@@ -2756,6 +2756,73 @@ body {
   line-height: 1;
 }
 #lqm-settings-close:hover { color: #fff; }
+
+/* ── Radar Color Editor ── */
+#radar-color-editor {
+  display: none;
+  position: fixed;
+  top: 60px; right: 16px;
+  width: 280px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background: rgba(8,12,18,0.97);
+  border: 1px solid rgba(0,200,200,0.25);
+  border-radius: 12px;
+  padding: 14px 16px 18px;
+  z-index: 9200;
+  font-family: var(--mono);
+  color: var(--text);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+}
+#radar-color-editor.open { display: block; }
+.rce-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.rce-title {
+  font-size: 11px; letter-spacing: 2px; color: var(--accent2);
+  text-transform: uppercase;
+}
+.rce-close {
+  background: none; border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px; color: var(--muted); cursor: pointer;
+  font-size: 13px; padding: 2px 7px; line-height: 1;
+}
+.rce-close:hover { color: #fff; border-color: rgba(255,255,255,0.4); }
+.rce-section {
+  font-size: 9px; letter-spacing: 2px; color: var(--muted);
+  text-transform: uppercase; margin: 12px 0 6px;
+  border-top: 1px solid rgba(255,255,255,0.07); padding-top: 10px;
+}
+.rce-row {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 5px;
+}
+.rce-dbz {
+  font-size: 10px; color: var(--accent2); min-width: 38px; letter-spacing: 0.5px;
+}
+.rce-swatch {
+  width: 28px; height: 20px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2);
+  cursor: pointer; padding: 0; flex-shrink: 0;
+  -webkit-appearance: none; appearance: none; background: none;
+}
+.rce-swatch::-webkit-color-swatch-wrapper { padding: 0; border-radius: 3px; }
+.rce-swatch::-webkit-color-swatch { border: none; border-radius: 3px; }
+.rce-swatch::-moz-color-swatch { border: none; border-radius: 3px; }
+.rce-label { font-size: 9px; color: var(--muted); }
+.rce-adj-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+}
+.rce-adj-lbl { font-size: 10px; color: var(--text); min-width: 68px; }
+.rce-adj-val { font-size: 9px; color: var(--accent2); min-width: 32px; text-align: right; }
+.rce-reset {
+  width: 100%; margin-top: 12px; padding: 7px;
+  background: rgba(0,200,200,0.08); border: 1px solid rgba(0,200,200,0.25);
+  border-radius: 7px; color: var(--accent2); font-family: var(--mono);
+  font-size: 10px; letter-spacing: 1px; cursor: pointer; text-transform: uppercase;
+}
+.rce-reset:hover { background: rgba(0,200,200,0.18); }
+
 @keyframes lqm-pulse {
   0%   { filter: drop-shadow(0 0 0px rgba(0,200,200,0.9)); }
   50%  { filter: drop-shadow(0 0 18px rgba(0,200,200,0.9)); }
@@ -3978,6 +4045,18 @@ footer {
   max-width: 110px;
 }
 .lqm-settings-select option { background: #2a0000; }
+.lqm-settings-btn {
+  background: rgba(0,0,0,0.4);
+  border: 1px solid rgba(220,0,0,0.45);
+  border-radius: 6px;
+  color: var(--accent2);
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 3px 10px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.lqm-settings-btn:hover { background: rgba(220,0,0,0.18); border-color: rgba(220,0,0,0.7); }
 
 /* ── CROSSHAIR ── */
 body.gwcfc-crosshair #map { cursor: crosshair !important; }
@@ -4631,90 +4710,47 @@ const AMBIENT_WEATHER_API_KEY         = '807d842f188e4d76bbba35960ef9449bb775e4a
 const AMBIENT_WEATHER_APPLICATION_KEY = ''; // TODO: paste applicationKey from dashboard.ambientweather.net → Account → API Keys
 let smoothEnabled = true;
 
-// ── RADAR COLOUR PALETTES (canvas pixel-remapping) ──
+// ── RADAR COLOUR CUSTOMISER ──
 // NWS source colors: [dBZ, R, G, B] — exact values IEM WMS renders
 const NWS_SOURCE_COLORS = [
-  [5,  4,   233, 231],
-  [10, 1,   159, 244],
-  [15, 3,   0,   244],
-  [20, 2,   253, 2  ],
-  [25, 1,   197, 1  ],
-  [30, 0,   142, 0  ],
-  [35, 253, 248, 2  ],
-  [40, 229, 188, 0  ],
-  [45, 253, 149, 0  ],
-  [50, 253, 0,   0  ],
-  [55, 212, 0,   0  ],
-  [60, 188, 0,   0  ],
-  [65, 248, 0,   253],
-  [70, 152, 84,  198],
-  [75, 253, 253, 253],
+  [5,  4,   233, 231], [10, 1,   159, 244], [15, 3,   0,   244],
+  [20, 2,   253, 2  ], [25, 1,   197, 1  ], [30, 0,   142, 0  ],
+  [35, 253, 248, 2  ], [40, 229, 188, 0  ], [45, 253, 149, 0  ],
+  [50, 253, 0,   0  ], [55, 212, 0,   0  ], [60, 188, 0,   0  ],
+  [65, 248, 0,   253], [70, 152, 84,  198], [75, 253, 253, 253],
+];
+const NWS_DBZ_META = [
+  { dbz:5,  hex:'#04e9e7', label:'Very light' },
+  { dbz:10, hex:'#019ff4', label:'Light' },
+  { dbz:15, hex:'#0300f4', label:'Light-mod' },
+  { dbz:20, hex:'#02fd02', label:'Moderate' },
+  { dbz:25, hex:'#01c501', label:'Moderate' },
+  { dbz:30, hex:'#008e00', label:'Mod-heavy' },
+  { dbz:35, hex:'#fdf802', label:'Heavy' },
+  { dbz:40, hex:'#e5bc00', label:'Heavy' },
+  { dbz:45, hex:'#fd9500', label:'Very heavy' },
+  { dbz:50, hex:'#fd0000', label:'Intense' },
+  { dbz:55, hex:'#d40000', label:'Intense' },
+  { dbz:60, hex:'#bc0000', label:'Extreme' },
+  { dbz:65, hex:'#f800fd', label:'Severe' },
+  { dbz:70, hex:'#9854c6', label:'Severe+' },
+  { dbz:75, hex:'#fdfdfd', label:'Max/Hail' },
 ];
 
-// Each palette entry: [dBZ, R, G, B] — same order as NWS_SOURCE_COLORS
-const RADAR_COLOR_PALETTES = {
-  nws: {
-    label: 'NWS Standard',
-    colors: null, // null = no remapping, use server tiles as-is
-    grad: null,
-  },
-  purple: {
-    label: 'Purple Storm',
-    colors: [
-      [5,  130, 180, 255], [10, 80,  120, 255], [15, 30,  50,  230],
-      [20, 80,  0,   200], [25, 110, 0,   220], [30, 140, 0,   240],
-      [35, 160, 40,  255], [40, 190, 80,  255], [45, 215, 0,   220],
-      [50, 255, 0,   180], [55, 255, 60,  120], [60, 255, 140, 0  ],
-      [65, 255, 230, 0  ], [70, 255, 255, 200], [75, 255, 255, 255],
-    ],
-  },
-  cool: {
-    label: 'Cool Rain',
-    colors: [
-      [5,  200, 240, 255], [10, 150, 210, 255], [15, 80,  170, 255],
-      [20, 30,  140, 255], [25, 0,   100, 220], [30, 0,   70,  190],
-      [35, 0,   200, 220], [40, 0,   220, 200], [45, 0,   230, 170],
-      [50, 0,   200, 110], [55, 0,   150, 70 ], [60, 0,   90,  40 ],
-      [65, 100, 0,   200], [70, 180, 0,   255], [75, 255, 255, 255],
-    ],
-  },
-  neon: {
-    label: 'Neon',
-    colors: [
-      [5,  0,   255, 220], [10, 0,   200, 255], [15, 0,   100, 255],
-      [20, 0,   255, 0  ], [25, 120, 255, 0  ], [30, 200, 255, 0  ],
-      [35, 255, 255, 0  ], [40, 255, 180, 0  ], [45, 255, 80,  0  ],
-      [50, 255, 0,   0  ], [55, 255, 0,   100], [60, 255, 0,   220],
-      [65, 200, 0,   255], [70, 80,  0,   255], [75, 255, 255, 255],
-    ],
-  },
-  inferno: {
-    label: 'Inferno',
-    colors: [
-      [5,  50,  0,   80 ], [10, 80,  0,   120], [15, 120, 0,   150],
-      [20, 160, 0,   120], [25, 180, 30,  0  ], [30, 200, 80,  0  ],
-      [35, 220, 140, 0  ], [40, 240, 200, 0  ], [45, 255, 240, 60 ],
-      [50, 255, 120, 0  ], [55, 255, 60,  0  ], [60, 220, 0,   0  ],
-      [65, 255, 0,   120], [70, 255, 200, 255], [75, 255, 255, 255],
-    ],
-  },
-  grey: {
-    label: 'Greyscale',
-    colors: [
-      [5,  210, 210, 210], [10, 195, 195, 195], [15, 178, 178, 178],
-      [20, 160, 160, 160], [25, 140, 140, 140], [30, 118, 118, 118],
-      [35, 235, 235, 235], [40, 215, 215, 215], [45, 190, 190, 190],
-      [50, 90,  90,  90 ], [55, 65,  65,  65 ], [60, 40,  40,  40 ],
-      [65, 255, 255, 255], [70, 255, 220, 0  ], [75, 255, 0,   0  ],
-    ],
-  },
-};
-let _radarPalette = 'nws';
+// null = NWS defaults (no remapping). Set to array of 15 hex strings for custom.
+let _customRadarColors = null;
+let _radarContrast   = 100; // %
+let _radarBrightness = 100; // %
+let _rceDebounce     = null;
 
-// Remap a loaded tile's pixels from NWS standard colors to the active palette
+function _hexToRgb(hex) {
+  const v = parseInt(hex.slice(1), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+// Remap tile pixels: match each pixel to nearest NWS color, swap to custom color
 function _remapTileColors(tile) {
-  const palette = RADAR_COLOR_PALETTES[_radarPalette];
-  if (!palette || !palette.colors) return;
+  if (!_customRadarColors) return;
   const w = tile.naturalWidth || 256, h = tile.naturalHeight || 256;
   const canvas = document.createElement('canvas');
   canvas.width = w; canvas.height = h;
@@ -4722,49 +4758,118 @@ function _remapTileColors(tile) {
   try { ctx.drawImage(tile, 0, 0); } catch(e) { return; }
   const imgData = ctx.getImageData(0, 0, w, h);
   const px = imgData.data;
-  // Pre-compute flat source/target arrays for speed
   const n = NWS_SOURCE_COLORS.length;
-  const src = NWS_SOURCE_COLORS, dst = palette.colors;
+  // Pre-parse custom colors to RGB once
+  const targets = _customRadarColors.map(_hexToRgb);
   for (let i = 0; i < px.length; i += 4) {
     if (px[i+3] < 10) continue;
     const r = px[i], g = px[i+1], b = px[i+2];
     let bestD = 3600, bestJ = -1;
     for (let j = 0; j < n; j++) {
-      const s = src[j];
+      const s = NWS_SOURCE_COLORS[j];
       const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
       if (d < bestD) { bestD = d; bestJ = j; }
     }
     if (bestJ >= 0) {
-      const t = dst[bestJ];
-      px[i] = t[1]; px[i+1] = t[2]; px[i+2] = t[3];
+      const t = targets[bestJ];
+      px[i] = t[0]; px[i+1] = t[1]; px[i+2] = t[2];
     }
   }
   ctx.putImageData(imgData, 0, 0);
   tile.src = canvas.toDataURL('image/png');
 }
 
-function _applyRadarPalette(id) {
-  _radarPalette = id;
-  localStorage.setItem('lqm_radar_palette', id);
+function _applyRadarPaneFilter() {
   const pane = map?.getPane('radarPane');
-  if (pane) pane.style.filter = '';
-  // Rebuild pools so all tiles reload and get remapped
+  if (pane) pane.style.filter =
+    `contrast(${_radarContrast}%) brightness(${_radarBrightness}%)`;
+}
+
+function _rebuildRadarTiles() {
   if (_radarPoolBuilt) { _buildRadarPool(); showFrame(currentFrame); }
   if (_refStation)     { _loadSingleSiteRef(_refStation); }
-  // Update legend bar to show palette colors
-  const palette = RADAR_COLOR_PALETTES[id];
+  _rceUpdateLegend();
+}
+
+function _rceUpdateLegend() {
   const bar = document.getElementById('legend-bar');
-  if (bar) {
-    if (!palette || !palette.colors) {
-      bar.style.background = LEGENDS.ref.grad;
-    } else {
-      const stops = palette.colors.map((c, i) => {
-        const pct = (i / (palette.colors.length - 1) * 93 + 6.7).toFixed(1);
-        return `rgb(${c[1]},${c[2]},${c[3]}) ${pct}%`;
-      });
-      bar.style.background = `linear-gradient(to right, transparent 0%, ${stops.join(', ')})`;
-    }
-  }
+  if (!bar) return;
+  const colors = _customRadarColors || NWS_DBZ_META.map(m => m.hex);
+  const stops = colors.map((hex, i) => {
+    const pct = (i / (colors.length - 1) * 93 + 6.7).toFixed(1);
+    return `${hex} ${pct}%`;
+  });
+  bar.style.background = `linear-gradient(to right, transparent 0%, ${stops.join(', ')})`;
+}
+
+// ── Radar Color Editor ──
+function openRadarColorEditor() {
+  const el = document.getElementById('radar-color-editor');
+  if (!el) return;
+  _rceBuildSwatches();
+  document.getElementById('rce-contrast').value   = _radarContrast;
+  document.getElementById('rce-contrast-val').textContent = _radarContrast + '%';
+  document.getElementById('rce-brightness').value = _radarBrightness;
+  document.getElementById('rce-brightness-val').textContent = _radarBrightness + '%';
+  el.classList.add('open');
+  // close settings if open
+  lqmCloseSettings();
+}
+function closeRadarColorEditor() {
+  document.getElementById('radar-color-editor')?.classList.remove('open');
+}
+
+function _rceBuildSwatches() {
+  const wrap = document.getElementById('rce-swatches');
+  if (!wrap) return;
+  const active = _customRadarColors || NWS_DBZ_META.map(m => m.hex);
+  wrap.innerHTML = NWS_DBZ_META.map((m, i) => `
+    <div class="rce-row">
+      <span class="rce-dbz">${m.dbz} dBZ</span>
+      <input type="color" class="rce-swatch" id="rce-c${i}"
+        value="${active[i]}" oninput="rceColorChange(${i}, this.value)">
+      <span class="rce-label">${m.label}</span>
+    </div>`).join('');
+}
+
+function rceColorChange(idx, hex) {
+  if (!_customRadarColors) _customRadarColors = NWS_DBZ_META.map(m => m.hex);
+  _customRadarColors[idx] = hex;
+  _rceUpdateLegend();
+  clearTimeout(_rceDebounce);
+  _rceDebounce = setTimeout(() => {
+    _rebuildRadarTiles();
+    localStorage.setItem('lqm_custom_colors', JSON.stringify(_customRadarColors));
+  }, 350);
+}
+
+function rceUpdateContrast(val) {
+  _radarContrast = +val;
+  document.getElementById('rce-contrast-val').textContent = val + '%';
+  _applyRadarPaneFilter();
+  localStorage.setItem('lqm_radar_contrast', val);
+}
+
+function rceUpdateBrightness(val) {
+  _radarBrightness = +val;
+  document.getElementById('rce-brightness-val').textContent = val + '%';
+  _applyRadarPaneFilter();
+  localStorage.setItem('lqm_radar_brightness', val);
+}
+
+function rceReset() {
+  _customRadarColors = null;
+  _radarContrast = 100; _radarBrightness = 100;
+  document.getElementById('rce-contrast').value = 100;
+  document.getElementById('rce-contrast-val').textContent = '100%';
+  document.getElementById('rce-brightness').value = 100;
+  document.getElementById('rce-brightness-val').textContent = '100%';
+  _rceBuildSwatches();
+  _applyRadarPaneFilter();
+  _rebuildRadarTiles();
+  localStorage.removeItem('lqm_custom_colors');
+  localStorage.removeItem('lqm_radar_contrast');
+  localStorage.removeItem('lqm_radar_brightness');
 }
 let mapTileLayers = {};
 let activeLayers = {
@@ -16284,15 +16389,8 @@ function selectProduct(p) {
     </div>
   </div>
   <div class="lqm-settings-row">
-    <span class="lqm-settings-lbl">Radar Color</span>
-    <select id="lqm-set-palette" class="lqm-settings-select" onchange="lqmToggleSetting('palette',this.value)">
-      <option value="nws">NWS Standard</option>
-      <option value="purple">Purple Storm</option>
-      <option value="cool">Cool Rain</option>
-      <option value="neon">Neon</option>
-      <option value="inferno">Inferno</option>
-      <option value="grey">Greyscale</option>
-    </select>
+    <span class="lqm-settings-lbl">Radar Colors</span>
+    <button class="lqm-settings-btn" onclick="openRadarColorEditor()">Customize →</button>
   </div>
   <div class="lqm-settings-row">
     <span class="lqm-settings-lbl">High Contrast</span>
@@ -16396,6 +16494,30 @@ function selectProduct(p) {
     ADS-B: OpenSky Network (free)<br>
     Tiles: MapTiler · OpenStreetMap
   </div>
+</div>
+
+<!-- ── Radar Color Editor Panel ── -->
+<div id="radar-color-editor">
+  <div class="rce-header">
+    <span class="rce-title">Radar Colors</span>
+    <button class="rce-close" onclick="closeRadarColorEditor()">✕</button>
+  </div>
+  <div class="rce-section" style="margin-top:0;border-top:none;padding-top:0;">ADJUSTMENTS</div>
+  <div class="rce-adj-row">
+    <span class="rce-adj-lbl">Contrast</span>
+    <input type="range" id="rce-contrast" min="50" max="200" value="100" step="5"
+      class="lqm-slider" style="flex:1;" oninput="rceUpdateContrast(this.value)">
+    <span class="rce-adj-val" id="rce-contrast-val">100%</span>
+  </div>
+  <div class="rce-adj-row">
+    <span class="rce-adj-lbl">Brightness</span>
+    <input type="range" id="rce-brightness" min="40" max="160" value="100" step="5"
+      class="lqm-slider" style="flex:1;" oninput="rceUpdateBrightness(this.value)">
+    <span class="rce-adj-val" id="rce-brightness-val">100%</span>
+  </div>
+  <div class="rce-section">dBZ LEVEL COLORS</div>
+  <div id="rce-swatches"></div>
+  <button class="rce-reset" onclick="rceReset()">↺ Reset to NWS Defaults</button>
 </div>
 
 <script>
@@ -18072,8 +18194,6 @@ lqmToggleSetting = function(key, val) {
     }
   } else if (key==='flash') {
     window._gwcfc_flash = val;
-  } else if (key==='palette') {
-    _applyRadarPalette(val);
   }
 };
 
@@ -18091,7 +18211,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (localStorage.getItem('lqm_coords')==='1')    { const el=document.getElementById('lqm-set-coords'); if(el){el.checked=true;lqmToggleSetting('coords',true);} }
     const wu = localStorage.getItem('lqm_windunit');  if(wu){ const el=document.getElementById('lqm-set-windunit'); if(el) el.value=wu; }
     const tu = localStorage.getItem('lqm_tempunit');  if(tu){ const el=document.getElementById('lqm-set-tempunit'); if(el) el.value=tu; }
-    const pal = localStorage.getItem('lqm_radar_palette'); if(pal && RADAR_PALETTES[pal]){ const el=document.getElementById('lqm-set-palette'); if(el) el.value=pal; _applyRadarPalette(pal); }
+    try {
+      const cc = localStorage.getItem('lqm_custom_colors');
+      if (cc) { _customRadarColors = JSON.parse(cc); }
+      const rc = localStorage.getItem('lqm_radar_contrast');
+      if (rc) { _radarContrast = parseInt(rc,10); const el=document.getElementById('rce-contrast'); if(el){el.value=_radarContrast; document.getElementById('rce-contrast-val').textContent=_radarContrast+'%';} }
+      const rb = localStorage.getItem('lqm_radar_brightness');
+      if (rb) { _radarBrightness = parseInt(rb,10); const el=document.getElementById('rce-brightness'); if(el){el.value=_radarBrightness; document.getElementById('rce-brightness-val').textContent=_radarBrightness+'%';} }
+      if (_radarContrast !== 100 || _radarBrightness !== 100) _applyRadarPaneFilter();
+    } catch(e) {}
     // Add scale control by default
     if (!window._scaleCtrl && window.map) { window._scaleCtrl = L.control.scale({imperial:true,metric:true}).addTo(map); }
   }, 1500);
