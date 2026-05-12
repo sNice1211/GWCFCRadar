@@ -2790,13 +2790,32 @@ body {
 }
 .rce-close:hover { color: #fff; border-color: rgba(255,255,255,0.4); }
 .drag-grip {
-  display: flex; align-items: center; justify-content: center;
-  cursor: grab; user-select: none; opacity: 0.4;
-  font-size: 13px; letter-spacing: 3px; line-height: 1;
-  transition: opacity 0.15s;
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  cursor: grab; user-select: none;
+  padding: 4px 0; margin-bottom: 4px;
+  border-radius: 6px;
+  background: rgba(255,255,255,0.04);
+  border: 1px dashed rgba(255,255,255,0.13);
+  font-size: 11px; letter-spacing: 4px; color: rgba(255,255,255,0.35);
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.drag-grip:hover { opacity: 0.8; }
-.drag-grip:active { cursor: grabbing; opacity: 1; }
+.drag-grip:hover { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.3); color: rgba(255,255,255,0.7); }
+.drag-grip:active { cursor: grabbing; }
+/* inline grip for horizontal toolbars */
+.dtb-drag {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; cursor: grab; user-select: none; padding: 0 6px;
+  opacity: 0.4; transition: opacity 0.15s; flex-shrink: 0;
+}
+.dtb-drag:hover { opacity: 1; }
+.dtb-drag:active { cursor: grabbing; }
+.dtb-drag span {
+  display: block; width: 14px; height: 2px;
+  border-radius: 1px; background: currentColor;
+}
+/* radar color editor header drag cue */
+.rce-header { cursor: grab; }
+.rce-header:active { cursor: grabbing; }
 .rce-section {
   font-size: 9px; letter-spacing: 2px; color: var(--muted);
   text-transform: uppercase; margin: 12px 0 6px;
@@ -4381,7 +4400,7 @@ body.gwcfc-crosshair #map::after {
 
     <!-- Alerts Panel -->
     <div id="alerts-panel">
-      <div id="alerts-drag" class="drag-grip" style="margin-bottom:3px;">⠿ ⠿ ⠿</div>
+      <div id="alerts-drag" class="drag-grip">⠿ ⠿ ⠿ ⠿</div>
       <div id="past-alerts-toggle" class="past-alerts-toggle" onclick="togglePastAlerts()">
         <span><span class="pat-count">Show</span> past alerts</span>
         <span class="pat-arrow">▼</span>
@@ -4439,6 +4458,7 @@ body.gwcfc-crosshair #map::after {
 <div id="tool-hint"></div>
 <!-- DRAW TOOLBAR -->
 <div id="draw-toolbar">
+  <div class="dtb-drag" id="draw-drag" title="Drag to move"><span></span><span></span><span></span></div>
   <div id="dtb-palette">
     <!-- swatches injected by JS -->
   </div>
@@ -4482,6 +4502,7 @@ body.gwcfc-crosshair #map::after {
 </div>
 <div id="dtb-status">Drawing mode paused</div>
 <div id="track-toolbar">
+  <div class="dtb-drag" id="track-drag" title="Drag to move"><span></span><span></span><span></span></div>
   <span class="dtb-label">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M12 6v6l4 2"/></svg>
     TRACK
@@ -4535,6 +4556,7 @@ body.gwcfc-crosshair #map::after {
 
 <!-- POLY TOOLBAR -->
 <div id="poly-toolbar">
+  <div class="dtb-drag" id="poly-drag" title="Drag to move"><span></span><span></span><span></span></div>
   <span class="dtb-label">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" width="13" height="13"><polyline points="12,3 21,9 18,20 6,20 3,9 12,3"/></svg>
     POLYGON
@@ -5361,8 +5383,6 @@ function toggleAlertsPanel() {
   if (panel.style.display === 'flex') {
     panel.style.display = 'none';
   } else {
-    // Close EAS panel if open
-    document.getElementById('eas-panel').style.display = 'none';
     panel.style.display = 'flex';
   }
 }
@@ -5377,8 +5397,6 @@ function toggleEASPanel() {
     panel.style.display = 'none';
     stopEASAudio();
   } else {
-    // Close WX alerts panel if open
-    document.getElementById('alerts-panel').style.display = 'none';
     panel.style.display = 'flex';
     loadEASAlerts();
   }
@@ -16514,6 +16532,7 @@ function selectProduct(p) {
 
 <!-- ── Radar Color Editor Panel ── -->
 <div id="radar-color-editor">
+  <div class="drag-grip" id="rce-drag-grip" style="margin-bottom:8px;">⠿ ⠿ ⠿ ⠿</div>
   <div class="rce-header">
     <span class="rce-title">Radar Colors</span>
     <button class="rce-close" onclick="closeRadarColorEditor()">✕</button>
@@ -18286,10 +18305,10 @@ function _makeDraggable(el, handle) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  _makeDraggable(document.getElementById('radar-color-editor'), document.querySelector('#radar-color-editor .rce-header'));
-  _makeDraggable(document.getElementById('draw-toolbar'),       document.querySelector('#draw-toolbar .dtb-label'));
-  _makeDraggable(document.getElementById('track-toolbar'),      document.querySelector('#track-toolbar .dtb-label'));
-  _makeDraggable(document.getElementById('poly-toolbar'),       document.querySelector('#poly-toolbar .dtb-label'));
+  _makeDraggable(document.getElementById('radar-color-editor'), document.getElementById('rce-drag-grip'));
+  _makeDraggable(document.getElementById('draw-toolbar'),       document.getElementById('draw-drag'));
+  _makeDraggable(document.getElementById('track-toolbar'),      document.getElementById('track-drag'));
+  _makeDraggable(document.getElementById('poly-toolbar'),       document.getElementById('poly-drag'));
   _makeDraggable(document.getElementById('alerts-panel'),       document.getElementById('alerts-drag'));
   _makeDraggable(document.getElementById('eas-panel'),          document.getElementById('eas-panel-header'));
 });
