@@ -9308,7 +9308,7 @@ function toggleWindSub() {
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { wrap.dataset.mode = ''; renderSubBubbles('regular'); };
+  back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('wind'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
 
   [
@@ -9319,7 +9319,7 @@ function toggleWindSub() {
     el.className = 'sub-bubble' + (b.active() ? ' active' : '');
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
-    el.onclick = () => b.action();
+    el.onclick = () => { b.action(); _syncParentBubble('wind'); };
     wrap.appendChild(el);
   });
 
@@ -9857,6 +9857,24 @@ const TAB_BUBBLES = {
 
 const activeBubbles = {};
 
+function _getBubbleActive(id) {
+  if (id === 'radar')    return !!activeLayers.nexrad;
+  if (id === 'satellite') return !!activeLayers.satellite;
+  if (id === 'wind')     return !!(windRegularBarbActive || windGustBarbActive);
+  if (id === 'waves')    return !!(_wavesTideActive || _wavesSurgeActive);
+  if (id === 'pressure') return !!_pressureIsoActive;
+  if (id === 'alerts')   return !!(activeLayers.tornado || activeLayers.tstm || activeLayers.flood || activeLayers.watch);
+  if (id === 'temp')     return !!_metarActive;
+  return !!activeBubbles[id];
+}
+
+function _syncParentBubble(id) {
+  const isActive = _getBubbleActive(id);
+  activeBubbles[id] = isActive;
+  const el = document.getElementById('sub-' + id);
+  if (el) el.classList.toggle('active', isActive);
+}
+
 
 
 function toggleForecastDots() {
@@ -10153,7 +10171,7 @@ function toggleWavesSub() {
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { wrap.dataset.mode = ''; renderSubBubbles('regular'); };
+  back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('waves'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
 
   const WAVES_SUBS = [
@@ -10171,6 +10189,7 @@ function toggleWavesSub() {
         _syncDataClickHandler();
         const el = document.getElementById('sub-wavtide');
         if (el) el.classList.toggle('active', _wavesTideActive);
+        _syncParentBubble('waves');
       }
     },
     { id: 'wavsurge', icon: '🌊', label: 'Surge', active: () => _wavesSurgeActive,
@@ -10187,6 +10206,7 @@ function toggleWavesSub() {
         _syncDataClickHandler();
         const el = document.getElementById('sub-wavsurge');
         if (el) el.classList.toggle('active', _wavesSurgeActive);
+        _syncParentBubble('waves');
       }
     }
   ];
@@ -10490,6 +10510,7 @@ function togglePressureSub() {
   _pressureIsoActive = !_pressureIsoActive;
   const el = document.getElementById('sub-pressure');
   if (el) el.classList.toggle('active', _pressureIsoActive);
+  _syncParentBubble('pressure');
   if (_pressureIsoActive) {
     _loadPressureIsolines();
     const _deb = () => { clearTimeout(_pressureDebounce); _pressureDebounce = setTimeout(_loadPressureIsolines, 500); };
@@ -10994,14 +11015,14 @@ function toggleAlertSub() {
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { wrap.dataset.mode = ''; renderSubBubbles('regular'); };
+  back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('alerts'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
   ALERT_SUB_BUBBLES.forEach(b => {
     const el = document.createElement('div');
     el.className = 'sub-bubble';
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
-    el.onclick = () => { b.action(); el.classList.toggle('active'); };
+    el.onclick = () => { b.action(); el.classList.toggle('active'); _syncParentBubble('alerts'); };
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
@@ -11074,9 +11095,9 @@ function toggleRadarSub() {
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
   back.onclick = () => {
-    // Disable radar if user goes back without selecting anything
     if (!activeLayers.nexrad) _disableRadar();
-    renderSubBubbles('regular');
+    _syncParentBubble('radar');
+    renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
   };
   wrap.appendChild(back);
   RADAR_SUB_BUBBLES.forEach(b => {
@@ -11115,7 +11136,7 @@ function renderSubBubbles(tab) {
   const bubbles = TAB_BUBBLES[tab] || [];
   bubbles.forEach(b => {
     const el = document.createElement('div');
-    const isActive = !!activeBubbles[b.id];
+    const isActive = _getBubbleActive(b.id);
     el.className = 'sub-bubble' + (isActive ? ' active' : '');
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
