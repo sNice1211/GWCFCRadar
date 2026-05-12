@@ -2789,6 +2789,14 @@ body {
   font-size: 13px; padding: 2px 7px; line-height: 1;
 }
 .rce-close:hover { color: #fff; border-color: rgba(255,255,255,0.4); }
+.drag-grip {
+  display: flex; align-items: center; justify-content: center;
+  cursor: grab; user-select: none; opacity: 0.4;
+  font-size: 13px; letter-spacing: 3px; line-height: 1;
+  transition: opacity 0.15s;
+}
+.drag-grip:hover { opacity: 0.8; }
+.drag-grip:active { cursor: grabbing; opacity: 1; }
 .rce-section {
   font-size: 9px; letter-spacing: 2px; color: var(--muted);
   text-transform: uppercase; margin: 12px 0 6px;
@@ -4373,6 +4381,7 @@ body.gwcfc-crosshair #map::after {
 
     <!-- Alerts Panel -->
     <div id="alerts-panel">
+      <div id="alerts-drag" class="drag-grip" style="margin-bottom:3px;">⠿ ⠿ ⠿</div>
       <div id="past-alerts-toggle" class="past-alerts-toggle" onclick="togglePastAlerts()">
         <span><span class="pat-count">Show</span> past alerts</span>
         <span class="pat-arrow">▼</span>
@@ -18230,6 +18239,59 @@ document.addEventListener('DOMContentLoaded', () => {
     // Add scale control by default
     if (!window._scaleCtrl && window.map) { window._scaleCtrl = L.control.scale({imperial:true,metric:true}).addTo(map); }
   }, 1500);
+});
+
+// ── Draggable panels ──
+function _makeDraggable(el, handle) {
+  if (!el || !handle) return;
+  let active = false, ox = 0, oy = 0;
+  handle.style.cursor = 'grab';
+
+  function _start(e) {
+    if (e.target !== handle && e.target.closest &&
+        e.target.closest('button,input,select,a,label')) return;
+    active = true;
+    const r = el.getBoundingClientRect();
+    el.style.position = 'fixed';
+    el.style.left = r.left + 'px';
+    el.style.top  = r.top  + 'px';
+    el.style.right  = 'auto';
+    el.style.bottom = 'auto';
+    el.style.transform = 'none';
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    ox = cx - r.left;
+    oy = cy - r.top;
+    handle.style.cursor = 'grabbing';
+    e.preventDefault();
+  }
+  function _move(e) {
+    if (!active) return;
+    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+    const x = Math.max(0, Math.min(window.innerWidth  - el.offsetWidth,  cx - ox));
+    const y = Math.max(0, Math.min(window.innerHeight - el.offsetHeight, cy - oy));
+    el.style.left = x + 'px';
+    el.style.top  = y + 'px';
+    e.preventDefault();
+  }
+  function _end() { active = false; handle.style.cursor = 'grab'; }
+
+  handle.addEventListener('mousedown',  _start);
+  handle.addEventListener('touchstart', _start, { passive: false });
+  document.addEventListener('mousemove',  _move);
+  document.addEventListener('touchmove',  _move, { passive: false });
+  document.addEventListener('mouseup',    _end);
+  document.addEventListener('touchend',   _end);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  _makeDraggable(document.getElementById('radar-color-editor'), document.querySelector('#radar-color-editor .rce-header'));
+  _makeDraggable(document.getElementById('draw-toolbar'),       document.querySelector('#draw-toolbar .dtb-label'));
+  _makeDraggable(document.getElementById('track-toolbar'),      document.querySelector('#track-toolbar .dtb-label'));
+  _makeDraggable(document.getElementById('poly-toolbar'),       document.querySelector('#poly-toolbar .dtb-label'));
+  _makeDraggable(document.getElementById('alerts-panel'),       document.getElementById('alerts-drag'));
+  _makeDraggable(document.getElementById('eas-panel'),          document.getElementById('eas-panel-header'));
 });
 
 </script>
