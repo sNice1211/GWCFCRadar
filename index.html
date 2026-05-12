@@ -4630,6 +4630,26 @@ let currentProduct = 'ref', currentModel = 'gfs', currentModelVar = 'precip';
 const AMBIENT_WEATHER_API_KEY         = '807d842f188e4d76bbba35960ef9449bb775e4a0f1ff4946a723e7a485554619'; // user-level
 const AMBIENT_WEATHER_APPLICATION_KEY = ''; // TODO: paste applicationKey from dashboard.ambientweather.net → Account → API Keys
 let smoothEnabled = true;
+
+// ── RADAR COLOUR PALETTES ──
+const RADAR_PALETTES = {
+  nws:      { label: 'NWS Standard',  filter: '' },
+  vivid:    { label: 'Vivid',         filter: 'saturate(1.9) brightness(1.05)' },
+  contrast: { label: 'High Contrast', filter: 'contrast(1.8) saturate(1.4)' },
+  soft:     { label: 'Soft',          filter: 'saturate(0.65) brightness(1.2)' },
+  night:    { label: 'Night',         filter: 'brightness(0.6) contrast(1.25) saturate(0.85)' },
+  warm:     { label: 'Warm',          filter: 'sepia(0.4) contrast(1.2) saturate(1.5)' },
+  grey:     { label: 'Greyscale',     filter: 'grayscale(1) contrast(1.3) brightness(1.1)' },
+};
+let _radarPalette = 'nws';
+
+function _applyRadarPalette(id) {
+  _radarPalette = id;
+  const filter = RADAR_PALETTES[id]?.filter ?? '';
+  const pane = map?.getPane('radarPane');
+  if (pane) pane.style.filter = filter;
+  localStorage.setItem('lqm_radar_palette', id);
+}
 let mapTileLayers = {};
 let activeLayers = {
   nexrad: false, satellite: false, tornado: true, tstm: true,
@@ -4666,6 +4686,11 @@ function initMap() {
     maxBounds: [[-90, -180], [90, 180]],
     maxBoundsViscosity: 1.0
   });
+
+  // Custom pane for all radar WMS layers — CSS filter applied here for palette switching
+  const _radarPaneEl = map.createPane('radarPane');
+  _radarPaneEl.style.zIndex = 400;
+  _radarPaneEl.style.pointerEvents = 'none';
 
   // ── MapTiler tile layers ──
   // Uses MapTiler SDK tile URLs — replace YOUR_KEY with your MapTiler API key if needed
@@ -4949,6 +4974,7 @@ function _buildRadarPool() {
       TIME: frame.iso,
       opacity: 0,
       zIndex: 10,
+      pane: 'radarPane',
       attribution: 'NEXRAD © NOAA via Iowa Mesonet',
       noWrap: true,
     });
@@ -4978,6 +5004,7 @@ function _buildCanadaPool() {
       TIME: frame.iso,
       opacity: 0,
       zIndex: 11,
+      pane: 'radarPane',
       attribution: 'Canada Radar © ECCC via Iowa Mesonet',
       noWrap: true,
     });
@@ -5034,7 +5061,7 @@ function showFrame(idx) {
     radarLayer = L.tileLayer.wms(NEXRAD_WMS, {
       layers: NEXRAD_LAYER, format: 'image/png', transparent: true,
       version: '1.1.1', TIME: radarFrames[idx].iso,
-      opacity: radarOpacity, zIndex: 10, noWrap: true,
+      opacity: radarOpacity, zIndex: 10, pane: 'radarPane', noWrap: true,
       attribution: 'NEXRAD © NOAA via Iowa Mesonet',
     }).addTo(map);
   }
@@ -12852,16 +12879,15 @@ function _syncNexradSites() {
   else         hideNexradSites();
 }
 
-// ── SINGLE-SITE REFLECTIVITY (NWS GeoServer n0q per station) ──
-// Mirrors the velocity single-site approach but uses the n0q reflectivity layer.
+// ── SINGLE-SITE REFLECTIVITY (Iowa Mesonet RIDGE per station) ──
+// Uses IEM ridge.cgi WMS — opengeo.ncep.noaa.gov dropped N0Q Level-3 in 2022.
+// IEM sector codes are 3-letter (strip leading K/P/T from 4-letter ICAO).
 async function _loadSingleSiteRef(stationId) {
   stationId = stationId.toLowerCase();
   _refStation = stationId;
+  const sector = stationId.slice(1).toUpperCase(); // KDVN → DVN
 
-  // Hide the composite pool while single-site is loading
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
-
-  // Tear down any previous single-site REF pool
   _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _refSitePool   = [];
   _refSiteLoaded = [];
@@ -12870,74 +12896,52 @@ async function _loadSingleSiteRef(stationId) {
   const animTimeEl = document.getElementById('anim-time');
   if (animTimeEl) animTimeEl.textContent = 'Loading REF…';
 
-  // Fetch real timestamps from NWS GeoServer GetCapabilities for this station
-  try {
-    const url = `https://opengeo.ncep.noaa.gov/geoserver/${stationId}/ows?service=wms&version=1.3.0&request=GetCapabilities`;
-    const res  = await fetch(url, { signal: _abortSignal(8000) });
-    const text = await res.text();
-    const parser = new DOMParser();
-    const xml  = parser.parseFromString(text, 'text/xml');
-    const layers = xml.querySelectorAll('Layer');
-    let timeStr = '';
-    for (const lyr of layers) {
-      const nameEl = lyr.querySelector(':scope > Name');
-      if (!nameEl) continue;
-      const nm = nameEl.textContent.trim().toLowerCase();
-      // Look for the base reflectivity layer: station_n0q or station_bref_raw
-      if (nm === `${stationId}_n0q` || nm.includes('n0q') || nm.includes('bref')) {
-        const dim = lyr.querySelector('Dimension[name="time"]') ||
-                    lyr.querySelector('Extent[name="time"]');
-        if (dim) { timeStr = dim.textContent.trim(); break; }
-      }
-    }
-    if (timeStr) {
-      const times = timeStr.split(',').map(s => s.trim()).filter(Boolean);
-      const recent = times.slice(-24);
-      _refSiteFrames = recent.map(iso => ({ iso, time: new Date(iso).getTime() / 1000 }));
-    }
-  } catch(err) {
-    console.warn('[SingleSiteREF] GetCapabilities failed:', err);
+  // Build last 12 frames at 5-min intervals
+  const now = new Date();
+  now.setUTCSeconds(0, 0);
+  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
+  for (let i = 11; i >= 0; i--) {
+    const t = new Date(now.getTime() - i * 5 * 60 * 1000);
+    _refSiteFrames.push({ time: t.getTime() / 1000, iso: t.toISOString().slice(0,19)+'Z', date: t });
   }
 
-  // Fallback: synthesise 24 frames at 5-min intervals
-  if (!_refSiteFrames.length) {
-    const now = new Date();
-    now.setUTCSeconds(0, 0);
-    now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
-    for (let i = 23; i >= 0; i--) {
-      const t = new Date(now.getTime() - i * 5 * 60 * 1000);
-      _refSiteFrames.push({ time: t.getTime() / 1000, iso: t.toISOString().slice(0, 19) + 'Z' });
-    }
-  }
-
-  // Build the WMS pool for this station's n0q layer
-  const wmsUrl  = `https://opengeo.ncep.noaa.gov/geoserver/${stationId}/ows`;
-  const layerNm = `${stationId}_n0q`;
+  const wmsUrl = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/ridge.cgi';
   _refSiteFrames.forEach((frame, i) => {
+    const d   = frame.date;
+    const yr  = d.getUTCFullYear();
+    const mo  = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dy  = String(d.getUTCDate()).padStart(2, '0');
+    const hhmm = String(d.getUTCHours()).padStart(2,'0') + String(d.getUTCMinutes()).padStart(2,'0');
+    const isLatest = (i === _refSiteFrames.length - 1);
     const l = L.tileLayer.wms(wmsUrl, {
-      layers:      layerNm,
+      layers:      isLatest ? 'single' : 'single-archive',
       format:      'image/png',
       transparent: true,
-      version:     '1.3.0',
-      TIME:        frame.iso,
+      version:     '1.1.1',
+      sector:      sector,
+      prod:        'N0Q',
+      ...(isLatest ? {} : { year: yr, month: mo, day: dy, time: hhmm }),
       opacity:     0,
-      zIndex:      10,
+      zIndex:      11,
+      pane:        'radarPane',
       noWrap:      true,
-      attribution: `NEXRAD ${stationId.toUpperCase()} © NOAA/NWS`
+      attribution: `NEXRAD ${stationId.toUpperCase()} © NOAA via IEM`
     });
     _refSiteLoaded[i] = false;
-    l.on('tileload', () => { _refSiteLoaded[i] = true; });
+    l.on('tileload', () => {
+      _refSiteLoaded[i] = true;
+      if (smoothEnabled) l.getContainer()?.querySelectorAll('.leaflet-tile').forEach(t => { t.style.imageRendering = 'auto'; });
+    });
     l.addTo(map);
     _refSitePool[i] = l;
   });
 
-  // Update timeline to match single-site frames
+  // Update timeline
   const tl = document.getElementById('timeline');
   tl.max   = _refSiteFrames.length - 1;
   tl.value = _refSiteFrames.length - 1;
   currentFrame = _refSiteFrames.length - 1;
 
-  // Rebuild timeline labels for the new frames
   const wrap = document.getElementById('timeline-labels');
   if (wrap) {
     const step = Math.max(1, Math.floor(_refSiteFrames.length / 5));
@@ -16159,6 +16163,18 @@ function selectProduct(p) {
     </div>
   </div>
   <div class="lqm-settings-row">
+    <span class="lqm-settings-lbl">Radar Color</span>
+    <select id="lqm-set-palette" class="lqm-settings-select" onchange="lqmToggleSetting('palette',this.value)">
+      <option value="nws">NWS Standard</option>
+      <option value="vivid">Vivid</option>
+      <option value="contrast">High Contrast</option>
+      <option value="soft">Soft</option>
+      <option value="night">Night</option>
+      <option value="warm">Warm</option>
+      <option value="grey">Greyscale</option>
+    </select>
+  </div>
+  <div class="lqm-settings-row">
     <span class="lqm-settings-lbl">High Contrast</span>
     <label class="lqm-toggle">
       <input type="checkbox" id="lqm-set-contrast" onchange="lqmToggleSetting('contrast',this.checked)">
@@ -17936,6 +17952,8 @@ lqmToggleSetting = function(key, val) {
     }
   } else if (key==='flash') {
     window._gwcfc_flash = val;
+  } else if (key==='palette') {
+    _applyRadarPalette(val);
   }
 };
 
@@ -17953,6 +17971,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (localStorage.getItem('lqm_coords')==='1')    { const el=document.getElementById('lqm-set-coords'); if(el){el.checked=true;lqmToggleSetting('coords',true);} }
     const wu = localStorage.getItem('lqm_windunit');  if(wu){ const el=document.getElementById('lqm-set-windunit'); if(el) el.value=wu; }
     const tu = localStorage.getItem('lqm_tempunit');  if(tu){ const el=document.getElementById('lqm-set-tempunit'); if(el) el.value=tu; }
+    const pal = localStorage.getItem('lqm_radar_palette'); if(pal && RADAR_PALETTES[pal]){ const el=document.getElementById('lqm-set-palette'); if(el) el.value=pal; _applyRadarPalette(pal); }
     // Add scale control by default
     if (!window._scaleCtrl && window.map) { window._scaleCtrl = L.control.scale({imperial:true,metric:true}).addTo(map); }
   }, 1500);
