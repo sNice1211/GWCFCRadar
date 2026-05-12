@@ -4618,6 +4618,7 @@ let goesLayer = null, currentGoesProduct = 'ir';
 let alertsLayer = null, spcLayer = null, lightningMarkers = [];
 let radarFrames = [], currentFrame = 0, playing = false, playTimer = null;
 let animSpeed = 1, radarOpacity = 0.85;
+let _pendingFrameTick = null, _pendingCanadaTick = null;
 let currentProduct = 'ref', currentModel = 'gfs', currentModelVar = 'precip';
 
 // ── AMBIENT WEATHER NETWORK CREDENTIALS ─────────────────────────────
@@ -5006,24 +5007,23 @@ function showFrame(idx) {
   document.getElementById('timeline').value = idx;
 
   if (activeLayers.nexrad && _radarPoolBuilt) {
-    // Only cross-fade when the incoming frame has tiles loaded,
-    // otherwise leave the previous frame visible to avoid blank flicker.
+    // Cancel any stale wait-for-tile interval from a previous scrub
+    if (_pendingFrameTick) { clearInterval(_pendingFrameTick); _pendingFrameTick = null; }
+
     if (_radarLayerLoaded[idx]) {
-      if (_radarLayerPool[prevFrame] && prevFrame !== idx)
-        _radarLayerPool[prevFrame].setOpacity(0);
+      // Tiles ready — hide every frame except the target to clear any overlap
+      _radarLayerPool.forEach((l, i) => { if (l && i !== idx) l.setOpacity(0); });
       _radarLayerPool[idx].setOpacity(radarOpacity);
     } else {
-      // Tiles not ready yet — show frame as soon as it loads (max 1.5 s)
+      // Tiles not ready — wait up to 1.5 s, then show whatever loaded
       const target = idx;
       let waited = 0;
-      const waitTick = setInterval(() => {
+      _pendingFrameTick = setInterval(() => {
         waited += 50;
         if (_radarLayerLoaded[target] || waited >= 1500) {
-          clearInterval(waitTick);
-          if (_radarLayerPool[prevFrame] && prevFrame !== target)
-            _radarLayerPool[prevFrame].setOpacity(0);
-          if (_radarLayerPool[target])
-            _radarLayerPool[target].setOpacity(radarOpacity);
+          clearInterval(_pendingFrameTick); _pendingFrameTick = null;
+          _radarLayerPool.forEach((l, i) => { if (l && i !== target) l.setOpacity(0); });
+          if (_radarLayerPool[target]) _radarLayerPool[target].setOpacity(radarOpacity);
         }
       }, 50);
     }
@@ -5041,17 +5041,18 @@ function showFrame(idx) {
 
   // ── Canada radar pool — always mirrors NEXRAD frame ──
   if (activeLayers.nexrad && _canadaPoolBuilt) {
+    if (_pendingCanadaTick) { clearInterval(_pendingCanadaTick); _pendingCanadaTick = null; }
     if (_canadaLayerLoaded[idx]) {
-      if (_canadaLayerPool[prevFrame] && prevFrame !== idx) _canadaLayerPool[prevFrame].setOpacity(0);
+      _canadaLayerPool.forEach((l, i) => { if (l && i !== idx) l.setOpacity(0); });
       _canadaLayerPool[idx].setOpacity(radarOpacity);
     } else {
       const target = idx;
       let waited = 0;
-      const waitTick = setInterval(() => {
+      _pendingCanadaTick = setInterval(() => {
         waited += 50;
         if (_canadaLayerLoaded[target] || waited >= 1500) {
-          clearInterval(waitTick);
-          if (_canadaLayerPool[prevFrame] && prevFrame !== target) _canadaLayerPool[prevFrame].setOpacity(0);
+          clearInterval(_pendingCanadaTick); _pendingCanadaTick = null;
+          _canadaLayerPool.forEach((l, i) => { if (l && i !== target) l.setOpacity(0); });
           if (_canadaLayerPool[target]) _canadaLayerPool[target].setOpacity(radarOpacity);
         }
       }, 50);
