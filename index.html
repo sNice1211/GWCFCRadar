@@ -1033,6 +1033,29 @@ body {
 .sat-region-btn:hover { background: rgba(255,255,255,0.1); color: #fff; border-color: rgba(255,255,255,0.3); }
 .sat-region-btn.active { background: rgba(0,180,180,0.2); border-color: var(--accent2); color: var(--accent2); }
 
+.sat-region-bubble {
+  background: rgba(0,20,40,0.82);
+  color: #7ef0ff;
+  border: 1px solid rgba(0,220,255,0.55);
+  border-radius: 14px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  transition: background 0.15s, border-color 0.15s;
+  transform: translate(-50%, -50%);
+  display: inline-block;
+}
+.sat-region-bubble:hover {
+  background: rgba(0,180,220,0.28);
+  border-color: #00e5ff;
+}
+
 /* ── RIGHT MENU ── */
 #right-menu {
   position: absolute;
@@ -9658,22 +9681,27 @@ async function _fetchNDBCBuoys(bounds) {
   return results.flat();
 }
 
+let _obsInFlight = null; // deduplicates concurrent calls for same bbox
 async function _loadObservations() {
   const bounds = map.getBounds();
   const key = _bboxKey(bounds);
   if (Date.now() - _obsCache.t < 300000 && _obsCache.bboxKey === key) return _obsCache.obs;
 
+  if (_obsInFlight && _obsInFlight.key === key) return _obsInFlight.promise;
+
   const cap = _stationCapForZoom(map.getZoom());
-  // Global grid via Open-Meteo (obs pre-attached)
-  // Fire ASOS stations and NDBC buoys in parallel for maximum speed
-  const [gridStations, buoys] = await Promise.all([
+  const promise = Promise.all([
     _fetchNWSStations(bounds, cap),
     _fetchNDBCBuoys(bounds)
-  ]);
-  const out = [...gridStations, ...buoys.filter(b => b.obs?.speedKph != null)];
+  ]).then(([gridStations, buoys]) => {
+    const out = [...gridStations, ...buoys.filter(b => b.obs?.speedKph != null)];
+    _obsCache = { t: Date.now(), bboxKey: key, obs: out };
+    _obsInFlight = null;
+    return out;
+  }).catch(e => { _obsInFlight = null; throw e; });
 
-  _obsCache = { t: Date.now(), bboxKey: key, obs: out };
-  return out;
+  _obsInFlight = { key, promise };
+  return promise;
 }
 
 // Popup content for a station
@@ -10329,6 +10357,45 @@ function _detectGoesRegion() {
   return 'global'; // GMGSI composite covers everywhere else
 }
 
+// Region center coords for clickable map markers
+const GOES_REGION_CENTERS = {
+  conus:     { lat: 38,   lon: -96,   label: 'CONUS' },
+  alaska:    { lat: 64,   lon: -153,  label: 'Alaska' },
+  hawaii:    { lat: 20.5, lon: -157,  label: 'Hawaii' },
+  caribbean: { lat: 18,   lon: -74,   label: 'Caribbean' },
+  epac:      { lat: 15,   lon: -115,  label: 'E. Pacific' },
+  atlantic:  { lat: 28,   lon: -45,   label: 'Atlantic' },
+  samer:     { lat: -15,  lon: -55,   label: 'S. America' },
+  fulldisk:  { lat: 10,   lon: -75,   label: 'Full Disk E' },
+  fulldiskw: { lat: 10,   lon: -135,  label: 'Full Disk W' },
+};
+
+let _satRegionMarkerLayer = null;
+
+function _showSatRegionMarkers() {
+  if (_satRegionMarkerLayer) return;
+  _satRegionMarkerLayer = L.layerGroup().addTo(map);
+  Object.entries(GOES_REGION_CENTERS).forEach(([key, r]) => {
+    const icon = L.divIcon({
+      className: '',
+      html: `<div class="sat-region-bubble">${r.label}</div>`,
+      iconAnchor: [0, 0],
+    });
+    const m = L.marker([r.lat, r.lon], { icon, interactive: true, zIndexOffset: 800 });
+    m.on('click', () => {
+      map.setView([r.lat, r.lon], Math.max(map.getZoom(), 4), { animate: true });
+    });
+    m.addTo(_satRegionMarkerLayer);
+  });
+}
+
+function _hideSatRegionMarkers() {
+  if (_satRegionMarkerLayer) {
+    try { map.removeLayer(_satRegionMarkerLayer); } catch(e) {}
+    _satRegionMarkerLayer = null;
+  }
+}
+
 // Build ~2 h of 10-min frames ending at the most recent even-10-min boundary
 function _buildGoesFrames() {
   const now = new Date();
@@ -10415,6 +10482,7 @@ function loadGoesLayer(product) {
 
   showGoesFrame(goesCurrentFrame);
   buildTimelineLabels();
+  _showSatRegionMarkers();
 
   // Re-detect region when the map is panned to a new area
   map.on('moveend', _onGoesMoveEnd);
@@ -10488,6 +10556,7 @@ function _disableSatellite() {
   activeLayers.satellite = false;
   map.off('moveend', _onGoesMoveEnd);
   _clearGoesActiveLayers();
+  _hideSatRegionMarkers();
   goesFrames = [];
   const el = document.getElementById('sub-satellite');
   if (el) el.classList.remove('active');
@@ -10507,7 +10576,7 @@ function toggleSatelliteSub() {
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { activeLayers.satellite = false; map.off('moveend', _onGoesMoveEnd); _clearGoesActiveLayers(); renderSubBubbles('regular'); };
+  back.onclick = () => { activeLayers.satellite = false; map.off('moveend', _onGoesMoveEnd); _clearGoesActiveLayers(); _hideSatRegionMarkers(); renderSubBubbles('regular'); };
   wrap.appendChild(back);
 
   // Product-only sub-bubbles — no region picker
