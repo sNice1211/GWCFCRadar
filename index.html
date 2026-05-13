@@ -9782,10 +9782,14 @@ function _makeWindArrow(s, mode) {
   return marker;
 }
 
+let _windBarbReqId = 0, _gustBarbReqId = 0;
+
 async function loadWindBarbs() {
   if (!windBarbActive) return;
+  const reqId = ++_windBarbReqId;
   try {
     const obs = await _loadObservations();
+    if (reqId !== _windBarbReqId) return; // stale — newer request already running
     const newLayer = L.layerGroup();
     obs.forEach(s => {
       if (!s.obs || s.obs.speedKph == null) return;
@@ -9793,16 +9797,19 @@ async function loadWindBarbs() {
       const g = _makeWindArrow(s, 'regular');
       if (g) g.addTo(newLayer);
     });
+    if (reqId !== _windBarbReqId) return;
     newLayer.addTo(map);
     if (windBarbLayer) map.removeLayer(windBarbLayer);
     windBarbLayer = newLayer;
-  } catch(e) { console.warn('Wind barbs error:', e); }
+  } catch(e) { if (reqId === _windBarbReqId) console.warn('Wind barbs error:', e); }
 }
 
 async function loadGustBarbs() {
   if (!windGustBarbActive) return;
+  const reqId = ++_gustBarbReqId;
   try {
     const obs = await _loadObservations();
+    if (reqId !== _gustBarbReqId) return;
     const newLayer = L.layerGroup();
     obs.forEach(s => {
       if (!s.obs || s.obs.gustKph == null) return;
@@ -9810,10 +9817,11 @@ async function loadGustBarbs() {
       const g = _makeWindArrow(s, 'gust');
       if (g) g.addTo(newLayer);
     });
+    if (reqId !== _gustBarbReqId) return;
     newLayer.addTo(map);
     if (windGustBarbLayer) map.removeLayer(windGustBarbLayer);
     windGustBarbLayer = newLayer;
-  } catch(e) { console.warn('Gust barbs error:', e); }
+  } catch(e) { if (reqId === _gustBarbReqId) console.warn('Gust barbs error:', e); }
 }
 
 let _windBarbDebounce = null, _gustBarbDebounce = null;
@@ -9822,11 +9830,9 @@ function toggleWindRegularBarbs() {
   windRegularBarbActive = windBarbActive = !windRegularBarbActive;
   if (windRegularBarbActive) {
     loadWindBarbs();
-    const _deb = () => { clearTimeout(_windBarbDebounce); _windBarbDebounce = setTimeout(loadWindBarbs, 300); };
+    const _deb = () => { clearTimeout(_windBarbDebounce); _windBarbDebounce = setTimeout(loadWindBarbs, 400); };
     map.on('moveend zoomend', _deb);
     map._windBarbMoveHandler = _deb;
-    // Also refresh immediately on zoomend to avoid empty screen
-    map.on('zoomend', loadWindBarbs);
     windBarbTimer = setInterval(loadWindBarbs, 5 * 60 * 1000);
   } else {
     if (map._windBarbMoveHandler) map.off('moveend zoomend', map._windBarbMoveHandler);
@@ -9842,10 +9848,9 @@ function toggleGustBarbs() {
   windGustBarbActive = windGustActive = !windGustBarbActive;
   if (windGustBarbActive) {
     loadGustBarbs();
-    const _deb = () => { clearTimeout(_gustBarbDebounce); _gustBarbDebounce = setTimeout(loadGustBarbs, 300); };
+    const _deb = () => { clearTimeout(_gustBarbDebounce); _gustBarbDebounce = setTimeout(loadGustBarbs, 400); };
     map.on('moveend zoomend', _deb);
     map._gustBarbMoveHandler = _deb;
-    map.on('zoomend', loadGustBarbs);
     windGustTimer = setInterval(loadGustBarbs, 5 * 60 * 1000);
   } else {
     if (map._gustBarbMoveHandler) map.off('moveend zoomend', map._gustBarbMoveHandler);
@@ -10296,15 +10301,32 @@ let goesFrames = [];       // array of { time: Date, timeStr: string }
 let goesCurrentFrame = 0;
 
 // All regions loaded simultaneously when satellite is active
-const GOES_ALL_REGIONS = ['global', 'conus', 'alaska', 'hawaii', 'caribbean', 'epac', 'atlantic', 'samer'];
 let _goesActiveLayers = [];
-let _goesActiveProduct = null; // track which product layers were built for
+let _goesActiveProduct = null;
+let _goesActiveRegion  = null;
 
 function _clearGoesActiveLayers() {
   _goesActiveLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _goesActiveLayers = [];
   _goesActiveProduct = null;
+  _goesActiveRegion  = null;
   goesLayer = null;
+}
+
+// Pick the best GOES/WMS region for the current map centre
+function _detectGoesRegion() {
+  const c = map.getCenter();
+  const lat = c.lat, lon = c.lng;
+  if (lat >= 24 && lat <= 50 && lon >= -126 && lon <= -65) return 'conus';
+  if (lat >= 52 && lat <= 72 && lon >= -172 && lon <= -128) return 'alaska';
+  if (lat >= 17 && lat <= 24 && lon >= -163 && lon <= -152) return 'hawaii';
+  if (lat >=  8 && lat <= 28 && lon >= -92  && lon <= -58)  return 'caribbean';
+  if (lat >=  0 && lat <= 35 && lon >= -140 && lon <= -80)  return 'epac';
+  if (lat >=  0 && lat <= 55 && lon >= -60  && lon <= -20)  return 'atlantic';
+  if (lat >= -60 && lat <= 15 && lon >= -90 && lon <= -30)  return 'samer';
+  if (lat >= -5 && lat <= 60 && lon >= -100 && lon <=   0)  return 'fulldisk';
+  if (lat >= -5 && lat <= 60 && lon >= -175 && lon <= -100) return 'fulldiskw';
+  return 'global'; // GMGSI composite covers everywhere else
 }
 
 // Build ~2 h of 10-min frames ending at the most recent even-10-min boundary
@@ -10353,8 +10375,27 @@ function _loadGibsLayer() {
   }).addTo(map);
 }
 
+function _buildGoesLayer(prodKey, regionKey, timeStr) {
+  const base = GOES_WMS_BASE[regionKey] || GOES_WMS_BASE.global;
+  const cfg  = base[prodKey] || base.ir;
+  const layer = L.tileLayer.wms(cfg.wms, {
+    layers: cfg.layer,
+    format: 'image/png',
+    transparent: true,
+    opacity: 0.85,
+    zIndex: 11,
+    attribution: regionKey === 'global' ? 'NOAA nowCOAST' : '© Iowa Mesonet',
+    noWrap: true,
+    TIME: timeStr,
+    updateWhenIdle: false,
+    updateWhenZooming: false,
+  }).addTo(map);
+  return layer;
+}
+
 function loadGoesLayer(product) {
   _clearGoesActiveLayers();
+  map.off('moveend', _onGoesMoveEnd);   // remove old listener before re-adding
   currentGoesProduct = product;
 
   if (product === 'gibs') {
@@ -10365,7 +10406,6 @@ function loadGoesLayer(product) {
     return;
   }
 
-  // WMS product — load all regions at once
   goesFrames = _buildGoesFrames();
   const tl = document.getElementById('timeline');
   tl.max   = goesFrames.length - 1;
@@ -10375,27 +10415,18 @@ function loadGoesLayer(product) {
 
   showGoesFrame(goesCurrentFrame);
   buildTimelineLabels();
+
+  // Re-detect region when the map is panned to a new area
+  map.on('moveend', _onGoesMoveEnd);
 }
 
-function _buildAllRegionLayers(prodKey, timeStr) {
-  const layers = [];
-  GOES_ALL_REGIONS.forEach((regionKey, ri) => {
-    const base = GOES_WMS_BASE[regionKey];
-    if (!base || !base[prodKey]) return;
-    const cfg = base[prodKey];
-    const layer = L.tileLayer.wms(cfg.wms, {
-      layers: cfg.layer,
-      format: 'image/png',
-      transparent: true,
-      opacity: 0.85,
-      zIndex: 11 + ri,
-      attribution: regionKey === 'global' ? 'NOAA nowCOAST' : '© Iowa Mesonet',
-      noWrap: true,
-      TIME: timeStr,
-    }).addTo(map);
-    layers.push(layer);
-  });
-  return layers;
+function _onGoesMoveEnd() {
+  if (!activeLayers.satellite || !goesFrames.length) return;
+  const newRegion = _detectGoesRegion();
+  if (newRegion !== _goesActiveRegion) {
+    // Crossed into a different satellite coverage area — reload with new region
+    showGoesFrame(goesCurrentFrame);
+  }
 }
 
 function showGoesFrame(idx) {
@@ -10404,18 +10435,21 @@ function showGoesFrame(idx) {
   goesCurrentFrame = idx;
   document.getElementById('timeline').value = idx;
 
-  const frame   = goesFrames[idx];
-  const prodKey = ['ir','vis','wv'].includes(currentGoesProduct) ? currentGoesProduct : 'ir';
+  const frame    = goesFrames[idx];
+  const prodKey  = ['ir','vis','wv'].includes(currentGoesProduct) ? currentGoesProduct : 'ir';
+  const region   = _detectGoesRegion();
 
-  if (_goesActiveLayers.length && _goesActiveProduct === prodKey) {
-    // Layers already exist for this product — just update TIME in place (fast, no flickering)
-    _goesActiveLayers.forEach(l => l.setParams({ TIME: frame.timeStr }, false));
+  if (_goesActiveLayers.length && _goesActiveProduct === prodKey && _goesActiveRegion === region) {
+    // Same product + region — update TIME in place (fast, tiles refresh without layer rebuild)
+    _goesActiveLayers[0].setParams({ TIME: frame.timeStr }, false);
   } else {
-    // First load or product changed — build fresh layers
+    // Product or region changed — build a fresh single layer
     _clearGoesActiveLayers();
-    _goesActiveLayers = _buildAllRegionLayers(prodKey, frame.timeStr);
+    const layer = _buildGoesLayer(prodKey, region, frame.timeStr);
+    _goesActiveLayers = [layer];
     _goesActiveProduct = prodKey;
-    goesLayer = _goesActiveLayers[0] || null;
+    _goesActiveRegion  = region;
+    goesLayer = layer;
   }
 
   // Update animbar time display
@@ -10452,6 +10486,7 @@ function _disableRadar() {
 // Kill satellite cleanly, used when radar turns on
 function _disableSatellite() {
   activeLayers.satellite = false;
+  map.off('moveend', _onGoesMoveEnd);
   _clearGoesActiveLayers();
   goesFrames = [];
   const el = document.getElementById('sub-satellite');
@@ -10472,7 +10507,7 @@ function toggleSatelliteSub() {
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { activeLayers.satellite = false; _clearGoesActiveLayers(); renderSubBubbles('regular'); };
+  back.onclick = () => { activeLayers.satellite = false; map.off('moveend', _onGoesMoveEnd); _clearGoesActiveLayers(); renderSubBubbles('regular'); };
   wrap.appendChild(back);
 
   // Product-only sub-bubbles — no region picker
