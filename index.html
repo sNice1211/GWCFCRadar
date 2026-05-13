@@ -10251,66 +10251,67 @@ const GOES_REGIONS = {
   samer:     { label: 'S. America',   icon: '🌎' },
   atlantic:  { label: 'Atlantic',     icon: '🌀' },
   epac:      { label: 'E. Pacific',   icon: '🌊' },
-  europe:    { label: 'Europe',       icon: '🌍' },  // nowCOAST GMGSI — Meteosat composite
-  jpac:      { label: 'Japan/W. Pac', icon: '🗾' },  // nowCOAST GMGSI — Himawari composite
-  australia: { label: 'Australia',    icon: '🌏' },  // nowCOAST GMGSI — Himawari composite
+  europe:    { label: 'Europe',       icon: '🌍' },  // GOES-East full disk (best available)
+  jpac:      { label: 'Japan/W. Pac', icon: '🗾' },  // NASA GIBS Himawari-8
+  australia: { label: 'Australia',    icon: '🌏' },  // NASA GIBS Himawari-8
   fulldisk:  { label: 'Full Disk E',  icon: '🔆' },
   fulldiskw: { label: 'Full Disk W',  icon: '🔅' },
   mesoscale: { label: 'Mesoscale',    icon: '🔍' },
 };
 
 // WMS endpoints per region + product
-// Global = NOAA nowCOAST GMGSI (GOES+Meteosat+Himawari composite, free, no key)
-// Regional = Iowa Mesonet GOES WMS
+// Iowa Mesonet for all GOES-covered sectors (Americas, Atlantic, Pacific)
+// NASA GIBS for Himawari-8 sectors (Japan, W.Pacific, Australia)
+// Iowa Mesonet GOES-East full disk for Europe and Global (best available GOES reach)
+// NOTE: NOAA nowCOAST GMGSI legacy service was terminated March 4, 2025.
+const _GIBS_WMS = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi';
+const _IOWA_FD  = (prod) => `https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_${prod}.cgi`;
 const GOES_WMS_BASE = {
-  // ── GLOBAL — nowCOAST GMGSI mosaic (60S–60N worldwide) ──
-  global: {
-    ir:  { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_lir',  label:'Infrared',    icon:'🌡' },
-    vis: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_vis',  label:'Visible',     icon:'☀️' },
-    wv:  { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_wv',   label:'Water Vapor', icon:'💧' },
-  },
-  // ── REGIONAL — Iowa Mesonet GOES ──
-  conus:     { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_ir.cgi',       layer:'conus_ir_4km'     },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_vis.cgi',      layer:'conus_vis_1km'    },
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_wv.cgi',       layer:'conus_wv_4km'     } },
-  alaska:    { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/alaska_ir.cgi',      layer:'alaska_ir_4km'    },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/alaska_vis.cgi',     layer:'alaska_vis_1km'   },
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/alaska_wv.cgi',      layer:'alaska_wv_4km'    } },
-  hawaii:    { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/hawaii_ir.cgi',      layer:'hawaii_ir_4km'    },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/hawaii_vis.cgi',     layer:'hawaii_vis_1km'   },
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/hawaii_wv.cgi',      layer:'hawaii_wv_4km'    } },
-  atlantic:  { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/atlantic_ir.cgi',    layer:'atlantic_ir_4km'  },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/atlantic_vis.cgi',   layer:'atlantic_vis_1km' },
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/atlantic_wv.cgi',    layer:'atlantic_wv_4km'  } },
-  epac:      { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/epac_ir.cgi',        layer:'epac_ir_4km'      },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/epac_vis.cgi',       layer:'epac_vis_1km'     },
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/epac_wv.cgi',        layer:'epac_wv_4km'      } },
-  fulldisk:  { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_ir.cgi',    layer:'fulldisk_ir_4km'  },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_vis.cgi',   layer:'fulldisk_vis_1km' },
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_wv.cgi',    layer:'fulldisk_wv_4km'  } },
-  fulldiskw: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_ir.cgi',   layer:'fulldiskw_ir_4km' },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_vis.cgi',  layer:'fulldiskw_vis_1km'},
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_wv.cgi',   layer:'fulldiskw_wv_4km' } },
-  mesoscale: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_ir.cgi',   layer:'mesoscale_ir_4km' },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_vis.cgi',  layer:'mesoscale_vis_1km'},
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_wv.cgi',   layer:'mesoscale_wv_4km' } },
-  // ── GOES-East sectors not in the original list ──
-  caribbean: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_ir.cgi',  layer:'carib_ir_4km'  },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_vis.cgi', layer:'carib_vis_1km' },
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_wv.cgi',  layer:'carib_wv_4km'  } },
-  samer:     { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_ir.cgi',  layer:'samer_ir_4km'  },
-               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_vis.cgi', layer:'samer_vis_1km' },
-               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_wv.cgi',  layer:'samer_wv_4km'  } },
-  // ── Outside GOES coverage — nowCOAST GMGSI composite (includes Meteosat + Himawari) ──
-  europe:    { ir: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_lir' },
-               vis:{ wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_vis' },
-               wv: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_wv'  } },
-  jpac:      { ir: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_lir' },
-               vis:{ wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_vis' },
-               wv: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_wv'  } },
-  australia: { ir: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_lir' },
-               vis:{ wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_vis' },
-               wv: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_wv'  } },
+  // ── GOES-East sectors (Iowa Mesonet) ──
+  conus:     { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_ir.cgi',       layer:'conus_ir_4km',      attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_vis.cgi',      layer:'conus_vis_1km',     attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_wv.cgi',       layer:'conus_wv_4km',      attr:'© Iowa Mesonet' } },
+  alaska:    { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/alaska_ir.cgi',      layer:'alaska_ir_4km',     attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/alaska_vis.cgi',     layer:'alaska_vis_1km',    attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/alaska_wv.cgi',      layer:'alaska_wv_4km',     attr:'© Iowa Mesonet' } },
+  hawaii:    { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/hawaii_ir.cgi',      layer:'hawaii_ir_4km',     attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/hawaii_vis.cgi',     layer:'hawaii_vis_1km',    attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/hawaii_wv.cgi',      layer:'hawaii_wv_4km',     attr:'© Iowa Mesonet' } },
+  atlantic:  { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/atlantic_ir.cgi',    layer:'atlantic_ir_4km',   attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/atlantic_vis.cgi',   layer:'atlantic_vis_1km',  attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/atlantic_wv.cgi',    layer:'atlantic_wv_4km',   attr:'© Iowa Mesonet' } },
+  epac:      { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/epac_ir.cgi',        layer:'epac_ir_4km',       attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/epac_vis.cgi',       layer:'epac_vis_1km',      attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/epac_wv.cgi',        layer:'epac_wv_4km',       attr:'© Iowa Mesonet' } },
+  fulldisk:  { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_ir.cgi',    layer:'fulldisk_ir_4km',   attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_vis.cgi',   layer:'fulldisk_vis_1km',  attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_wv.cgi',    layer:'fulldisk_wv_4km',   attr:'© Iowa Mesonet' } },
+  fulldiskw: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_ir.cgi',   layer:'fulldiskw_ir_4km',  attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_vis.cgi',  layer:'fulldiskw_vis_1km', attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_wv.cgi',   layer:'fulldiskw_wv_4km',  attr:'© Iowa Mesonet' } },
+  mesoscale: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_ir.cgi',   layer:'mesoscale_ir_4km',  attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_vis.cgi',  layer:'mesoscale_vis_1km', attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_wv.cgi',   layer:'mesoscale_wv_4km',  attr:'© Iowa Mesonet' } },
+  caribbean: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_ir.cgi',       layer:'carib_ir_4km',      attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_vis.cgi',      layer:'carib_vis_1km',     attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_wv.cgi',       layer:'carib_wv_4km',      attr:'© Iowa Mesonet' } },
+  samer:     { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_ir.cgi',       layer:'samer_ir_4km',      attr:'© Iowa Mesonet' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_vis.cgi',      layer:'samer_vis_1km',     attr:'© Iowa Mesonet' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_wv.cgi',       layer:'samer_wv_4km',      attr:'© Iowa Mesonet' } },
+  // ── GOES-East full disk — used for Global and Europe (best GOES reach, covers to ~10°E) ──
+  global:    { ir: { wms:_IOWA_FD('ir'),  layer:'fulldisk_ir_4km',  attr:'© Iowa Mesonet · GOES-E' },
+               vis:{ wms:_IOWA_FD('vis'), layer:'fulldisk_vis_1km', attr:'© Iowa Mesonet · GOES-E' },
+               wv: { wms:_IOWA_FD('wv'),  layer:'fulldisk_wv_4km',  attr:'© Iowa Mesonet · GOES-E' } },
+  europe:    { ir: { wms:_IOWA_FD('ir'),  layer:'fulldisk_ir_4km',  attr:'© Iowa Mesonet · GOES-E' },
+               vis:{ wms:_IOWA_FD('vis'), layer:'fulldisk_vis_1km', attr:'© Iowa Mesonet · GOES-E' },
+               wv: { wms:_IOWA_FD('wv'),  layer:'fulldisk_wv_4km',  attr:'© Iowa Mesonet · GOES-E' } },
+  // ── Himawari-8 via NASA GIBS — covers Japan, W.Pacific, Australia (85°E–205°E) ──
+  jpac:      { ir: { wms:_GIBS_WMS, layer:'Himawari_8_AHI_Band13_Clean_Longwave_Window', attr:'NASA GIBS · Himawari-8' },
+               vis:{ wms:_GIBS_WMS, layer:'Himawari_8_AHI_Band3_Red',                    attr:'NASA GIBS · Himawari-8' },
+               wv: { wms:_GIBS_WMS, layer:'Himawari_8_AHI_Band8_Upper_Level_Water_Vapor',attr:'NASA GIBS · Himawari-8' } },
+  australia: { ir: { wms:_GIBS_WMS, layer:'Himawari_8_AHI_Band13_Clean_Longwave_Window', attr:'NASA GIBS · Himawari-8' },
+               vis:{ wms:_GIBS_WMS, layer:'Himawari_8_AHI_Band3_Red',                    attr:'NASA GIBS · Himawari-8' },
+               wv: { wms:_GIBS_WMS, layer:'Himawari_8_AHI_Band8_Upper_Level_Water_Vapor',attr:'NASA GIBS · Himawari-8' } },
 };
 
 let _goesRegion = 'global'; // default to global
@@ -10357,7 +10358,11 @@ function _detectGoesRegion() {
   if (lat >= -60 && lat <= 15 && lon >= -90 && lon <= -30)  return 'samer';
   if (lat >= -5 && lat <= 60 && lon >= -100 && lon <=   0)  return 'fulldisk';
   if (lat >= -5 && lat <= 60 && lon >= -175 && lon <= -100) return 'fulldiskw';
-  return 'global'; // GMGSI composite covers everywhere else
+  // Outside GOES coverage — use best available per region
+  if (lat >= 30 && lat <= 75 && lon >= -15 && lon <= 45)   return 'europe';    // Europe
+  if (lat >= 10 && lat <= 55 && lon >= 100 && lon <= 175)  return 'jpac';      // Japan/W. Pacific (Himawari-8)
+  if (lat >= -50 && lat <= 10 && lon >= 100 && lon <= 180) return 'australia'; // Australia/SW Pacific (Himawari-8)
+  return 'global'; // fallback: GOES-East full disk
 }
 
 // Region center coords for clickable map markers
@@ -10369,6 +10374,9 @@ const GOES_REGION_CENTERS = {
   epac:      { lat: 15,   lon: -115,  label: 'E. Pacific' },
   atlantic:  { lat: 28,   lon: -45,   label: 'Atlantic' },
   samer:     { lat: -15,  lon: -55,   label: 'S. America' },
+  europe:    { lat: 48,   lon: 10,    label: 'Europe' },
+  jpac:      { lat: 30,   lon: 140,   label: 'Japan/W.Pac' },
+  australia: { lat: -25,  lon: 135,   label: 'Australia' },
   fulldisk:  { lat: 10,   lon: -75,   label: 'Full Disk E' },
   fulldiskw: { lat: 10,   lon: -135,  label: 'Full Disk W' },
 };
@@ -10454,7 +10462,7 @@ function _buildGoesLayer(prodKey, regionKey, timeStr) {
     transparent: true,
     opacity: 0.85,
     zIndex: 11,
-    attribution: regionKey === 'global' ? 'NOAA nowCOAST' : '© Iowa Mesonet',
+    attribution: cfg.attr || '© Iowa Mesonet',
     noWrap: true,
     TIME: timeStr,
     updateWhenIdle: false,
