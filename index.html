@@ -1011,6 +1011,28 @@ body {
 }
 .sub-bubble .sb-icon { font-size: 13px; }
 
+/* ── SATELLITE REGION SELECTOR ── */
+#sat-region-row {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 4px 0 6px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  margin-bottom: 4px;
+  width: 100%;
+}
+.sat-region-btn {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border-radius: 20px; font-size: 10px;
+  font-family: var(--display); letter-spacing: 0.3px;
+  cursor: pointer; user-select: none;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.6);
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.sat-region-btn:hover { background: rgba(255,255,255,0.1); color: #fff; border-color: rgba(255,255,255,0.3); }
+.sat-region-btn.active { background: rgba(0,180,180,0.2); border-color: var(--accent2); color: var(--accent2); }
+
 /* ── RIGHT MENU ── */
 #right-menu {
   position: absolute;
@@ -9941,15 +9963,20 @@ function toggleSmooth() {
 // ── GOES SATELLITE (Iowa Mesonet WMS) ──
 // Satellite regions and products
 const GOES_REGIONS = {
-  global:   { label: 'Global',       icon: '🌐' },  // NOAA nowCOAST GMGSI — seamless worldwide
-  conus:    { label: 'CONUS',        icon: '🇺🇸' },
-  alaska:   { label: 'Alaska',       icon: '🏔' },
-  hawaii:   { label: 'Hawaii',       icon: '🌺' },
-  atlantic: { label: 'Atlantic',     icon: '🌀' },
-  epac:     { label: 'E. Pacific',   icon: '🌊' },
-  fulldisk: { label: 'Full Disk E',  icon: '🌍' },
-  fulldiskw:{ label: 'Full Disk W',  icon: '🌎' },
-  mesoscale:{ label: 'Mesoscale 1',  icon: '🔍' },
+  global:    { label: 'Global',       icon: '🌐' },  // NOAA nowCOAST GMGSI — seamless worldwide
+  conus:     { label: 'CONUS',        icon: '🇺🇸' },
+  alaska:    { label: 'Alaska',       icon: '🏔' },
+  hawaii:    { label: 'Hawaii',       icon: '🌺' },
+  caribbean: { label: 'Caribbean',    icon: '🏝' },
+  samer:     { label: 'S. America',   icon: '🌎' },
+  atlantic:  { label: 'Atlantic',     icon: '🌀' },
+  epac:      { label: 'E. Pacific',   icon: '🌊' },
+  europe:    { label: 'Europe',       icon: '🌍' },  // nowCOAST GMGSI — Meteosat composite
+  jpac:      { label: 'Japan/W. Pac', icon: '🗾' },  // nowCOAST GMGSI — Himawari composite
+  australia: { label: 'Australia',    icon: '🌏' },  // nowCOAST GMGSI — Himawari composite
+  fulldisk:  { label: 'Full Disk E',  icon: '🔆' },
+  fulldiskw: { label: 'Full Disk W',  icon: '🔅' },
+  mesoscale: { label: 'Mesoscale',    icon: '🔍' },
 };
 
 // WMS endpoints per region + product
@@ -9987,6 +10014,23 @@ const GOES_WMS_BASE = {
   mesoscale: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_ir.cgi',   layer:'mesoscale_ir_4km' },
                vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_vis.cgi',  layer:'mesoscale_vis_1km'},
                wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_wv.cgi',   layer:'mesoscale_wv_4km' } },
+  // ── GOES-East sectors not in the original list ──
+  caribbean: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_ir.cgi',  layer:'carib_ir_4km'  },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_vis.cgi', layer:'carib_vis_1km' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/carib_wv.cgi',  layer:'carib_wv_4km'  } },
+  samer:     { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_ir.cgi',  layer:'samer_ir_4km'  },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_vis.cgi', layer:'samer_vis_1km' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/samer_wv.cgi',  layer:'samer_wv_4km'  } },
+  // ── Outside GOES coverage — nowCOAST GMGSI composite (includes Meteosat + Himawari) ──
+  europe:    { ir: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_lir' },
+               vis:{ wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_vis' },
+               wv: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_wv'  } },
+  jpac:      { ir: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_lir' },
+               vis:{ wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_vis' },
+               wv: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_wv'  } },
+  australia: { ir: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_lir' },
+               vis:{ wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_vis' },
+               wv: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'gmgsi_wv'  } },
 };
 
 let _goesRegion = 'global'; // default to global
@@ -9995,9 +10039,11 @@ let _goesRegion = 'global'; // default to global
 function _buildGoesProducts() {
   const base = GOES_WMS_BASE[_goesRegion] || GOES_WMS_BASE.conus;
   return {
-    ir:  { ...base.ir,  label: 'Infrared',    icon: '🌡' },
-    vis: { ...base.vis, label: 'Visible',      icon: '☀️' },
-    wv:  { ...base.wv,  label: 'Water Vapor',  icon: '💧' },
+    ir:      { ...base.ir,  label: 'Infrared',       icon: '🌡', type: 'wms' },
+    vis:     { ...base.vis, label: 'Visible',         icon: '☀️', type: 'wms' },
+    wv:      { ...base.wv,  label: 'Water Vapor',     icon: '💧', type: 'wms' },
+    rv_ir:   { type: 'rainviewer', label: 'RainViewer IR',  icon: '🛰',  attribution: '© RainViewer' },
+    gibs_tc: { type: 'gibs',       label: 'HD True Color',  icon: '📸',  attribution: 'NASA GIBS / MODIS Terra' },
   };
 }
 let GOES_PRODUCTS = _buildGoesProducts();
@@ -10022,13 +10068,59 @@ function _buildGoesFrames() {
   return frames;
 }
 
+// ── RainViewer satellite tile loader (free, global IR composite) ──
+async function _loadRainViewerSatLayer() {
+  try {
+    const resp = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+    const data = await resp.json();
+    const frames = data.satellite && data.satellite.infrared;
+    if (!frames || !frames.length) throw new Error('no frames');
+    const latest = frames[frames.length - 1];
+    const url = `${data.host}${latest.path}/256/{z}/{x}/{y}/0/0_0.png`;
+    if (goesLayer) { map.removeLayer(goesLayer); goesLayer = null; }
+    goesLayer = L.tileLayer(url, {
+      opacity: 0.85, zIndex: 11, attribution: '© RainViewer', tileSize: 256, noWrap: true
+    }).addTo(map);
+  } catch(e) {
+    console.warn('RainViewer satellite failed', e);
+    showToast('⚠ RainViewer satellite unavailable', 3000);
+  }
+}
+
+// ── NASA GIBS MODIS True Color (updated 2×/day) ──
+function _loadGibsLayer() {
+  const d = new Date();
+  const date = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+  const url = `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${date}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`;
+  if (goesLayer) { map.removeLayer(goesLayer); goesLayer = null; }
+  goesLayer = L.tileLayer(url, {
+    opacity: 0.9, zIndex: 11, attribution: 'NASA GIBS · MODIS Terra', tileSize: 256, maxZoom: 9, noWrap: true
+  }).addTo(map);
+}
+
 function loadGoesLayer(product) {
   if (goesLayer) { map.removeLayer(goesLayer); goesLayer = null; }
   GOES_PRODUCTS = _buildGoesProducts(); // rebuild for current region
   const cfg = GOES_PRODUCTS[product] || GOES_PRODUCTS.ir;
   currentGoesProduct = product;
 
-  // Rebuild frames for the new product (same times, different layer)
+  // Non-WMS sources — single frame, no animation timeline
+  if (cfg.type === 'rainviewer') {
+    goesFrames = [];
+    const tl = document.getElementById('timeline');
+    if (tl) { tl.max = 0; tl.value = 0; }
+    _loadRainViewerSatLayer();
+    return;
+  }
+  if (cfg.type === 'gibs') {
+    goesFrames = [];
+    const tl = document.getElementById('timeline');
+    if (tl) { tl.max = 0; tl.value = 0; }
+    _loadGibsLayer();
+    return;
+  }
+
+  // Rebuild frames for the new WMS product (same times, different layer)
   goesFrames = _buildGoesFrames();
   const tl = document.getElementById('timeline');
   tl.max   = goesFrames.length - 1;
@@ -10111,11 +10203,30 @@ function _setGoesRegion(region) {
 function toggleSatelliteSub() {
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
+  wrap.style.flexWrap = 'wrap';
+
+  // ── Back button ──
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
   back.onclick = () => { activeLayers.satellite = false; if (goesLayer) { map.removeLayer(goesLayer); goesLayer = null; } renderSubBubbles('regular'); };
   wrap.appendChild(back);
+
+  // ── Region selector row ──
+  const regionRow = document.createElement('div');
+  regionRow.id = 'sat-region-row';
+  Object.entries(GOES_REGIONS).forEach(([key, r]) => {
+    const btn = document.createElement('div');
+    btn.className = 'sat-region-btn' + (key === _goesRegion ? ' active' : '');
+    btn.dataset.region = key;
+    btn.innerHTML = `${r.icon} ${r.label}`;
+    btn.onclick = () => { _setGoesRegion(key); };
+    regionRow.appendChild(btn);
+  });
+  wrap.appendChild(regionRow);
+
+  // ── Product sub-bubbles ──
+  GOES_PRODUCTS = _buildGoesProducts();
   Object.entries(GOES_PRODUCTS).forEach(([key, cfg]) => {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (key === currentGoesProduct ? ' active' : '');
