@@ -4519,7 +4519,12 @@ body.gwcfc-crosshair #map::after {
     DRAW
   </span>
   <!-- Brush mode toggle -->
-  <button class="dtb-btn active" id="dtb-mode-marker" onclick="_dtbSetMode('marker')" title="Marker (thick)">🖊</button>
+  <button class="dtb-btn active" id="dtb-mode-pencil" onclick="_dtbSetMode('pencil')" title="Pencil">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><line x1="15" y1="5" x2="19" y2="9"/></svg>
+  </button>
+  <button class="dtb-btn" id="dtb-mode-highlighter" onclick="_dtbSetMode('highlighter')" title="Highlighter">
+    <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><rect x="3" y="13" width="13" height="6" rx="2" opacity="0.45"/><path fill="none" stroke="currentColor" stroke-width="1.5" d="M5 13V7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v6"/><polygon points="10,19 14,19 12,22" opacity="0.7"/></svg>
+  </button>
   <div class="dtb-sep"></div>
   <!-- Color swatch + palette trigger -->
   <div style="position:relative;flex-shrink:0;">
@@ -12268,7 +12273,7 @@ const DTB_COLORS = [
 ];
 let _dtbColor = '#ff2222';
 let _dtbSize  = 3;
-let _dtbMode  = 'marker'; // 'marker' (pen removed)
+let _dtbMode  = 'pencil'; // 'pencil' | 'highlighter'
 const _dtbRedoStack = [];
 let _dtbPaletteOpen = false;
 
@@ -12342,7 +12347,9 @@ function _dtbSetSize(v) {
 }
 function _dtbSetMode(mode) {
   _dtbMode = mode;
-  document.getElementById('dtb-mode-marker')?.classList.toggle('active', mode === 'marker');
+  document.getElementById('dtb-mode-pencil')?.classList.toggle('active', mode === 'pencil');
+  document.getElementById('dtb-mode-highlighter')?.classList.toggle('active', mode === 'highlighter');
+  _dtbSetStatus(mode === 'highlighter' ? 'Highlighter mode' : 'Pencil mode');
 }
 function _dtbUndo() {
   if (!_allToolLayers.length) return;
@@ -12400,8 +12407,11 @@ deactivateTool = function() {
 };
 
 function _getDrawStyle() {
-  const w = _dtbMode === 'marker' ? Math.max(_dtbSize * 2.5, 8) : _dtbSize;
-  return { color: _dtbColor, weight: w, opacity: _dtbMode === 'marker' ? 0.55 : 0.92, smoothFactor: 1, lineCap: 'round', lineJoin: 'round' };
+  if (_dtbMode === 'highlighter') {
+    return { color: _dtbColor, weight: Math.min(Math.max(_dtbSize * 2, 10), 60), opacity: 0.35, smoothFactor: 1, lineCap: 'square', lineJoin: 'round' };
+  }
+  // pencil: thin, sharp, opaque
+  return { color: _dtbColor, weight: _dtbSize, opacity: 0.92, smoothFactor: 1, lineCap: 'round', lineJoin: 'round' };
 }
 
 function _onDrawTouchStart(e) {
