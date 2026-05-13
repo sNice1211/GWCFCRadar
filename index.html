@@ -10261,11 +10261,11 @@ const GOES_REGIONS = {
 
 // WMS endpoints per region + product
 // Iowa Mesonet for all GOES-covered sectors (Americas, Atlantic, Pacific)
-// Himawari-8 (jpac/australia) IR is served via RainViewer global tiles — see showGoesFrame()
-// Iowa Mesonet GOES-East full disk for Europe and Global
-// NOTE: NOAA nowCOAST GMGSI legacy service was terminated March 4, 2025.
+// GOES sectors: Iowa Mesonet. Himawari-8 (jpac/australia): NASA GIBS WMS.
+// Europe/Global: Iowa Mesonet GOES-E full disk (best free option, no Meteosat available free).
 const _IOWA_FD  = (prod) => `https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_${prod}.cgi`;
 const _IOWA_FDW = (prod) => `https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_${prod}.cgi`;
+const _GIBS_WMS = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi';
 const GOES_WMS_BASE = {
   // ── GOES-East sectors (Iowa Mesonet) ──
   conus:     { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_ir.cgi',       layer:'conus_ir_4km',      attr:'© Iowa Mesonet' },
@@ -10305,14 +10305,13 @@ const GOES_WMS_BASE = {
   europe:    { ir: { wms:_IOWA_FD('ir'),  layer:'fulldisk_ir_4km',  attr:'© Iowa Mesonet · GOES-E' },
                vis:{ wms:_IOWA_FD('vis'), layer:'fulldisk_vis_1km', attr:'© Iowa Mesonet · GOES-E' },
                wv: { wms:_IOWA_FD('wv'),  layer:'fulldisk_wv_4km',  attr:'© Iowa Mesonet · GOES-E' } },
-  // ── Himawari-8 regions — IR via RainViewer global tiles (see showGoesFrame) ──
-  // vis/wv fall back to GOES-West full disk (closest available GOES coverage)
-  jpac:      { ir: { wms:_IOWA_FDW('ir'),  layer:'fulldiskw_ir_4km',  attr:'© Iowa Mesonet · GOES-W' },
-               vis:{ wms:_IOWA_FDW('vis'), layer:'fulldiskw_vis_1km', attr:'© Iowa Mesonet · GOES-W' },
-               wv: { wms:_IOWA_FDW('wv'),  layer:'fulldiskw_wv_4km',  attr:'© Iowa Mesonet · GOES-W' } },
-  australia: { ir: { wms:_IOWA_FDW('ir'),  layer:'fulldiskw_ir_4km',  attr:'© Iowa Mesonet · GOES-W' },
-               vis:{ wms:_IOWA_FDW('vis'), layer:'fulldiskw_vis_1km', attr:'© Iowa Mesonet · GOES-W' },
-               wv: { wms:_IOWA_FDW('wv'),  layer:'fulldiskw_wv_4km',  attr:'© Iowa Mesonet · GOES-W' } },
+  // Himawari-8 regions — NASA GIBS WMS (free, CORS-enabled, 10-min updates)
+  jpac:      { ir: { wms:_GIBS_WMS, layer:'Himawari_AHI_Band13_Clean_Infrared',          attr:'© NASA GIBS · Himawari-8' },
+               vis:{ wms:_GIBS_WMS, layer:'Himawari_AHI_Band3_Red_Visible_1km',           attr:'© NASA GIBS · Himawari-8' },
+               wv: { wms:_GIBS_WMS, layer:'Himawari_AHI_Band8_Upper_Level_Water_Vapor',   attr:'© NASA GIBS · Himawari-8' } },
+  australia: { ir: { wms:_GIBS_WMS, layer:'Himawari_AHI_Band13_Clean_Infrared',          attr:'© NASA GIBS · Himawari-8' },
+               vis:{ wms:_GIBS_WMS, layer:'Himawari_AHI_Band3_Red_Visible_1km',           attr:'© NASA GIBS · Himawari-8' },
+               wv: { wms:_GIBS_WMS, layer:'Himawari_AHI_Band8_Upper_Level_Water_Vapor',   attr:'© NASA GIBS · Himawari-8' } },
 };
 
 let _goesRegion = 'global'; // default to global
@@ -10327,39 +10326,6 @@ function _buildGoesProducts() {
   };
 }
 let GOES_PRODUCTS = _buildGoesProducts();
-
-// Himawari-8 regions — IR served via RainViewer global satellite tiles
-function _isHimawariRegion(r) { return r === 'jpac' || r === 'australia'; }
-
-// RainViewer satellite frames cache (null=not fetched yet, []=failed/empty, [...]= frames)
-let _rvSatFrames = null;
-
-function _fetchRvSatFrames() {
-  if (_rvSatFrames !== null) return; // already fetched or in-progress
-  _rvSatFrames = []; // mark in-progress to prevent double-fetch
-  fetch('https://api.rainviewer.com/public/weather-maps.json')
-    .then(r => r.json())
-    .then(data => {
-      const raw = (data.satellite && data.satellite.infrared) || [];
-      const pad = n => String(n).padStart(2, '0');
-      _rvSatFrames = raw.map(f => {
-        const t = new Date(f.time * 1000);
-        const timeStr = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
-        return { time: t, timeStr, url: `${data.host}${f.path}/256/{z}/{x}/{y}/0/0_0.png` };
-      });
-      // If we're currently showing a Himawari region and frames just arrived, refresh
-      if (activeLayers.satellite && _isHimawariRegion(_detectGoesRegion()) && _rvSatFrames.length) {
-        goesFrames = _rvSatFrames;
-        const tl = document.getElementById('timeline');
-        if (tl) { tl.max = goesFrames.length - 1; tl.value = goesFrames.length - 1; }
-        goesCurrentFrame = goesFrames.length - 1;
-        _updateTimelineGradient(goesCurrentFrame, goesFrames.length);
-        showGoesFrame(goesCurrentFrame);
-        buildTimelineLabels();
-      }
-    })
-    .catch(e => { console.warn('RainViewer sat fetch failed', e); _rvSatFrames = []; });
-}
 
 // GOES frame state
 let goesFrames = [];       // array of { time: Date, timeStr: string }
@@ -10479,16 +10445,7 @@ function loadGoesLayer(product) {
   map.off('moveend', _onGoesMoveEnd);
   currentGoesProduct = ['ir','vis','wv'].includes(product) ? product : 'ir';
 
-  // Eagerly pre-fetch RainViewer frames (Himawari-8 global IR) — low cost, ready when needed
-  _fetchRvSatFrames();
-
-  // If starting on a Himawari region and frames are already cached, use them for timeline
-  const region = _detectGoesRegion();
-  if (_isHimawariRegion(region) && _rvSatFrames && _rvSatFrames.length) {
-    goesFrames = _rvSatFrames;
-  } else {
-    goesFrames = _buildGoesFrames();
-  }
+  goesFrames = _buildGoesFrames();
 
   const tl = document.getElementById('timeline');
   if (tl) { tl.max = goesFrames.length - 1; tl.value = goesFrames.length - 1; }
@@ -10506,22 +10463,6 @@ function _onGoesMoveEnd() {
   const newRegion = _detectGoesRegion();
   if (newRegion === _goesActiveRegion) return;
 
-  // Switching to/from a Himawari region — sync the frame array
-  if (_isHimawariRegion(newRegion)) {
-    if (!_rvSatFrames || !_rvSatFrames.length) {
-      // Frames not ready yet — fetch triggers a refresh when done
-      _fetchRvSatFrames();
-      return;
-    }
-    goesFrames = _rvSatFrames;
-  } else if (_isHimawariRegion(_goesActiveRegion || '')) {
-    // Leaving Himawari region back to GOES — rebuild Iowa Mesonet frames
-    goesFrames = _buildGoesFrames();
-    goesCurrentFrame = goesFrames.length - 1;
-  }
-  const tl = document.getElementById('timeline');
-  if (tl) { tl.max = goesFrames.length - 1; tl.value = goesCurrentFrame; }
-
   showGoesFrame(goesCurrentFrame);
 }
 
@@ -10536,38 +10477,15 @@ function showGoesFrame(idx) {
   const prodKey = ['ir','vis','wv'].includes(currentGoesProduct) ? currentGoesProduct : 'ir';
   const region  = _detectGoesRegion();
 
-  if (_isHimawariRegion(region) && prodKey === 'ir') {
-    // ── Himawari IR via RainViewer global satellite tiles ──
-    if (!_rvSatFrames || !_rvSatFrames.length) return; // wait for fetch
-    const rvFrame = _rvSatFrames[Math.min(idx, _rvSatFrames.length - 1)];
-
-    if (_goesActiveLayers.length && _goesActiveProduct === '__rv__' && _goesActiveRegion === region) {
-      // Update URL in-place (no layer rebuild, smoother animation)
-      _goesActiveLayers[0].setUrl(rvFrame.url, false);
-    } else {
-      _clearGoesActiveLayers();
-      const layer = L.tileLayer(rvFrame.url, {
-        opacity: 0.85, zIndex: 11,
-        attribution: '© RainViewer · Himawari-8',
-        tileSize: 256, noWrap: true,
-      }).addTo(map);
-      _goesActiveLayers = [layer];
-      _goesActiveProduct = '__rv__';
-      _goesActiveRegion  = region;
-      goesLayer = layer;
-    }
+  if (_goesActiveLayers.length && _goesActiveProduct === prodKey && _goesActiveRegion === region) {
+    _goesActiveLayers[0].setParams({ TIME: frame.timeStr }, false);
   } else {
-    // ── Iowa Mesonet WMS (GOES sectors + vis/wv for all regions) ──
-    if (_goesActiveLayers.length && _goesActiveProduct === prodKey && _goesActiveRegion === region) {
-      _goesActiveLayers[0].setParams({ TIME: frame.timeStr }, false);
-    } else {
-      _clearGoesActiveLayers();
-      const layer = _buildGoesLayer(prodKey, region, frame.timeStr);
-      _goesActiveLayers = [layer];
-      _goesActiveProduct = prodKey;
-      _goesActiveRegion  = region;
-      goesLayer = layer;
-    }
+    _clearGoesActiveLayers();
+    const layer = _buildGoesLayer(prodKey, region, frame.timeStr);
+    _goesActiveLayers = [layer];
+    _goesActiveProduct = prodKey;
+    _goesActiveRegion  = region;
+    goesLayer = layer;
   }
 
   // Update animbar time display
