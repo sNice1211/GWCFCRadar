@@ -10042,7 +10042,6 @@ function _buildGoesProducts() {
     ir:      { ...base.ir,  label: 'Infrared',       icon: '🌡', type: 'wms' },
     vis:     { ...base.vis, label: 'Visible',         icon: '☀️', type: 'wms' },
     wv:      { ...base.wv,  label: 'Water Vapor',     icon: '💧', type: 'wms' },
-    rv_ir:   { type: 'rainviewer', label: 'RainViewer IR',  icon: '🛰',  attribution: '© RainViewer' },
     gibs_tc: { type: 'gibs',       label: 'HD True Color',  icon: '📸',  attribution: 'NASA GIBS / MODIS Terra' },
   };
 }
@@ -10051,6 +10050,29 @@ let GOES_PRODUCTS = _buildGoesProducts();
 // GOES frame state
 let goesFrames = [];       // array of { time: Date, timeStr: string }
 let goesCurrentFrame = 0;
+let _preloadedGoesLayers = {};
+
+function _preloadAllGoesRegions() {
+  Object.values(_preloadedGoesLayers).forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _preloadedGoesLayers = {};
+  const prodKey = ['ir','vis','wv'].includes(currentGoesProduct) ? currentGoesProduct : 'ir';
+  const frames = _buildGoesFrames();
+  const latestFrame = frames[frames.length - 1];
+  Object.keys(GOES_REGIONS).forEach(regionKey => {
+    const base = GOES_WMS_BASE[regionKey];
+    if (!base || !base[prodKey]) return;
+    const cfg = base[prodKey];
+    _preloadedGoesLayers[regionKey] = L.tileLayer.wms(cfg.wms, {
+      layers: cfg.layer,
+      format: 'image/png',
+      transparent: true,
+      opacity: 0,
+      zIndex: 9,
+      noWrap: true,
+      TIME: latestFrame.timeStr,
+    }).addTo(map);
+  });
+}
 
 // Build ~2 h of 10-min frames ending at the most recent even-10-min boundary
 function _buildGoesFrames() {
@@ -10188,6 +10210,8 @@ function _disableRadar() {
 function _disableSatellite() {
   activeLayers.satellite = false;
   if (goesLayer) { try { map.removeLayer(goesLayer); } catch(e){} goesLayer = null; }
+  Object.values(_preloadedGoesLayers).forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _preloadedGoesLayers = {};
   goesFrames = [];
   const el = document.getElementById('sub-satellite');
   if (el) el.classList.remove('active');
@@ -10220,6 +10244,7 @@ function toggleSatelliteSub() {
     btn.className = 'sat-region-btn' + (key === _goesRegion ? ' active' : '');
     btn.dataset.region = key;
     btn.innerHTML = `${r.icon} ${r.label}`;
+    btn.addEventListener('mouseenter', () => { _setGoesRegion(key); });
     btn.onclick = () => { _setGoesRegion(key); };
     regionRow.appendChild(btn);
   });
@@ -10240,6 +10265,9 @@ function toggleSatelliteSub() {
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
+
+  // Preload all regions in the background so hover switching is fast
+  _preloadAllGoesRegions();
 }
 
 // ── SUB BUBBLES ──
