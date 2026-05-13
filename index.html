@@ -7438,7 +7438,11 @@ function _bboxKey(b) {
 
 // Station cap — always enough to fill viewport at any zoom
 function _stationCapForZoom(z) {
-  return 300; // always fetch up to 300 — parallel chunks handle it fast
+  // More stations at higher zoom (smaller viewport = less API load)
+  if (z >= 10) return 600;
+  if (z >= 8)  return 500;
+  if (z >= 6)  return 400;
+  return 300;
 }
 
 // ── REAL ASOS/AWOS STATION DATABASE ──
@@ -9351,15 +9355,15 @@ const ASOS_STATIONS = [
 async function _fetchNWSStations(bounds, cap) {
   const south = bounds.getSouth(), west = bounds.getWest();
   const north = bounds.getNorth(), east = bounds.getEast();
+  const zoom = map.getZoom();
 
-  // At low zoom, viewport is huge — use a grid-spaced subset so arrows aren't overlapping
+  // Named ASOS/AWOS stations in viewport
   let visible = ASOS_STATIONS.filter(s =>
     s.lat >= south && s.lat <= north && s.lon >= west && s.lon <= east
   );
-  // At very low zoom, thin out by geographic spacing to avoid clutter
-  const zoom = map.getZoom();
+  // At very low zoom, thin out named stations by geographic spacing to avoid clutter
   if (zoom <= 4 && visible.length > 80) {
-    const spacing = zoom <= 3 ? 8 : 5; // degrees
+    const spacing = zoom <= 3 ? 8 : 5;
     const grid = {};
     visible = visible.filter(s => {
       const key = `${Math.round(s.lat/spacing)},${Math.round(s.lon/spacing)}`;
@@ -9368,15 +9372,36 @@ async function _fetchNWSStations(bounds, cap) {
       return true;
     });
   }
-  visible = visible.slice(0, Math.min(cap, 300));
 
-  if (!visible.length) return [];
+  // ── Dynamic grid supplement: fills gaps globally with anonymous Open-Meteo points ──
+  // Spacing is zoom-adaptive so we get ~200-400 grid points regardless of viewport size
+  const gridSpacing = zoom <= 3 ? 10 : zoom <= 5 ? 5 : zoom <= 7 ? 2.5 : zoom <= 9 ? 1 : 0.5;
+  // Build a set of named-station cells to avoid placing grid points right on top of them
+  const namedCells = new Set(visible.map(s =>
+    `${Math.round(s.lat / gridSpacing)},${Math.round(s.lon / gridSpacing)}`
+  ));
+  const gridPts = [];
+  const latFrom = Math.ceil(south  / gridSpacing) * gridSpacing;
+  const lonFrom = Math.ceil(west   / gridSpacing) * gridSpacing;
+  for (let lat = latFrom; lat <= north; lat += gridSpacing) {
+    for (let lon = lonFrom; lon <= east; lon += gridSpacing) {
+      const cell = `${Math.round(lat / gridSpacing)},${Math.round(lon / gridSpacing)}`;
+      if (namedCells.has(cell)) continue;
+      gridPts.push({ id: `G${lat.toFixed(2)}x${lon.toFixed(2)}`, name: '',
+                     lat: +lat.toFixed(3), lon: +lon.toFixed(3) });
+    }
+  }
+
+  // Combine: named stations first (prioritized), then grid filler up to cap
+  const all = [...visible, ...gridPts].slice(0, cap);
+
+  if (!all.length) return [];
 
   // Split into chunks of 100 (Open-Meteo limit) and fire in parallel
   const CHUNK = 100;
   const chunks = [];
-  for (let i = 0; i < visible.length; i += CHUNK)
-    chunks.push(visible.slice(i, i + CHUNK));
+  for (let i = 0; i < all.length; i += CHUNK)
+    chunks.push(all.slice(i, i + CHUNK));
 
   const OM_FIELDS = 'wind_speed_10m,wind_gusts_10m,wind_direction_10m,temperature_2m,surface_pressure';
 
@@ -9393,7 +9418,7 @@ async function _fetchNWSStations(bounds, cap) {
       const data = await res.json();
       const arr  = Array.isArray(data) ? data : [data];
       return chunk.map((s, i) => ({
-        ...s, kind: 'land',
+        ...s, kind: s.kind || 'land',
         obs: {
           speedKph:   arr[i]?.current?.wind_speed_10m     ?? null,
           gustKph:    arr[i]?.current?.wind_gusts_10m     ?? null,
@@ -10273,10 +10298,12 @@ let goesCurrentFrame = 0;
 // All regions loaded simultaneously when satellite is active
 const GOES_ALL_REGIONS = ['global', 'conus', 'alaska', 'hawaii', 'caribbean', 'epac', 'atlantic', 'samer'];
 let _goesActiveLayers = [];
+let _goesActiveProduct = null; // track which product layers were built for
 
 function _clearGoesActiveLayers() {
   _goesActiveLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _goesActiveLayers = [];
+  _goesActiveProduct = null;
   goesLayer = null;
 }
 
@@ -10377,12 +10404,19 @@ function showGoesFrame(idx) {
   goesCurrentFrame = idx;
   document.getElementById('timeline').value = idx;
 
-  const frame  = goesFrames[idx];
+  const frame   = goesFrames[idx];
   const prodKey = ['ir','vis','wv'].includes(currentGoesProduct) ? currentGoesProduct : 'ir';
 
-  _clearGoesActiveLayers();
-  _goesActiveLayers = _buildAllRegionLayers(prodKey, frame.timeStr);
-  goesLayer = _goesActiveLayers[0] || null;
+  if (_goesActiveLayers.length && _goesActiveProduct === prodKey) {
+    // Layers already exist for this product — just update TIME in place (fast, no flickering)
+    _goesActiveLayers.forEach(l => l.setParams({ TIME: frame.timeStr }, false));
+  } else {
+    // First load or product changed — build fresh layers
+    _clearGoesActiveLayers();
+    _goesActiveLayers = _buildAllRegionLayers(prodKey, frame.timeStr);
+    _goesActiveProduct = prodKey;
+    goesLayer = _goesActiveLayers[0] || null;
+  }
 
   // Update animbar time display
   const d = frame.time;
