@@ -7464,11 +7464,11 @@ function _bboxKey(b) {
 
 // Station cap — always enough to fill viewport at any zoom
 function _stationCapForZoom(z) {
-  // More stations at higher zoom (smaller viewport = less API load)
-  if (z >= 10) return 600;
-  if (z >= 8)  return 500;
-  if (z >= 6)  return 400;
-  return 300;
+  if (z >= 10) return 3000;
+  if (z >= 8)  return 2000;
+  if (z >= 6)  return 1500;
+  if (z >= 4)  return 800;
+  return 400;
 }
 
 // ── REAL ASOS/AWOS STATION DATABASE ──
@@ -9388,7 +9388,7 @@ async function _fetchNWSStations(bounds, cap) {
     s.lat >= south && s.lat <= north && s.lon >= west && s.lon <= east
   );
   // At very low zoom, thin out named stations by geographic spacing to avoid clutter
-  if (zoom <= 4 && visible.length > 80) {
+  if (zoom <= 4 && visible.length > 300) {
     const spacing = zoom <= 3 ? 8 : 5;
     const grid = {};
     visible = visible.filter(s => {
@@ -9401,7 +9401,7 @@ async function _fetchNWSStations(bounds, cap) {
 
   // ── Dynamic grid supplement: fills gaps globally with anonymous Open-Meteo points ──
   // Spacing is zoom-adaptive so we get ~200-400 grid points regardless of viewport size
-  const gridSpacing = zoom <= 3 ? 10 : zoom <= 5 ? 5 : zoom <= 7 ? 2.5 : zoom <= 9 ? 1 : 0.5;
+  const gridSpacing = zoom <= 3 ? 6 : zoom <= 5 ? 2 : zoom <= 7 ? 0.75 : zoom <= 9 ? 0.3 : 0.1;
   // Build a set of named-station cells to avoid placing grid points right on top of them
   const namedCells = new Set(visible.map(s =>
     `${Math.round(s.lat / gridSpacing)},${Math.round(s.lon / gridSpacing)}`
@@ -10265,7 +10265,6 @@ const GOES_REGIONS = {
 // Europe/Global: Iowa Mesonet GOES-E full disk (best free option, no Meteosat available free).
 const _IOWA_FD  = (prod) => `https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_${prod}.cgi`;
 const _IOWA_FDW = (prod) => `https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_${prod}.cgi`;
-const _GIBS_WMS = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi';
 const GOES_WMS_BASE = {
   // ── GOES-East sectors (Iowa Mesonet) ──
   conus:     { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_ir.cgi',       layer:'conus_ir_4km',      attr:'© Iowa Mesonet' },
@@ -10305,13 +10304,13 @@ const GOES_WMS_BASE = {
   europe:    { ir: { wms:_IOWA_FD('ir'),  layer:'fulldisk_ir_4km',  attr:'© Iowa Mesonet · GOES-E' },
                vis:{ wms:_IOWA_FD('vis'), layer:'fulldisk_vis_1km', attr:'© Iowa Mesonet · GOES-E' },
                wv: { wms:_IOWA_FD('wv'),  layer:'fulldisk_wv_4km',  attr:'© Iowa Mesonet · GOES-E' } },
-  // Himawari-8 regions — NASA GIBS WMS (free, CORS-enabled, 10-min updates)
-  jpac:      { ir: { wms:_GIBS_WMS, layer:'Himawari_AHI_Band13_Clean_Infrared',          attr:'© NASA GIBS · Himawari-8' },
-               vis:{ wms:_GIBS_WMS, layer:'Himawari_AHI_Band3_Red_Visible_1km',           attr:'© NASA GIBS · Himawari-8' },
-               wv: { wms:_GIBS_WMS, layer:'Himawari_AHI_Band8_Upper_Level_Water_Vapor',   attr:'© NASA GIBS · Himawari-8' } },
-  australia: { ir: { wms:_GIBS_WMS, layer:'Himawari_AHI_Band13_Clean_Infrared',          attr:'© NASA GIBS · Himawari-8' },
-               vis:{ wms:_GIBS_WMS, layer:'Himawari_AHI_Band3_Red_Visible_1km',           attr:'© NASA GIBS · Himawari-8' },
-               wv: { wms:_GIBS_WMS, layer:'Himawari_AHI_Band8_Upper_Level_Water_Vapor',   attr:'© NASA GIBS · Himawari-8' } },
+  // Japan/W.Pacific + Australia — GOES-W full disk (137°W, covers western Pacific)
+  jpac:      { ir: { wms:_IOWA_FDW('ir'),  layer:'fulldiskw_ir_4km',  attr:'© Iowa Mesonet · GOES-W' },
+               vis:{ wms:_IOWA_FDW('vis'), layer:'fulldiskw_vis_1km', attr:'© Iowa Mesonet · GOES-W' },
+               wv: { wms:_IOWA_FDW('wv'),  layer:'fulldiskw_wv_4km',  attr:'© Iowa Mesonet · GOES-W' } },
+  australia: { ir: { wms:_IOWA_FDW('ir'),  layer:'fulldiskw_ir_4km',  attr:'© Iowa Mesonet · GOES-W' },
+               vis:{ wms:_IOWA_FDW('vis'), layer:'fulldiskw_vis_1km', attr:'© Iowa Mesonet · GOES-W' },
+               wv: { wms:_IOWA_FDW('wv'),  layer:'fulldiskw_wv_4km',  attr:'© Iowa Mesonet · GOES-W' } },
 };
 
 let _goesRegion = 'global'; // default to global
