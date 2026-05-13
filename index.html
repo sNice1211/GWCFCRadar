@@ -9613,7 +9613,162 @@ function toggleGustBarbs() {
   if (wrap && wrap.dataset.mode === 'wind') toggleWindSub();
 }
 
-// ── WIND SUB-MENU — Regular / Gusts only ──
+// ── CLASSIC MET BARBS ──
+let windClassicBarbActive = false, windClassicBarbLayer = null, windClassicBarbTimer = null, _windClassicDebounce = null;
+
+async function loadClassicBarbs() {
+  if (!windClassicBarbActive) return;
+  try {
+    const obs = await _loadObservations();
+    const newLayer = L.layerGroup();
+    obs.forEach(s => {
+      if (!s.obs || s.obs.speedKph == null) return;
+      if (!_ptInPolyUnion(s.lat, s.lon)) return;
+      const speedKt = kphToKt(s.obs.speedKph);
+      const svg = makeWindBarbSVG(speedKt, s.obs.dirDeg ?? 0, '#00cfff', false);
+      const icon = L.divIcon({ html: svg, className: '', iconSize: [40, 40], iconAnchor: [20, 20] });
+      L.marker([s.lat, s.lon], { icon })
+        .bindPopup(_stationPopupHTML(s, 'barb'), { maxWidth: 250 })
+        .addTo(newLayer);
+    });
+    newLayer.addTo(map);
+    if (windClassicBarbLayer) map.removeLayer(windClassicBarbLayer);
+    windClassicBarbLayer = newLayer;
+  } catch(e) { console.warn('Classic barbs error:', e); }
+}
+
+function toggleClassicBarbs() {
+  windClassicBarbActive = !windClassicBarbActive;
+  if (windClassicBarbActive) {
+    loadClassicBarbs();
+    const deb = () => { clearTimeout(_windClassicDebounce); _windClassicDebounce = setTimeout(loadClassicBarbs, 300); };
+    map.on('moveend zoomend', deb);
+    map._windClassicHandler = deb;
+    windClassicBarbTimer = setInterval(loadClassicBarbs, 5 * 60 * 1000);
+  } else {
+    if (map._windClassicHandler) map.off('moveend zoomend', map._windClassicHandler);
+    clearTimeout(_windClassicDebounce); clearInterval(windClassicBarbTimer); windClassicBarbTimer = null;
+    if (windClassicBarbLayer) { map.removeLayer(windClassicBarbLayer); windClassicBarbLayer = null; }
+  }
+  const wrap = document.getElementById('sub-bubbles');
+  if (wrap && wrap.dataset.mode === 'wind') toggleWindSub();
+}
+
+// ── UPPER-LEVEL WIND LAYERS (850mb / 250mb) via Open-Meteo ──
+let wind850mActive = false, wind850mLayer = null, wind850mTimer = null, _wind850mDebounce = null;
+let windJetActive  = false, windJetLayer  = null, windJetTimer  = null, _windJetDebounce  = null;
+
+async function _fetchUpperWindGrid(hPa) {
+  const bounds = map.getBounds();
+  const south = bounds.getSouth(), west = bounds.getWest();
+  const north = bounds.getNorth(), east = bounds.getEast();
+  const zoom = map.getZoom();
+  const spacing = zoom <= 4 ? 10 : zoom <= 6 ? 6 : zoom <= 8 ? 3.5 : 1.5;
+  const pts = [];
+  for (let lat = Math.ceil(south / spacing) * spacing; lat <= north; lat += spacing)
+    for (let lon = Math.ceil(west / spacing) * spacing; lon <= east; lon += spacing)
+      pts.push({ lat: +lat.toFixed(3), lon: +lon.toFixed(3) });
+  if (!pts.length) return [];
+
+  const now = new Date();
+  const hourStr = now.toISOString().slice(0, 13) + ':00';
+  const CHUNK = 100;
+  const chunks = [];
+  for (let i = 0; i < pts.length; i += CHUNK) chunks.push(pts.slice(i, i + CHUNK));
+
+  const results = await Promise.all(chunks.map(async chunk => {
+    const latStr = chunk.map(p => p.lat).join(',');
+    const lonStr = chunk.map(p => p.lon).join(',');
+    try {
+      const res = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}` +
+        `&hourly=wind_speed_${hPa}hPa,wind_direction_${hPa}hPa&wind_speed_unit=kmh&forecast_days=1&timezone=UTC`,
+        { signal: _abortSignal(8000) }
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      const arr = Array.isArray(data) ? data : [data];
+      return chunk.map((pt, i) => {
+        const d = arr[i];
+        if (!d?.hourly) return null;
+        const times = d.hourly.time || [];
+        const idx = times.findIndex(t => t === hourStr);
+        const si = idx >= 0 ? idx : Math.max(0, times.length - 1);
+        const speedKph = d.hourly[`wind_speed_${hPa}hPa`]?.[si];
+        const dirDeg   = d.hourly[`wind_direction_${hPa}hPa`]?.[si];
+        if (speedKph == null) return null;
+        return { lat: pt.lat, lon: pt.lon, id: `${hPa}_${pt.lat}_${pt.lon}`,
+                 name: `${hPa}mb`, kind: 'upper',
+                 obs: { speedKph, gustKph: null, dirDeg, tempC: null, pressurePa: null, time: new Date().toISOString() } };
+      }).filter(Boolean);
+    } catch { return []; }
+  }));
+  return results.flat();
+}
+
+async function _renderUpperWindLayer(hPa, layerVar, setter) {
+  try {
+    const pts = await _fetchUpperWindGrid(hPa);
+    const newLayer = L.layerGroup();
+    pts.forEach(s => {
+      const speedKt = kphToKt(s.obs.speedKph);
+      const svg = makeWindBarbSVG(speedKt, s.obs.dirDeg ?? 0, hPa === 250 ? '#ff9f40' : '#40c8ff', false);
+      const icon = L.divIcon({ html: svg, className: '', iconSize: [40, 40], iconAnchor: [20, 20] });
+      L.marker([s.lat, s.lon], { icon })
+        .bindPopup(`<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;">
+          <b style="color:#00cfff;">${hPa}mb Wind</b><br>
+          <b>${Math.round(speedKt)} kt</b> from ${s.obs.dirDeg != null ? Math.round(s.obs.dirDeg)+'°' : '—'}
+        </div>`, { maxWidth: 200 })
+        .addTo(newLayer);
+    });
+    newLayer.addTo(map);
+    if (layerVar) map.removeLayer(layerVar);
+    setter(newLayer);
+  } catch(e) { console.warn(`${hPa}mb wind error:`, e); }
+}
+
+async function load850mWinds() {
+  if (!wind850mActive) return;
+  await _renderUpperWindLayer(850, wind850mLayer, l => { wind850mLayer = l; });
+}
+async function loadJetWinds() {
+  if (!windJetActive) return;
+  await _renderUpperWindLayer(250, windJetLayer, l => { windJetLayer = l; });
+}
+
+function toggleWind850m() {
+  wind850mActive = !wind850mActive;
+  if (wind850mActive) {
+    load850mWinds();
+    const deb = () => { clearTimeout(_wind850mDebounce); _wind850mDebounce = setTimeout(load850mWinds, 400); };
+    map.on('moveend zoomend', deb); map._wind850mHandler = deb;
+    wind850mTimer = setInterval(load850mWinds, 10 * 60 * 1000);
+  } else {
+    if (map._wind850mHandler) map.off('moveend zoomend', map._wind850mHandler);
+    clearTimeout(_wind850mDebounce); clearInterval(wind850mTimer); wind850mTimer = null;
+    if (wind850mLayer) { map.removeLayer(wind850mLayer); wind850mLayer = null; }
+  }
+  const wrap = document.getElementById('sub-bubbles');
+  if (wrap && wrap.dataset.mode === 'wind') toggleWindSub();
+}
+
+function toggleWindJet() {
+  windJetActive = !windJetActive;
+  if (windJetActive) {
+    loadJetWinds();
+    const deb = () => { clearTimeout(_windJetDebounce); _windJetDebounce = setTimeout(loadJetWinds, 400); };
+    map.on('moveend zoomend', deb); map._windJetHandler = deb;
+    windJetTimer = setInterval(loadJetWinds, 10 * 60 * 1000);
+  } else {
+    if (map._windJetHandler) map.off('moveend zoomend', map._windJetHandler);
+    clearTimeout(_windJetDebounce); clearInterval(windJetTimer); windJetTimer = null;
+    if (windJetLayer) { map.removeLayer(windJetLayer); windJetLayer = null; }
+  }
+  const wrap = document.getElementById('sub-bubbles');
+  if (wrap && wrap.dataset.mode === 'wind') toggleWindSub();
+}
+
+// ── WIND SUB-MENU ──
 function toggleWindSub() {
   const wrap = document.getElementById('sub-bubbles');
   if (!wrap) return;
@@ -9627,8 +9782,11 @@ function toggleWindSub() {
   wrap.appendChild(back);
 
   [
-    { id: 'wind-reg',  icon: '💨', label: 'Regular', active: () => windRegularBarbActive, action: toggleWindRegularBarbs },
-    { id: 'wind-gust', icon: '🌬', label: 'Gusts',   active: () => windGustBarbActive,    action: toggleGustBarbs }
+    { id: 'wind-reg',   icon: '💨', label: 'Regular',    active: () => windRegularBarbActive,  action: toggleWindRegularBarbs },
+    { id: 'wind-gust',  icon: '🌬', label: 'Gusts',      active: () => windGustBarbActive,     action: toggleGustBarbs },
+    { id: 'wind-barbs', icon: '🎯', label: 'Classic Barbs', active: () => windClassicBarbActive, action: toggleClassicBarbs },
+    { id: 'wind-850m',  icon: '🌀', label: '850mb',      active: () => wind850mActive,         action: toggleWind850m },
+    { id: 'wind-jet',   icon: '✈️', label: 'Jet Stream', active: () => windJetActive,          action: toggleWindJet }
   ].forEach(b => {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (b.active() ? ' active' : '');
@@ -10042,7 +10200,6 @@ function _buildGoesProducts() {
     ir:      { ...base.ir,  label: 'Infrared',       icon: '🌡', type: 'wms' },
     vis:     { ...base.vis, label: 'Visible',         icon: '☀️', type: 'wms' },
     wv:      { ...base.wv,  label: 'Water Vapor',     icon: '💧', type: 'wms' },
-    rv_ir:   { type: 'rainviewer', label: 'RainViewer IR',  icon: '🛰',  attribution: '© RainViewer' },
     gibs_tc: { type: 'gibs',       label: 'HD True Color',  icon: '📸',  attribution: 'NASA GIBS / MODIS Terra' },
   };
 }
@@ -10051,6 +10208,29 @@ let GOES_PRODUCTS = _buildGoesProducts();
 // GOES frame state
 let goesFrames = [];       // array of { time: Date, timeStr: string }
 let goesCurrentFrame = 0;
+let _preloadedGoesLayers = {};
+
+function _preloadAllGoesRegions() {
+  Object.values(_preloadedGoesLayers).forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _preloadedGoesLayers = {};
+  const prodKey = ['ir','vis','wv'].includes(currentGoesProduct) ? currentGoesProduct : 'ir';
+  const frames = _buildGoesFrames();
+  const latestFrame = frames[frames.length - 1];
+  Object.keys(GOES_REGIONS).forEach(regionKey => {
+    const base = GOES_WMS_BASE[regionKey];
+    if (!base || !base[prodKey]) return;
+    const cfg = base[prodKey];
+    _preloadedGoesLayers[regionKey] = L.tileLayer.wms(cfg.wms, {
+      layers: cfg.layer,
+      format: 'image/png',
+      transparent: true,
+      opacity: 0,
+      zIndex: 9,
+      noWrap: true,
+      TIME: latestFrame.timeStr,
+    }).addTo(map);
+  });
+}
 
 // Build ~2 h of 10-min frames ending at the most recent even-10-min boundary
 function _buildGoesFrames() {
@@ -10188,6 +10368,8 @@ function _disableRadar() {
 function _disableSatellite() {
   activeLayers.satellite = false;
   if (goesLayer) { try { map.removeLayer(goesLayer); } catch(e){} goesLayer = null; }
+  Object.values(_preloadedGoesLayers).forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _preloadedGoesLayers = {};
   goesFrames = [];
   const el = document.getElementById('sub-satellite');
   if (el) el.classList.remove('active');
@@ -10220,6 +10402,7 @@ function toggleSatelliteSub() {
     btn.className = 'sat-region-btn' + (key === _goesRegion ? ' active' : '');
     btn.dataset.region = key;
     btn.innerHTML = `${r.icon} ${r.label}`;
+    btn.addEventListener('mouseenter', () => { _setGoesRegion(key); });
     btn.onclick = () => { _setGoesRegion(key); };
     regionRow.appendChild(btn);
   });
@@ -10240,6 +10423,9 @@ function toggleSatelliteSub() {
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
+
+  // Preload all regions in the background so hover switching is fast
+  _preloadAllGoesRegions();
 }
 
 // ── SUB BUBBLES ──
