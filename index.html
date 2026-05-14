@@ -14070,7 +14070,7 @@ function _showCamPopup(cam) {
     return;
   }
 
-  // ── PhenoCam / JPEG image ────────────────────────────────────────
+  // ── JPEG snapshot (WSDOT / national / other) ─────────────────────
   const imgUrl = cam.img || cam.imgUrl || '';
   if (badge) badge.textContent = '↻ LIVE';
 
@@ -14079,15 +14079,16 @@ function _showCamPopup(cam) {
     ph.style.display  = 'flex';
     if (phText) phText.textContent = imgUrl ? 'Loading feed…' : 'No feed available';
     if (!imgUrl) return;
-    const sep = imgUrl.includes('?') ? '&' : '?';
     const tmp = new Image();
     tmp.onload = () => { img.src = tmp.src; img.style.display = 'block'; ph.style.display = 'none'; };
     tmp.onerror = () => { ph.style.display = 'flex'; if (phText) phText.textContent = 'Feed unavailable'; };
-    tmp.src = imgUrl + sep + '_t=' + Math.floor(Date.now() / 30000);
+    // Cache-bust: bucket to 5-minute windows so we match WSDOT's own refresh rate
+    const sep = imgUrl.includes('?') ? '&' : '?';
+    tmp.src = imgUrl + sep + '_t=' + Math.floor(Date.now() / 300000);
   }
 
   _loadImg();
-  _camPopupRefreshTimer = setInterval(_loadImg, 30000);
+  _camPopupRefreshTimer = setInterval(_loadImg, 300000); // re-fetch every 5 min
   popup.style.display = 'block';
 }
 
@@ -14105,7 +14106,7 @@ function _placeCamMarker(cam) {
     ? `background-image:url('${thumbUrl}');background-size:cover;background-position:center;`
     : isVideo
       ? 'background:rgba(200,30,30,0.92);'   // red = EarthCam live video
-      : 'background:rgba(0,150,180,0.90);';  // teal = PhenoCam snapshot
+      : 'background:rgba(0,150,180,0.90);';  // teal = snapshot camera
   const shortName = (cam.name || cam.title || 'Cam').replace('EarthCam: ', '').slice(0, 18);
 
   const innerIcon = thumbUrl
@@ -14147,31 +14148,64 @@ function _loadStaticCams() {
   return added;
 }
 
-// ── PhenoCam Network ──────────────────────────────────────────────
-// 800+ US environmental / weather cameras, NSF-funded, public API
-// https://phenocam.sr.unh.edu/  — no API key, CORS-enabled
+// ── WSDOT Traffic Cameras (Washington State) ─────────────────────
+// ArcGIS REST services are ALWAYS CORS-enabled and require no auth.
+// Images at images.wsdot.wa.gov load in <img> tags (no CORS needed).
+// Refreshes every 5 minutes per WSDOT's own update schedule.
 
-async function _fetchPhenoCams() {
+async function _fetchWSDOTCams() {
   try {
-    const url = 'https://phenocam.sr.unh.edu/api/v1/cameras/?format=json&active=1&limit=2000';
-    const res = await fetch(url, { signal: _abortSignal(12000) });
+    const url = 'https://www.wsdot.wa.gov/arcgis/rest/services/Production/WSDOTTrafficCameras/MapServer/0/query' +
+      '?where=IsActive+%3D+1&outFields=CameraID,Title,ImageURL,DisplayLatitude,DisplayLongitude' +
+      '&resultRecordCount=500&f=json';
+    const res = await fetch(url, { signal: _abortSignal(15000) });
     if (!res.ok) return [];
     const data = await res.json();
-    const results = data.results || (Array.isArray(data) ? data : []);
-    return results.map(c => {
-      const site = c.site_name || c.site || '';
+    return (data.features || []).map(f => {
+      const p = f.attributes;
+      const rawUrl = p.ImageURL || '';
+      const imgUrl = rawUrl.startsWith('http') ? rawUrl
+        : rawUrl ? 'http://images.wsdot.wa.gov/' + rawUrl : '';
       return {
-        id:   'pheno_' + site,
-        name: (c.description || site).replace(/_/g, ' '),
-        lat:  parseFloat(c.lat || c.latitude || 0),
-        lon:  parseFloat(c.lon || c.lng || c.longitude || 0),
-        img:  `https://phenocam.sr.unh.edu/data/latest/${site}/${site}_latest.jpg`,
-        link: `https://phenocam.sr.unh.edu/webcam/sites/${site}/`,
-        meta: 'PhenoCam · ' + (c.primary_veg || c.site_type || 'Weather Cam'),
-        type: 'phenocam'
+        id:   'wsdot_' + p.CameraID,
+        name: (p.Title || 'WSDOT Camera').slice(0, 60),
+        lat:  parseFloat(p.DisplayLatitude  || 0),
+        lon:  parseFloat(p.DisplayLongitude || 0),
+        img:  imgUrl,
+        link: 'https://wsdot.com/travel/real-time/cameras',
+        meta: 'Traffic · Washington State DOT',
+        type: 'snapshot'
       };
-    }).filter(c => c.lat && c.lon && c.id !== 'pheno_');
-  } catch { return []; }
+    }).filter(c => c.lat && c.lon);
+  } catch (e) { console.warn('WSDOT fetch failed', e); return []; }
+}
+
+// ── National government / university weather cameras ──────────────
+// Hard-coded cameras with stable public JPEG URLs that load in
+// <img> tags without any CORS restrictions. Covers regions not
+// served by WSDOT. Images update every 1–10 minutes depending
+// on the source agency.
+
+const CAM_NATIONAL_DB = [
+  // USGS Cascades Volcano Observatory — public webcam images
+  {id:'usgs_rainier',  name:'Mt. Rainier Summit',          lat:46.8529, lon:-121.7604, img:'https://volcanoes.usgs.gov/observatories/cvo/cvo_data/activity/rainier/images/latest_summit.jpg',         link:'https://volcanoes.usgs.gov/observatories/cvo/', meta:'USGS · WA'},
+  {id:'usgs_sthelens', name:'Mt. St. Helens Crater',       lat:46.1912, lon:-122.1944, img:'https://volcanoes.usgs.gov/observatories/cvo/cvo_data/activity/sthelens/images/ShW_latest.jpg',          link:'https://volcanoes.usgs.gov/observatories/cvo/', meta:'USGS · WA'},
+  {id:'usgs_hood',     name:'Mt. Hood Oregon',             lat:45.3735, lon:-121.6959, img:'https://volcanoes.usgs.gov/observatories/cvo/cvo_data/activity/hood/images/Hood_HoodRiver_latest.jpg',   link:'https://volcanoes.usgs.gov/observatories/cvo/', meta:'USGS · OR'},
+  {id:'usgs_kil1',     name:'Kīlauea Volcano Hawaii',      lat:19.4069, lon:-155.2834, img:'https://volcanoes.usgs.gov/observatories/hvo/cams/KIcam/images/M_cam.jpg',                              link:'https://volcanoes.usgs.gov/volcanoes/kilauea/webcams', meta:'USGS · HI'},
+  {id:'usgs_maunaloa', name:'Mauna Loa Hawaii',            lat:19.4792, lon:-155.6001, img:'https://volcanoes.usgs.gov/observatories/hvo/cams/MLsummitF/images/M_cam.jpg',                          link:'https://volcanoes.usgs.gov/volcanoes/mauna_loa/webcams', meta:'USGS · HI'},
+  // National Park Service webcams (via NPS data streams)
+  {id:'nps_yellowstone',name:'Yellowstone Old Faithful',   lat:44.4605, lon:-110.8281, img:'https://www.nps.gov/webcams/products/oldfaithful/latest.jpg',                                            link:'https://www.nps.gov/yell/learn/photosmultimedia/webcams.htm', meta:'NPS · WY'},
+  {id:'nps_grandcanyon',name:'Grand Canyon South Rim',     lat:36.0544, lon:-112.1401, img:'https://www.nps.gov/webcams/products/grca/latest.jpg',                                                   link:'https://www.nps.gov/grca/learn/photosmultimedia/webcams.htm', meta:'NPS · AZ'},
+  // Colorado DOT — images via cotrip.org public endpoint
+  {id:'cdot_loveland', name:'Loveland Pass CO-6',          lat:39.6653, lon:-105.8933, img:'https://www.cotrip.org/dimages/ws/camera?imageURL=327',                                                  link:'https://www.cotrip.org/list/cameras', meta:'CDOT · CO'},
+  {id:'cdot_vail',     name:'Vail Pass I-70',              lat:39.5337, lon:-106.2131, img:'https://www.cotrip.org/dimages/ws/camera?imageURL=90',                                                   link:'https://www.cotrip.org/list/cameras', meta:'CDOT · CO'},
+  {id:'cdot_eisenhower',name:'Eisenhower Tunnel I-70',     lat:39.6754, lon:-105.9164, img:'https://www.cotrip.org/dimages/ws/camera?imageURL=109',                                                  link:'https://www.cotrip.org/list/cameras', meta:'CDOT · CO'},
+  // University weather station cameras
+  {id:'univ_uwseattle', name:'UW Seattle Atmospheric Cam', lat:47.6553, lon:-122.3035, img:'https://www.atmos.washington.edu/data/uw_cam/UWcam1_latest.jpg',                                        link:'https://www.atmos.washington.edu/', meta:'UW Atmospheric Sciences · WA'},
+];
+
+async function _fetchNationalCams() {
+  return CAM_NATIONAL_DB.map(c => ({ ...c, type: 'snapshot' }));
 }
 
 // ── EarthCam via YouTube — verified live stream video IDs ──────────
@@ -14207,14 +14241,14 @@ async function _fetchCamsForViewport() {
   // 1. Static DB (instant)
   const staticAdded = _loadStaticCams();
 
-  // 2. PhenoCam (viewport-filtered) + EarthCam streams (global) in parallel
-  const [phenoCams, ecCams] = await Promise.all([
-    _fetchPhenoCams(), _fetchEarthCamStreams()
+  // 2. WSDOT (viewport-filtered) + national hard-coded + EarthCam global in parallel
+  const [wsdotCams, nationalCams, ecCams] = await Promise.all([
+    _fetchWSDOTCams(), _fetchNationalCams(), _fetchEarthCamStreams()
   ]);
 
-  // Filter PhenoCam to current viewport; EarthCam streams placed globally
   const b = map.getBounds();
-  const filtered = phenoCams.filter(c => b.contains([c.lat, c.lon]));
+  // WSDOT and national cameras filtered to current viewport; EarthCam always shown
+  const filtered = [...wsdotCams, ...nationalCams].filter(c => b.contains([c.lat, c.lon]));
 
   const allDynamic = [...filtered, ...ecCams];
   let dynAdded = 0;
