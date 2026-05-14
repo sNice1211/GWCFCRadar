@@ -9,10 +9,8 @@
 <link rel="preconnect" href="https://opengeo.ncep.noaa.gov">
 <link rel="preconnect" href="https://www.spc.noaa.gov">
 <link rel="preconnect" href="https://mesonet.agron.iastate.edu">
-<link rel="preconnect" href="https://nowcoast.noaa.gov">
 <link rel="preconnect" href="https://services9.arcgis.com">
 <link rel="dns-prefetch" href="https://mesonet.agron.iastate.edu">
-<link rel="dns-prefetch" href="https://nowcoast.noaa.gov">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Radar V85</title>
@@ -2798,7 +2796,9 @@ body {
     DRAW
   </span>
   <!-- Brush mode toggle -->
+  <button class="dtb-btn" id="dtb-mode-pencil" onclick="_dtbSetMode('pencil')" title="Pencil (thin, precise)">✏️</button>
   <button class="dtb-btn active" id="dtb-mode-marker" onclick="_dtbSetMode('marker')" title="Marker (thick)">🖊</button>
+  <button class="dtb-btn" id="dtb-mode-highlighter" onclick="_dtbSetMode('highlighter')" title="Highlighter (semi-transparent)">🖍️</button>
   <div class="dtb-sep"></div>
   <!-- Color swatch + palette trigger -->
   <div style="position:relative;flex-shrink:0;">
@@ -5529,7 +5529,11 @@ function _bboxKey(b) {
 
 // Station cap — always enough to fill viewport at any zoom
 function _stationCapForZoom(z) {
-  return 300; // always fetch up to 300 — parallel chunks handle it fast
+  if (z >= 10) return 3000;
+  if (z >= 8)  return 2000;
+  if (z >= 6)  return 1500;
+  if (z >= 4)  return 800;
+  return 500;
 }
 
 // ── REAL ASOS/AWOS STATION DATABASE ──
@@ -7240,15 +7244,26 @@ async function _fetchNWSStations(bounds, cap) {
       return true;
     });
   }
-  visible = visible.slice(0, Math.min(cap, 300));
+  visible = visible.slice(0, cap);
 
-  if (!visible.length) return [];
+  // Add Open-Meteo grid points to fill in sparse/global areas
+  const gridSpacing = zoom <= 3 ? 6 : zoom <= 5 ? 2.5 : zoom <= 7 ? 1 : zoom <= 9 ? 0.4 : 0.15;
+  const omGrid = [];
+  for (let lat2 = Math.ceil(south / gridSpacing) * gridSpacing; lat2 <= north; lat2 += gridSpacing) {
+    for (let lon2 = Math.ceil(west / gridSpacing) * gridSpacing; lon2 <= east; lon2 += gridSpacing) {
+      if (!visible.some(s => Math.abs(s.lat - lat2) < gridSpacing * 0.45 && Math.abs(s.lon - lon2) < gridSpacing * 0.45))
+        omGrid.push({ id: `G_${lat2.toFixed(2)}_${lon2.toFixed(2)}`, name: `${lat2.toFixed(1)}°, ${lon2.toFixed(1)}°`, lat: lat2, lon: lon2 });
+    }
+  }
+  const allStations = [...visible, ...omGrid].slice(0, cap);
+
+  if (!allStations.length) return [];
 
   // Split into chunks of 100 (Open-Meteo limit) and fire in parallel
   const CHUNK = 100;
   const chunks = [];
-  for (let i = 0; i < visible.length; i += CHUNK)
-    chunks.push(visible.slice(i, i + CHUNK));
+  for (let i = 0; i < allStations.length; i += CHUNK)
+    chunks.push(allStations.slice(i, i + CHUNK));
 
   const OM_FIELDS = 'wind_speed_10m,wind_gusts_10m,wind_direction_10m,temperature_2m,surface_pressure';
 
@@ -7259,7 +7274,7 @@ async function _fetchNWSStations(bounds, cap) {
       const res = await fetch(
         `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}` +
         `&current=${OM_FIELDS}&wind_speed_unit=kmh&temperature_unit=celsius&forecast_days=1`,
-        { signal: _abortSignal(6000) }
+        { signal: _abortSignal(12000) }
       );
       if (!res.ok) return [];
       const data = await res.json();
@@ -8051,29 +8066,27 @@ function toggleSmooth() {
 // ── GOES SATELLITE (Iowa Mesonet WMS) ──
 // Satellite regions and products
 const GOES_REGIONS = {
-  global:   { label: 'Global',       icon: '🌐' },  // NOAA nowCOAST GMGSI — seamless worldwide
-  conus:    { label: 'CONUS',        icon: '🇺🇸' },
-  alaska:   { label: 'Alaska',       icon: '🏔' },
-  hawaii:   { label: 'Hawaii',       icon: '🌺' },
-  atlantic: { label: 'Atlantic',     icon: '🌀' },
-  epac:     { label: 'E. Pacific',   icon: '🌊' },
-  fulldisk: { label: 'Full Disk E',  icon: '🌍' },
-  fulldiskw:{ label: 'Full Disk W',  icon: '🌎' },
-  mesoscale:{ label: 'Mesoscale 1',  icon: '🔍' },
+  conus:     { label: 'CONUS',        icon: '🇺🇸' },
+  alaska:    { label: 'Alaska',       icon: '🏔' },
+  hawaii:    { label: 'Hawaii',       icon: '🌺' },
+  atlantic:  { label: 'Atlantic',     icon: '🌀' },
+  epac:      { label: 'E. Pacific',   icon: '🌊' },
+  fulldisk:  { label: 'Full Disk E',  icon: '🌍' },
+  fulldiskw: { label: 'Full Disk W',  icon: '🌎' },
+  europe:    { label: 'Europe',       icon: '🌍' },
+  jpac:      { label: 'Japan/W.Pac',  icon: '🌏' },
+  australia: { label: 'Australia',    icon: '🦘' },
+  global:    { label: 'Global',       icon: '🌐' },
+  mesoscale: { label: 'Mesoscale 1',  icon: '🔍' },
 };
 
 // WMS endpoints per region + product
-// Global = NOAA nowCOAST GMGSI (GOES+Meteosat+Himawari composite, free, no key)
-// Regional = Iowa Mesonet GOES WMS
+// All regions use Iowa Mesonet GOES WMS
 const GOES_WMS_BASE = {
-  // ── GLOBAL — nowCOAST GMGSI mosaic (60S–60N worldwide) ──
-  // Correct layer names from GetCapabilities: global_longwave_imagery_mosaic etc.
-  // TIME resolution for nowcoast is hourly (not 10-min like Iowa Mesonet)
-  global: {
-    ir:  { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'global_longwave_imagery_mosaic',  label:'Infrared',    icon:'🌡' },
-    vis: { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'global_visible_imagery_mosaic',   label:'Visible',     icon:'☀️' },
-    wv:  { wms:'https://nowcoast.noaa.gov/geoserver/satellite/wms', layer:'global_water_vapor_imagery_mosaic', label:'Water Vapor', icon:'💧' },
-  },
+  // Iowa Mesonet GOES-E full disk — covers Americas, Europe, Africa
+  global:    { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_ir.cgi',    layer:'fulldisk_ir_4km'  },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_vis.cgi',   layer:'fulldisk_vis_1km' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_wv.cgi',    layer:'fulldisk_wv_4km'  } },
   // ── REGIONAL — Iowa Mesonet GOES ──
   conus:     { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_ir.cgi',       layer:'conus_ir_4km'     },
                vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/conus_vis.cgi',      layer:'conus_vis_1km'    },
@@ -8096,12 +8109,112 @@ const GOES_WMS_BASE = {
   fulldiskw: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_ir.cgi',   layer:'fulldiskw_ir_4km' },
                vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_vis.cgi',  layer:'fulldiskw_vis_1km'},
                wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_wv.cgi',   layer:'fulldiskw_wv_4km' } },
+  // Europe / Africa / Middle East — GOES-E full disk covers to ~60°E
+  europe:    { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_ir.cgi',    layer:'fulldisk_ir_4km'  },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_vis.cgi',   layer:'fulldisk_vis_1km' },
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldisk_wv.cgi',    layer:'fulldisk_wv_4km'  } },
+  // Japan / Korea / SE Asia / W.Pacific — GOES-W full disk
+  jpac:      { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_ir.cgi',   layer:'fulldiskw_ir_4km' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_vis.cgi',  layer:'fulldiskw_vis_1km'},
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_wv.cgi',   layer:'fulldiskw_wv_4km' } },
+  // Australia / New Zealand / SW Pacific — GOES-W full disk
+  australia: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_ir.cgi',   layer:'fulldiskw_ir_4km' },
+               vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_vis.cgi',  layer:'fulldiskw_vis_1km'},
+               wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/fulldiskw_wv.cgi',   layer:'fulldiskw_wv_4km' } },
   mesoscale: { ir: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_ir.cgi',   layer:'mesoscale_ir_4km' },
                vis:{ wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_vis.cgi',  layer:'mesoscale_vis_1km'},
                wv: { wms:'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes/mesoscale_wv.cgi',   layer:'mesoscale_wv_4km' } },
 };
 
-let _goesRegion = 'global'; // default to global
+// ── RainViewer global IR composite (Himawari/GOES/Meteosat) ──
+// Used for jpac + australia regions: better Himawari data than GOES-W full disk.
+// GOES-W shown immediately; RainViewer upgrades it async when ready.
+function _isHimawariRegion(r) { return r === 'jpac' || r === 'australia'; }
+let _rvSatFrames      = null;  // null=not yet fetched, []=failed, [...]= frames
+let _rvFetching       = false; // prevents duplicate in-flight requests
+let _rvReadyCallbacks = [];    // callbacks waiting for first fetch
+
+function _fetchRvSatFrames(onReady) {
+  if (_rvSatFrames !== null) {
+    if (onReady && _rvSatFrames.length) onReady(_rvSatFrames);
+    return;
+  }
+  if (onReady) _rvReadyCallbacks.push(onReady);
+  if (_rvFetching) return;
+  _rvFetching = true;
+  fetch('https://api.rainviewer.com/public/weather-maps.json', { signal: _abortSignal(10000) })
+    .then(r => r.json())
+    .then(data => {
+      const raw = (data.satellite && data.satellite.infrared) || [];
+      const pad = n => String(n).padStart(2, '0');
+      _rvSatFrames = raw.map(f => {
+        const t = new Date(f.time * 1000);
+        const timeStr = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
+        return { time: t, timeStr, url: `${data.host}${f.path}/256/{z}/{x}/{y}/0/0_0.png` };
+      });
+      _rvFetching = false;
+      if (_rvSatFrames.length && _rvReadyCallbacks.length) {
+        _rvReadyCallbacks.forEach(cb => { try { cb(_rvSatFrames); } catch(e){} });
+        _rvReadyCallbacks = [];
+      }
+    })
+    .catch(() => { _rvSatFrames = []; _rvFetching = false; _rvReadyCallbacks = []; });
+}
+
+// Single RainViewer tile layer used for Himawari regions
+let _rvActiveLayer = null;
+let _rvActiveUrl   = null;
+
+function _showRvFrame(url) {
+  if (!url) return;
+  if (_rvActiveLayer && _rvActiveUrl !== url) {
+    _rvActiveLayer.setUrl(url, false);
+    _rvActiveUrl = url;
+  } else if (!_rvActiveLayer) {
+    _rvActiveLayer = L.tileLayer(url, {
+      opacity: 0.85, zIndex: 12, tileSize: 256, noWrap: false,
+      attribution: '© RainViewer · Global Satellite (Himawari/GOES/Meteosat)',
+      updateWhenIdle: false, updateWhenZooming: false,
+    }).addTo(map);
+    _rvActiveUrl = url;
+  }
+}
+
+function _clearRvLayer() {
+  if (_rvActiveLayer) { try { map.removeLayer(_rvActiveLayer); } catch(e){} _rvActiveLayer = null; }
+  _rvActiveUrl = null;
+}
+
+let _goesRegion = 'conus'; // will be auto-detected on load
+
+function _detectGoesRegion() {
+  const c = map.getCenter();
+  const lat = c.lat, lon = c.lng;
+  // CONUS
+  if (lat >= 24 && lat <= 50  && lon >= -126 && lon <= -65)  return 'conus';
+  // Alaska
+  if (lat >= 52 && lat <= 72  && lon >= -172 && lon <= -128) return 'alaska';
+  // Hawaii
+  if (lat >= 17 && lat <= 24  && lon >= -163 && lon <= -152) return 'hawaii';
+  // Caribbean
+  if (lat >=  8 && lat <= 28  && lon >= -92  && lon <= -58)  return 'atlantic';
+  // E. Pacific
+  if (lat >=  0 && lat <= 35  && lon >= -140 && lon <= -80)  return 'epac';
+  // Atlantic
+  if (lat >=  0 && lat <= 55  && lon >= -60  && lon <= -20)  return 'atlantic';
+  // S. America
+  if (lat >= -60 && lat <= 15 && lon >= -90  && lon <= -30)  return 'fulldisk';
+  // Europe / Africa / Middle East
+  if (lat >= 25 && lat <= 80  && lon >= -20  && lon <= 60)   return 'europe';
+  if (lat >= -35 && lat <= 25 && lon >= -20  && lon <= 60)   return 'europe';
+  // Japan / Korea / SE Asia / W.Pacific
+  if (lat >= 5  && lat <= 55  && lon >= 100  && lon <= 180)  return 'jpac';
+  // Australia / NZ
+  if (lat >= -55 && lat <= 10 && lon >= 95   && lon <= 180)  return 'australia';
+  // Rest of Pacific / global fallback
+  if (lon >= 40 && lon <= 180)  return 'fulldiskw';
+  return 'global';
+}
 
 // Build flat GOES_PRODUCTS from current region for backwards compat
 function _buildGoesProducts() {
@@ -8119,31 +8232,18 @@ let goesFrames = [];       // array of { time: Date, timeStr: string }
 let goesCurrentFrame = 0;
 
 // Build satellite frames.
-// - Global (nowcoast): hourly resolution, 6 frames (~6 h history)
-// - Regional (Iowa Mesonet): 10-min resolution, 12 frames (~2 h history)
+// Iowa Mesonet: 10-min resolution, 12 frames (~2 h history), 20-min lag so data always exists
 function _buildGoesFrames() {
   const pad = n => String(n).padStart(2, '0');
   const frames = [];
-  if (_goesRegion === 'global') {
-    // nowcoast TIME is hourly — snap to last full hour
-    const now = new Date();
-    now.setUTCSeconds(0, 0);
-    now.setUTCMinutes(0);
-    for (let i = 5; i >= 0; i--) {
-      const t = new Date(now.getTime() - i * 60 * 60 * 1000);
-      const timeStr = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:00:00Z`;
-      frames.push({ time: t, timeStr });
-    }
-  } else {
-    // Iowa Mesonet — 10-min resolution, snap to last 10-min mark
-    const now = new Date();
-    now.setUTCSeconds(0, 0);
-    now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 10) * 10);
-    for (let i = 11; i >= 0; i--) {
-      const t = new Date(now.getTime() - i * 10 * 60 * 1000);
-      const timeStr = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
-      frames.push({ time: t, timeStr });
-    }
+  // Iowa Mesonet needs ~20 min to process — offset by 20 min to ensure frames exist
+  const now = new Date();
+  now.setUTCSeconds(0, 0);
+  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 10) * 10 - 20);
+  for (let i = 11; i >= 0; i--) {
+    const t = new Date(now.getTime() - i * 10 * 60 * 1000);
+    const timeStr = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
+    frames.push({ time: t, timeStr });
   }
   return frames;
 }
@@ -8169,8 +8269,7 @@ function _buildGoesPool(product) {
   _goesPoolProduct = product;
   _goesPoolRegion  = _goesRegion;
 
-  const isNowcoast = _goesRegion === 'global';
-  const attribution = isNowcoast ? 'GMGSI © NOAA nowCOAST' : 'GOES © Iowa Mesonet';
+  const attribution = 'GOES © Iowa Mesonet';
 
   goesFrames.forEach((frame, i) => {
     const l = L.tileLayer.wms(cfg.wms, {
@@ -8192,9 +8291,22 @@ function _buildGoesPool(product) {
   _goesPoolBuilt = true;
 }
 
+function _onGoesMoveEnd() {
+  if (!activeLayers.satellite) return;
+  const newRegion = _detectGoesRegion();
+  if (newRegion === _goesRegion) return;
+  _goesRegion = newRegion;
+  loadGoesLayer(currentGoesProduct);
+}
+
 function loadGoesLayer(product) {
   // Always remove the legacy single-layer reference
   if (goesLayer) { try { map.removeLayer(goesLayer); } catch(e){} goesLayer = null; }
+
+  // Auto-detect region from current map view
+  _goesRegion = _detectGoesRegion();
+  map.off('moveend', _onGoesMoveEnd);
+  map.on('moveend', _onGoesMoveEnd);
 
   GOES_PRODUCTS = _buildGoesProducts();
   currentGoesProduct = product;
@@ -8215,6 +8327,18 @@ function loadGoesLayer(product) {
 
   showGoesFrame(goesCurrentFrame);
   buildTimelineLabels();
+
+  // For Himawari regions, fetch RainViewer and overlay on top of WMS
+  if (_isHimawariRegion(_goesRegion) && currentGoesProduct === 'ir') {
+    _fetchRvSatFrames(frames => {
+      if (!activeLayers.satellite || !_isHimawariRegion(_goesRegion)) return;
+      // Replace pool with RainViewer — show last frame
+      const last = frames[frames.length - 1];
+      if (last) _showRvFrame(last.url);
+    });
+  } else {
+    _clearRvLayer();
+  }
 }
 
 function showGoesFrame(idx) {
@@ -8259,7 +8383,7 @@ function showGoesFrame(idx) {
       version: '1.1.1',
       opacity: 0.85,
       zIndex: 11,
-      attribution: _goesRegion === 'global' ? 'GMGSI © NOAA nowCOAST' : 'GOES © Iowa Mesonet',
+      attribution: 'GOES © Iowa Mesonet',
       noWrap: true,
       TIME: frame.timeStr,
     }).addTo(map);
@@ -8305,6 +8429,7 @@ function _disableSatellite() {
   _goesPoolRegion  = null;
   if (goesLayer) { try { map.removeLayer(goesLayer); } catch(e){} goesLayer = null; }
   goesFrames = [];
+  _clearRvLayer();
   const el = document.getElementById('sub-satellite');
   if (el) el.classList.remove('active');
 }
@@ -10059,7 +10184,9 @@ function _dtbSetSize(v) {
 }
 function _dtbSetMode(mode) {
   _dtbMode = mode;
-  document.getElementById('dtb-mode-marker')?.classList.toggle('active', mode === 'marker');
+  document.getElementById('dtb-mode-pencil')?.classList.toggle('active',      mode === 'pencil');
+  document.getElementById('dtb-mode-marker')?.classList.toggle('active',      mode === 'marker');
+  document.getElementById('dtb-mode-highlighter')?.classList.toggle('active', mode === 'highlighter');
 }
 function _dtbUndo() {
   if (!_allToolLayers.length) return;
@@ -10115,8 +10242,13 @@ deactivateTool = function() {
 };
 
 function _getDrawStyle() {
-  const w = _dtbMode === 'marker' ? Math.max(_dtbSize * 2.5, 8) : _dtbSize;
-  return { color: _dtbColor, weight: w, opacity: _dtbMode === 'marker' ? 0.55 : 0.92, smoothFactor: 1, lineCap: 'round', lineJoin: 'round' };
+  const w = _dtbMode === 'marker'      ? Math.max(_dtbSize * 2.5, 8)
+          : _dtbMode === 'highlighter' ? Math.max(_dtbSize * 3, 12)
+          : _dtbSize;
+  const opacity = _dtbMode === 'marker'      ? 0.85
+                : _dtbMode === 'highlighter' ? 0.35
+                : 0.92;
+  return { color: _dtbColor, weight: w, opacity, smoothFactor: 1, lineCap: 'round', lineJoin: 'round' };
 }
 
 function _onDrawTouchStart(e) {
@@ -10375,8 +10507,12 @@ function _dtbTogglePalette(ev) {
 
 // Wire texture into stroke style
 function _getDrawStyle() {
-  let w = _dtbMode === 'marker' ? Math.max(_dtbSize * 2.5, 8) : _dtbSize;
-  let opacity = _dtbMode === 'marker' ? 0.55 : 0.92;
+  let w = _dtbMode === 'marker'      ? Math.max(_dtbSize * 2.5, 8)
+        : _dtbMode === 'highlighter' ? Math.max(_dtbSize * 3, 12)
+        : _dtbSize;
+  let opacity = _dtbMode === 'marker'      ? 0.85
+              : _dtbMode === 'highlighter' ? 0.35
+              : 0.92;
   let dashArray = null;
   let className = '';
   switch(_dtbTexture) {
