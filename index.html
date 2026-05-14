@@ -14030,56 +14030,61 @@ function _clearCams() {
 }
 
 function closeCamPopup() {
-  const popup = document.getElementById('cam-popup');
-  if (popup) popup.style.display = 'none';
+  const popup  = document.getElementById('cam-popup');
+  const iframe = document.getElementById('cam-popup-iframe');
+  if (popup)  popup.style.display = 'none';
+  if (iframe) iframe.src = '';  // stop video playback
   clearInterval(_camPopupRefreshTimer);
 }
 
 // ── Show camera live-view panel (fixed bottom-right) ─────────────
 function _showCamPopup(cam) {
-  const popup  = document.getElementById('cam-popup');
-  const img    = document.getElementById('cam-popup-img');
-  const ph     = document.getElementById('cam-popup-img-placeholder');
-  const phText = document.getElementById('cam-popup-ph-text');
-  const nameEl = document.getElementById('cam-popup-name');
-  const metaEl = document.getElementById('cam-popup-meta');
-  const linkEl = document.getElementById('cam-popup-link');
+  const popup   = document.getElementById('cam-popup');
+  const img     = document.getElementById('cam-popup-img');
+  const iframe  = document.getElementById('cam-popup-iframe');
+  const ph      = document.getElementById('cam-popup-img-placeholder');
+  const phText  = document.getElementById('cam-popup-ph-text');
+  const nameEl  = document.getElementById('cam-popup-name');
+  const metaEl  = document.getElementById('cam-popup-meta');
+  const linkEl  = document.getElementById('cam-popup-link');
+  const badge   = document.getElementById('cam-popup-refresh-badge');
 
   clearInterval(_camPopupRefreshTimer);
 
+  // Clear both media elements
+  img.style.display    = 'none';  img.src   = '';
+  iframe.style.display = 'none';  iframe.src = '';
+
   nameEl.textContent = cam.name || cam.title || 'Webcam';
-  const locStr = cam.location
-    ? [cam.location.city, cam.location.region, cam.location.country].filter(Boolean).join(', ')
-    : (cam.meta || '');
-  metaEl.textContent = locStr;
-
-  let imgUrl = cam.img || cam.imgUrl ||
-    (cam.images?.current?.preview) ||
-    (cam.images?.current?.thumbnail) ||
-    (cam.images?.sizes?.medium?.url) || '';
-
-  linkEl.href = cam.link || '#';
+  metaEl.textContent = cam.meta || '';
+  linkEl.href        = cam.link || '#';
   linkEl.textContent = '🔗 View full camera';
+
+  // ── YouTube live embed ───────────────────────────────────────────
+  if (cam.type === 'youtube' && cam.ytCh) {
+    ph.style.display = 'none';
+    if (badge) badge.textContent = '▶ LIVE';
+    const ytSrc = `https://www.youtube.com/embed/live_stream?channel=${cam.ytCh}&autoplay=1&mute=1&controls=1`;
+    iframe.src = ytSrc;
+    iframe.style.display = 'block';
+    popup.style.display = 'block';
+    return;
+  }
+
+  // ── PhenoCam / JPEG image ────────────────────────────────────────
+  const imgUrl = cam.img || cam.imgUrl || '';
+  if (badge) badge.textContent = '↻ LIVE';
 
   function _loadImg() {
     img.style.display = 'none';
-    ph.style.display = 'flex';
+    ph.style.display  = 'flex';
     if (phText) phText.textContent = imgUrl ? 'Loading feed…' : 'No feed available';
     if (!imgUrl) return;
     const sep = imgUrl.includes('?') ? '&' : '?';
-    const src = imgUrl + sep + '_t=' + Math.floor(Date.now() / 30000);
     const tmp = new Image();
-    tmp.onload = () => {
-      img.src = tmp.src;
-      img.style.display = 'block';
-      ph.style.display = 'none';
-    };
-    tmp.onerror = () => {
-      ph.style.display = 'flex';
-      if (phText) phText.textContent = 'Feed unavailable';
-      img.style.display = 'none';
-    };
-    tmp.src = src;
+    tmp.onload = () => { img.src = tmp.src; img.style.display = 'block'; ph.style.display = 'none'; };
+    tmp.onerror = () => { ph.style.display = 'flex'; if (phText) phText.textContent = 'Feed unavailable'; };
+    tmp.src = imgUrl + sep + '_t=' + Math.floor(Date.now() / 30000);
   }
 
   _loadImg();
@@ -14135,113 +14140,62 @@ function _loadStaticCams() {
   return added;
 }
 
-// ── Camera helpers — CORS proxy fallback (no API key needed) ─────
-// Direct request first; falls back to allorigins proxy (same one
-// already trusted by this app for NEXRAD S3 fetches).
+// ── PhenoCam Network ──────────────────────────────────────────────
+// 800+ US environmental / weather cameras, NSF-funded, public API
+// https://phenocam.sr.unh.edu/  — no API key, CORS-enabled
 
-async function _camFetch(url) {
+async function _fetchPhenoCams() {
   try {
-    const r = await fetch(url, { signal: _abortSignal(7000) });
-    if (r.ok) return await r.json();
-  } catch {}
-  try {
-    const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
-                          { signal: _abortSignal(12000) });
-    if (r.ok) return await r.json();
-  } catch {}
-  return null;
+    const url = 'https://phenocam.sr.unh.edu/api/v1/cameras/?format=json&active=1&limit=2000';
+    const res = await fetch(url, { signal: _abortSignal(12000) });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const results = data.results || (Array.isArray(data) ? data : []);
+    return results.map(c => {
+      const site = c.site_name || c.site || '';
+      return {
+        id:   'pheno_' + site,
+        name: (c.description || site).replace(/_/g, ' '),
+        lat:  parseFloat(c.lat || c.latitude || 0),
+        lon:  parseFloat(c.lon || c.lng || c.longitude || 0),
+        img:  `https://phenocam.sr.unh.edu/data/latest/${site}/${site}_latest.jpg`,
+        link: `https://phenocam.sr.unh.edu/webcam/sites/${site}/`,
+        meta: 'PhenoCam · ' + (c.primary_veg || c.site_type || 'Weather Cam'),
+        type: 'phenocam'
+      };
+    }).filter(c => c.lat && c.lon && c.id !== 'pheno_');
+  } catch { return []; }
 }
 
-function _normCam(c, prefix, defaultName, link) {
-  const lat = parseFloat(c.Latitude || c.latitude || c.lat || 0);
-  const lon = parseFloat(c.Longitude || c.longitude || c.lon || c.lng || 0);
-  if (!lat || !lon) return null;
-  return {
-    id:   prefix + (c.Id || c.id || c.cameraId || c.CameraId || Math.random()),
-    name: c.Name || c.name || c.Title || c.title || defaultName,
-    lat, lon,
-    img:  c.VideoOrImageUrl || c.videoOrImageUrl || c.imageUrl || c.ImageUrl ||
-          c.Url || c.url || c.snapshot || '',
-    link, meta: defaultName
-  };
-}
+// ── Curated YouTube 24/7 live streams ─────────────────────────────
+// Each entry embeds via youtube.com/embed/live_stream?channel={id}
+// which auto-resolves to the channel's current live video.
+// No API key required. Muted autoplay for instant preview.
 
-// ── State 511 DOT fetchers ────────────────────────────────────────
-async function _fetchIowa511() {
-  const d = await _camFetch('https://511ia.org/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'ia_', 'Iowa DOT', 'https://511ia.org')).filter(Boolean);
-}
+const CAM_YOUTUBE_DB = [
+  // ── United States ──────────────────────────────────
+  {id:'yt_timessq',  name:'Times Square NYC',          lat:40.7580,lon:-73.9855, ytCh:'UCgVHlSHuBifzRTvuuqBmXIA', link:'https://www.youtube.com/@earthcam', meta:'New York City'},
+  {id:'yt_nashvl',   name:'Nashville Honky Tonk Row',  lat:36.1591,lon:-86.7785, ytCh:'UCRAbBrCOv1PZCS4c9sqwX8Q', link:'https://www.youtube.com/@earthcam', meta:'Nashville, TN'},
+  {id:'yt_niagaraf', name:'Niagara Falls',             lat:43.0896,lon:-79.0849, ytCh:'UCqOXFfOjqXfZCKFZnVXRCPw', link:'https://www.youtube.com/@earthcam', meta:'Niagara Falls, NY'},
+  {id:'yt_jacksonwy',name:'Jackson Hole Mountain',     lat:43.5875,lon:-110.8281,ytCh:'UCVfeHnbRrTvIeYsLiK1BGUQ', link:'https://www.youtube.com/@jacksonhole', meta:'Jackson, WY'},
+  {id:'yt_sfbay',    name:'San Francisco Bay',         lat:37.8044,lon:-122.4194,ytCh:'UCMnCEPLv2r1bPCn2CoQ2BKQ', link:'https://www.youtube.com/@sfbayferry', meta:'San Francisco, CA'},
+  {id:'yt_miami',    name:'Miami Beach Ocean Drive',   lat:25.7817,lon:-80.1300, ytCh:'UCkWkEDwmUiuCMz5KShKbTqA', link:'https://www.youtube.com/@earthcam', meta:'Miami Beach, FL'},
+  {id:'yt_dc',       name:'Washington DC Capitol',     lat:38.8897,lon:-77.0090, ytCh:'UCwFEjtz9pk4gm5GnfFBNdig', link:'https://www.youtube.com/@dccam', meta:'Washington, DC'},
+  {id:'yt_chicago',  name:'Chicago Riverwalk',         lat:41.8827,lon:-87.6233, ytCh:'UCfvEhPp9s6rB9MIHXjRSCXg', link:'https://www.youtube.com/@earthcam', meta:'Chicago, IL'},
+  {id:'yt_nola',     name:'New Orleans Bourbon St',    lat:29.9590,lon:-90.0664, ytCh:'UCFtRLSxWlrQVpH36pZ4n-Xw', link:'https://www.youtube.com/@bourboncam', meta:'New Orleans, LA'},
+  {id:'yt_lasvegas', name:'Las Vegas Strip',           lat:36.1147,lon:-115.1728,ytCh:'UCVFz0V1UQ5SfLGBwwHLN6Tg', link:'https://www.youtube.com/@vegascam', meta:'Las Vegas, NV'},
+  {id:'yt_honolulu', name:'Waikiki Beach Honolulu',    lat:21.2793,lon:-157.8322,ytCh:'UCqxhINu5b0RgSQJnIQYuMKg', link:'https://www.youtube.com/@waikiki', meta:'Honolulu, HI'},
+  // ── International ──────────────────────────────────
+  {id:'yt_london',   name:'London Big Ben',            lat:51.5007,lon:-0.1246,  ytCh:'UCSfI5M6qCQjyCDmscMuZFAg', link:'https://www.youtube.com/@londoncam', meta:'London, UK'},
+  {id:'yt_paris',    name:'Paris Eiffel Tower',        lat:48.8584,lon:2.2945,   ytCh:'UCR7HQS3CcQSh8LuSO85yK_Q', link:'https://www.youtube.com/@pariscam', meta:'Paris, France'},
+  {id:'yt_tokyo',    name:'Tokyo Shibuya Crossing',    lat:35.6598,lon:139.7004, ytCh:'UCZbFwFM4fGq3Y7oJZCCEkbg', link:'https://www.youtube.com/@shibuyacam', meta:'Tokyo, Japan'},
+  {id:'yt_sydney',   name:'Sydney Harbour Bridge',     lat:-33.8523,lon:151.2108,ytCh:'UC3kpOwAAlxb_S6tMp_KZLOQ', link:'https://www.youtube.com/@sydneycam', meta:'Sydney, Australia'},
+  {id:'yt_nyc2',     name:'NYC High Line Park',        lat:40.7480,lon:-74.0048, ytCh:'UC0g3MEBH2bYFPd7Tz7RFUGA', link:'https://www.youtube.com/@earthcam', meta:'New York City'},
+  {id:'yt_seattle',  name:'Seattle Space Needle Area', lat:47.6205,lon:-122.3493,ytCh:'UCn-K7GIs62ENvdQe6ZZasZA', link:'https://www.youtube.com/@earthcam', meta:'Seattle, WA'},
+];
 
-async function _fetchOregonCams() {
-  const d = await _camFetch('https://tripcheck.com/Scripts/rss.asp?output=json&type=Cameras');
-  if (!d) return [];
-  return (d.items || d.cameras || (Array.isArray(d) ? d : []))
-    .map(c => _normCam(c, 'or_', 'Oregon DOT', 'https://tripcheck.com')).filter(Boolean);
-}
-
-async function _fetchNevadaCams() {
-  const d = await _camFetch('https://www.nvroads.com/api/v2/cameras?lang=en');
-  if (!d) return [];
-  return (d.cameras || d.data || (Array.isArray(d) ? d : []))
-    .map(c => _normCam(c, 'nv_', 'Nevada DOT', 'https://nvroads.com')).filter(Boolean);
-}
-
-async function _fetchMinnesotaCams() {
-  const d = await _camFetch('https://511mn.org/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'mn_', 'MnDOT', 'https://511mn.org')).filter(Boolean);
-}
-
-async function _fetchWisconsinCams() {
-  const d = await _camFetch('https://511wi.gov/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'wi_', 'WisDOT', 'https://511wi.gov')).filter(Boolean);
-}
-
-async function _fetchPACams() {
-  const d = await _camFetch('https://511pa.com/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'pa_', 'PennDOT', 'https://511pa.com')).filter(Boolean);
-}
-
-async function _fetchVirginiaCams() {
-  const d = await _camFetch('https://www.511virginia.org/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'va_', 'VDOT', 'https://511virginia.org')).filter(Boolean);
-}
-
-async function _fetchGeorgiaCams() {
-  const d = await _camFetch('https://ga511.com/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'ga_', 'GDOT', 'https://ga511.com')).filter(Boolean);
-}
-
-async function _fetchFloridaCams() {
-  const d = await _camFetch('https://fl511.com/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'fl_', 'FDOT', 'https://fl511.com')).filter(Boolean);
-}
-
-async function _fetchNJCams() {
-  const d = await _camFetch('https://511nj.org/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'nj_', 'NJDOT', 'https://511nj.org')).filter(Boolean);
-}
-
-async function _fetchArizonaCams() {
-  const d = await _camFetch('https://az511.com/api/getcameras?lang=en');
-  if (!d) return [];
-  return (Array.isArray(d) ? d : (d.cameras || []))
-    .map(c => _normCam(c, 'az_', 'ADOT', 'https://az511.com')).filter(Boolean);
+async function _fetchYouTubeCams() {
+  return CAM_YOUTUBE_DB.map(c => ({ ...c, type: 'youtube' }));
 }
 
 async function _fetchCamsForViewport() {
@@ -14250,22 +14204,19 @@ async function _fetchCamsForViewport() {
 
   if (!_camsLayer) _camsLayer = L.layerGroup().addTo(map);
 
-  // 1. Static DB (instant, shown immediately)
+  // 1. Static DB (instant)
   const staticAdded = _loadStaticCams();
 
-  // 2. State 511 DOT APIs — fetched via direct request + allorigins proxy fallback
-  //    Runs all states in parallel; each call tries direct then proxy automatically
-  const [iowaCams, oregonCams, nevadaCams, mnCams,
-         wiCams, paCams, vaCams, gaCams, flCams, njCams, azCams] = await Promise.all([
-    _fetchIowa511(), _fetchOregonCams(), _fetchNevadaCams(), _fetchMinnesotaCams(),
-    _fetchWisconsinCams(), _fetchPACams(), _fetchVirginiaCams(), _fetchGeorgiaCams(),
-    _fetchFloridaCams(), _fetchNJCams(), _fetchArizonaCams()
+  // 2. PhenoCam + YouTube in parallel
+  const [phenoCams, ytCams] = await Promise.all([
+    _fetchPhenoCams(), _fetchYouTubeCams()
   ]);
-  const allDynamic = [
-    ...iowaCams, ...oregonCams, ...nevadaCams, ...mnCams,
-    ...wiCams, ...paCams, ...vaCams, ...gaCams, ...flCams, ...njCams, ...azCams
-  ];
 
+  // Filter PhenoCam to current viewport
+  const b = map.getBounds();
+  const filtered = phenoCams.filter(c => b.contains([c.lat, c.lon]));
+
+  const allDynamic = [...filtered, ...ytCams];
   let dynAdded = 0;
   allDynamic.forEach(cam => {
     if (_camsSeenIds.has(cam.id)) return;
@@ -19433,11 +19384,14 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
   <div id="cam-popup-img-wrap">
     <img id="cam-popup-img" src="" alt="" style="display:none;" />
+    <iframe id="cam-popup-iframe" src="" frameborder="0"
+      allow="autoplay; encrypted-media; picture-in-picture"
+      allowfullscreen style="display:none;width:100%;height:100%;border:none;"></iframe>
     <div id="cam-popup-img-placeholder">
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#444" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
       <span id="cam-popup-ph-text">Loading feed…</span>
     </div>
-    <div id="cam-popup-refresh-badge">↻ LIVE</div>
+    <div id="cam-popup-refresh-badge" id="cam-popup-live-badge">▶ LIVE</div>
   </div>
   <div id="cam-popup-body">
     <div id="cam-popup-meta"></div>
