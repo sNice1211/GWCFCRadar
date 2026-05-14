@@ -9767,64 +9767,137 @@ function _windColor(kph) {
   return                [220,   0, 180];
 }
 
-// Build a single SVG arrow marker — everything in one DOM element, renders all at once
-function _makeWindArrow(s, mode) {
-  const o = s.obs;
-  const raw = mode === 'gust' ? o.gustKph : o.speedKph;
-  if (raw == null) return null;
-  const dir   = o.dirDeg ?? null;
-  const [r,g,b] = _windColor(raw);
-  const col   = `rgb(${r},${g},${b})`;
-  const mph   = Math.round(raw * 0.621371);
-  const kt    = Math.round(raw * 0.539957);
+// ── CANVAS WIND BARB RENDERER ────────────────────────────────────
+// Single <canvas> overlay — draws 10,000+ barbs in one paint pass,
+// eliminating DOM-per-marker overhead. Redraws instantly on move/zoom.
+
+let _windCanvas = null, _windCtx = null;
+let _gustCanvas = null, _gustCtx = null;
+let _windBarbData = [];
+let _gustBarbData = [];
+
+function _initWindCanvas(mode) {
+  const isGust = mode === 'gust';
+  if (isGust ? _gustCanvas : _windCanvas) return;
+  const c = document.createElement('canvas');
+  c.id = isGust ? '_gustBarbCanvas' : '_windBarbCanvas';
+  c.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:401;';
+  document.getElementById('map').appendChild(c);
+  const ctx = c.getContext('2d');
+  if (isGust) { _gustCanvas = c; _gustCtx = ctx; }
+  else        { _windCanvas = c; _windCtx  = ctx; }
+  _resizeWindCanvas(mode);
+}
+
+function _resizeWindCanvas(mode) {
+  const el = document.getElementById('map');
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const c = mode === 'gust' ? _gustCanvas : _windCanvas;
+  if (!c) return;
+  c.width = w; c.height = h;
+  c.style.width = w + 'px'; c.style.height = h + 'px';
+}
+
+function _destroyWindCanvas(mode) {
+  const isGust = mode === 'gust';
+  const c = isGust ? _gustCanvas : _windCanvas;
+  if (c) c.remove();
+  if (isGust) { _gustCanvas = null; _gustCtx = null; _gustBarbData = []; }
+  else        { _windCanvas = null; _windCtx  = null; _windBarbData = []; }
+}
+
+function _drawWindCanvas(mode) {
+  const isGust = mode === 'gust';
+  const ctx    = isGust ? _gustCtx    : _windCtx;
+  const canvas = isGust ? _gustCanvas : _windCanvas;
+  const data   = isGust ? _gustBarbData : _windBarbData;
+  if (!ctx || !canvas) return;
+
+  _resizeWindCanvas(mode);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const zoom = map.getZoom();
+  const shaft    = zoom <= 4 ? 22 : zoom <= 6 ? 18 : zoom <= 8 ? 14 : 11;
+  const head     = zoom <= 4 ?  7 : zoom <= 6 ?  6 :  5;
+  const fontSize = zoom <= 4 ?  9 : zoom <= 6 ?  8 :  7;
+  const lw       = zoom <= 4 ?  2 : 1.5;
+
+  data.forEach(s => {
+    const kph = isGust ? s.obs.gustKph : s.obs.speedKph;
+    if (kph == null) return;
+    const pt = map.latLngToContainerPoint([s.lat, s.lon]);
+    const x = pt.x, y = pt.y;
+    if (x < -40 || x > canvas.width + 40 || y < -40 || y > canvas.height + 40) return;
+
+    const [r, g, b] = _windColor(kph);
+    const col = `rgb(${r},${g},${b})`;
+    const dir = s.obs.dirDeg;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.strokeStyle = col;
+    ctx.fillStyle   = col;
+    ctx.lineWidth   = lw;
+    ctx.lineCap     = 'round';
+
+    if (dir == null) {
+      ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+    } else {
+      const rad = (dir + 180) * Math.PI / 180;
+      ctx.rotate(rad);
+      ctx.beginPath(); ctx.moveTo(0, shaft * 0.3); ctx.lineTo(0, -shaft); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-head, -shaft + head * 1.3); ctx.lineTo(0, -shaft); ctx.lineTo(head, -shaft + head * 1.3);
+      ctx.stroke();
+      ctx.rotate(-rad);
+    }
+
+    if (zoom >= 5) {
+      const mph = Math.round(kph * 0.621371);
+      ctx.font = `${fontSize}px 'IBM Plex Mono',monospace`;
+      ctx.textAlign = 'center';
+      ctx.fillText(mph, 0, shaft + fontSize + 2);
+    }
+    ctx.restore();
+  });
+}
+
+function _windCanvasClick(e, mode) {
+  const isGust = mode === 'gust';
+  const canvas = isGust ? _gustCanvas : _windCanvas;
+  const data   = isGust ? _gustBarbData : _windBarbData;
+  if (!canvas || !data.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  let best = null, bestD = 24;
+  data.forEach(s => {
+    const pt = map.latLngToContainerPoint([s.lat, s.lon]);
+    const d = Math.hypot(pt.x - mx, pt.y - my);
+    if (d < bestD) { bestD = d; best = s; }
+  });
+  if (!best) return;
+  const o = best.obs;
+  const kph = isGust ? o.gustKph : o.speedKph;
+  const mph = Math.round(kph * 0.621371);
+  const kt  = Math.round(kph * 0.539957);
   const dirs8 = ['N','NE','E','SE','S','SW','W','NW'];
-  const compass = dir != null ? dirs8[Math.round(dir/45)%8] + ' (' + Math.round(dir) + '°)' : '—';
+  const compass = o.dirDeg != null ? dirs8[Math.round(o.dirDeg/45)%8] + ' (' + Math.round(o.dirDeg) + '°)' : '—';
   const tempF = o.tempC != null ? Math.round(o.tempC * 9/5 + 32) : null;
   const prsMb = o.pressurePa != null ? (o.pressurePa / 100).toFixed(0) : null;
-
-  // Scale arrow size with zoom — bigger at low zoom so visible, smaller at high zoom
-  const zoom = map ? map.getZoom() : 7;
-  const S = zoom <= 4 ? 56 : zoom <= 6 ? 48 : zoom <= 9 ? 40 : 36;
-  const cx = S/2, cy = S/2;
-  const rotDeg = dir != null ? (dir + 180) % 360 : 0; // meteorological: dir=FROM, so +180 = arrow points TO (downwind)
-  // shaft length scales with speed
-  const shaftLen = 12 + Math.min(raw / 100, 1) * 12;
-  const tipY  = cy - shaftLen;
-  const baseY = cy + shaftLen * 0.35;
-  const headSize = 6;
-  // arrow: base → tip → left barb, tip → right barb
-  const svgArrow = dir != null
-    ? `<line x1="${cx}" y1="${baseY}" x2="${cx}" y2="${tipY}" stroke="${col}" stroke-width="2.5" stroke-linecap="round"/>
-       <polyline points="${cx-headSize},${tipY+headSize*1.4} ${cx},${tipY} ${cx+headSize},${tipY+headSize*1.4}" stroke="${col}" stroke-width="2.5" stroke-linejoin="round" fill="none"/>`
-    : `<circle cx="${cx}" cy="${cy}" r="5" fill="${col}" opacity="0.9"/>`;
-
-  const speedLabel = mph < 999 ? `<text x="${cx}" y="${S-2}" text-anchor="middle" font-size="8" font-family="IBM Plex Mono,monospace" fill="${col}" opacity="0.95">${mph}</text>` : '';
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${S}" height="${S}" style="overflow:visible;transform:rotate(${rotDeg}deg);transform-origin:${cx}px ${cy}px;">
-    ${svgArrow}
-    ${speedLabel}
-  </svg>`;
-
-  const icon = L.divIcon({
-    className: '',
-    html: `<div style="width:${S}px;height:${S}px;cursor:pointer;">${svg}</div>`,
-    iconSize: [S, S],
-    iconAnchor: [cx, cy]
-  });
-
-  const marker = L.marker([s.lat, s.lon], { icon, interactive: true });
-  marker.bindPopup(`<div class="data-popup-inner">
-    <div class="dp-coord">${s.lat.toFixed(2)}°, ${s.lon.toFixed(2)}°</div>
-    <div class="dp-section">💨 ${mode === 'gust' ? 'Gusts' : 'Wind'}</div>
-    <div class="dp-row"><span>Speed</span><b style="color:${col}">${mph} mph / ${kt} kt</b></div>
-    <div class="dp-row"><span>Direction</span><b>${compass}</b></div>
-    ${o.gustKph != null ? `<div class="dp-row"><span>Gusts</span><b>${Math.round(o.gustKph*0.621371)} mph</b></div>` : ''}
-    ${tempF != null ? `<div class="dp-section">🌡 Temperature</div>
-    <div class="dp-row"><span>Air temp</span><b>${tempF}°F / ${Math.round(o.tempC)}°C</b></div>` : ''}
-    ${prsMb != null ? `<div class="dp-section">⬡ Pressure</div>
-    <div class="dp-row"><span>Surface</span><b>${prsMb} hPa</b></div>` : ''}
-  </div>`, { className: 'data-popup', maxWidth: 230 });
-  return marker;
+  const [r,g,b] = _windColor(kph);
+  const col = `rgb(${r},${g},${b})`;
+  L.popup({ className: 'data-popup', maxWidth: 230 })
+    .setLatLng([best.lat, best.lon])
+    .setContent(`<div class="data-popup-inner">
+      <div class="dp-coord">${best.lat.toFixed(2)}°, ${best.lon.toFixed(2)}°</div>
+      <div class="dp-section">💨 ${isGust ? 'Gusts' : 'Wind'}</div>
+      <div class="dp-row"><span>Speed</span><b style="color:${col}">${mph} mph / ${kt} kt</b></div>
+      <div class="dp-row"><span>Direction</span><b>${compass}</b></div>
+      ${o.gustKph != null ? `<div class="dp-row"><span>Gusts</span><b>${Math.round(o.gustKph*0.621371)} mph</b></div>` : ''}
+      ${tempF != null ? `<div class="dp-section">🌡 Temperature</div><div class="dp-row"><span>Air</span><b>${tempF}°F / ${Math.round(o.tempC)}°C</b></div>` : ''}
+      ${prsMb != null ? `<div class="dp-section">⬡ Pressure</div><div class="dp-row"><span>Surface</span><b>${prsMb} hPa</b></div>` : ''}
+    </div>`)
+    .openOn(map);
 }
 
 let _windBarbReqId = 0, _gustBarbReqId = 0;
@@ -9832,24 +9905,24 @@ let _windBarbReqId = 0, _gustBarbReqId = 0;
 async function loadWindBarbs() {
   if (!windBarbActive) return;
   const reqId = ++_windBarbReqId;
+  _initWindCanvas('regular');
   try {
-    const obs = await _loadObservations();
-    if (reqId !== _windBarbReqId) return; // stale — newer request already running
-    const newLayer = L.layerGroup();
-    obs.forEach(s => {
-      if (!s.obs || s.obs.speedKph == null) return;
-      if (!_ptInPolyUnion(s.lat, s.lon)) return;
-      const g = _makeWindArrow(s, 'regular');
-      if (g) g.addTo(newLayer);
-    });
+    // Phase 1 — fast coarse grid (~400 pts) shows barbs in < 1 second
+    const bounds = map.getBounds();
+    const zoom   = map.getZoom();
+    const coarse = await _fetchNWSStations(bounds, 400);
     if (reqId !== _windBarbReqId) return;
-    // Only swap layers if the new fetch actually returned data.
-    // This prevents a failed/rate-limited fetch from wiping the existing barbs.
-    const newCount = newLayer.getLayers().length;
-    if (newCount > 0 || !windBarbLayer) {
-      newLayer.addTo(map);
-      if (windBarbLayer) map.removeLayer(windBarbLayer);
-      windBarbLayer = newLayer;
+    if (coarse.length > 0) {
+      _windBarbData = coarse.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+      _drawWindCanvas('regular');
+    }
+    // Phase 2 — full density in background, swapped in seamlessly
+    const full = await _loadObservations();
+    if (reqId !== _windBarbReqId) return;
+    const filtered = full.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (filtered.length > 0 || _windBarbData.length === 0) {
+      _windBarbData = filtered;
+      _drawWindCanvas('regular');
     }
   } catch(e) { if (reqId === _windBarbReqId) console.warn('Wind barbs error:', e); }
 }
@@ -9857,23 +9930,21 @@ async function loadWindBarbs() {
 async function loadGustBarbs() {
   if (!windGustBarbActive) return;
   const reqId = ++_gustBarbReqId;
+  _initWindCanvas('gust');
   try {
-    const obs = await _loadObservations();
+    const bounds = map.getBounds();
+    const coarse = await _fetchNWSStations(bounds, 400);
     if (reqId !== _gustBarbReqId) return;
-    const newLayer = L.layerGroup();
-    obs.forEach(s => {
-      if (!s.obs || s.obs.gustKph == null) return;
-      if (!_ptInPolyUnion(s.lat, s.lon)) return;
-      const g = _makeWindArrow(s, 'gust');
-      if (g) g.addTo(newLayer);
-    });
+    if (coarse.length > 0) {
+      _gustBarbData = coarse.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+      _drawWindCanvas('gust');
+    }
+    const full = await _loadObservations();
     if (reqId !== _gustBarbReqId) return;
-    // Guard: never wipe existing gust barbs with an empty fetch result
-    const newCount = newLayer.getLayers().length;
-    if (newCount > 0 || !windGustBarbLayer) {
-      newLayer.addTo(map);
-      if (windGustBarbLayer) map.removeLayer(windGustBarbLayer);
-      windGustBarbLayer = newLayer;
+    const filtered = full.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (filtered.length > 0 || _gustBarbData.length === 0) {
+      _gustBarbData = filtered;
+      _drawWindCanvas('gust');
     }
   } catch(e) { if (reqId === _gustBarbReqId) console.warn('Gust barbs error:', e); }
 }
@@ -9884,15 +9955,23 @@ function toggleWindRegularBarbs() {
   windRegularBarbActive = windBarbActive = !windRegularBarbActive;
   if (windRegularBarbActive) {
     loadWindBarbs();
-    const _deb = () => { clearTimeout(_windBarbDebounce); _windBarbDebounce = setTimeout(loadWindBarbs, 400); };
-    map.on('moveend zoomend', _deb);
-    map._windBarbMoveHandler = _deb;
-    windBarbTimer = setInterval(loadWindBarbs, 5 * 60 * 1000);
+    map._windBarbMoveHandler = () => { clearTimeout(_windBarbDebounce); _windBarbDebounce = setTimeout(loadWindBarbs, 500); };
+    map._windBarbDrawHandler = () => _drawWindCanvas('regular');
+    map.on('moveend zoomend', map._windBarbMoveHandler);
+    map.on('move zoom resize', map._windBarbDrawHandler);
+    const mapEl = document.getElementById('map');
+    mapEl._windClickHandler = e => _windCanvasClick(e, 'regular');
+    mapEl.addEventListener('click', mapEl._windClickHandler);
+    windBarbTimer = setInterval(loadWindBarbs, 10 * 60 * 1000);
   } else {
     if (map._windBarbMoveHandler) map.off('moveend zoomend', map._windBarbMoveHandler);
+    if (map._windBarbDrawHandler) map.off('move zoom resize', map._windBarbDrawHandler);
     clearTimeout(_windBarbDebounce);
     clearInterval(windBarbTimer); windBarbTimer = null;
-    if (windBarbLayer) { map.removeLayer(windBarbLayer); windBarbLayer = null; }
+    _destroyWindCanvas('regular');
+    const mapEl = document.getElementById('map');
+    if (mapEl._windClickHandler) mapEl.removeEventListener('click', mapEl._windClickHandler);
+    windBarbLayer = null;
   }
   const wrap = document.getElementById('sub-bubbles');
   if (wrap && wrap.dataset.mode === 'wind') toggleWindSub();
@@ -9902,15 +9981,23 @@ function toggleGustBarbs() {
   windGustBarbActive = windGustActive = !windGustBarbActive;
   if (windGustBarbActive) {
     loadGustBarbs();
-    const _deb = () => { clearTimeout(_gustBarbDebounce); _gustBarbDebounce = setTimeout(loadGustBarbs, 400); };
-    map.on('moveend zoomend', _deb);
-    map._gustBarbMoveHandler = _deb;
-    windGustTimer = setInterval(loadGustBarbs, 5 * 60 * 1000);
+    map._gustBarbMoveHandler = () => { clearTimeout(_gustBarbDebounce); _gustBarbDebounce = setTimeout(loadGustBarbs, 500); };
+    map._gustBarbDrawHandler = () => _drawWindCanvas('gust');
+    map.on('moveend zoomend', map._gustBarbMoveHandler);
+    map.on('move zoom resize', map._gustBarbDrawHandler);
+    const mapEl = document.getElementById('map');
+    mapEl._gustClickHandler = e => _windCanvasClick(e, 'gust');
+    mapEl.addEventListener('click', mapEl._gustClickHandler);
+    windGustTimer = setInterval(loadGustBarbs, 10 * 60 * 1000);
   } else {
     if (map._gustBarbMoveHandler) map.off('moveend zoomend', map._gustBarbMoveHandler);
+    if (map._gustBarbDrawHandler) map.off('move zoom resize', map._gustBarbDrawHandler);
     clearTimeout(_gustBarbDebounce);
     clearInterval(windGustTimer); windGustTimer = null;
-    if (windGustBarbLayer) { map.removeLayer(windGustBarbLayer); windGustBarbLayer = null; }
+    _destroyWindCanvas('gust');
+    const mapEl = document.getElementById('map');
+    if (mapEl._gustClickHandler) mapEl.removeEventListener('click', mapEl._gustClickHandler);
+    windGustBarbLayer = null;
   }
   const wrap = document.getElementById('sub-bubbles');
   if (wrap && wrap.dataset.mode === 'wind') toggleWindSub();
