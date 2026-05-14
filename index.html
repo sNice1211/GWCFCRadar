@@ -13965,60 +13965,6 @@ let _camsTimer    = null;
 let _camsSeenIds  = new Set();
 let _camPopupRefreshTimer = null;
 
-// ── Static notable-cam database ──────────────────────────────────
-// Each entry: { id, name, lat, lon, img (public thumbnail URL), link }
-// img URLs load in <img> without CORS headers required.
-const CAM_STATIC_DB = [
-  // WSDOT — Washington State DOT (real public image CDN)
-  {id:'ws001',name:'Seattle I-5 Ship Canal',lat:47.648,lon:-122.335,img:'https://images.wsdot.wa.gov/nw/005vc32435.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  {id:'ws002',name:'Tacoma Narrows',lat:47.353,lon:-122.551,img:'https://images.wsdot.wa.gov/nw/016vc00038.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  {id:'ws003',name:'Snoqualmie Pass I-90',lat:47.425,lon:-121.416,img:'https://images.wsdot.wa.gov/sc/090vc15311.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  {id:'ws004',name:'Seattle I-90 Mounth Lake',lat:47.592,lon:-122.178,img:'https://images.wsdot.wa.gov/nw/090vc00160.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  // Oregon — TripCheck real CCTV IDs from their public API
-  {id:'or001',name:'Portland I-5 Columbia Crossing',lat:45.648,lon:-122.760,img:'https://tripcheck.com/Photos/CCTVImages/10203_medium.jpg',link:'https://tripcheck.com'},
-  {id:'or002',name:'Portland I-84 Gateway',lat:45.528,lon:-122.559,img:'https://tripcheck.com/Photos/CCTVImages/10206_medium.jpg',link:'https://tripcheck.com'},
-  {id:'or003',name:'Mt Hood US-26',lat:45.319,lon:-121.814,img:'https://tripcheck.com/Photos/CCTVImages/10401_medium.jpg',link:'https://tripcheck.com'},
-  // California — Caltrans real public image server (cwwp2.dot.ca.gov)
-  {id:'ca001',name:'Bay Bridge Oakland',lat:37.800,lon:-122.372,img:'https://cwwp2.dot.ca.gov/data/d4/cctv/image/tvn96on80/tvn96on80.jpg',link:'https://511.org'},
-  {id:'ca002',name:'Golden Gate SF',lat:37.808,lon:-122.478,img:'https://cwwp2.dot.ca.gov/data/d4/cctv/image/tvn101sf/tvn101sf.jpg',link:'https://511.org'},
-  {id:'ca003',name:'LA I-10 Santa Monica Fwy',lat:34.023,lon:-118.464,img:'https://cwwp2.dot.ca.gov/data/d7/cctv/image/tvn10la/tvn10la.jpg',link:'https://511.org'},
-  {id:'ca004',name:'Grapevine I-5',lat:34.831,lon:-118.902,img:'https://cwwp2.dot.ca.gov/data/d7/cctv/image/tvn5grapevine/tvn5grapevine.jpg',link:'https://511.org'},
-  {id:'ca005',name:'San Diego I-8 Mission Valley',lat:32.766,lon:-117.154,img:'https://cwwp2.dot.ca.gov/data/d11/cctv/image/tvn8sd/tvn8sd.jpg',link:'https://511.org'},
-  // Colorado — CDOT real image server
-  {id:'co001',name:'Denver I-70 Genesee',lat:39.693,lon:-105.306,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_234.jpg',link:'https://cotrip.org'},
-  {id:'co002',name:'Vail Pass I-70',lat:39.559,lon:-106.213,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_190.jpg',link:'https://cotrip.org'},
-  {id:'co003',name:'Eisenhower Tunnel',lat:39.680,lon:-105.906,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_216.jpg',link:'https://cotrip.org'},
-  // Wyoming — WyoRoad real image server
-  {id:'wy001',name:'Laramie I-80',lat:41.318,lon:-105.589,img:'https://www.wyoroad.info/highway/webcams/I80EB_LE_mm333_1.jpg',link:'https://wyoroad.info'},
-  {id:'wy002',name:'Cheyenne I-80',lat:41.139,lon:-104.818,img:'https://www.wyoroad.info/highway/webcams/I80EB_LE_mm357_1.jpg',link:'https://wyoroad.info'},
-  // Volcano Observatory (USGS public captures)
-  {id:'usgs001',name:'Kīlauea HVO Hawaii',lat:19.421,lon:-155.287,img:'https://volcanoes.usgs.gov/vsc/captures/kilauea/latest.jpg',link:'https://www.usgs.gov/volcanoes/kilauea'},
-  // Montana DOT real image server
-  {id:'mt001',name:'Butte I-90 MT',lat:46.005,lon:-112.534,img:'https://www.mdt.mt.gov/travinfo/cameras/I90_Butte.jpg',link:'https://www.mdt.mt.gov'},
-  {id:'mt002',name:'Missoula I-90 MT',lat:46.866,lon:-114.017,img:'https://www.mdt.mt.gov/travinfo/cameras/I90_Missoula.jpg',link:'https://www.mdt.mt.gov'},
-  // Locations with known 511 pages but no guaranteed public image CDN — no img
-  {id:'az001',name:'Phoenix I-10 AZ',lat:33.449,lon:-112.074,link:'https://az511.com'},
-  {id:'tx001',name:'Houston I-10 TX',lat:29.762,lon:-95.367,link:'https://drivetexas.org'},
-  {id:'tx002',name:'Dallas I-35E TX',lat:32.788,lon:-96.799,link:'https://drivetexas.org'},
-  {id:'mn001',name:'Minneapolis I-94 MN',lat:44.979,lon:-93.265,link:'https://511mn.org'},
-  {id:'il001',name:'Chicago I-90/94 IL',lat:41.878,lon:-87.629,link:'https://www.gettingaroundillinois.com'},
-  {id:'ga001',name:'Atlanta I-285 GA',lat:33.749,lon:-84.388,link:'https://ga511.com'},
-  {id:'fl001',name:'Miami I-95 FL',lat:25.774,lon:-80.193,link:'https://fl511.com'},
-  {id:'fl002',name:'Tampa I-275 FL',lat:27.947,lon:-82.458,link:'https://fl511.com'},
-  {id:'fl003',name:'Orlando I-4 FL',lat:28.538,lon:-81.379,link:'https://fl511.com'},
-  {id:'pa001',name:'Philadelphia I-76 PA',lat:39.952,lon:-75.164,link:'https://www.511pa.com'},
-  {id:'ny001',name:'New York Triborough',lat:40.776,lon:-73.929,link:'https://511ny.org'},
-  {id:'ma001',name:'Boston I-93 MA',lat:42.360,lon:-71.058,link:'https://mass511.com'},
-  {id:'va001',name:'Richmond I-95 VA',lat:37.540,lon:-77.436,link:'https://511virginia.org'},
-  {id:'nc001',name:'Charlotte I-77 NC',lat:35.227,lon:-80.843,link:'https://nctraffic.ncdot.gov'},
-  {id:'noaa001',name:'Virginia Key NOAA FL',lat:25.733,lon:-80.162,link:'https://tidesandcurrents.noaa.gov/photos/8723214'},
-  {id:'noaa002',name:'Boston Harbor NOAA',lat:42.354,lon:-71.053,link:'https://tidesandcurrents.noaa.gov/photos/8443970'},
-  {id:'noaa003',name:'San Francisco Bay NOAA',lat:37.806,lon:-122.466,link:'https://tidesandcurrents.noaa.gov/photos/9414290'},
-  {id:'pnw001',name:'Hurricane Ridge Olympic NP',lat:47.970,lon:-123.499,link:'https://www.nps.gov/olym'},
-  {id:'pnw002',name:'Crater Lake NP OR',lat:42.944,lon:-122.109,link:'https://www.nps.gov/crla'},
-  {id:'ak001',name:'Anchorage AK DOT',lat:61.218,lon:-149.900,link:'https://511.alaska.gov'},
-  {id:'hi001',name:'Honolulu H-1 HI',lat:21.307,lon:-157.858,link:'https://hidot.hawaii.gov'},
-];
 
 function _clearCams() {
   _camsFetching = false;
@@ -14133,47 +14079,6 @@ function _placeCamMarker(cam) {
   });
 }
 
-// ── Load static database for current viewport ─────────────────────
-function _loadStaticCams() {
-  const b = map.getBounds();
-  let added = 0;
-  CAM_STATIC_DB.forEach(cam => {
-    if (_camsSeenIds.has(cam.id)) return;
-    if (!b.contains([cam.lat, cam.lon])) return;
-    _camsSeenIds.add(cam.id);
-    _placeCamMarker(cam);
-    added++;
-  });
-  return added;
-}
-
-// ── PhenoCam Network ──────────────────────────────────────────────
-// 800+ US environmental / weather cameras, NSF-funded, public API
-// https://phenocam.sr.unh.edu/  — no API key, CORS-enabled
-
-async function _fetchPhenoCams() {
-  try {
-    const url = 'https://phenocam.sr.unh.edu/api/v1/cameras/?format=json&active=1&limit=2000';
-    const res = await fetch(url, { signal: _abortSignal(12000) });
-    if (!res.ok) return [];
-    const data = await res.json();
-    const results = data.results || (Array.isArray(data) ? data : []);
-    return results.map(c => {
-      const site = c.site_name || c.site || '';
-      return {
-        id:   'pheno_' + site,
-        name: (c.description || site).replace(/_/g, ' '),
-        lat:  parseFloat(c.lat || c.latitude || 0),
-        lon:  parseFloat(c.lon || c.lng || c.longitude || 0),
-        img:  `https://phenocam.sr.unh.edu/data/latest/${site}/${site}_latest.jpg`,
-        link: `https://phenocam.sr.unh.edu/webcam/sites/${site}/`,
-        meta: 'PhenoCam · ' + (c.primary_veg || c.site_type || 'Weather Cam'),
-        type: 'phenocam'
-      };
-    }).filter(c => c.lat && c.lon && c.id !== 'pheno_');
-  } catch { return []; }
-}
-
 // ── EarthCam via YouTube — verified live stream video IDs ──────────
 // All video IDs sourced from EarthCam's official YouTube channel
 // (UC6qrG3W8SMK0jior2olka3g / @earthcam) via web search results.
@@ -14204,30 +14109,17 @@ async function _fetchCamsForViewport() {
 
   if (!_camsLayer) _camsLayer = L.layerGroup().addTo(map);
 
-  // 1. Static DB (instant)
-  const staticAdded = _loadStaticCams();
-
-  // 2. PhenoCam (viewport-filtered) + EarthCam streams (global) in parallel
-  const [phenoCams, ecCams] = await Promise.all([
-    _fetchPhenoCams(), _fetchEarthCamStreams()
-  ]);
-
-  // Filter PhenoCam to current viewport; EarthCam streams placed globally
-  const b = map.getBounds();
-  const filtered = phenoCams.filter(c => b.contains([c.lat, c.lon]));
-
-  const allDynamic = [...filtered, ...ecCams];
-  let dynAdded = 0;
-  allDynamic.forEach(cam => {
+  const ecCams = await _fetchEarthCamStreams();
+  let added = 0;
+  ecCams.forEach(cam => {
     if (_camsSeenIds.has(cam.id)) return;
     _camsSeenIds.add(cam.id);
     _placeCamMarker(cam);
-    dynAdded++;
+    added++;
   });
 
-  const total = staticAdded + dynAdded;
-  if (total > 0) showToast(`📹 ${total} camera${total > 1 ? 's' : ''} loaded`, 1500);
-  else           showToast('📹 No cameras in this area', 2000);
+  if (added > 0) showToast(`📹 ${added} EarthCam live stream${added > 1 ? 's' : ''} loaded`, 1500);
+  else           showToast('📹 Cameras already loaded', 1500);
 
   _camsFetching = false;
 }
