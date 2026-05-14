@@ -14135,6 +14135,54 @@ function _loadStaticCams() {
   return added;
 }
 
+// ── Windy Webcams API v3 ─────────────────────────────────────────
+// Get free key at https://api.windy.com/ (1,000 calls/day free tier)
+// Key persisted to localStorage under 'gwcfc_windy_key'
+
+function lqmSaveWindyKey(val) {
+  const k = (val || '').trim();
+  if (k) localStorage.setItem('gwcfc_windy_key', k);
+  else   localStorage.removeItem('gwcfc_windy_key');
+}
+
+function _getWindyKey() {
+  return (localStorage.getItem('gwcfc_windy_key') || '').trim();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const inp = document.getElementById('lqm-windy-key');
+  if (inp) inp.value = _getWindyKey();
+});
+
+async function _fetchWindyCams() {
+  const key = _getWindyKey();
+  if (!key) return [];
+  try {
+    const b = map.getBounds();
+    // Windy v3 bbox endpoint
+    const url = `https://api.windy.com/webcams/v3/webcams/bbox?north=${b.getNorth().toFixed(4)}&south=${b.getSouth().toFixed(4)}&east=${b.getEast().toFixed(4)}&west=${b.getWest().toFixed(4)}&limit=100&lang=en`;
+    const res = await fetch(url, {
+      headers: { 'x-windy-api-key': key },
+      signal: _abortSignal(10000)
+    });
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403)
+        showToast('📹 Invalid Windy API key — check Settings', 3500);
+      return [];
+    }
+    const data = await res.json();
+    return (data.webcams || []).map(w => ({
+      id:   'windy_' + w.webcamId,
+      name: w.title || 'Webcam',
+      lat:  parseFloat(w.location?.latitude  || 0),
+      lon:  parseFloat(w.location?.longitude || 0),
+      img:  w.images?.current?.preview || w.images?.current?.fluid || '',
+      link: w.urls?.detail || 'https://windy.com',
+      meta: [w.location?.city, w.location?.region, w.location?.country].filter(Boolean).join(', ')
+    })).filter(c => c.lat && c.lon);
+  } catch { return []; }
+}
+
 // ── Try Iowa 511 public API (free, CORS-friendly) ─────────────────
 async function _fetchIowa511() {
   try {
@@ -14229,14 +14277,23 @@ async function _fetchCamsForViewport() {
 
   if (!_camsLayer) _camsLayer = L.layerGroup().addTo(map);
 
-  // 1. Static DB (instant)
+  // 1. Static DB (instant, shown immediately)
   const staticAdded = _loadStaticCams();
 
-  // 2. Multiple free public DOT APIs in parallel (no API keys)
+  // 2. Windy API (primary — requires free key from api.windy.com)
+  const windyKey = _getWindyKey();
+  let windyCams = [];
+  if (windyKey) {
+    windyCams = await _fetchWindyCams();
+  } else if (staticAdded === 0) {
+    showToast('📹 Add Windy API key in ⚙️ Settings for live cameras', 5000);
+  }
+
+  // 3. Free public DOT APIs as fallback (no key needed)
   const [iowaCams, oregonCams, nevadaCams, mnCams] = await Promise.all([
     _fetchIowa511(), _fetchOregonCams(), _fetchNevadaCams(), _fetchMinnesotaCams()
   ]);
-  const allDynamic = [...iowaCams, ...oregonCams, ...nevadaCams, ...mnCams];
+  const allDynamic = [...windyCams, ...iowaCams, ...oregonCams, ...nevadaCams, ...mnCams];
 
   let dynAdded = 0;
   allDynamic.forEach(cam => {
@@ -14247,8 +14304,12 @@ async function _fetchCamsForViewport() {
   });
 
   const total = staticAdded + dynAdded;
-  if (total > 0) showToast(`📹 ${total} camera${total > 1 ? 's' : ''} loaded`, 1500);
-  else           showToast('📹 No cameras in this area', 2000);
+  if (windyKey && windyCams.length > 0)
+    showToast(`📹 ${total} cameras loaded (${windyCams.length} live)`, 1800);
+  else if (total > 0)
+    showToast(`📹 ${total} camera${total > 1 ? 's' : ''} loaded`, 1500);
+  else
+    showToast('📹 No cameras in this area', 2000);
 
   _camsFetching = false;
 }
@@ -17377,13 +17438,33 @@ function selectProduct(p) {
       <span id="lqm-alertopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">65%</span>
     </div>
   </div>
+  <!-- ─── API KEYS ─── -->
+  <div class="lqm-settings-category">API KEYS</div>
+  <div class="lqm-settings-row" style="flex-direction:column;align-items:stretch;gap:5px;">
+    <span class="lqm-settings-lbl" style="margin-bottom:2px;">Windy Webcams API Key</span>
+    <div style="display:flex;gap:6px;">
+      <input type="text" id="lqm-windy-key" placeholder="Paste key from api.windy.com"
+        style="flex:1;background:rgba(0,0,0,0.4);border:1px solid rgba(0,200,200,0.25);border-radius:5px;
+               padding:4px 7px;color:#fff;font-family:var(--mono);font-size:9px;outline:none;"
+        oninput="lqmSaveWindyKey(this.value)">
+      <button onclick="window.open('https://api.windy.com/','_blank')"
+        style="background:rgba(0,200,200,0.12);border:1px solid rgba(0,200,200,0.3);border-radius:5px;
+               color:var(--accent2);font-family:var(--display);font-size:9px;padding:3px 8px;cursor:pointer;white-space:nowrap;">
+        Get key →
+      </button>
+    </div>
+    <div style="font-family:var(--mono);font-size:8px;color:var(--muted);line-height:1.5;">
+      Free tier · 1,000 calls/day · Powers live webcam layer
+    </div>
+  </div>
   <!-- ─── ABOUT ─── -->
   <div class="lqm-settings-category">ABOUT</div>
   <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0;letter-spacing:1px;line-height:1.7;">
     GWCFC Radar V85<br>
     Data: NOAA · NWS · SPC · NHC<br>
     ADS-B: OpenSky Network (free)<br>
-    Tiles: MapTiler · OpenStreetMap
+    Tiles: MapTiler · OpenStreetMap<br>
+    Webcams: Windy API (optional)
   </div>
 </div>
 
