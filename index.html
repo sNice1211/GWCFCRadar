@@ -2521,78 +2521,112 @@ body {
 }
 
 #cam-popup {
-  position: absolute;
-  z-index: 2000;
-  background: rgba(8,12,16,0.96);
-  border: 1px solid var(--accent2);
-  border-radius: 10px;
-  padding: 0;
-  width: 220px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.7);
+  position: fixed;
+  z-index: 9500;
+  bottom: 20px;
+  right: 20px;
+  width: 390px;
+  background: rgba(8,12,18,0.97);
+  border: 1.5px solid var(--accent2);
+  border-radius: 12px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.85);
   pointer-events: all;
   display: none;
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+#cam-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(0,200,200,0.15);
+  gap: 8px;
+}
+#cam-popup-name {
+  font-family: var(--display);
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#cam-popup-close {
+  flex-shrink: 0;
+  color: rgba(255,255,255,0.6);
+  font-size: 18px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+#cam-popup-close:hover { color: #fff; background: rgba(255,255,255,0.1); }
+#cam-popup-img-wrap {
+  position: relative;
+  width: 100%;
+  background: #0a0e14;
+  aspect-ratio: 16/9;
   overflow: hidden;
 }
 #cam-popup-img {
   width: 100%;
-  height: 130px;
+  height: 100%;
   object-fit: cover;
   display: block;
-  background: #111;
 }
 #cam-popup-img-placeholder {
-  width: 100%;
-  height: 130px;
+  position: absolute;
+  inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: #111;
-  color: #555;
-  font-size: 28px;
+  background: #0a0e14;
+  color: #444;
+  font-size: 14px;
+  gap: 8px;
+}
+#cam-popup-refresh-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.65);
+  color: var(--accent2);
+  font-family: var(--mono);
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  pointer-events: none;
 }
 #cam-popup-body {
-  padding: 8px 10px;
-}
-#cam-popup-name {
-  font-family: var(--display);
-  font-size: 12px;
-  font-weight: 600;
-  color: #fff;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 4px;
+  padding: 8px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 #cam-popup-meta {
   font-family: var(--mono);
   font-size: 9px;
   color: var(--muted);
-  margin-bottom: 6px;
 }
 #cam-popup-link {
   display: block;
   text-align: center;
   font-family: var(--display);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--accent2);
   text-decoration: none;
   border: 1px solid rgba(0,200,200,0.3);
-  border-radius: 5px;
-  padding: 3px 0;
+  border-radius: 6px;
+  padding: 5px 0;
   transition: background 0.15s;
 }
-#cam-popup-link:hover { background: rgba(0,200,200,0.15); }
-#cam-popup-close {
-  position: absolute;
-  top: 6px; right: 8px;
-  color: rgba(255,255,255,0.7);
-  font-size: 16px;
-  cursor: pointer;
-  line-height: 1;
-  z-index: 10;
-}
-#cam-popup-close:hover { color: #fff; }
+#cam-popup-link:hover { background: rgba(0,200,200,0.12); }
 
 /* ── LOGO QUICK MENU (triple-tap) ── */
 #logo-wrap {
@@ -4368,17 +4402,7 @@ body.gwcfc-crosshair #map::after {
   <div id="map-wrap">
     <div id="map"></div>
 
-    <!-- Cam Popup -->
-    <div id="cam-popup">
-      <span id="cam-popup-close" onclick="closeCamPopup()">✕</span>
-      <img id="cam-popup-img" src="" alt="" onerror="this.style.display='none';document.getElementById('cam-popup-img-placeholder').style.display='flex';" />
-      <div id="cam-popup-img-placeholder" style="display:none;">📷</div>
-      <div id="cam-popup-body">
-        <div id="cam-popup-name">Loading…</div>
-        <div id="cam-popup-meta"></div>
-        <a id="cam-popup-link" href="#" target="_blank" rel="noopener">🔗 View on Windy</a>
-      </div>
-    </div>
+    <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
       <div class="mi-name" id="mi-name">GFS · NOAA</div>
       <div class="mi-row"><span>Run</span><span class="mi-val" id="mi-run">--</span></div>
@@ -13945,73 +13969,55 @@ let _camPopupRefreshTimer = null;
 // Each entry: { id, name, lat, lon, img (public thumbnail URL), link }
 // img URLs load in <img> without CORS headers required.
 const CAM_STATIC_DB = [
-  // WSDOT — Washington State DOT (public image CDN)
+  // WSDOT — Washington State DOT (real public image CDN)
   {id:'ws001',name:'Seattle I-5 Ship Canal',lat:47.648,lon:-122.335,img:'https://images.wsdot.wa.gov/nw/005vc32435.jpg',link:'https://wsdot.com/travel/real-time/map'},
   {id:'ws002',name:'Tacoma Narrows',lat:47.353,lon:-122.551,img:'https://images.wsdot.wa.gov/nw/016vc00038.jpg',link:'https://wsdot.com/travel/real-time/map'},
   {id:'ws003',name:'Snoqualmie Pass I-90',lat:47.425,lon:-121.416,img:'https://images.wsdot.wa.gov/sc/090vc15311.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  {id:'ws004',name:'Seattle I-90 Mounth',lat:47.592,lon:-122.178,img:'https://images.wsdot.wa.gov/nw/090vc00160.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  // Oregon — TripCheck (public CDN)
+  {id:'ws004',name:'Seattle I-90 Mounth Lake',lat:47.592,lon:-122.178,img:'https://images.wsdot.wa.gov/nw/090vc00160.jpg',link:'https://wsdot.com/travel/real-time/map'},
+  // Oregon — TripCheck real CCTV IDs from their public API
   {id:'or001',name:'Portland I-5 Columbia Crossing',lat:45.648,lon:-122.760,img:'https://tripcheck.com/Photos/CCTVImages/10203_medium.jpg',link:'https://tripcheck.com'},
   {id:'or002',name:'Portland I-84 Gateway',lat:45.528,lon:-122.559,img:'https://tripcheck.com/Photos/CCTVImages/10206_medium.jpg',link:'https://tripcheck.com'},
   {id:'or003',name:'Mt Hood US-26',lat:45.319,lon:-121.814,img:'https://tripcheck.com/Photos/CCTVImages/10401_medium.jpg',link:'https://tripcheck.com'},
-  // Colorado — CDOT (public)
-  {id:'co001',name:'Denver I-70 Genesee',lat:39.693,lon:-105.306,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_234.jpg',link:'https://cotrip.org'},
-  {id:'co002',name:'Vail Pass I-70',lat:39.559,lon:-106.213,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_190.jpg',link:'https://cotrip.org'},
-  {id:'co003',name:'Eisenhower Tunnel',lat:39.680,lon:-105.906,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_216.jpg',link:'https://cotrip.org'},
-  // Nevada — NVRoads
-  {id:'nv001',name:'Las Vegas I-15 NB',lat:36.174,lon:-115.137,img:'https://www.nvroads.com/cameras/snapshots/I015_S_000_019.jpg',link:'https://nvroads.com'},
-  {id:'nv002',name:'Hoover Dam NV-172',lat:36.016,lon:-114.738,img:'https://www.nvroads.com/cameras/snapshots/SR172_S_000_001.jpg',link:'https://nvroads.com'},
-  // Wyoming — WyoRoad
-  {id:'wy001',name:'Laramie I-80',lat:41.318,lon:-105.589,img:'https://www.wyoroad.info/highway/webcams/I80EB_LE_mm333_1.jpg',link:'https://wyoroad.info'},
-  {id:'wy002',name:'Cheyenne I-80',lat:41.139,lon:-104.818,img:'https://www.wyoroad.info/highway/webcams/I80EB_LE_mm357_1.jpg',link:'https://wyoroad.info'},
-  // California — Caltrans D4 Bay Area (public)
+  // California — Caltrans real public image server (cwwp2.dot.ca.gov)
   {id:'ca001',name:'Bay Bridge Oakland',lat:37.800,lon:-122.372,img:'https://cwwp2.dot.ca.gov/data/d4/cctv/image/tvn96on80/tvn96on80.jpg',link:'https://511.org'},
   {id:'ca002',name:'Golden Gate SF',lat:37.808,lon:-122.478,img:'https://cwwp2.dot.ca.gov/data/d4/cctv/image/tvn101sf/tvn101sf.jpg',link:'https://511.org'},
   {id:'ca003',name:'LA I-10 Santa Monica Fwy',lat:34.023,lon:-118.464,img:'https://cwwp2.dot.ca.gov/data/d7/cctv/image/tvn10la/tvn10la.jpg',link:'https://511.org'},
   {id:'ca004',name:'Grapevine I-5',lat:34.831,lon:-118.902,img:'https://cwwp2.dot.ca.gov/data/d7/cctv/image/tvn5grapevine/tvn5grapevine.jpg',link:'https://511.org'},
   {id:'ca005',name:'San Diego I-8 Mission Valley',lat:32.766,lon:-117.154,img:'https://cwwp2.dot.ca.gov/data/d11/cctv/image/tvn8sd/tvn8sd.jpg',link:'https://511.org'},
-  // NOAA/NWS coastal weather webcams (public)
-  {id:'noaa001',name:'Virginia Key NOAA FL',lat:25.733,lon:-80.162,img:'https://tidesonline.nos.noaa.gov/photos/8723214.jpg',link:'https://tidesandcurrents.noaa.gov/photos/8723214'},
-  {id:'noaa002',name:'Boston Harbor NOAA',lat:42.354,lon:-71.053,img:'https://tidesonline.nos.noaa.gov/photos/8443970.jpg',link:'https://tidesandcurrents.noaa.gov/photos/8443970'},
-  {id:'noaa003',name:'San Francisco Bay NOAA',lat:37.806,lon:-122.466,img:'https://tidesonline.nos.noaa.gov/photos/9414290.jpg',link:'https://tidesandcurrents.noaa.gov/photos/9414290'},
-  // Volcano Observatory (USGS public)
+  // Colorado — CDOT real image server
+  {id:'co001',name:'Denver I-70 Genesee',lat:39.693,lon:-105.306,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_234.jpg',link:'https://cotrip.org'},
+  {id:'co002',name:'Vail Pass I-70',lat:39.559,lon:-106.213,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_190.jpg',link:'https://cotrip.org'},
+  {id:'co003',name:'Eisenhower Tunnel',lat:39.680,lon:-105.906,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_216.jpg',link:'https://cotrip.org'},
+  // Wyoming — WyoRoad real image server
+  {id:'wy001',name:'Laramie I-80',lat:41.318,lon:-105.589,img:'https://www.wyoroad.info/highway/webcams/I80EB_LE_mm333_1.jpg',link:'https://wyoroad.info'},
+  {id:'wy002',name:'Cheyenne I-80',lat:41.139,lon:-104.818,img:'https://www.wyoroad.info/highway/webcams/I80EB_LE_mm357_1.jpg',link:'https://wyoroad.info'},
+  // Volcano Observatory (USGS public captures)
   {id:'usgs001',name:'Kīlauea HVO Hawaii',lat:19.421,lon:-155.287,img:'https://volcanoes.usgs.gov/vsc/captures/kilauea/latest.jpg',link:'https://www.usgs.gov/volcanoes/kilauea'},
-  // Montana DOT — public
+  // Montana DOT real image server
   {id:'mt001',name:'Butte I-90 MT',lat:46.005,lon:-112.534,img:'https://www.mdt.mt.gov/travinfo/cameras/I90_Butte.jpg',link:'https://www.mdt.mt.gov'},
   {id:'mt002',name:'Missoula I-90 MT',lat:46.866,lon:-114.017,img:'https://www.mdt.mt.gov/travinfo/cameras/I90_Missoula.jpg',link:'https://www.mdt.mt.gov'},
-  // Idaho — ITD
-  {id:'id001',name:'Boise I-84 ID',lat:43.601,lon:-116.201,img:'https://web.idaho.gov/itd/511/cameras/I84_Boise.jpg',link:'https://511.idaho.gov'},
-  // Arizona DOT
-  {id:'az001',name:'Phoenix I-10 AZ',lat:33.449,lon:-112.074,img:'https://az511.com/cameras/I10_Phoenix.jpg',link:'https://az511.com'},
-  // New Mexico DOT
-  {id:'nm001',name:'Albuquerque I-40 NM',lat:35.084,lon:-106.651,img:'https://nmroads.com/cameras/I40_Albuquerque.jpg',link:'https://nmroads.com'},
-  // Texas — TxDOT (some public)
-  {id:'tx001',name:'Houston I-10 TX',lat:29.762,lon:-95.367,img:'https://ftp.txdot.gov/pub/txdot-info/cmd/cctv/I10_Houston.jpg',link:'https://drivetexas.org'},
-  {id:'tx002',name:'Dallas I-35E TX',lat:32.788,lon:-96.799,img:'https://ftp.txdot.gov/pub/txdot-info/cmd/cctv/I35E_Dallas.jpg',link:'https://drivetexas.org'},
-  // Midwest
-  {id:'mn001',name:'Minneapolis I-94 MN',lat:44.979,lon:-93.265,img:'https://511mn.org/cameras/I94_Minneapolis.jpg',link:'https://511mn.org'},
-  {id:'wi001',name:'Milwaukee I-94 WI',lat:43.038,lon:-87.906,img:'https://511wi.gov/cameras/I94_Milwaukee.jpg',link:'https://511wi.gov'},
-  {id:'il001',name:'Chicago I-90/94 IL',lat:41.878,lon:-87.629,img:'https://www.gettingaroundillinois.com/cameras/I90_Chicago.jpg',link:'https://www.gettingaroundillinois.com'},
-  // East Coast
-  {id:'va001',name:'Richmond I-95 VA',lat:37.540,lon:-77.436,img:'https://www.511virginia.org/cameras/I95_Richmond.jpg',link:'https://511virginia.org'},
-  {id:'nc001',name:'Charlotte I-77 NC',lat:35.227,lon:-80.843,img:'https://tims.ncdot.gov/tims/cameras/I77_Charlotte.jpg',link:'https://nctraffic.ncdot.gov'},
-  {id:'ga001',name:'Atlanta I-285 GA',lat:33.749,lon:-84.388,img:'https://ga511.com/cameras/I285_Atlanta.jpg',link:'https://ga511.com'},
-  {id:'fl001',name:'Miami I-95 FL',lat:25.774,lon:-80.193,img:'https://fl511.com/cameras/I95_Miami.jpg',link:'https://fl511.com'},
-  {id:'fl002',name:'Tampa I-275 FL',lat:27.947,lon:-82.458,img:'https://fl511.com/cameras/I275_Tampa.jpg',link:'https://fl511.com'},
-  {id:'fl003',name:'Orlando I-4 FL',lat:28.538,lon:-81.379,img:'https://fl511.com/cameras/I4_Orlando.jpg',link:'https://fl511.com'},
-  // Pennsylvania
-  {id:'pa001',name:'Philadelphia I-76 PA',lat:39.952,lon:-75.164,img:'https://www.511pa.com/cameras/I76_Philadelphia.jpg',link:'https://www.511pa.com'},
-  // New York
-  {id:'ny001',name:'New York Triborough',lat:40.776,lon:-73.929,img:'https://511ny.org/cameras/Triborough.jpg',link:'https://511ny.org'},
-  // New England
-  {id:'ma001',name:'Boston I-93 MA',lat:42.360,lon:-71.058,img:'https://www.mass511.com/cameras/I93_Boston.jpg',link:'https://mass511.com'},
-  // Pacific NW weather webcams
-  {id:'pnw001',name:'Hurricane Ridge Olympic NP',lat:47.970,lon:-123.499,img:'https://www.nps.gov/olym/learn/nature/images/Hurricane-Ridge-Webcam.jpg',link:'https://www.nps.gov/olym'},
-  {id:'pnw002',name:'Crater Lake NP OR',lat:42.944,lon:-122.109,img:'https://www.nps.gov/crla/learn/nature/images/crater-lake-webcam.jpg',link:'https://www.nps.gov/crla'},
-  // Alaska
-  {id:'ak001',name:'Anchorage AK DOT',lat:61.218,lon:-149.900,img:'https://www.511.alaska.gov/cameras/Glenn_Hwy_Anchorage.jpg',link:'https://511.alaska.gov'},
-  // Hawaii
-  {id:'hi001',name:'Honolulu H-1 HI',lat:21.307,lon:-157.858,img:'https://hidot.hawaii.gov/cameras/H1_Honolulu.jpg',link:'https://hidot.hawaii.gov'},
+  // Locations with known 511 pages but no guaranteed public image CDN — no img
+  {id:'az001',name:'Phoenix I-10 AZ',lat:33.449,lon:-112.074,link:'https://az511.com'},
+  {id:'tx001',name:'Houston I-10 TX',lat:29.762,lon:-95.367,link:'https://drivetexas.org'},
+  {id:'tx002',name:'Dallas I-35E TX',lat:32.788,lon:-96.799,link:'https://drivetexas.org'},
+  {id:'mn001',name:'Minneapolis I-94 MN',lat:44.979,lon:-93.265,link:'https://511mn.org'},
+  {id:'il001',name:'Chicago I-90/94 IL',lat:41.878,lon:-87.629,link:'https://www.gettingaroundillinois.com'},
+  {id:'ga001',name:'Atlanta I-285 GA',lat:33.749,lon:-84.388,link:'https://ga511.com'},
+  {id:'fl001',name:'Miami I-95 FL',lat:25.774,lon:-80.193,link:'https://fl511.com'},
+  {id:'fl002',name:'Tampa I-275 FL',lat:27.947,lon:-82.458,link:'https://fl511.com'},
+  {id:'fl003',name:'Orlando I-4 FL',lat:28.538,lon:-81.379,link:'https://fl511.com'},
+  {id:'pa001',name:'Philadelphia I-76 PA',lat:39.952,lon:-75.164,link:'https://www.511pa.com'},
+  {id:'ny001',name:'New York Triborough',lat:40.776,lon:-73.929,link:'https://511ny.org'},
+  {id:'ma001',name:'Boston I-93 MA',lat:42.360,lon:-71.058,link:'https://mass511.com'},
+  {id:'va001',name:'Richmond I-95 VA',lat:37.540,lon:-77.436,link:'https://511virginia.org'},
+  {id:'nc001',name:'Charlotte I-77 NC',lat:35.227,lon:-80.843,link:'https://nctraffic.ncdot.gov'},
+  {id:'noaa001',name:'Virginia Key NOAA FL',lat:25.733,lon:-80.162,link:'https://tidesandcurrents.noaa.gov/photos/8723214'},
+  {id:'noaa002',name:'Boston Harbor NOAA',lat:42.354,lon:-71.053,link:'https://tidesandcurrents.noaa.gov/photos/8443970'},
+  {id:'noaa003',name:'San Francisco Bay NOAA',lat:37.806,lon:-122.466,link:'https://tidesandcurrents.noaa.gov/photos/9414290'},
+  {id:'pnw001',name:'Hurricane Ridge Olympic NP',lat:47.970,lon:-123.499,link:'https://www.nps.gov/olym'},
+  {id:'pnw002',name:'Crater Lake NP OR',lat:42.944,lon:-122.109,link:'https://www.nps.gov/crla'},
+  {id:'ak001',name:'Anchorage AK DOT',lat:61.218,lon:-149.900,link:'https://511.alaska.gov'},
+  {id:'hi001',name:'Honolulu H-1 HI',lat:21.307,lon:-157.858,link:'https://hidot.hawaii.gov'},
 ];
 
 function _clearCams() {
@@ -14029,11 +14035,12 @@ function closeCamPopup() {
   clearInterval(_camPopupRefreshTimer);
 }
 
-// ── Show popup with live auto-refreshing preview ──────────────────
-function _showCamPopup(cam, markerEl) {
+// ── Show camera live-view panel (fixed bottom-right) ─────────────
+function _showCamPopup(cam) {
   const popup  = document.getElementById('cam-popup');
   const img    = document.getElementById('cam-popup-img');
   const ph     = document.getElementById('cam-popup-img-placeholder');
+  const phText = document.getElementById('cam-popup-ph-text');
   const nameEl = document.getElementById('cam-popup-name');
   const metaEl = document.getElementById('cam-popup-meta');
   const linkEl = document.getElementById('cam-popup-link');
@@ -14041,52 +14048,42 @@ function _showCamPopup(cam, markerEl) {
   clearInterval(_camPopupRefreshTimer);
 
   nameEl.textContent = cam.name || cam.title || 'Webcam';
-  metaEl.textContent = cam.location
+  const locStr = cam.location
     ? [cam.location.city, cam.location.region, cam.location.country].filter(Boolean).join(', ')
     : (cam.meta || '');
+  metaEl.textContent = locStr;
 
-  // Resolve best image URL
   let imgUrl = cam.img || cam.imgUrl ||
     (cam.images?.current?.preview) ||
     (cam.images?.current?.thumbnail) ||
     (cam.images?.sizes?.medium?.url) || '';
 
+  linkEl.href = cam.link || '#';
+  linkEl.textContent = '🔗 View full camera';
+
   function _loadImg() {
     img.style.display = 'none';
     ph.style.display = 'flex';
-    ph.textContent = '⏳';
-    if (!imgUrl) { ph.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>'; return; }
-    // Cache-bust so browser fetches a fresh frame
-    const bust = '?_t=' + Math.floor(Date.now() / 30000);
+    if (phText) phText.textContent = imgUrl ? 'Loading feed…' : 'No feed available';
+    if (!imgUrl) return;
+    const sep = imgUrl.includes('?') ? '&' : '?';
+    const src = imgUrl + sep + '_t=' + Math.floor(Date.now() / 30000);
     const tmp = new Image();
     tmp.onload = () => {
       img.src = tmp.src;
       img.style.display = 'block';
       ph.style.display = 'none';
     };
-    tmp.onerror = () => { ph.style.display = 'flex'; ph.textContent = '📷'; img.style.display = 'none'; };
-    tmp.src = imgUrl + (imgUrl.includes('?') ? '&_t=' : bust);
+    tmp.onerror = () => {
+      ph.style.display = 'flex';
+      if (phText) phText.textContent = 'Feed unavailable';
+      img.style.display = 'none';
+    };
+    tmp.src = src;
   }
+
   _loadImg();
-  // Refresh preview every 30 s — shows near-live feed
   _camPopupRefreshTimer = setInterval(_loadImg, 30000);
-
-  linkEl.href = cam.link || `https://windy.com/webcams/${cam.webcamId || cam.id || ''}`;
-  linkEl.textContent = '🔗 View full camera';
-
-  // Position popup near the marker
-  const mapEl  = document.getElementById('map');
-  const mapRect = mapEl.getBoundingClientRect();
-  const mRect   = markerEl ? markerEl.getBoundingClientRect() : mapRect;
-  const PW = 240, PH = 230;
-  let left = mRect.left - mapRect.left + 18;
-  let top  = mRect.top  - mapRect.top  - PH - 8;
-  if (left + PW > mapRect.width)  left = mRect.left - mapRect.left - PW - 18;
-  if (left < 4)                   left = 4;
-  if (top  < 4)                   top  = mRect.top  - mapRect.top  + 34;
-  if (top + PH > mapRect.height)  top  = mapRect.height - PH - 4;
-  popup.style.left    = left + 'px';
-  popup.style.top     = top  + 'px';
   popup.style.display = 'block';
 }
 
@@ -14118,9 +14115,9 @@ function _placeCamMarker(cam) {
 
   const marker = L.marker([lat, lng], { icon, zIndexOffset: 500 }).addTo(_camsLayer);
   marker.on('click', function(e) {
-    L.DomEvent.stopPropagation(e);
-    closeCamPopup();
-    _showCamPopup(cam, marker.getElement());
+    L.DomEvent.stop(e);
+    if (e.originalEvent) e.originalEvent.stopPropagation();
+    _showCamPopup(cam);
   });
 }
 
@@ -14272,8 +14269,14 @@ async function loadWindyCams() {
 document.addEventListener('DOMContentLoaded', () => {
   const mapEl = document.getElementById('map');
   if (mapEl) mapEl.addEventListener('click', e => {
+    // Close panel only when clicking the bare map (not a cam marker)
     if (!e.target.closest('.cam-marker')) closeCamPopup();
   });
+  // Clicks inside the fixed panel should never close it
+  document.addEventListener('click', e => {
+    const panel = document.getElementById('cam-popup');
+    if (panel && panel.contains(e.target)) e.stopPropagation();
+  }, true);
 });
 
 // ── S3 NEXRAD LEVEL 2 FILE BROWSER ──
@@ -19392,6 +19395,26 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
 </div>
 
+
+<!-- Camera Live View Panel (fixed, right-side) -->
+<div id="cam-popup">
+  <div id="cam-popup-header">
+    <div id="cam-popup-name">Loading…</div>
+    <span id="cam-popup-close" onclick="closeCamPopup()" title="Close">✕</span>
+  </div>
+  <div id="cam-popup-img-wrap">
+    <img id="cam-popup-img" src="" alt="" style="display:none;" />
+    <div id="cam-popup-img-placeholder">
+      <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#444" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+      <span id="cam-popup-ph-text">Loading feed…</span>
+    </div>
+    <div id="cam-popup-refresh-badge">↻ LIVE</div>
+  </div>
+  <div id="cam-popup-body">
+    <div id="cam-popup-meta"></div>
+    <a id="cam-popup-link" href="#" target="_blank" rel="noopener">🔗 View full camera</a>
+  </div>
+</div>
 
 </body>
 </html>
