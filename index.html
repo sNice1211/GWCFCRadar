@@ -7462,13 +7462,13 @@ function _bboxKey(b) {
   return [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].map(n => n.toFixed(1)).join(',') + '@z' + z;
 }
 
-// Station cap — always enough to fill viewport at any zoom
+// Station cap — enough to fill viewport at any zoom with dense coverage
 function _stationCapForZoom(z) {
-  if (z >= 10) return 3000;
-  if (z >= 8)  return 2000;
-  if (z >= 6)  return 1500;
-  if (z >= 4)  return 800;
-  return 400;
+  if (z >= 10) return 20000;
+  if (z >= 8)  return 15000;
+  if (z >= 6)  return 12000;
+  if (z >= 4)  return 8000;
+  return 5000;
 }
 
 // ── REAL ASOS/AWOS STATION DATABASE ──
@@ -9400,8 +9400,8 @@ async function _fetchNWSStations(bounds, cap) {
   }
 
   // ── Dynamic grid supplement: fills gaps globally with anonymous Open-Meteo points ──
-  // Spacing is zoom-adaptive so we get ~200-400 grid points regardless of viewport size
-  const gridSpacing = zoom <= 3 ? 6 : zoom <= 5 ? 2 : zoom <= 7 ? 0.75 : zoom <= 9 ? 0.3 : 0.1;
+  // Tight spacing ensures 10,000+ barbs at typical zoom levels
+  const gridSpacing = zoom <= 3 ? 1.5 : zoom <= 5 ? 0.5 : zoom <= 7 ? 0.18 : zoom <= 9 ? 0.07 : 0.03;
   // Build a set of named-station cells to avoid placing grid points right on top of them
   const namedCells = new Set(visible.map(s =>
     `${Math.round(s.lat / gridSpacing)},${Math.round(s.lon / gridSpacing)}`
@@ -9423,24 +9423,28 @@ async function _fetchNWSStations(bounds, cap) {
 
   if (!all.length) return [];
 
-  // Split into chunks of 100 (Open-Meteo limit) and fire in parallel
-  const CHUNK = 100;
+  // Split into chunks of 200 and fire in parallel batches to stay within rate limits
+  const CHUNK = 200;
   const chunks = [];
   for (let i = 0; i < all.length; i += CHUNK)
     chunks.push(all.slice(i, i + CHUNK));
 
   const OM_FIELDS = 'wind_speed_10m,wind_gusts_10m,wind_direction_10m,temperature_2m,surface_pressure';
 
-  const results = await Promise.all(chunks.map(async chunk => {
-    const latStr = chunk.map(s => s.lat.toFixed(4)).join(',');
-    const lonStr = chunk.map(s => s.lon.toFixed(4)).join(',');
+  const _fetchChunk = async (chunk, retries = 2) => {
+    const latStr = chunk.map(s => s.lat.toFixed(3)).join(',');
+    const lonStr = chunk.map(s => s.lon.toFixed(3)).join(',');
     try {
       const res = await fetch(
         `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}` +
         `&current=${OM_FIELDS}&wind_speed_unit=kmh&temperature_unit=celsius&forecast_days=1`,
-        { signal: _abortSignal(12000) }
+        { signal: _abortSignal(15000) }
       );
-      if (!res.ok) return []; // includes 429 rate-limit — silently skip this chunk
+      if (res.status === 429 && retries > 0) {
+        await new Promise(r => setTimeout(r, 800));
+        return _fetchChunk(chunk, retries - 1);
+      }
+      if (!res.ok) return [];
       const data = await res.json();
       const arr  = Array.isArray(data) ? data : [data];
       return chunk.map((s, i) => ({
@@ -9456,7 +9460,17 @@ async function _fetchNWSStations(bounds, cap) {
         }
       })).filter(s => s.obs.speedKph != null);
     } catch { return []; }
-  }));
+  };
+
+  // Run in parallel batches of 10 to avoid hammering the API
+  const BATCH = 10;
+  const results = [];
+  for (let i = 0; i < chunks.length; i += BATCH) {
+    const batch = chunks.slice(i, i + BATCH);
+    const batchResults = await Promise.all(batch.map(_fetchChunk));
+    results.push(...batchResults);
+    if (i + BATCH < chunks.length) await new Promise(r => setTimeout(r, 150));
+  }
 
   return results.flat();
 }
@@ -9640,7 +9654,7 @@ async function _fetchNDBCBuoys(bounds) {
   // Filter buoys to viewport — no zoom limit, always show all in view
   const visible = NDBC_BUOYS.filter(b =>
     b.lat >= south && b.lat <= north && b.lon >= west && b.lon <= east
-  ).slice(0, 150);
+  ).slice(0, 500);
 
   if (!visible.length) return [];
 
@@ -9688,7 +9702,7 @@ let _obsInFlight = null; // deduplicates concurrent calls for same bbox
 async function _loadObservations() {
   const bounds = map.getBounds();
   const key = _bboxKey(bounds);
-  if (Date.now() - _obsCache.t < 300000 && _obsCache.bboxKey === key) return _obsCache.obs;
+  if (Date.now() - _obsCache.t < 600000 && _obsCache.bboxKey === key) return _obsCache.obs;
 
   if (_obsInFlight && _obsInFlight.key === key) return _obsInFlight.promise;
 
@@ -9829,9 +9843,14 @@ async function loadWindBarbs() {
       if (g) g.addTo(newLayer);
     });
     if (reqId !== _windBarbReqId) return;
-    newLayer.addTo(map);
-    if (windBarbLayer) map.removeLayer(windBarbLayer);
-    windBarbLayer = newLayer;
+    // Only swap layers if the new fetch actually returned data.
+    // This prevents a failed/rate-limited fetch from wiping the existing barbs.
+    const newCount = newLayer.getLayers().length;
+    if (newCount > 0 || !windBarbLayer) {
+      newLayer.addTo(map);
+      if (windBarbLayer) map.removeLayer(windBarbLayer);
+      windBarbLayer = newLayer;
+    }
   } catch(e) { if (reqId === _windBarbReqId) console.warn('Wind barbs error:', e); }
 }
 
@@ -9849,9 +9868,13 @@ async function loadGustBarbs() {
       if (g) g.addTo(newLayer);
     });
     if (reqId !== _gustBarbReqId) return;
-    newLayer.addTo(map);
-    if (windGustBarbLayer) map.removeLayer(windGustBarbLayer);
-    windGustBarbLayer = newLayer;
+    // Guard: never wipe existing gust barbs with an empty fetch result
+    const newCount = newLayer.getLayers().length;
+    if (newCount > 0 || !windGustBarbLayer) {
+      newLayer.addTo(map);
+      if (windGustBarbLayer) map.removeLayer(windGustBarbLayer);
+      windGustBarbLayer = newLayer;
+    }
   } catch(e) { if (reqId === _gustBarbReqId) console.warn('Gust barbs error:', e); }
 }
 
