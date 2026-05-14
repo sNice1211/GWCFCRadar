@@ -14135,140 +14135,113 @@ function _loadStaticCams() {
   return added;
 }
 
-// ── Windy Webcams API v3 ─────────────────────────────────────────
-// Get free key at https://api.windy.com/ (1,000 calls/day free tier)
-// Key persisted to localStorage under 'gwcfc_windy_key'
+// ── Camera helpers — CORS proxy fallback (no API key needed) ─────
+// Direct request first; falls back to allorigins proxy (same one
+// already trusted by this app for NEXRAD S3 fetches).
 
-function lqmSaveWindyKey(val) {
-  const k = (val || '').trim();
-  if (k) localStorage.setItem('gwcfc_windy_key', k);
-  else   localStorage.removeItem('gwcfc_windy_key');
-}
-
-function _getWindyKey() {
-  return (localStorage.getItem('gwcfc_windy_key') || '').trim();
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const inp = document.getElementById('lqm-windy-key');
-  if (inp) inp.value = _getWindyKey();
-});
-
-async function _fetchWindyCams() {
-  const key = _getWindyKey();
-  if (!key) return [];
+async function _camFetch(url) {
   try {
-    const b = map.getBounds();
-    // Windy v3 bbox endpoint
-    const url = `https://api.windy.com/webcams/v3/webcams/bbox?north=${b.getNorth().toFixed(4)}&south=${b.getSouth().toFixed(4)}&east=${b.getEast().toFixed(4)}&west=${b.getWest().toFixed(4)}&limit=100&lang=en`;
-    const res = await fetch(url, {
-      headers: { 'x-windy-api-key': key },
-      signal: _abortSignal(10000)
-    });
-    if (!res.ok) {
-      if (res.status === 401 || res.status === 403)
-        showToast('📹 Invalid Windy API key — check Settings', 3500);
-      return [];
-    }
-    const data = await res.json();
-    return (data.webcams || []).map(w => ({
-      id:   'windy_' + w.webcamId,
-      name: w.title || 'Webcam',
-      lat:  parseFloat(w.location?.latitude  || 0),
-      lon:  parseFloat(w.location?.longitude || 0),
-      img:  w.images?.current?.preview || w.images?.current?.fluid || '',
-      link: w.urls?.detail || 'https://windy.com',
-      meta: [w.location?.city, w.location?.region, w.location?.country].filter(Boolean).join(', ')
-    })).filter(c => c.lat && c.lon);
-  } catch { return []; }
+    const r = await fetch(url, { signal: _abortSignal(7000) });
+    if (r.ok) return await r.json();
+  } catch {}
+  try {
+    const r = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+                          { signal: _abortSignal(12000) });
+    if (r.ok) return await r.json();
+  } catch {}
+  return null;
 }
 
-// ── Try Iowa 511 public API (free, CORS-friendly) ─────────────────
+function _normCam(c, prefix, defaultName, link) {
+  const lat = parseFloat(c.Latitude || c.latitude || c.lat || 0);
+  const lon = parseFloat(c.Longitude || c.longitude || c.lon || c.lng || 0);
+  if (!lat || !lon) return null;
+  return {
+    id:   prefix + (c.Id || c.id || c.cameraId || c.CameraId || Math.random()),
+    name: c.Name || c.name || c.Title || c.title || defaultName,
+    lat, lon,
+    img:  c.VideoOrImageUrl || c.videoOrImageUrl || c.imageUrl || c.ImageUrl ||
+          c.Url || c.url || c.snapshot || '',
+    link, meta: defaultName
+  };
+}
+
+// ── State 511 DOT fetchers ────────────────────────────────────────
 async function _fetchIowa511() {
-  try {
-    const res = await fetch(
-      'https://511ia.org/api/getcameras?lang=en',
-      { signal: _abortSignal(8000) }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const cams = Array.isArray(data) ? data : (data.cameras || []);
-    return cams.map(c => ({
-      id: 'ia_' + (c.Id || c.id || Math.random()),
-      name: c.Name || c.name || 'Iowa DOT Cam',
-      lat: parseFloat(c.Latitude || c.lat || 0),
-      lon: parseFloat(c.Longitude || c.lng || 0),
-      img: c.VideoOrImageUrl || c.imageUrl || c.Url || '',
-      link: 'https://511ia.org',
-      meta: 'Iowa DOT',
-    })).filter(c => c.lat && c.lon);
-  } catch { return []; }
+  const d = await _camFetch('https://511ia.org/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'ia_', 'Iowa DOT', 'https://511ia.org')).filter(Boolean);
 }
 
-// ── Oregon TripCheck DOT cameras (public, no API key) ─────────────
 async function _fetchOregonCams() {
-  try {
-    const res = await fetch(
-      'https://tripcheck.com/Scripts/rss.asp?output=json&type=Cameras',
-      { signal: _abortSignal(8000) }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const items = data.items || data.cameras || (Array.isArray(data) ? data : []);
-    return items.map(c => ({
-      id:   'or_' + (c.id || c.CameraId || Math.random()),
-      name: c.title || c.Name || 'Oregon DOT',
-      lat:  parseFloat(c.latitude  || c.Latitude  || 0),
-      lon:  parseFloat(c.longitude || c.Longitude || 0),
-      img:  c.imageUrl || c.ImageUrl || c.url || '',
-      link: 'https://tripcheck.com',
-      meta: 'Oregon DOT'
-    })).filter(c => c.lat && c.lon);
-  } catch { return []; }
+  const d = await _camFetch('https://tripcheck.com/Scripts/rss.asp?output=json&type=Cameras');
+  if (!d) return [];
+  return (d.items || d.cameras || (Array.isArray(d) ? d : []))
+    .map(c => _normCam(c, 'or_', 'Oregon DOT', 'https://tripcheck.com')).filter(Boolean);
 }
 
-// ── Nevada NVRoads cameras (public, no key) ──────────────────────
 async function _fetchNevadaCams() {
-  try {
-    const res = await fetch(
-      'https://www.nvroads.com/api/v2/cameras?lang=en',
-      { signal: _abortSignal(8000) }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const items = data.cameras || data.data || (Array.isArray(data) ? data : []);
-    return items.map(c => ({
-      id:   'nv_' + (c.Id || c.id || Math.random()),
-      name: c.Name || c.name || 'Nevada DOT',
-      lat:  parseFloat(c.Latitude || c.latitude || 0),
-      lon:  parseFloat(c.Longitude || c.longitude || 0),
-      img:  c.VideoOrImageUrl || c.imageUrl || c.Url || '',
-      link: 'https://nvroads.com',
-      meta: 'Nevada DOT'
-    })).filter(c => c.lat && c.lon);
-  } catch { return []; }
+  const d = await _camFetch('https://www.nvroads.com/api/v2/cameras?lang=en');
+  if (!d) return [];
+  return (d.cameras || d.data || (Array.isArray(d) ? d : []))
+    .map(c => _normCam(c, 'nv_', 'Nevada DOT', 'https://nvroads.com')).filter(Boolean);
 }
 
-// ── Minnesota 511 cameras (public, no key) ────────────────────────
 async function _fetchMinnesotaCams() {
-  try {
-    const res = await fetch(
-      'https://511mn.org/api/getcameras?lang=en',
-      { signal: _abortSignal(8000) }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const items = Array.isArray(data) ? data : (data.cameras || []);
-    return items.map(c => ({
-      id:   'mn_' + (c.Id || c.id || Math.random()),
-      name: c.Name || c.name || 'MnDOT',
-      lat:  parseFloat(c.Latitude || c.latitude || 0),
-      lon:  parseFloat(c.Longitude || c.longitude || 0),
-      img:  c.VideoOrImageUrl || c.imageUrl || '',
-      link: 'https://511mn.org',
-      meta: 'MnDOT'
-    })).filter(c => c.lat && c.lon);
-  } catch { return []; }
+  const d = await _camFetch('https://511mn.org/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'mn_', 'MnDOT', 'https://511mn.org')).filter(Boolean);
+}
+
+async function _fetchWisconsinCams() {
+  const d = await _camFetch('https://511wi.gov/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'wi_', 'WisDOT', 'https://511wi.gov')).filter(Boolean);
+}
+
+async function _fetchPACams() {
+  const d = await _camFetch('https://511pa.com/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'pa_', 'PennDOT', 'https://511pa.com')).filter(Boolean);
+}
+
+async function _fetchVirginiaCams() {
+  const d = await _camFetch('https://www.511virginia.org/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'va_', 'VDOT', 'https://511virginia.org')).filter(Boolean);
+}
+
+async function _fetchGeorgiaCams() {
+  const d = await _camFetch('https://ga511.com/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'ga_', 'GDOT', 'https://ga511.com')).filter(Boolean);
+}
+
+async function _fetchFloridaCams() {
+  const d = await _camFetch('https://fl511.com/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'fl_', 'FDOT', 'https://fl511.com')).filter(Boolean);
+}
+
+async function _fetchNJCams() {
+  const d = await _camFetch('https://511nj.org/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'nj_', 'NJDOT', 'https://511nj.org')).filter(Boolean);
+}
+
+async function _fetchArizonaCams() {
+  const d = await _camFetch('https://az511.com/api/getcameras?lang=en');
+  if (!d) return [];
+  return (Array.isArray(d) ? d : (d.cameras || []))
+    .map(c => _normCam(c, 'az_', 'ADOT', 'https://az511.com')).filter(Boolean);
 }
 
 async function _fetchCamsForViewport() {
@@ -14280,20 +14253,18 @@ async function _fetchCamsForViewport() {
   // 1. Static DB (instant, shown immediately)
   const staticAdded = _loadStaticCams();
 
-  // 2. Windy API (primary — requires free key from api.windy.com)
-  const windyKey = _getWindyKey();
-  let windyCams = [];
-  if (windyKey) {
-    windyCams = await _fetchWindyCams();
-  } else if (staticAdded === 0) {
-    showToast('📹 Add Windy API key in ⚙️ Settings for live cameras', 5000);
-  }
-
-  // 3. Free public DOT APIs as fallback (no key needed)
-  const [iowaCams, oregonCams, nevadaCams, mnCams] = await Promise.all([
-    _fetchIowa511(), _fetchOregonCams(), _fetchNevadaCams(), _fetchMinnesotaCams()
+  // 2. State 511 DOT APIs — fetched via direct request + allorigins proxy fallback
+  //    Runs all states in parallel; each call tries direct then proxy automatically
+  const [iowaCams, oregonCams, nevadaCams, mnCams,
+         wiCams, paCams, vaCams, gaCams, flCams, njCams, azCams] = await Promise.all([
+    _fetchIowa511(), _fetchOregonCams(), _fetchNevadaCams(), _fetchMinnesotaCams(),
+    _fetchWisconsinCams(), _fetchPACams(), _fetchVirginiaCams(), _fetchGeorgiaCams(),
+    _fetchFloridaCams(), _fetchNJCams(), _fetchArizonaCams()
   ]);
-  const allDynamic = [...windyCams, ...iowaCams, ...oregonCams, ...nevadaCams, ...mnCams];
+  const allDynamic = [
+    ...iowaCams, ...oregonCams, ...nevadaCams, ...mnCams,
+    ...wiCams, ...paCams, ...vaCams, ...gaCams, ...flCams, ...njCams, ...azCams
+  ];
 
   let dynAdded = 0;
   allDynamic.forEach(cam => {
@@ -14304,12 +14275,8 @@ async function _fetchCamsForViewport() {
   });
 
   const total = staticAdded + dynAdded;
-  if (windyKey && windyCams.length > 0)
-    showToast(`📹 ${total} cameras loaded (${windyCams.length} live)`, 1800);
-  else if (total > 0)
-    showToast(`📹 ${total} camera${total > 1 ? 's' : ''} loaded`, 1500);
-  else
-    showToast('📹 No cameras in this area', 2000);
+  if (total > 0) showToast(`📹 ${total} camera${total > 1 ? 's' : ''} loaded`, 1500);
+  else           showToast('📹 No cameras in this area', 2000);
 
   _camsFetching = false;
 }
@@ -17438,25 +17405,6 @@ function selectProduct(p) {
       <span id="lqm-alertopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">65%</span>
     </div>
   </div>
-  <!-- ─── API KEYS ─── -->
-  <div class="lqm-settings-category">API KEYS</div>
-  <div class="lqm-settings-row" style="flex-direction:column;align-items:stretch;gap:5px;">
-    <span class="lqm-settings-lbl" style="margin-bottom:2px;">Windy Webcams API Key</span>
-    <div style="display:flex;gap:6px;">
-      <input type="text" id="lqm-windy-key" placeholder="Paste key from api.windy.com"
-        style="flex:1;background:rgba(0,0,0,0.4);border:1px solid rgba(0,200,200,0.25);border-radius:5px;
-               padding:4px 7px;color:#fff;font-family:var(--mono);font-size:9px;outline:none;"
-        oninput="lqmSaveWindyKey(this.value)">
-      <button onclick="window.open('https://api.windy.com/','_blank')"
-        style="background:rgba(0,200,200,0.12);border:1px solid rgba(0,200,200,0.3);border-radius:5px;
-               color:var(--accent2);font-family:var(--display);font-size:9px;padding:3px 8px;cursor:pointer;white-space:nowrap;">
-        Get key →
-      </button>
-    </div>
-    <div style="font-family:var(--mono);font-size:8px;color:var(--muted);line-height:1.5;">
-      Free tier · 1,000 calls/day · Powers live webcam layer
-    </div>
-  </div>
   <!-- ─── ABOUT ─── -->
   <div class="lqm-settings-category">ABOUT</div>
   <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0;letter-spacing:1px;line-height:1.7;">
@@ -17464,7 +17412,7 @@ function selectProduct(p) {
     Data: NOAA · NWS · SPC · NHC<br>
     ADS-B: OpenSky Network (free)<br>
     Tiles: MapTiler · OpenStreetMap<br>
-    Webcams: Windy API (optional)
+    Webcams: State DOT 511 Networks
   </div>
 </div>
 
