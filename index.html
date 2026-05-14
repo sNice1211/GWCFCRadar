@@ -18974,6 +18974,70 @@ document.addEventListener('DOMContentLoaded', () => {
   _makeDraggable(document.getElementById('s3-panel'),            document.getElementById('s3-drag'));
 });
 
+// ── PLAYSTATION / GAMEPAD CONTROLLER SUPPORT ──────────────────────
+// PlayStation button indices (Standard Gamepad API mapping):
+//   4 = L1  (zoom out)   5 = R1  (zoom in)
+//   6 = L2  (zoom out fast)  7 = R2  (zoom in fast)
+//  12 = D-pad Up   13 = D-pad Down  14 = D-pad Left  15 = D-pad Right
+//  axes[0]/[1] = left stick X/Y  (pan)
+(function() {
+  let _gpLoop = null;
+  const _gpState = {};   // tracks which buttons are held
+  const DEADZONE = 0.18; // ignore stick drift below this threshold
+
+  function _gpPoll() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (let p = 0; p < pads.length; p++) {
+      const pad = pads[p];
+      if (!pad) continue;
+
+      const btn = (i) => pad.buttons[i]?.pressed;
+
+      // ── ZOOM ──
+      // L1 / L2 = zoom out  |  R1 / R2 = zoom in
+      // Hold for continuous zoom; L2/R2 are faster
+      if (btn(4) && !_gpState[4]) { map.zoomOut(1);      _gpState[4] = true; }
+      if (!btn(4)) _gpState[4] = false;
+      if (btn(5) && !_gpState[5]) { map.zoomIn(1);       _gpState[5] = true; }
+      if (!btn(5)) _gpState[5] = false;
+      if (btn(6) && !_gpState[6]) { map.zoomOut(1);      _gpState[6] = true; }
+      if (!btn(6)) _gpState[6] = false;
+      if (btn(7) && !_gpState[7]) { map.zoomIn(1);       _gpState[7] = true; }
+      if (!btn(7)) _gpState[7] = false;
+
+      // ── D-PAD PAN ──
+      const dpadSpeed = 80;
+      if (btn(12)) map.panBy([0,  -dpadSpeed], { animate: false });
+      if (btn(13)) map.panBy([0,   dpadSpeed], { animate: false });
+      if (btn(14)) map.panBy([-dpadSpeed, 0],  { animate: false });
+      if (btn(15)) map.panBy([ dpadSpeed, 0],  { animate: false });
+
+      // ── LEFT STICK PAN ──
+      const ax = pad.axes[0] ?? 0;
+      const ay = pad.axes[1] ?? 0;
+      if (Math.abs(ax) > DEADZONE || Math.abs(ay) > DEADZONE) {
+        const speed = 6;
+        map.panBy([ax * speed, ay * speed], { animate: false });
+      }
+    }
+    _gpLoop = requestAnimationFrame(_gpPoll);
+  }
+
+  window.addEventListener('gamepadconnected', (e) => {
+    console.log('Gamepad connected:', e.gamepad.id);
+    if (!_gpLoop) _gpLoop = requestAnimationFrame(_gpPoll);
+  });
+
+  window.addEventListener('gamepaddisconnected', () => {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    const anyConnected = Array.from(pads).some(Boolean);
+    if (!anyConnected && _gpLoop) {
+      cancelAnimationFrame(_gpLoop);
+      _gpLoop = null;
+    }
+  });
+})();
+
 </script>
     </div><!-- /tut-modal-body -->
     </div><!-- /tut-scroll-area -->
