@@ -14060,12 +14060,11 @@ function _showCamPopup(cam) {
   linkEl.href        = cam.link || '#';
   linkEl.textContent = '🔗 View full camera';
 
-  // ── YouTube live embed ───────────────────────────────────────────
-  if (cam.type === 'youtube' && cam.ytCh) {
+  // ── EarthCam via YouTube live embed ─────────────────────────────
+  if (cam.type === 'earthcam' && cam.ytVid) {
     ph.style.display = 'none';
     if (badge) badge.textContent = '▶ LIVE';
-    const ytSrc = `https://www.youtube.com/embed/live_stream?channel=${cam.ytCh}&autoplay=1&mute=1&controls=1`;
-    iframe.src = ytSrc;
+    iframe.src = `https://www.youtube.com/embed/${cam.ytVid}?autoplay=1&mute=1&controls=1&rel=0`;
     iframe.style.display = 'block';
     popup.style.display = 'block';
     return;
@@ -14101,17 +14100,25 @@ function _placeCamMarker(cam) {
   const thumbUrl = cam.img || cam.imgUrl ||
     (cam.images?.current?.thumbnail) || '';
 
-  // Marker: camera emoji with mini-thumbnail tooltip on hover
+  const isVideo = cam.type === 'earthcam';
   const thumbStyle = thumbUrl
     ? `background-image:url('${thumbUrl}');background-size:cover;background-position:center;`
-    : 'background:rgba(0,180,180,0.9);';
-  const shortName = (cam.name || cam.title || 'Cam').slice(0, 18);
+    : isVideo
+      ? 'background:rgba(200,30,30,0.92);'   // red = EarthCam live video
+      : 'background:rgba(0,150,180,0.90);';  // teal = PhenoCam snapshot
+  const shortName = (cam.name || cam.title || 'Cam').replace('EarthCam: ', '').slice(0, 18);
+
+  const innerIcon = thumbUrl
+    ? ''
+    : isVideo
+      ? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>'
+      : '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>';
 
   const icon = L.divIcon({
     className: '',
     html: `<div class="cam-marker" title="${(cam.name||cam.title||'Webcam').replace(/"/g,"'")}"
              style="${thumbStyle}">
-             ${thumbUrl ? '' : '<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"white\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M23 7l-7 5 7 5V7z\"/><rect x=\"1\" y=\"5\" width=\"15\" height=\"14\" rx=\"2\"/></svg>'}
+             ${innerIcon}
              <div class="cam-marker-label">${shortName}</div>
            </div>`,
     iconSize:   [38, 38],
@@ -14167,35 +14174,28 @@ async function _fetchPhenoCams() {
   } catch { return []; }
 }
 
-// ── Curated YouTube 24/7 live streams ─────────────────────────────
-// Each entry embeds via youtube.com/embed/live_stream?channel={id}
-// which auto-resolves to the channel's current live video.
-// No API key required. Muted autoplay for instant preview.
+// ── EarthCam via YouTube — verified live stream video IDs ──────────
+// All video IDs sourced from EarthCam's official YouTube channel
+// (UC6qrG3W8SMK0jior2olka3g / @earthcam) via web search results.
+// Embed format: youtube.com/embed/{videoId}?autoplay=1&mute=1
+// No API key required. Falls back to "stream ended" if EarthCam
+// takes a camera offline, which is visible feedback to the user.
 
-const CAM_YOUTUBE_DB = [
-  // ── United States ──────────────────────────────────
-  {id:'yt_timessq',  name:'Times Square NYC',          lat:40.7580,lon:-73.9855, ytCh:'UCgVHlSHuBifzRTvuuqBmXIA', link:'https://www.youtube.com/@earthcam', meta:'New York City'},
-  {id:'yt_nashvl',   name:'Nashville Honky Tonk Row',  lat:36.1591,lon:-86.7785, ytCh:'UCRAbBrCOv1PZCS4c9sqwX8Q', link:'https://www.youtube.com/@earthcam', meta:'Nashville, TN'},
-  {id:'yt_niagaraf', name:'Niagara Falls',             lat:43.0896,lon:-79.0849, ytCh:'UCqOXFfOjqXfZCKFZnVXRCPw', link:'https://www.youtube.com/@earthcam', meta:'Niagara Falls, NY'},
-  {id:'yt_jacksonwy',name:'Jackson Hole Mountain',     lat:43.5875,lon:-110.8281,ytCh:'UCVfeHnbRrTvIeYsLiK1BGUQ', link:'https://www.youtube.com/@jacksonhole', meta:'Jackson, WY'},
-  {id:'yt_sfbay',    name:'San Francisco Bay',         lat:37.8044,lon:-122.4194,ytCh:'UCMnCEPLv2r1bPCn2CoQ2BKQ', link:'https://www.youtube.com/@sfbayferry', meta:'San Francisco, CA'},
-  {id:'yt_miami',    name:'Miami Beach Ocean Drive',   lat:25.7817,lon:-80.1300, ytCh:'UCkWkEDwmUiuCMz5KShKbTqA', link:'https://www.youtube.com/@earthcam', meta:'Miami Beach, FL'},
-  {id:'yt_dc',       name:'Washington DC Capitol',     lat:38.8897,lon:-77.0090, ytCh:'UCwFEjtz9pk4gm5GnfFBNdig', link:'https://www.youtube.com/@dccam', meta:'Washington, DC'},
-  {id:'yt_chicago',  name:'Chicago Riverwalk',         lat:41.8827,lon:-87.6233, ytCh:'UCfvEhPp9s6rB9MIHXjRSCXg', link:'https://www.youtube.com/@earthcam', meta:'Chicago, IL'},
-  {id:'yt_nola',     name:'New Orleans Bourbon St',    lat:29.9590,lon:-90.0664, ytCh:'UCFtRLSxWlrQVpH36pZ4n-Xw', link:'https://www.youtube.com/@bourboncam', meta:'New Orleans, LA'},
-  {id:'yt_lasvegas', name:'Las Vegas Strip',           lat:36.1147,lon:-115.1728,ytCh:'UCVFz0V1UQ5SfLGBwwHLN6Tg', link:'https://www.youtube.com/@vegascam', meta:'Las Vegas, NV'},
-  {id:'yt_honolulu', name:'Waikiki Beach Honolulu',    lat:21.2793,lon:-157.8322,ytCh:'UCqxhINu5b0RgSQJnIQYuMKg', link:'https://www.youtube.com/@waikiki', meta:'Honolulu, HI'},
-  // ── International ──────────────────────────────────
-  {id:'yt_london',   name:'London Big Ben',            lat:51.5007,lon:-0.1246,  ytCh:'UCSfI5M6qCQjyCDmscMuZFAg', link:'https://www.youtube.com/@londoncam', meta:'London, UK'},
-  {id:'yt_paris',    name:'Paris Eiffel Tower',        lat:48.8584,lon:2.2945,   ytCh:'UCR7HQS3CcQSh8LuSO85yK_Q', link:'https://www.youtube.com/@pariscam', meta:'Paris, France'},
-  {id:'yt_tokyo',    name:'Tokyo Shibuya Crossing',    lat:35.6598,lon:139.7004, ytCh:'UCZbFwFM4fGq3Y7oJZCCEkbg', link:'https://www.youtube.com/@shibuyacam', meta:'Tokyo, Japan'},
-  {id:'yt_sydney',   name:'Sydney Harbour Bridge',     lat:-33.8523,lon:151.2108,ytCh:'UC3kpOwAAlxb_S6tMp_KZLOQ', link:'https://www.youtube.com/@sydneycam', meta:'Sydney, Australia'},
-  {id:'yt_nyc2',     name:'NYC High Line Park',        lat:40.7480,lon:-74.0048, ytCh:'UC0g3MEBH2bYFPd7Tz7RFUGA', link:'https://www.youtube.com/@earthcam', meta:'New York City'},
-  {id:'yt_seattle',  name:'Seattle Space Needle Area', lat:47.6205,lon:-122.3493,ytCh:'UCn-K7GIs62ENvdQe6ZZasZA', link:'https://www.youtube.com/@earthcam', meta:'Seattle, WA'},
+const CAM_EARTHCAM_DB = [
+  // Video IDs verified from search engine results pointing to official EarthCam YouTube titles
+  {id:'ec_timessq',  name:'EarthCam: Times Square NYC 4K',   lat:40.7580, lon:-73.9855, ytVid:'rnXIjl_Rzy4', link:'https://www.youtube.com/watch?v=rnXIjl_Rzy4', meta:'New York City · EarthCam'},
+  {id:'ec_niagara',  name:'EarthCam: Niagara Falls',         lat:43.0896, lon:-79.0849, ytVid:'qx7gry390YA', link:'https://www.youtube.com/watch?v=qx7gry390YA', meta:'Niagara Falls, NY · EarthCam'},
+  {id:'ec_nashvl',   name:'EarthCam: Nashville Cam',         lat:36.1591, lon:-86.7785, ytVid:'MrSqv7yJWIE', link:'https://www.youtube.com/watch?v=MrSqv7yJWIE', meta:'Nashville, TN · EarthCam'},
+  {id:'ec_wrigley',  name:'EarthCam: Wrigley Field Chicago', lat:41.9484, lon:-87.6553, ytVid:'LaGkqNGhZTk', link:'https://www.youtube.com/watch?v=LaGkqNGhZTk', meta:'Chicago, IL · EarthCam'},
+  {id:'ec_lasvegas', name:'EarthCam: Las Vegas Raiders Stadium', lat:36.0909, lon:-115.1833, ytVid:'_rmUXOHSf0w', link:'https://www.youtube.com/watch?v=_rmUXOHSf0w', meta:'Las Vegas, NV · EarthCam'},
+  {id:'ec_nola1',    name:'EarthCam: New Orleans Street',    lat:29.9590, lon:-90.0664, ytVid:'Ksrleaxxxhw', link:'https://www.youtube.com/watch?v=Ksrleaxxxhw', meta:'New Orleans, LA · EarthCam'},
+  {id:'ec_nola2',    name:'EarthCam: New Orleans Balcony',   lat:29.9597, lon:-90.0661, ytVid:'C32EiZiQPkQ', link:'https://www.youtube.com/watch?v=C32EiZiQPkQ', meta:'New Orleans, LA · EarthCam'},
+  {id:'ec_sandiego', name:'EarthCam: San Diego Bay',         lat:32.7201, lon:-117.1686, ytVid:'277D0mDXTBE', link:'https://www.youtube.com/watch?v=277D0mDXTBE', meta:'San Diego, CA · EarthCam'},
+  {id:'ec_dublin',   name:'EarthCam: Temple Bar Dublin',     lat:53.3454, lon:-6.2672,  ytVid:'fXnFs9Op4HY', link:'https://www.youtube.com/watch?v=fXnFs9Op4HY', meta:'Dublin, Ireland · EarthCam'},
 ];
 
-async function _fetchYouTubeCams() {
-  return CAM_YOUTUBE_DB.map(c => ({ ...c, type: 'youtube' }));
+async function _fetchEarthCamStreams() {
+  return CAM_EARTHCAM_DB.map(c => ({ ...c, type: 'earthcam' }));
 }
 
 async function _fetchCamsForViewport() {
@@ -14207,16 +14207,16 @@ async function _fetchCamsForViewport() {
   // 1. Static DB (instant)
   const staticAdded = _loadStaticCams();
 
-  // 2. PhenoCam + YouTube in parallel
-  const [phenoCams, ytCams] = await Promise.all([
-    _fetchPhenoCams(), _fetchYouTubeCams()
+  // 2. PhenoCam (viewport-filtered) + EarthCam streams (global) in parallel
+  const [phenoCams, ecCams] = await Promise.all([
+    _fetchPhenoCams(), _fetchEarthCamStreams()
   ]);
 
-  // Filter PhenoCam to current viewport
+  // Filter PhenoCam to current viewport; EarthCam streams placed globally
   const b = map.getBounds();
   const filtered = phenoCams.filter(c => b.contains([c.lat, c.lon]));
 
-  const allDynamic = [...filtered, ...ytCams];
+  const allDynamic = [...filtered, ...ecCams];
   let dynAdded = 0;
   allDynamic.forEach(cam => {
     if (_camsSeenIds.has(cam.id)) return;
@@ -19391,7 +19391,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#444" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
       <span id="cam-popup-ph-text">Loading feed…</span>
     </div>
-    <div id="cam-popup-refresh-badge" id="cam-popup-live-badge">▶ LIVE</div>
+    <div id="cam-popup-refresh-badge">▶ LIVE</div>
   </div>
   <div id="cam-popup-body">
     <div id="cam-popup-meta"></div>
