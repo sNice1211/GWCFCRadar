@@ -9835,8 +9835,10 @@ function _initWindCanvas(mode) {
 function _resizeWindCanvas(mode) {
   const el = document.getElementById('map');
   const w = el.offsetWidth, h = el.offsetHeight;
+  if (!w || !h) return; // skip if map not yet laid out
   const c = mode === 'gust' ? _gustCanvas : _windCanvas;
   if (!c) return;
+  if (c.width === w && c.height === h) return; // no change — skip (avoids clearing canvas on every move)
   c.width = w; c.height = h;
   c.style.width = w + 'px'; c.style.height = h + 'px';
 }
@@ -9870,6 +9872,7 @@ function _drawWindCanvas(mode) {
     if (kph == null) return;
     const pt = map.latLngToContainerPoint([s.lat, s.lon]);
     const x = pt.x, y = pt.y;
+    if (!isFinite(x) || !isFinite(y)) return;
     if (x < -40 || x > canvas.width + 40 || y < -40 || y > canvas.height + 40) return;
 
     const [r, g, b] = _windColor(kph);
@@ -14629,57 +14632,6 @@ async function _fetchWSDOTCams() {
   } catch(e) { return []; }
 }
 
-// ── Caltrans (California, all 12 districts) ───────────────────────
-async function _fetchCaltransCams(bounds) {
-  const districts = [1,2,3,4,5,6,7,8,9,10,11,12];
-  const s=bounds.getSouth(), n=bounds.getNorth(), w=bounds.getWest(), e=bounds.getEast();
-  const results = await Promise.allSettled(districts.map(d =>
-    fetch(`https://cwwp2.dot.ca.gov/data/d${d}/cctv/cctv.json`, { signal: _abortSignal(10000) })
-      .then(r => r.ok ? r.json() : { data:[] })
-      .then(j => (j.data || j.Data || []))
-      .catch(() => [])
-  ));
-  const cams = [];
-  results.forEach(r => {
-    if (r.status !== 'fulfilled') return;
-    r.value.forEach(c => {
-      const lat = parseFloat(c.location?.latitude  ?? c.lat ?? 0);
-      const lon = parseFloat(c.location?.longitude ?? c.lon ?? 0);
-      if (!lat || !lon) return;
-      if (lat<s||lat>n||lon<w||lon>e) return;
-      const name = c.location?.locationName || c.name || 'Caltrans Camera';
-      const img  = c.imageData?.static || c.imgUrl || '';
-      if (!img || CAM_URL_BLOCKLIST.has(img)) return;
-      cams.push({ id:'ca_'+c.cctv_id||name, name:name.slice(0,60),
-        lat, lon, img, link:'https://quickmap.dot.ca.gov/', meta:'Traffic · Caltrans', type:'snapshot' });
-    });
-  });
-  return cams;
-}
-
-// ── Oregon TripCheck ──────────────────────────────────────────────
-async function _fetchOregonCams(bounds) {
-  try {
-    const res = await fetch(
-      'https://tripcheck.com/Page.aspx?action=cameraList&format=json',
-      { signal: _abortSignal(10000) }
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const s=bounds.getSouth(), n=bounds.getNorth(), w=bounds.getWest(), e=bounds.getEast();
-    return (data.cameras||data||[]).filter(c => {
-      const lat=parseFloat(c.lat||0), lon=parseFloat(c.lng||c.lon||0);
-      return lat>=s&&lat<=n&&lon>=w&&lon<=e;
-    }).map(c => {
-      const img = c.imageUrl||c.snapShotURL||'';
-      if (!img || CAM_URL_BLOCKLIST.has(img)) return null;
-      return { id:'or_'+c.cameraId, name:(c.title||'OR Camera').slice(0,60),
-        lat:parseFloat(c.lat), lon:parseFloat(c.lng||c.lon),
-        img, link:'https://tripcheck.com', meta:'Traffic · Oregon DOT', type:'snapshot' };
-    }).filter(Boolean);
-  } catch(e) { return []; }
-}
-
 async function _fetchEarthCamStreams() {
   return CAM_EARTHCAM_DB.map(c => ({ ...c, type: 'earthcam' }));
 }
@@ -14692,15 +14644,13 @@ async function _fetchCamsForViewport() {
 
   const bounds = map.getBounds();
 
-  // EarthCam loads globally; DOT cameras filtered to viewport
-  const [ecCams, wsdotCams, caltransCams, oregonCams] = await Promise.all([
+  // EarthCam loads globally; WSDOT filtered by viewport
+  const [ecCams, wsdotCams] = await Promise.all([
     _fetchEarthCamStreams(),
     _fetchWSDOTCams(),
-    _fetchCaltransCams(bounds),
-    _fetchOregonCams(bounds),
   ]);
 
-  const allCams = [...ecCams, ...wsdotCams, ...caltransCams, ...oregonCams];
+  const allCams = [...ecCams, ...wsdotCams];
   let added = 0;
   allCams.forEach(cam => {
     if (_camsSeenIds.has(cam.id)) return;
