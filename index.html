@@ -7663,22 +7663,15 @@ async function loadWindBarbs() {
   _initWindCanvas('regular');
   const reqId = ++_windBarbReqId;
   try {
-    const wxg = await _loadWxGrid();
+    const stations = await _getMetarWindData();
     if (reqId !== _windBarbReqId) return;
-    const valid = _wxGridToBarbs(wxg.pts)
-      .filter(s => s.obs.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (!valid.length) { showToast('⚠️ Wind: no data', 2500); return; }
+    const valid = stations.filter(s => s.obs.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!valid.length) { showToast('⚠️ Wind: no station data', 2500); return; }
     _windBarbData = valid;
     _drawWindCanvas('regular');
   } catch(e) {
     if (reqId !== _windBarbReqId) return;
-    const msg = e.message || '';
-    if (msg.includes('429') || msg.includes('rate')) {
-      showToast('⏳ Wind: rate limited — retrying in 60s', 4000);
-      setTimeout(() => { if (windBarbActive) { _wxGrid.time = 0; loadWindBarbs(); } }, 60000);
-    } else {
-      showToast('⚠️ Wind: ' + msg, 3500);
-    }
+    showToast('⚠️ Wind: ' + (e.message || 'error'), 3500);
     console.warn('[loadWindBarbs]', e);
   }
 }
@@ -7688,15 +7681,18 @@ async function loadGustBarbs() {
   _initWindCanvas('gust');
   const reqId = ++_gustBarbReqId;
   try {
-    const wxg = await _loadWxGrid();
+    const stations = await _getMetarWindData();
     if (reqId !== _gustBarbReqId) return;
-    const valid = _wxGridToBarbs(wxg.pts)
-      .filter(s => s.obs.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    // Fall back to regular wind speed when no gust readings in the data
+    const valid = stations
+      .filter(s => (s.obs.gustKph ?? s.obs.speedKph) != null && _ptInPolyUnion(s.lat, s.lon))
+      .map(s => s.obs.gustKph != null ? s : { ...s, obs: { ...s.obs, gustKph: s.obs.speedKph } });
     if (!valid.length) { showToast('⚠️ Gusts: no data', 2500); return; }
     _gustBarbData = valid;
     _drawWindCanvas('gust');
   } catch(e) {
     if (reqId !== _gustBarbReqId) return;
+    showToast('⚠️ Gusts: ' + (e.message || 'error'), 3500);
     console.warn('[loadGustBarbs]', e);
   }
 }
@@ -14932,6 +14928,46 @@ async function _getMetarStations() {
   _metarStationsTime = now;
   _cityTempCache.length = 0; // expire city cache so new station data is picked up
   return out;
+}
+
+// ── METAR wind data cache — same ArcGIS endpoint, shared by wind barbs ──
+let _metarWindData = null, _metarWindTime = 0, _metarWindFetch = null;
+const _METAR_WIND_TTL = 10 * 60 * 1000; // 10 min
+
+async function _getMetarWindData() {
+  if (_metarWindData && Date.now() - _metarWindTime < _METAR_WIND_TTL) return _metarWindData;
+  if (_metarWindFetch) return _metarWindFetch;
+  _metarWindFetch = (async () => {
+    try {
+      const url =
+        'https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/' +
+        'NOAA_METAR_current_wind_speed_direction_v1/FeatureServer/0/query' +
+        '?where=1%3D1&outFields=WIND_SPEED,WIND_DIRECT,WIND_GUST,TEMP&f=geojson&resultRecordCount=9999';
+      const r = await fetch(url, { signal: _abortSignal(20000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const js = await r.json();
+      const out = [];
+      (js.features || []).forEach(f => {
+        const p = f.properties || {};
+        const c = f.geometry?.coordinates;
+        if (!c || p.WIND_SPEED == null) return;
+        out.push({
+          lat: c[1], lon: c[0],
+          obs: {
+            speedKph: p.WIND_SPEED * 1.852,
+            gustKph:  (typeof p.WIND_GUST === 'number' && p.WIND_GUST > 0) ? p.WIND_GUST * 1.852 : null,
+            dirDeg:   typeof p.WIND_DIRECT === 'number' ? p.WIND_DIRECT : null,
+            tempC:    p.TEMP != null ? (p.TEMP - 32) * 5 / 9 : null,
+            pressurePa: null, time: new Date().toISOString()
+          }
+        });
+      });
+      _metarWindData = out;
+      _metarWindTime = Date.now();
+      return out;
+    } finally { _metarWindFetch = null; }
+  })();
+  return _metarWindFetch;
 }
 
 // Fast nearest-station lookup (equirectangular approx, no trig in the hot loop)
