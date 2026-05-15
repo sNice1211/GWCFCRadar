@@ -10041,69 +10041,63 @@ async function loadWindBarbs() {
   if (!windBarbActive) return;
   const reqId = ++_windBarbReqId;
   _initWindCanvas('regular');
-  try {
-    // Phase 0 — global pre-fetch: 0ms if page loaded >500ms ago, ≤500ms otherwise
-    if (_windPrefetchData === null) { _startWindPrefetch(); await _windPrefetchPromise; }
-    if (reqId !== _windBarbReqId) return;
-    if (_windPrefetchData && _windPrefetchData.length > 0) {
-      _windBarbData = _windPrefetchData.filter(s => s.obs.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-      _drawWindCanvas('regular');
-    }
+  _windBarbData = [];
 
-    // Phase 1 — viewport-specific 200 pts (land + ocean), single call ~300ms
-    const bounds = map.getBounds();
-    const vp = await _fetchWindViewport(bounds);
-    if (reqId !== _windBarbReqId) return;
-    const vpF = vp.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (vpF.length > 0) { _windBarbData = vpF; _drawWindCanvas('regular'); }
+  const bounds = map.getBounds();
 
-    // Phase 2 — ASOS + dense viewport grid ~800 pts
-    const coarse = await _fetchNWSStations(bounds, 800);
+  // show(): merge or replace _windBarbData, then redraw
+  const show = (pts, replace) => {
     if (reqId !== _windBarbReqId) return;
-    const coarseF = coarse.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (coarseF.length > 0) { _windBarbData = coarseF; _drawWindCanvas('regular'); }
+    const f = pts.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!f.length) return;
+    _windBarbData = replace ? f : [..._windBarbData, ...f];
+    _drawWindCanvas('regular');
+  };
 
-    // Phase 3 — full density (ASOS + ocean buoys)
-    const full = await _loadObservations();
-    if (reqId !== _windBarbReqId) return;
-    const filtered = full.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (filtered.length > 0 || _windBarbData.length === 0) {
-      _windBarbData = filtered; _drawWindCanvas('regular');
-    }
-  } catch(e) { if (reqId === _windBarbReqId) console.warn('Wind barbs error:', e); }
+  // Phase 0 — pre-fetched global grid (0ms if ready)
+  if (_windPrefetchData && _windPrefetchData.length > 0) show(_windPrefetchData, false);
+
+  // Phase 1+2 — fire viewport (1 call) and coarse (4 calls) SIMULTANEOUSLY
+  // First to resolve draws; coarse replaces viewport when it arrives
+  const vpP = _fetchWindViewport(bounds).then(d => show(d, false));
+  const coP = _fetchNWSStations(bounds, 800).then(d => show(d, true));
+  await Promise.all([vpP, coP]);
+
+  if (reqId !== _windBarbReqId) return;
+
+  // Phase 3 — full density (ASOS stations + ocean buoys + dense grid)
+  const full = await _loadObservations();
+  if (reqId !== _windBarbReqId) return;
+  show(full, true);
 }
 
 async function loadGustBarbs() {
   if (!windGustBarbActive) return;
   const reqId = ++_gustBarbReqId;
   _initWindCanvas('gust');
-  try {
-    // Phase 0 — global pre-fetch
-    if (_windPrefetchData === null) { _startWindPrefetch(); await _windPrefetchPromise; }
-    if (reqId !== _gustBarbReqId) return;
-    if (_windPrefetchData && _windPrefetchData.length > 0) {
-      _gustBarbData = _windPrefetchData.filter(s => s.obs.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-      _drawWindCanvas('gust');
-    }
+  _gustBarbData = [];
 
-    const bounds = map.getBounds();
-    const vp = await _fetchWindViewport(bounds);
-    if (reqId !== _gustBarbReqId) return;
-    const vpF = vp.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (vpF.length > 0) { _gustBarbData = vpF; _drawWindCanvas('gust'); }
+  const bounds = map.getBounds();
 
-    const coarse = await _fetchNWSStations(bounds, 800);
+  const show = (pts, replace) => {
     if (reqId !== _gustBarbReqId) return;
-    const coarseF = coarse.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (coarseF.length > 0) { _gustBarbData = coarseF; _drawWindCanvas('gust'); }
+    const f = pts.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!f.length) return;
+    _gustBarbData = replace ? f : [..._gustBarbData, ...f];
+    _drawWindCanvas('gust');
+  };
 
-    const full = await _loadObservations();
-    if (reqId !== _gustBarbReqId) return;
-    const filtered = full.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (filtered.length > 0 || _gustBarbData.length === 0) {
-      _gustBarbData = filtered; _drawWindCanvas('gust');
-    }
-  } catch(e) { if (reqId === _gustBarbReqId) console.warn('Gust barbs error:', e); }
+  if (_windPrefetchData && _windPrefetchData.length > 0) show(_windPrefetchData, false);
+
+  const vpP = _fetchWindViewport(bounds).then(d => show(d, false));
+  const coP = _fetchNWSStations(bounds, 800).then(d => show(d, true));
+  await Promise.all([vpP, coP]);
+
+  if (reqId !== _gustBarbReqId) return;
+
+  const full = await _loadObservations();
+  if (reqId !== _gustBarbReqId) return;
+  show(full, true);
 }
 
 let _windBarbDebounce = null, _gustBarbDebounce = null;
