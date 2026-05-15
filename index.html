@@ -9952,20 +9952,69 @@ function _windCanvasClick(e, mode) {
 
 let _windBarbReqId = 0, _gustBarbReqId = 0;
 
-// Phase 0 helper — 200 evenly-spaced points, single Open-Meteo call, ~300ms first paint
-async function _fetchWindQuick(bounds) {
-  const s = bounds.getSouth(), n = bounds.getNorth();
-  const w = bounds.getWest(),  e = bounds.getEast();
-  const area    = (n - s) * (e - w);
-  const spacing = Math.max(0.5, Math.sqrt(area / 200));
-  const pts = [];
-  for (let lat = s + spacing / 2; lat < n; lat += spacing)
-    for (let lon = w + spacing / 2; lon < e; lon += spacing)
-      pts.push({ id: `Q${lat.toFixed(2)}x${lon.toFixed(2)}`, name: '',
-                 lat: +lat.toFixed(3), lon: +lon.toFixed(3) });
-  const sample = pts.slice(0, 200);
-  if (!sample.length) return [];
+// Global wind pre-fetch — fires on page load, 10° grid covering land + ocean.
+// By the time user clicks the barb button, data is already in _windPrefetchData (0ms wait).
+let _windPrefetchData    = null;   // null=not started; []=error/empty; [...]= ready
+let _windPrefetchPromise = null;
+
+function _startWindPrefetch() {
+  if (_windPrefetchPromise) return; // already started
+  _windPrefetchPromise = (async () => {
+    try {
+      // 10° global grid: 18 lat × 36 lon = 648 pts covering land + all oceans
+      const pts = [];
+      for (let lat = -85; lat <= 85; lat += 10)
+        for (let lon = -175; lon <= 175; lon += 10)
+          pts.push({ id: `G${lat}x${lon}`, name: '', lat, lon });
+      const CHUNK = 200;
+      const chunks = [];
+      for (let i = 0; i < pts.length; i += CHUNK) chunks.push(pts.slice(i, i + CHUNK));
+      const results = await Promise.all(chunks.map(async chunk => {
+        const latStr = chunk.map(p => p.lat).join(',');
+        const lonStr = chunk.map(p => p.lon).join(',');
+        try {
+          const res = await fetch(
+            `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}` +
+            `&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m&wind_speed_unit=kmh&forecast_days=1`,
+            { signal: _abortSignal(12000) }
+          );
+          if (!res.ok) return [];
+          const data = await res.json();
+          const arr  = Array.isArray(data) ? data : [data];
+          return chunk.map((p, i) => ({
+            ...p, kind: 'land',
+            obs: {
+              speedKph: arr[i]?.current?.wind_speed_10m     ?? null,
+              gustKph:  arr[i]?.current?.wind_gusts_10m     ?? null,
+              dirDeg:   arr[i]?.current?.wind_direction_10m ?? null,
+              tempC: null, pressurePa: null, time: new Date().toISOString()
+            }
+          }));
+        } catch(e) { return []; }
+      }));
+      _windPrefetchData = results.flat().filter(p => p.obs.speedKph != null);
+    } catch(e) { _windPrefetchData = []; }
+    return _windPrefetchData;
+  })();
+}
+
+// Viewport-specific grid: evenly-distributed 200 pts, single Open-Meteo call, ~300ms.
+// Handles Leaflet's extended longitude range (lon > 180 for wrapped views).
+async function _fetchWindViewport(bounds) {
   try {
+    const s = bounds.getSouth(), n = bounds.getNorth();
+    const w = bounds.getWest(),  e = bounds.getEast();
+    const spacing = Math.max(0.5, Math.sqrt(Math.abs((n - s) * (e - w)) / 200));
+    const pts = [];
+    for (let lat = s + spacing / 2; lat < n; lat += spacing) {
+      for (let lon = w + spacing / 2; lon < e; lon += spacing) {
+        const normLon = ((lon % 360) + 540) % 360 - 180; // clamp to [-180,180]
+        pts.push({ id: `V${lat.toFixed(2)}x${normLon.toFixed(2)}`, name: '',
+                   lat: +lat.toFixed(3), lon: +normLon.toFixed(3) });
+      }
+    }
+    const sample = pts.slice(0, 200);
+    if (!sample.length) return [];
     const latStr = sample.map(p => p.lat.toFixed(3)).join(',');
     const lonStr = sample.map(p => p.lon.toFixed(3)).join(',');
     const res = await fetch(
@@ -9993,31 +10042,33 @@ async function loadWindBarbs() {
   const reqId = ++_windBarbReqId;
   _initWindCanvas('regular');
   try {
-    const bounds = map.getBounds();
-
-    // Phase 0 — single API call, 200 evenly-distributed pts, renders in ~300ms
-    const quick = await _fetchWindQuick(bounds);
+    // Phase 0 — global pre-fetch: 0ms if page loaded >500ms ago, ≤500ms otherwise
+    if (_windPrefetchData === null) { _startWindPrefetch(); await _windPrefetchPromise; }
     if (reqId !== _windBarbReqId) return;
-    if (quick.length > 0) {
-      _windBarbData = quick.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (_windPrefetchData && _windPrefetchData.length > 0) {
+      _windBarbData = _windPrefetchData.filter(s => s.obs.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
       _drawWindCanvas('regular');
     }
 
-    // Phase 1 — coarse grid (~800 pts, 4 parallel calls), fills gaps
+    // Phase 1 — viewport-specific 200 pts (land + ocean), single call ~300ms
+    const bounds = map.getBounds();
+    const vp = await _fetchWindViewport(bounds);
+    if (reqId !== _windBarbReqId) return;
+    const vpF = vp.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (vpF.length > 0) { _windBarbData = vpF; _drawWindCanvas('regular'); }
+
+    // Phase 2 — ASOS + dense viewport grid ~800 pts
     const coarse = await _fetchNWSStations(bounds, 800);
     if (reqId !== _windBarbReqId) return;
-    if (coarse.length > 0) {
-      _windBarbData = coarse.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-      _drawWindCanvas('regular');
-    }
+    const coarseF = coarse.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (coarseF.length > 0) { _windBarbData = coarseF; _drawWindCanvas('regular'); }
 
-    // Phase 2 — full density in background, swapped in seamlessly
+    // Phase 3 — full density (ASOS + ocean buoys)
     const full = await _loadObservations();
     if (reqId !== _windBarbReqId) return;
     const filtered = full.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
     if (filtered.length > 0 || _windBarbData.length === 0) {
-      _windBarbData = filtered;
-      _drawWindCanvas('regular');
+      _windBarbData = filtered; _drawWindCanvas('regular');
     }
   } catch(e) { if (reqId === _windBarbReqId) console.warn('Wind barbs error:', e); }
 }
@@ -10027,28 +10078,30 @@ async function loadGustBarbs() {
   const reqId = ++_gustBarbReqId;
   _initWindCanvas('gust');
   try {
-    const bounds = map.getBounds();
-
-    // Phase 0 — instant first paint
-    const quick = await _fetchWindQuick(bounds);
+    // Phase 0 — global pre-fetch
+    if (_windPrefetchData === null) { _startWindPrefetch(); await _windPrefetchPromise; }
     if (reqId !== _gustBarbReqId) return;
-    if (quick.length > 0) {
-      _gustBarbData = quick.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (_windPrefetchData && _windPrefetchData.length > 0) {
+      _gustBarbData = _windPrefetchData.filter(s => s.obs.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
       _drawWindCanvas('gust');
     }
+
+    const bounds = map.getBounds();
+    const vp = await _fetchWindViewport(bounds);
+    if (reqId !== _gustBarbReqId) return;
+    const vpF = vp.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (vpF.length > 0) { _gustBarbData = vpF; _drawWindCanvas('gust'); }
 
     const coarse = await _fetchNWSStations(bounds, 800);
     if (reqId !== _gustBarbReqId) return;
-    if (coarse.length > 0) {
-      _gustBarbData = coarse.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-      _drawWindCanvas('gust');
-    }
+    const coarseF = coarse.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (coarseF.length > 0) { _gustBarbData = coarseF; _drawWindCanvas('gust'); }
+
     const full = await _loadObservations();
     if (reqId !== _gustBarbReqId) return;
     const filtered = full.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
     if (filtered.length > 0 || _gustBarbData.length === 0) {
-      _gustBarbData = filtered;
-      _drawWindCanvas('gust');
+      _gustBarbData = filtered; _drawWindCanvas('gust');
     }
   } catch(e) { if (reqId === _gustBarbReqId) console.warn('Gust barbs error:', e); }
 }
@@ -14018,11 +14071,9 @@ function _clearSingleSiteRef() {
   _refreshNexradSiteStyles();
 }
 
-// ── WEBCAM LAYER ──────────────────────────────────────────────────
-// Multi-source: Windy API (primary) + 511 DOT APIs + static notable-cams db
+// ── WEBCAM LAYER ─────────────────────────────────────────────────
+// Sources: EarthCam (YouTube live streams) + WSDOT ArcGIS (traffic cameras)
 // Preview thumbnails use <img> tags — no CORS needed for image loading.
-
-// No API key needed — cameras sourced from public DOT and open data feeds
 
 let _camsLayer    = null;
 let _camsFetching = false;
@@ -14786,6 +14837,7 @@ async function loadWindyCams() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  _startWindPrefetch(); // warm global wind grid before user ever clicks the barb button
   const mapEl = document.getElementById('map');
   if (mapEl) mapEl.addEventListener('click', e => {
     // Close panel only when clicking the bare map (not a cam marker)
@@ -18456,7 +18508,7 @@ function lqmToggleSetting(key, val) {
     <div class="feature-card">
       <div class="fc-icon">📷</div>
       <div class="fc-title">WEBCAMS</div>
-      <p class="fc-body">Places camera icons at webcam locations across the region. Click any camera marker to open a popup with a live or recent still from that camera. Powered by Windy's webcam network.</p>
+      <p class="fc-body">Places camera icons at webcam locations. Click any camera to open a live stream or snapshot. EarthCam provides global live streams; WSDOT provides Pacific Northwest traffic cameras.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">📻</div>
