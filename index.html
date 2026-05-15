@@ -7565,6 +7565,10 @@ function _drawWindCanvas(mode) {
   const fontSize = zoom <= 4 ?  9 : zoom <= 6 ?  8 :  7;
   const lw       = zoom <= 4 ?  2 : 1.5;
 
+  // Minimum pixel spacing between barbs — prevents overlap at low zoom
+  const minGap = zoom <= 4 ? 60 : zoom <= 6 ? 42 : zoom <= 8 ? 28 : 18;
+  const occupied = new Map(); // cell key → true
+
   data.forEach(s => {
     const kph = isGust ? s.obs.gustKph : s.obs.speedKph;
     if (kph == null) return;
@@ -7572,6 +7576,12 @@ function _drawWindCanvas(mode) {
     const x = pt.x, y = pt.y;
     if (!isFinite(x) || !isFinite(y)) return;
     if (x < -40 || x > canvas.width + 40 || y < -40 || y > canvas.height + 40) return;
+
+    // Skip if a barb was already drawn within minGap pixels
+    const cx = Math.floor(x / minGap), cy = Math.floor(y / minGap);
+    const key = `${cx},${cy}`;
+    if (occupied.has(key)) return;
+    occupied.set(key, true);
 
     const [r, g, b] = _windColor(kph);
     const col = `rgb(${r},${g},${b})`;
