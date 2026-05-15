@@ -10001,37 +10001,32 @@ async function loadWindBarbs() {
   _windBarbData = [];
 
   const draw = (pts) => {
-    if (reqId !== _windBarbReqId || !pts.length) return;
-    _windBarbData = pts.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (_windBarbData.length) _drawWindCanvas('regular');
+    if (reqId !== _windBarbReqId) return;
+    const filtered = pts.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!filtered.length) return;
+    _windBarbData = filtered;
+    _drawWindCanvas('regular');
   };
 
+  const bounds = map.getBounds();
+
+  // Phase 1 — quick 50-pt grid: single small call, draws within ~250ms
   try {
-    const bounds = map.getBounds();
+    const q = await _omFetch(_viewportGrid(bounds, 50));
+    if (reqId === _windBarbReqId && q.length) draw(q);
+  } catch(e) { console.warn('[wind p1]', e.message); }
 
-    // Step 1 — fire 200-pt viewport grid (1 API call, ~300ms) WITHOUT awaiting it
-    //           so Step 2 starts immediately in parallel.
-    const quickPts = _viewportGrid(bounds, 200);
-    let quickDone  = false;
-    const quickP   = _omFetch(quickPts)
-      .then(data => { if (!quickDone && reqId === _windBarbReqId) draw(data); })
-      .catch(e  => console.warn('[wind quick]', e.message));
+  if (reqId !== _windBarbReqId) return;
 
-    // Step 2 — fire coarse 800-pt ASOS+grid (4 parallel API calls, ~400ms)
-    //           When it resolves it draws and blocks the quick callback from overwriting.
-    const coarse = await _fetchNWSStations(bounds, 800);
-    quickDone = true;                          // quick result no longer needed
+  // Phase 2 — full density: named ASOS + dense grid + ocean buoys
+  try {
+    const [grid, buoys] = await Promise.all([
+      _fetchNWSStations(bounds, 800).catch(() => []),
+      _fetchNDBCBuoys(bounds).catch(() => [])
+    ]);
     if (reqId !== _windBarbReqId) return;
-    draw(coarse);
-
-    // Step 3 — full density: ASOS + ocean buoys + dense grid (background, ~1-2s)
-    const full = await _loadObservations();
-    if (reqId !== _windBarbReqId) return;
-    draw(full);
-
-  } catch(e) {
-    console.error('[loadWindBarbs]', e);
-  }
+    draw([...grid, ...buoys]);
+  } catch(e) { console.warn('[wind p2]', e.message); }
 }
 
 async function loadGustBarbs() {
@@ -10041,32 +10036,32 @@ async function loadGustBarbs() {
   _gustBarbData = [];
 
   const draw = (pts) => {
-    if (reqId !== _gustBarbReqId || !pts.length) return;
-    _gustBarbData = pts.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (_gustBarbData.length) _drawWindCanvas('gust');
+    if (reqId !== _gustBarbReqId) return;
+    const filtered = pts.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!filtered.length) return;
+    _gustBarbData = filtered;
+    _drawWindCanvas('gust');
   };
 
+  const bounds = map.getBounds();
+
+  // Phase 1 — quick 50-pt grid
   try {
-    const bounds = map.getBounds();
+    const q = await _omFetch(_viewportGrid(bounds, 50));
+    if (reqId === _gustBarbReqId && q.length) draw(q);
+  } catch(e) { console.warn('[gust p1]', e.message); }
 
-    const quickPts = _viewportGrid(bounds, 200);
-    let quickDone  = false;
-    _omFetch(quickPts)
-      .then(data => { if (!quickDone && reqId === _gustBarbReqId) draw(data); })
-      .catch(e  => console.warn('[gust quick]', e.message));
+  if (reqId !== _gustBarbReqId) return;
 
-    const coarse = await _fetchNWSStations(bounds, 800);
-    quickDone = true;
+  // Phase 2 — full density
+  try {
+    const [grid, buoys] = await Promise.all([
+      _fetchNWSStations(bounds, 800).catch(() => []),
+      _fetchNDBCBuoys(bounds).catch(() => [])
+    ]);
     if (reqId !== _gustBarbReqId) return;
-    draw(coarse);
-
-    const full = await _loadObservations();
-    if (reqId !== _gustBarbReqId) return;
-    draw(full);
-
-  } catch(e) {
-    console.error('[loadGustBarbs]', e);
-  }
+    draw([...grid, ...buoys]);
+  } catch(e) { console.warn('[gust p2]', e.message); }
 }
 
 let _windBarbDebounce = null, _gustBarbDebounce = null;
@@ -18352,7 +18347,7 @@ function lqmToggleSetting(key, val) {
     <div class="feature-card">
       <div class="fc-icon">💨</div>
       <div class="fc-title">WIND</div>
-      <p class="fc-body">Opens a sub-menu for <strong>Regular</strong> wind barbs (sustained speed and direction at 10m) and <strong>Gusts</strong> (peak gust barbs). Barb tails show wind speed in knots — each full barb = 10 kt, half barb = 5 kt, pennant = 50 kt.</p>
+      <p class="fc-body">Opens a sub-menu for <strong>Regular</strong> wind barbs (sustained 10m wind speed and direction) and <strong>Gusts</strong> (peak gust barbs). Barbs load instantly using Open-Meteo — a first pass of ~50 barbs appears within ~250ms, then expands to hundreds covering both land and ocean. Arrow points in the wind direction; color scales from blue (calm) through green/yellow to red/purple (severe). Click any barb for speed in mph/kt, direction, and gust info.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌡</div>
@@ -18470,12 +18465,12 @@ function lqmToggleSetting(key, val) {
     <div class="feature-card">
       <div class="fc-icon">📷</div>
       <div class="fc-title">WEBCAMS</div>
-      <p class="fc-body">Places camera icons at webcam locations. Click any camera to open a live stream or snapshot. EarthCam provides global live streams; WSDOT provides Pacific Northwest traffic cameras.</p>
+      <p class="fc-body">Places camera icons at webcam locations. Click any camera icon to open a floating panel with a live feed. <strong>EarthCam</strong> provides YouTube-powered live streams from around the world (city skylines, beaches, landmarks). <strong>WSDOT</strong> provides Pacific Northwest DOT traffic cameras with live snapshots. The camera panel is <strong>draggable</strong> — grab the title bar to reposition it anywhere on screen.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">📻</div>
       <div class="fc-title">RADIO STATIONS</div>
-      <p class="fc-body">Plots weather radio transmitter locations. Useful for checking coverage areas and ensuring you're within range of a NOAA Weather Radio signal.</p>
+      <p class="fc-body">Plots <strong>NOAA Weather Radio (NWR)</strong> transmitter locations from the NWS station network. Each blue circle marks a radio transmitter. Click a marker to see the station ID and frequency. Useful for checking NWR coverage in your area — if you're within range of a transmitter, a dedicated weather radio receiver will pick up live NWS broadcasts 24/7.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🔮</div>
