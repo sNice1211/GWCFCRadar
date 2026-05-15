@@ -9956,12 +9956,12 @@ let _windBarbReqId = 0, _gustBarbReqId = 0;
 let _windBarbCache = { data: [], lat: null, lon: null, time: 0 };
 let _gustBarbCache = { data: [], lat: null, lon: null, time: 0 };
 
-// Returns true if cache is still fresh and center hasn't moved >3°
+// Returns true if cache is still fresh and center hasn't moved >10°
 function _windCacheValid(cache) {
   if (!cache.data.length) return false;
-  if (Date.now() - cache.time > 600000) return false; // 10 min TTL
+  if (Date.now() - cache.time > 1800000) return false; // 30 min TTL
   const c = map.getCenter();
-  return Math.abs(c.lat - cache.lat) < 3 && Math.abs(c.lng - cache.lon) < 3;
+  return Math.abs(c.lat - cache.lat) < 10 && Math.abs(c.lng - cache.lon) < 10;
 }
 
 async function _omFetch(pts, _retry = 1) {
@@ -10078,26 +10078,20 @@ async function loadGustBarbs() {
   }
 }
 
-let _windBarbDebounce = null, _gustBarbDebounce = null;
 
 function toggleWindRegularBarbs() {
   windRegularBarbActive = windBarbActive = !windRegularBarbActive;
   if (windRegularBarbActive) {
     loadWindBarbs();
-    // on pan/zoom: redraw existing data immediately (no API call)
-    // re-fetch only when cache expires or center moves >3° (handled inside loadWindBarbs)
-    map._windBarbMoveHandler = () => { clearTimeout(_windBarbDebounce); _windBarbDebounce = setTimeout(loadWindBarbs, 600); };
+    // pan/zoom only redraws existing barbs — no re-fetch, no extra API calls
     map._windBarbDrawHandler = () => _drawWindCanvas('regular');
-    map.on('moveend zoomend', map._windBarbMoveHandler);
     map.on('move zoom resize', map._windBarbDrawHandler);
     const mapEl = document.getElementById('map');
     mapEl._windClickHandler = e => _windCanvasClick(e, 'regular');
     mapEl.addEventListener('click', mapEl._windClickHandler);
     windBarbTimer = setInterval(loadWindBarbs, 10 * 60 * 1000);
   } else {
-    if (map._windBarbMoveHandler) map.off('moveend zoomend', map._windBarbMoveHandler);
     if (map._windBarbDrawHandler) map.off('move zoom resize', map._windBarbDrawHandler);
-    clearTimeout(_windBarbDebounce);
     clearInterval(windBarbTimer); windBarbTimer = null;
     _windBarbCache = { data: [], lat: null, lon: null, time: 0 };
     _destroyWindCanvas('regular');
@@ -10113,18 +10107,14 @@ function toggleGustBarbs() {
   windGustBarbActive = windGustActive = !windGustBarbActive;
   if (windGustBarbActive) {
     loadGustBarbs();
-    map._gustBarbMoveHandler = () => { clearTimeout(_gustBarbDebounce); _gustBarbDebounce = setTimeout(loadGustBarbs, 600); };
     map._gustBarbDrawHandler = () => _drawWindCanvas('gust');
-    map.on('moveend zoomend', map._gustBarbMoveHandler);
     map.on('move zoom resize', map._gustBarbDrawHandler);
     const mapEl = document.getElementById('map');
     mapEl._gustClickHandler = e => _windCanvasClick(e, 'gust');
     mapEl.addEventListener('click', mapEl._gustClickHandler);
     windGustTimer = setInterval(loadGustBarbs, 10 * 60 * 1000);
   } else {
-    if (map._gustBarbMoveHandler) map.off('moveend zoomend', map._gustBarbMoveHandler);
     if (map._gustBarbDrawHandler) map.off('move zoom resize', map._gustBarbDrawHandler);
-    clearTimeout(_gustBarbDebounce);
     clearInterval(windGustTimer); windGustTimer = null;
     _gustBarbCache = { data: [], lat: null, lon: null, time: 0 };
     _destroyWindCanvas('gust');
@@ -17350,7 +17340,6 @@ function _scheduleCityTempRefresh() {
 
 async function _refreshVisibleCityTemps() {
   if (!activeLayers.forecasts || !cityMarkersLayer) return;
-  if (map.getZoom() < 5) { cityMarkersLayer.clearLayers(); return; }
 
   // Determine visible cities
   const bounds  = map.getBounds().pad(0.1);
