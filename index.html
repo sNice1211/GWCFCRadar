@@ -9952,6 +9952,18 @@ function _windCanvasClick(e, mode) {
 
 let _windBarbReqId = 0, _gustBarbReqId = 0;
 
+// Caches: avoid re-fetching Open-Meteo when panning within same area
+let _windBarbCache = { data: [], lat: null, lon: null, time: 0 };
+let _gustBarbCache = { data: [], lat: null, lon: null, time: 0 };
+
+// Returns true if cache is still fresh and center hasn't moved >3°
+function _windCacheValid(cache) {
+  if (!cache.data.length) return false;
+  if (Date.now() - cache.time > 600000) return false; // 10 min TTL
+  const c = map.getCenter();
+  return Math.abs(c.lat - cache.lat) < 3 && Math.abs(c.lng - cache.lon) < 3;
+}
+
 async function _omFetch(pts, _retry = 1) {
   if (!pts.length) return [];
   const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
@@ -9999,78 +10011,71 @@ function _viewportGrid(bounds, maxPts) {
 
 async function loadWindBarbs() {
   if (!windBarbActive) return;
-  const reqId = ++_windBarbReqId;
   _initWindCanvas('regular');
-  _windBarbData = [];
 
-  // Single call: 50-pt grid. No complex phases — just fetch and draw.
+  // Serve from cache if still valid — zero API calls
+  if (_windCacheValid(_windBarbCache)) {
+    _windBarbData = _windBarbCache.data.filter(s => _ptInPolyUnion(s.lat, s.lon));
+    if (_windBarbData.length) { _drawWindCanvas('regular'); return; }
+  }
+
+  const reqId = ++_windBarbReqId;
   try {
-    const pts = _viewportGrid(map.getBounds(), 50);
+    const pts = _viewportGrid(map.getBounds(), 40);
     if (!pts.length) return;
     const data = await _omFetch(pts);
     if (reqId !== _windBarbReqId) return;
-    const valid = data.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (!valid.length) { showToast('⚠️ Wind: no data returned', 2500); return; }
-    _windBarbData = valid;
+    const valid = data.filter(s => s.obs?.speedKph != null);
+    if (!valid.length) { showToast('⚠️ Wind: no data — try again in a moment', 3000); return; }
+    const c = map.getCenter();
+    _windBarbCache = { data: valid, lat: c.lat, lon: c.lng, time: Date.now() };
+    _windBarbData  = valid.filter(s => _ptInPolyUnion(s.lat, s.lon));
     _drawWindCanvas('regular');
-    // Background: expand to full density
-    _loadWindFull(reqId);
   } catch(e) {
-    console.error('[loadWindBarbs]', e);
-    showToast('⚠️ Wind barbs: ' + e.message, 3500);
+    if (reqId !== _windBarbReqId) return;
+    const msg = e.message || '';
+    if (msg.includes('429') || msg.includes('rate')) {
+      showToast('⏳ Wind: rate limited — waiting 60s', 4000);
+      setTimeout(() => { if (windBarbActive) { _windBarbCache.time = 0; loadWindBarbs(); } }, 60000);
+    } else {
+      showToast('⚠️ Wind: ' + msg, 3500);
+    }
+    console.warn('[loadWindBarbs]', e);
   }
-}
-
-async function _loadWindFull(reqId) {
-  try {
-    const bounds = map.getBounds();
-    const [grid, buoys] = await Promise.all([
-      _fetchNWSStations(bounds, 800).catch(() => []),
-      _fetchNDBCBuoys(bounds).catch(() => [])
-    ]);
-    if (reqId !== _windBarbReqId || !windBarbActive) return;
-    const valid = [...grid, ...buoys].filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (!valid.length) return;
-    _windBarbData = valid;
-    _drawWindCanvas('regular');
-  } catch(e) { console.warn('[windFull]', e.message); }
 }
 
 async function loadGustBarbs() {
   if (!windGustBarbActive) return;
-  const reqId = ++_gustBarbReqId;
   _initWindCanvas('gust');
-  _gustBarbData = [];
 
+  if (_windCacheValid(_gustBarbCache)) {
+    _gustBarbData = _gustBarbCache.data.filter(s => _ptInPolyUnion(s.lat, s.lon));
+    if (_gustBarbData.length) { _drawWindCanvas('gust'); return; }
+  }
+
+  const reqId = ++_gustBarbReqId;
   try {
-    const pts = _viewportGrid(map.getBounds(), 50);
+    const pts = _viewportGrid(map.getBounds(), 40);
     if (!pts.length) return;
     const data = await _omFetch(pts);
     if (reqId !== _gustBarbReqId) return;
-    const valid = data.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (!valid.length) { showToast('⚠️ Gusts: no data returned', 2500); return; }
-    _gustBarbData = valid;
+    const valid = data.filter(s => s.obs?.gustKph != null);
+    if (!valid.length) { showToast('⚠️ Gusts: no data — try again in a moment', 3000); return; }
+    const c = map.getCenter();
+    _gustBarbCache = { data: valid, lat: c.lat, lon: c.lng, time: Date.now() };
+    _gustBarbData  = valid.filter(s => _ptInPolyUnion(s.lat, s.lon));
     _drawWindCanvas('gust');
-    _loadGustFull(reqId);
   } catch(e) {
-    console.error('[loadGustBarbs]', e);
-    showToast('⚠️ Gust barbs: ' + e.message, 3500);
+    if (reqId !== _gustBarbReqId) return;
+    const msg = e.message || '';
+    if (msg.includes('429') || msg.includes('rate')) {
+      showToast('⏳ Gusts: rate limited — waiting 60s', 4000);
+      setTimeout(() => { if (windGustBarbActive) { _gustBarbCache.time = 0; loadGustBarbs(); } }, 60000);
+    } else {
+      showToast('⚠️ Gusts: ' + msg, 3500);
+    }
+    console.warn('[loadGustBarbs]', e);
   }
-}
-
-async function _loadGustFull(reqId) {
-  try {
-    const bounds = map.getBounds();
-    const [grid, buoys] = await Promise.all([
-      _fetchNWSStations(bounds, 800).catch(() => []),
-      _fetchNDBCBuoys(bounds).catch(() => [])
-    ]);
-    if (reqId !== _gustBarbReqId || !windGustBarbActive) return;
-    const valid = [...grid, ...buoys].filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (!valid.length) return;
-    _gustBarbData = valid;
-    _drawWindCanvas('gust');
-  } catch(e) { console.warn('[gustFull]', e.message); }
 }
 
 let _windBarbDebounce = null, _gustBarbDebounce = null;
@@ -10079,7 +10084,9 @@ function toggleWindRegularBarbs() {
   windRegularBarbActive = windBarbActive = !windRegularBarbActive;
   if (windRegularBarbActive) {
     loadWindBarbs();
-    map._windBarbMoveHandler = () => { clearTimeout(_windBarbDebounce); _windBarbDebounce = setTimeout(loadWindBarbs, 500); };
+    // on pan/zoom: redraw existing data immediately (no API call)
+    // re-fetch only when cache expires or center moves >3° (handled inside loadWindBarbs)
+    map._windBarbMoveHandler = () => { clearTimeout(_windBarbDebounce); _windBarbDebounce = setTimeout(loadWindBarbs, 600); };
     map._windBarbDrawHandler = () => _drawWindCanvas('regular');
     map.on('moveend zoomend', map._windBarbMoveHandler);
     map.on('move zoom resize', map._windBarbDrawHandler);
@@ -10092,6 +10099,7 @@ function toggleWindRegularBarbs() {
     if (map._windBarbDrawHandler) map.off('move zoom resize', map._windBarbDrawHandler);
     clearTimeout(_windBarbDebounce);
     clearInterval(windBarbTimer); windBarbTimer = null;
+    _windBarbCache = { data: [], lat: null, lon: null, time: 0 };
     _destroyWindCanvas('regular');
     const mapEl = document.getElementById('map');
     if (mapEl._windClickHandler) mapEl.removeEventListener('click', mapEl._windClickHandler);
@@ -10105,7 +10113,7 @@ function toggleGustBarbs() {
   windGustBarbActive = windGustActive = !windGustBarbActive;
   if (windGustBarbActive) {
     loadGustBarbs();
-    map._gustBarbMoveHandler = () => { clearTimeout(_gustBarbDebounce); _gustBarbDebounce = setTimeout(loadGustBarbs, 500); };
+    map._gustBarbMoveHandler = () => { clearTimeout(_gustBarbDebounce); _gustBarbDebounce = setTimeout(loadGustBarbs, 600); };
     map._gustBarbDrawHandler = () => _drawWindCanvas('gust');
     map.on('moveend zoomend', map._gustBarbMoveHandler);
     map.on('move zoom resize', map._gustBarbDrawHandler);
@@ -10118,6 +10126,7 @@ function toggleGustBarbs() {
     if (map._gustBarbDrawHandler) map.off('move zoom resize', map._gustBarbDrawHandler);
     clearTimeout(_gustBarbDebounce);
     clearInterval(windGustTimer); windGustTimer = null;
+    _gustBarbCache = { data: [], lat: null, lon: null, time: 0 };
     _destroyWindCanvas('gust');
     const mapEl = document.getElementById('map');
     if (mapEl._gustClickHandler) mapEl.removeEventListener('click', mapEl._gustClickHandler);
