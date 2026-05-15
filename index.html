@@ -9952,20 +9952,23 @@ function _windCanvasClick(e, mode) {
 
 let _windBarbReqId = 0, _gustBarbReqId = 0;
 
-// Single Open-Meteo call for a list of {lat,lon} points. Returns obs-enriched points.
-// Max 200 pts per call to keep URL length safe. Throws on network/API error.
-async function _omFetch(pts) {
+async function _omFetch(pts, _retry = 1) {
   if (!pts.length) return [];
   const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
   const lonStr = pts.map(p => p.lon.toFixed(3)).join(',');
   const res = await fetch(
     `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}` +
-    `&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m&wind_speed_unit=kmh&forecast_days=1`,
-    { signal: _abortSignal(10000) }
+    `&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m&wind_speed_unit=kmh`,
+    { signal: _abortSignal(12000) }
   );
-  if (!res.ok) throw new Error(`Open-Meteo ${res.status}`);
+  if (res.status === 429) {
+    if (_retry > 0) { await new Promise(r => setTimeout(r, 1200)); return _omFetch(pts, _retry - 1); }
+    throw new Error('Open-Meteo rate limited (429)');
+  }
+  if (!res.ok) throw new Error(`Open-Meteo HTTP ${res.status}`);
   const json = await res.json();
-  const arr  = Array.isArray(json) ? json : [json];
+  if (json?.error) throw new Error(`Open-Meteo API error: ${json.reason ?? 'unknown'}`);
+  const arr = Array.isArray(json) ? json : [json];
   return pts.map((p, i) => ({
     ...p, kind: 'land',
     obs: {
@@ -10006,15 +10009,27 @@ async function loadWindBarbs() {
     if (!filtered.length) return;
     _windBarbData = filtered;
     _drawWindCanvas('regular');
+    return filtered.length;
   };
 
   const bounds = map.getBounds();
+  const center = map.getCenter();
 
-  // Phase 1 — quick 50-pt grid: single small call, draws within ~250ms
+  // Phase 0 — single center-point call (~150ms): guarantees at least 1 barb appears
+  try {
+    const cpt = [{ id: 'C', name: '', lat: +center.lat.toFixed(3), lon: +center.lng.toFixed(3) }];
+    const c0 = await _omFetch(cpt);
+    if (reqId === _windBarbReqId && c0.length) draw(c0);
+  } catch(e) { console.warn('[wind p0]', e.message); }
+
+  if (reqId !== _windBarbReqId) return;
+
+  // Phase 1 — 50-pt grid across viewport (~300ms): fills in coverage
   try {
     const q = await _omFetch(_viewportGrid(bounds, 50));
     if (reqId === _windBarbReqId && q.length) draw(q);
-  } catch(e) { console.warn('[wind p1]', e.message); }
+    else if (!q.length) console.warn('[wind p1] open-meteo returned 0 valid pts');
+  } catch(e) { console.warn('[wind p1]', e.message); showToast('⚠️ Wind data error: ' + e.message, 3000); }
 
   if (reqId !== _windBarbReqId) return;
 
@@ -10044,8 +10059,18 @@ async function loadGustBarbs() {
   };
 
   const bounds = map.getBounds();
+  const center = map.getCenter();
 
-  // Phase 1 — quick 50-pt grid
+  // Phase 0 — single center point (~150ms)
+  try {
+    const cpt = [{ id: 'C', name: '', lat: +center.lat.toFixed(3), lon: +center.lng.toFixed(3) }];
+    const c0 = await _omFetch(cpt);
+    if (reqId === _gustBarbReqId && c0.length) draw(c0);
+  } catch(e) { console.warn('[gust p0]', e.message); }
+
+  if (reqId !== _gustBarbReqId) return;
+
+  // Phase 1 — 50-pt grid
   try {
     const q = await _omFetch(_viewportGrid(bounds, 50));
     if (reqId === _gustBarbReqId && q.length) draw(q);
