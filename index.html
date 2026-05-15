@@ -13965,60 +13965,6 @@ let _camsTimer    = null;
 let _camsSeenIds  = new Set();
 let _camPopupRefreshTimer = null;
 
-// ── Static notable-cam database ──────────────────────────────────
-// Each entry: { id, name, lat, lon, img (public thumbnail URL), link }
-// img URLs load in <img> without CORS headers required.
-const CAM_STATIC_DB = [
-  // WSDOT — Washington State DOT (real public image CDN)
-  {id:'ws001',name:'Seattle I-5 Ship Canal',lat:47.648,lon:-122.335,img:'https://images.wsdot.wa.gov/nw/005vc32435.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  {id:'ws002',name:'Tacoma Narrows',lat:47.353,lon:-122.551,img:'https://images.wsdot.wa.gov/nw/016vc00038.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  {id:'ws003',name:'Snoqualmie Pass I-90',lat:47.425,lon:-121.416,img:'https://images.wsdot.wa.gov/sc/090vc15311.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  {id:'ws004',name:'Seattle I-90 Mounth Lake',lat:47.592,lon:-122.178,img:'https://images.wsdot.wa.gov/nw/090vc00160.jpg',link:'https://wsdot.com/travel/real-time/map'},
-  // Oregon — TripCheck real CCTV IDs from their public API
-  {id:'or001',name:'Portland I-5 Columbia Crossing',lat:45.648,lon:-122.760,img:'https://tripcheck.com/Photos/CCTVImages/10203_medium.jpg',link:'https://tripcheck.com'},
-  {id:'or002',name:'Portland I-84 Gateway',lat:45.528,lon:-122.559,img:'https://tripcheck.com/Photos/CCTVImages/10206_medium.jpg',link:'https://tripcheck.com'},
-  {id:'or003',name:'Mt Hood US-26',lat:45.319,lon:-121.814,img:'https://tripcheck.com/Photos/CCTVImages/10401_medium.jpg',link:'https://tripcheck.com'},
-  // California — Caltrans real public image server (cwwp2.dot.ca.gov)
-  {id:'ca001',name:'Bay Bridge Oakland',lat:37.800,lon:-122.372,img:'https://cwwp2.dot.ca.gov/data/d4/cctv/image/tvn96on80/tvn96on80.jpg',link:'https://511.org'},
-  {id:'ca002',name:'Golden Gate SF',lat:37.808,lon:-122.478,img:'https://cwwp2.dot.ca.gov/data/d4/cctv/image/tvn101sf/tvn101sf.jpg',link:'https://511.org'},
-  {id:'ca003',name:'LA I-10 Santa Monica Fwy',lat:34.023,lon:-118.464,img:'https://cwwp2.dot.ca.gov/data/d7/cctv/image/tvn10la/tvn10la.jpg',link:'https://511.org'},
-  {id:'ca004',name:'Grapevine I-5',lat:34.831,lon:-118.902,img:'https://cwwp2.dot.ca.gov/data/d7/cctv/image/tvn5grapevine/tvn5grapevine.jpg',link:'https://511.org'},
-  {id:'ca005',name:'San Diego I-8 Mission Valley',lat:32.766,lon:-117.154,img:'https://cwwp2.dot.ca.gov/data/d11/cctv/image/tvn8sd/tvn8sd.jpg',link:'https://511.org'},
-  // Colorado — CDOT real image server
-  {id:'co001',name:'Denver I-70 Genesee',lat:39.693,lon:-105.306,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_234.jpg',link:'https://cotrip.org'},
-  {id:'co002',name:'Vail Pass I-70',lat:39.559,lon:-106.213,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_190.jpg',link:'https://cotrip.org'},
-  {id:'co003',name:'Eisenhower Tunnel',lat:39.680,lon:-105.906,img:'https://dtd.coloradodot.info/Data/CCTV/I070_MMW_216.jpg',link:'https://cotrip.org'},
-  // Wyoming — WyoRoad real image server
-  {id:'wy001',name:'Laramie I-80',lat:41.318,lon:-105.589,img:'https://www.wyoroad.info/highway/webcams/I80EB_LE_mm333_1.jpg',link:'https://wyoroad.info'},
-  {id:'wy002',name:'Cheyenne I-80',lat:41.139,lon:-104.818,img:'https://www.wyoroad.info/highway/webcams/I80EB_LE_mm357_1.jpg',link:'https://wyoroad.info'},
-  // Volcano Observatory (USGS public captures)
-  {id:'usgs001',name:'Kīlauea HVO Hawaii',lat:19.421,lon:-155.287,img:'https://volcanoes.usgs.gov/vsc/captures/kilauea/latest.jpg',link:'https://www.usgs.gov/volcanoes/kilauea'},
-  // Montana DOT real image server
-  {id:'mt001',name:'Butte I-90 MT',lat:46.005,lon:-112.534,img:'https://www.mdt.mt.gov/travinfo/cameras/I90_Butte.jpg',link:'https://www.mdt.mt.gov'},
-  {id:'mt002',name:'Missoula I-90 MT',lat:46.866,lon:-114.017,img:'https://www.mdt.mt.gov/travinfo/cameras/I90_Missoula.jpg',link:'https://www.mdt.mt.gov'},
-  // Locations with known 511 pages but no guaranteed public image CDN — no img
-  {id:'az001',name:'Phoenix I-10 AZ',lat:33.449,lon:-112.074,link:'https://az511.com'},
-  {id:'tx001',name:'Houston I-10 TX',lat:29.762,lon:-95.367,link:'https://drivetexas.org'},
-  {id:'tx002',name:'Dallas I-35E TX',lat:32.788,lon:-96.799,link:'https://drivetexas.org'},
-  {id:'mn001',name:'Minneapolis I-94 MN',lat:44.979,lon:-93.265,link:'https://511mn.org'},
-  {id:'il001',name:'Chicago I-90/94 IL',lat:41.878,lon:-87.629,link:'https://www.gettingaroundillinois.com'},
-  {id:'ga001',name:'Atlanta I-285 GA',lat:33.749,lon:-84.388,link:'https://ga511.com'},
-  {id:'fl001',name:'Miami I-95 FL',lat:25.774,lon:-80.193,link:'https://fl511.com'},
-  {id:'fl002',name:'Tampa I-275 FL',lat:27.947,lon:-82.458,link:'https://fl511.com'},
-  {id:'fl003',name:'Orlando I-4 FL',lat:28.538,lon:-81.379,link:'https://fl511.com'},
-  {id:'pa001',name:'Philadelphia I-76 PA',lat:39.952,lon:-75.164,link:'https://www.511pa.com'},
-  {id:'ny001',name:'New York Triborough',lat:40.776,lon:-73.929,link:'https://511ny.org'},
-  {id:'ma001',name:'Boston I-93 MA',lat:42.360,lon:-71.058,link:'https://mass511.com'},
-  {id:'va001',name:'Richmond I-95 VA',lat:37.540,lon:-77.436,link:'https://511virginia.org'},
-  {id:'nc001',name:'Charlotte I-77 NC',lat:35.227,lon:-80.843,link:'https://nctraffic.ncdot.gov'},
-  {id:'noaa001',name:'Virginia Key NOAA FL',lat:25.733,lon:-80.162,link:'https://tidesandcurrents.noaa.gov/photos/8723214'},
-  {id:'noaa002',name:'Boston Harbor NOAA',lat:42.354,lon:-71.053,link:'https://tidesandcurrents.noaa.gov/photos/8443970'},
-  {id:'noaa003',name:'San Francisco Bay NOAA',lat:37.806,lon:-122.466,link:'https://tidesandcurrents.noaa.gov/photos/9414290'},
-  {id:'pnw001',name:'Hurricane Ridge Olympic NP',lat:47.970,lon:-123.499,link:'https://www.nps.gov/olym'},
-  {id:'pnw002',name:'Crater Lake NP OR',lat:42.944,lon:-122.109,link:'https://www.nps.gov/crla'},
-  {id:'ak001',name:'Anchorage AK DOT',lat:61.218,lon:-149.900,link:'https://511.alaska.gov'},
-  {id:'hi001',name:'Honolulu H-1 HI',lat:21.307,lon:-157.858,link:'https://hidot.hawaii.gov'},
-];
 
 function _clearCams() {
   _camsFetching = false;
@@ -14070,7 +14016,7 @@ function _showCamPopup(cam) {
     return;
   }
 
-  // ── JPEG snapshot (WSDOT / national / other) ─────────────────────
+  // ── JPEG image fallback ──────────────────────────────────────────
   const imgUrl = cam.img || cam.imgUrl || '';
   if (badge) badge.textContent = '↻ LIVE';
 
@@ -14079,12 +14025,11 @@ function _showCamPopup(cam) {
     ph.style.display  = 'flex';
     if (phText) phText.textContent = imgUrl ? 'Loading feed…' : 'No feed available';
     if (!imgUrl) return;
+    const sep = imgUrl.includes('?') ? '&' : '?';
     const tmp = new Image();
     tmp.onload = () => { img.src = tmp.src; img.style.display = 'block'; ph.style.display = 'none'; };
     tmp.onerror = () => { ph.style.display = 'flex'; if (phText) phText.textContent = 'Feed unavailable'; };
-    // Cache-bust: bucket to 5-minute windows so we match WSDOT's own refresh rate
-    const sep = imgUrl.includes('?') ? '&' : '?';
-    tmp.src = imgUrl + sep + '_t=' + Math.floor(Date.now() / 300000);
+    tmp.src = imgUrl + sep + '_t=' + Math.floor(Date.now() / 30000);
   }
 
   _loadImg();
@@ -14106,7 +14051,7 @@ function _placeCamMarker(cam) {
     ? `background-image:url('${thumbUrl}');background-size:cover;background-position:center;`
     : isVideo
       ? 'background:rgba(200,30,30,0.92);'   // red = EarthCam live video
-      : 'background:rgba(0,150,180,0.90);';  // teal = snapshot camera
+      : 'background:rgba(0,150,180,0.90);';
   const shortName = (cam.name || cam.title || 'Cam').replace('EarthCam: ', '').slice(0, 18);
 
   const innerIcon = thumbUrl
@@ -14134,80 +14079,6 @@ function _placeCamMarker(cam) {
   });
 }
 
-// ── Load static database for current viewport ─────────────────────
-function _loadStaticCams() {
-  const b = map.getBounds();
-  let added = 0;
-  CAM_STATIC_DB.forEach(cam => {
-    if (_camsSeenIds.has(cam.id)) return;
-    if (!b.contains([cam.lat, cam.lon])) return;
-    _camsSeenIds.add(cam.id);
-    _placeCamMarker(cam);
-    added++;
-  });
-  return added;
-}
-
-// ── WSDOT Traffic Cameras (Washington State) ─────────────────────
-// ArcGIS REST services are ALWAYS CORS-enabled and require no auth.
-// Images at images.wsdot.wa.gov load in <img> tags (no CORS needed).
-// Refreshes every 5 minutes per WSDOT's own update schedule.
-
-async function _fetchWSDOTCams() {
-  try {
-    const url = 'https://www.wsdot.wa.gov/arcgis/rest/services/Production/WSDOTTrafficCameras/MapServer/0/query' +
-      '?where=IsActive+%3D+1&outFields=CameraID,Title,ImageURL,DisplayLatitude,DisplayLongitude' +
-      '&resultRecordCount=500&f=json';
-    const res = await fetch(url, { signal: _abortSignal(15000) });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return (data.features || []).map(f => {
-      const p = f.attributes;
-      const rawUrl = p.ImageURL || '';
-      const imgUrl = rawUrl.startsWith('http') ? rawUrl
-        : rawUrl ? 'http://images.wsdot.wa.gov/' + rawUrl : '';
-      return {
-        id:   'wsdot_' + p.CameraID,
-        name: (p.Title || 'WSDOT Camera').slice(0, 60),
-        lat:  parseFloat(p.DisplayLatitude  || 0),
-        lon:  parseFloat(p.DisplayLongitude || 0),
-        img:  imgUrl,
-        link: 'https://wsdot.com/travel/real-time/cameras',
-        meta: 'Traffic · Washington State DOT',
-        type: 'snapshot'
-      };
-    }).filter(c => c.lat && c.lon);
-  } catch (e) { console.warn('WSDOT fetch failed', e); return []; }
-}
-
-// ── National government / university weather cameras ──────────────
-// Hard-coded cameras with stable public JPEG URLs that load in
-// <img> tags without any CORS restrictions. Covers regions not
-// served by WSDOT. Images update every 1–10 minutes depending
-// on the source agency.
-
-const CAM_NATIONAL_DB = [
-  // USGS Cascades Volcano Observatory — public webcam images
-  {id:'usgs_rainier',  name:'Mt. Rainier Summit',          lat:46.8529, lon:-121.7604, img:'https://volcanoes.usgs.gov/observatories/cvo/cvo_data/activity/rainier/images/latest_summit.jpg',         link:'https://volcanoes.usgs.gov/observatories/cvo/', meta:'USGS · WA'},
-  {id:'usgs_sthelens', name:'Mt. St. Helens Crater',       lat:46.1912, lon:-122.1944, img:'https://volcanoes.usgs.gov/observatories/cvo/cvo_data/activity/sthelens/images/ShW_latest.jpg',          link:'https://volcanoes.usgs.gov/observatories/cvo/', meta:'USGS · WA'},
-  {id:'usgs_hood',     name:'Mt. Hood Oregon',             lat:45.3735, lon:-121.6959, img:'https://volcanoes.usgs.gov/observatories/cvo/cvo_data/activity/hood/images/Hood_HoodRiver_latest.jpg',   link:'https://volcanoes.usgs.gov/observatories/cvo/', meta:'USGS · OR'},
-  {id:'usgs_kil1',     name:'Kīlauea Volcano Hawaii',      lat:19.4069, lon:-155.2834, img:'https://volcanoes.usgs.gov/observatories/hvo/cams/KIcam/images/M_cam.jpg',                              link:'https://volcanoes.usgs.gov/volcanoes/kilauea/webcams', meta:'USGS · HI'},
-  {id:'usgs_maunaloa', name:'Mauna Loa Hawaii',            lat:19.4792, lon:-155.6001, img:'https://volcanoes.usgs.gov/observatories/hvo/cams/MLsummitF/images/M_cam.jpg',                          link:'https://volcanoes.usgs.gov/volcanoes/mauna_loa/webcams', meta:'USGS · HI'},
-  // National Park Service webcams (via NPS data streams)
-  {id:'nps_yellowstone',name:'Yellowstone Old Faithful',   lat:44.4605, lon:-110.8281, img:'https://www.nps.gov/webcams/products/oldfaithful/latest.jpg',                                            link:'https://www.nps.gov/yell/learn/photosmultimedia/webcams.htm', meta:'NPS · WY'},
-  {id:'nps_grandcanyon',name:'Grand Canyon South Rim',     lat:36.0544, lon:-112.1401, img:'https://www.nps.gov/webcams/products/grca/latest.jpg',                                                   link:'https://www.nps.gov/grca/learn/photosmultimedia/webcams.htm', meta:'NPS · AZ'},
-  // Colorado DOT — images via cotrip.org public endpoint
-  {id:'cdot_loveland', name:'Loveland Pass CO-6',          lat:39.6653, lon:-105.8933, img:'https://www.cotrip.org/dimages/ws/camera?imageURL=327',                                                  link:'https://www.cotrip.org/list/cameras', meta:'CDOT · CO'},
-  {id:'cdot_vail',     name:'Vail Pass I-70',              lat:39.5337, lon:-106.2131, img:'https://www.cotrip.org/dimages/ws/camera?imageURL=90',                                                   link:'https://www.cotrip.org/list/cameras', meta:'CDOT · CO'},
-  {id:'cdot_eisenhower',name:'Eisenhower Tunnel I-70',     lat:39.6754, lon:-105.9164, img:'https://www.cotrip.org/dimages/ws/camera?imageURL=109',                                                  link:'https://www.cotrip.org/list/cameras', meta:'CDOT · CO'},
-  // University weather station cameras
-  {id:'univ_uwseattle', name:'UW Seattle Atmospheric Cam', lat:47.6553, lon:-122.3035, img:'https://www.atmos.washington.edu/data/uw_cam/UWcam1_latest.jpg',                                        link:'https://www.atmos.washington.edu/', meta:'UW Atmospheric Sciences · WA'},
-];
-
-async function _fetchNationalCams() {
-  return CAM_NATIONAL_DB.map(c => ({ ...c, type: 'snapshot' }));
-}
-
 // ── EarthCam via YouTube — verified live stream video IDs ──────────
 // All video IDs sourced from EarthCam's official YouTube channel
 // (UC6qrG3W8SMK0jior2olka3g / @earthcam) via web search results.
@@ -14216,18 +14087,41 @@ async function _fetchNationalCams() {
 // takes a camera offline, which is visible feedback to the user.
 
 const CAM_EARTHCAM_DB = [
-  // Video IDs verified from search engine results pointing to official EarthCam YouTube titles
-  {id:'ec_timessq',  name:'EarthCam: Times Square NYC 4K',   lat:40.7580, lon:-73.9855, ytVid:'rnXIjl_Rzy4', link:'https://www.youtube.com/watch?v=rnXIjl_Rzy4', meta:'New York City · EarthCam'},
-  {id:'ec_niagara',  name:'EarthCam: Niagara Falls',         lat:43.0896, lon:-79.0849, ytVid:'qx7gry390YA', link:'https://www.youtube.com/watch?v=qx7gry390YA', meta:'Niagara Falls, NY · EarthCam'},
-  {id:'ec_nashvl',   name:'EarthCam: Nashville Cam',         lat:36.1591, lon:-86.7785, ytVid:'MrSqv7yJWIE', link:'https://www.youtube.com/watch?v=MrSqv7yJWIE', meta:'Nashville, TN · EarthCam'},
-  {id:'ec_wrigley',  name:'EarthCam: Wrigley Field Chicago', lat:41.9484, lon:-87.6553, ytVid:'LaGkqNGhZTk', link:'https://www.youtube.com/watch?v=LaGkqNGhZTk', meta:'Chicago, IL · EarthCam'},
-  {id:'ec_lasvegas', name:'EarthCam: Las Vegas Raiders Stadium', lat:36.0909, lon:-115.1833, ytVid:'_rmUXOHSf0w', link:'https://www.youtube.com/watch?v=_rmUXOHSf0w', meta:'Las Vegas, NV · EarthCam'},
-  {id:'ec_nola1',    name:'EarthCam: New Orleans Street',    lat:29.9590, lon:-90.0664, ytVid:'Ksrleaxxxhw', link:'https://www.youtube.com/watch?v=Ksrleaxxxhw', meta:'New Orleans, LA · EarthCam'},
-  {id:'ec_nola2',    name:'EarthCam: New Orleans Balcony',   lat:29.9597, lon:-90.0661, ytVid:'C32EiZiQPkQ', link:'https://www.youtube.com/watch?v=C32EiZiQPkQ', meta:'New Orleans, LA · EarthCam'},
-  {id:'ec_sandiego', name:'EarthCam: San Diego Bay',         lat:32.7201, lon:-117.1686, ytVid:'277D0mDXTBE', link:'https://www.youtube.com/watch?v=277D0mDXTBE', meta:'San Diego, CA · EarthCam'},
-  {id:'ec_dublin',   name:'EarthCam: Temple Bar Dublin',     lat:53.3454, lon:-6.2672,  ytVid:'fXnFs9Op4HY', link:'https://www.youtube.com/watch?v=fXnFs9Op4HY', meta:'Dublin, Ireland · EarthCam'},
+  // ── USA — Northeast ───────────────────────────────────────────────
+  {id:'ec_timessq',   name:'EarthCam: Times Square NYC 4K',        lat:40.7580, lon:-73.9855,  ytVid:'rnXIjl_Rzy4', link:'https://www.youtube.com/watch?v=rnXIjl_Rzy4',  meta:'New York City · EarthCam'},
+  {id:'ec_wtc',       name:'EarthCam: World Trade Center NYC',      lat:40.7127, lon:-74.0134,  ytVid:'5C9oM7C2Q9k', link:'https://www.youtube.com/watch?v=5C9oM7C2Q9k',  meta:'Lower Manhattan, NY · EarthCam'},
+  {id:'ec_niagara',   name:'EarthCam: Niagara Falls',               lat:43.0896, lon:-79.0849,  ytVid:'qx7gry390YA', link:'https://www.youtube.com/watch?v=qx7gry390YA',  meta:'Niagara Falls, NY · EarthCam'},
+  {id:'ec_philly',    name:'EarthCam: Philadelphia',                lat:39.9580, lon:-75.1736,  ytVid:'RH5fgOcO0jg', link:'https://www.youtube.com/watch?v=RH5fgOcO0jg',  meta:'Philadelphia, PA · EarthCam'},
+  // ── USA — Mid-Atlantic / Southeast ────────────────────────────────
+  {id:'ec_dc',        name:'EarthCam: Washington Monument DC',      lat:38.8895, lon:-77.0353,  ytVid:'dszl29JfIxE', link:'https://www.youtube.com/watch?v=dszl29JfIxE',  meta:'Washington, D.C. · EarthCam'},
+  {id:'ec_myrtlebch', name:'EarthCam: Myrtle Beach',                lat:33.6890, lon:-78.8879,  ytVid:'RG_-aRFPQSU', link:'https://www.youtube.com/watch?v=RG_-aRFPQSU',  meta:'Myrtle Beach, SC · EarthCam'},
+  // ── USA — South ───────────────────────────────────────────────────
+  {id:'ec_nashvl',    name:'EarthCam: Nashville Cam',               lat:36.1591, lon:-86.7785,  ytVid:'MrSqv7yJWIE', link:'https://www.youtube.com/watch?v=MrSqv7yJWIE',  meta:'Nashville, TN · EarthCam'},
+  {id:'ec_nola1',     name:'EarthCam: New Orleans Street',          lat:29.9590, lon:-90.0664,  ytVid:'Ksrleaxxxhw', link:'https://www.youtube.com/watch?v=Ksrleaxxxhw',  meta:'New Orleans, LA · EarthCam'},
+  {id:'ec_nola2',     name:'EarthCam: New Orleans Balcony',         lat:29.9597, lon:-90.0661,  ytVid:'C32EiZiQPkQ', link:'https://www.youtube.com/watch?v=C32EiZiQPkQ',  meta:'New Orleans, LA · EarthCam'},
+  {id:'ec_keywest',   name:'EarthCam: Key West Duval Street',       lat:24.5603, lon:-81.8063,  ytVid:'ETUwfugOA6M', link:'https://www.youtube.com/watch?v=ETUwfugOA6M',  meta:'Key West, FL · EarthCam'},
+  // ── USA — Midwest ─────────────────────────────────────────────────
+  {id:'ec_wrigley',   name:'EarthCam: Wrigley Field Chicago',       lat:41.9484, lon:-87.6553,  ytVid:'LaGkqNGhZTk', link:'https://www.youtube.com/watch?v=LaGkqNGhZTk',  meta:'Chicago, IL · EarthCam'},
+  // ── USA — Texas ───────────────────────────────────────────────────
+  {id:'ec_houston',   name:'EarthCam: Houston Galleria',            lat:29.7360, lon:-95.4608,  ytVid:'xPRzvMFtkl4', link:'https://www.youtube.com/watch?v=xPRzvMFtkl4',  meta:'Houston, TX · EarthCam'},
+  // ── USA — Mountain / Southwest ────────────────────────────────────
+  {id:'ec_lasvegas',  name:'EarthCam: Las Vegas Raiders Stadium',   lat:36.0909, lon:-115.1833, ytVid:'_rmUXOHSf0w', link:'https://www.youtube.com/watch?v=_rmUXOHSf0w',  meta:'Las Vegas, NV · EarthCam'},
+  // ── USA — West Coast ──────────────────────────────────────────────
+  {id:'ec_seattle',   name:'EarthCam: Seattle Space Needle',        lat:47.6205, lon:-122.3493, ytVid:'4_uWzUhz8-8', link:'https://www.youtube.com/watch?v=4_uWzUhz8-8',  meta:'Seattle, WA · EarthCam'},
+  {id:'ec_sfbay',     name:'EarthCam: San Francisco Bay',           lat:37.8049, lon:-122.4394, ytVid:'ZEuT7E8orjw', link:'https://www.youtube.com/watch?v=ZEuT7E8orjw',  meta:'San Francisco, CA · EarthCam'},
+  {id:'ec_sandiego',  name:'EarthCam: San Diego Bay',               lat:32.7201, lon:-117.1686, ytVid:'277D0mDXTBE', link:'https://www.youtube.com/watch?v=277D0mDXTBE',  meta:'San Diego, CA · EarthCam'},
+  {id:'ec_la',        name:'EarthCam: Los Angeles Hollywood 5K',    lat:34.1013, lon:-118.3379, ytVid:'7A7EiEJVKPg', link:'https://www.youtube.com/watch?v=7A7EiEJVKPg',  meta:'Los Angeles, CA · EarthCam'},
+  // ── USA — Hawaii ──────────────────────────────────────────────────
+  {id:'ec_waikiki',   name:'EarthCam: Waikiki Beach Honolulu',      lat:21.2792, lon:-157.8299, ytVid:'z_Dn0wGfGSU', link:'https://www.youtube.com/watch?v=z_Dn0wGfGSU',  meta:'Honolulu, HI · EarthCam'},
+  {id:'ec_waikoloa',  name:'EarthCam: Waikoloa Big Island Hawaii',  lat:19.9243, lon:-155.8869, ytVid:'XBWaG6q9ntg', link:'https://www.youtube.com/watch?v=XBWaG6q9ntg',  meta:'Waikoloa, HI · EarthCam'},
+  // ── Europe ────────────────────────────────────────────────────────
+  {id:'ec_dublin',    name:'EarthCam: Temple Bar Dublin',           lat:53.3454, lon:-6.2672,   ytVid:'fXnFs9Op4HY', link:'https://www.youtube.com/watch?v=fXnFs9Op4HY',  meta:'Dublin, Ireland · EarthCam'},
+  {id:'ec_abbeyroad', name:'EarthCam: Abbey Road London',           lat:51.5320, lon:-0.1775,   ytVid:'Lxqcg1qt0XU', link:'https://www.youtube.com/watch?v=Lxqcg1qt0XU',  meta:'London, UK · EarthCam'},
+  {id:'ec_amsterdam', name:'EarthCam: Amsterdam Canal',             lat:52.3730, lon:4.8920,    ytVid:'_rn6lFr3u9Q', link:'https://www.youtube.com/watch?v=_rn6lFr3u9Q',  meta:'Amsterdam, Netherlands · EarthCam'},
+  {id:'ec_budapest',  name:'EarthCam: Budapest Danube View',        lat:47.4970, lon:19.0414,   ytVid:'SPmtLnWJ4SY', link:'https://www.youtube.com/watch?v=SPmtLnWJ4SY',  meta:'Budapest, Hungary · EarthCam'},
+  // ── Africa / Wildlife ─────────────────────────────────────────────
+  {id:'ec_botswana',  name:'EarthCam: Chobe Watering Hole Botswana',lat:-17.800, lon:25.150,    ytVid:'FEdZ87fxV2w', link:'https://www.youtube.com/watch?v=FEdZ87fxV2w',  meta:'Chobe, Botswana · EarthCam'},
 ];
-
 async function _fetchEarthCamStreams() {
   return CAM_EARTHCAM_DB.map(c => ({ ...c, type: 'earthcam' }));
 }
@@ -14238,30 +14132,17 @@ async function _fetchCamsForViewport() {
 
   if (!_camsLayer) _camsLayer = L.layerGroup().addTo(map);
 
-  // 1. Static DB (instant)
-  const staticAdded = _loadStaticCams();
-
-  // 2. WSDOT (viewport-filtered) + national hard-coded + EarthCam global in parallel
-  const [wsdotCams, nationalCams, ecCams] = await Promise.all([
-    _fetchWSDOTCams(), _fetchNationalCams(), _fetchEarthCamStreams()
-  ]);
-
-  const b = map.getBounds();
-  // WSDOT and national cameras filtered to current viewport; EarthCam always shown
-  const filtered = [...wsdotCams, ...nationalCams].filter(c => b.contains([c.lat, c.lon]));
-
-  const allDynamic = [...filtered, ...ecCams];
-  let dynAdded = 0;
-  allDynamic.forEach(cam => {
+  const ecCams = await _fetchEarthCamStreams();
+  let added = 0;
+  ecCams.forEach(cam => {
     if (_camsSeenIds.has(cam.id)) return;
     _camsSeenIds.add(cam.id);
     _placeCamMarker(cam);
-    dynAdded++;
+    added++;
   });
 
-  const total = staticAdded + dynAdded;
-  if (total > 0) showToast(`📹 ${total} camera${total > 1 ? 's' : ''} loaded`, 1500);
-  else           showToast('📹 No cameras in this area', 2000);
+  if (added > 0) showToast(`📹 ${added} EarthCam live stream${added > 1 ? 's' : ''} loaded`, 1500);
+  else           showToast('📹 Cameras already loaded', 1500);
 
   _camsFetching = false;
 }
