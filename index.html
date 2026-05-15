@@ -4530,7 +4530,7 @@ body.gwcfc-crosshair #map::after {
       <div id="overlay-bar">
         <div class="overlay-pill" id="op-lightning" onclick="toggleOverlayPill('lightning')" title="Lightning">⚡</div>
         <div class="overlay-pill" id="op-cams"      onclick="toggleOverlayPill('cams')"      title="Cams"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
-        <div class="overlay-pill" id="op-radio"     onclick="toggleOverlayPill('radio')"     title="Radio">📻</div>
+        <div class="overlay-pill" id="op-radio"     onclick="toggleOverlayPill('radio')"     title="NOAA Weather Radio Stations"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></div>
         <div class="overlay-pill active" id="op-forecasts" onclick="toggleOverlayPill('forecasts')" title="Forecasts">🔮</div>
         <div class="overlay-pill" id="op-reports"  onclick="toggleOverlayPill('reports')"  title="Storm Reports">⛈</div>
         <div class="overlay-pill" id="op-hhunt" onclick="toggleOverlayPill('hhunt')" title="Hurricane Hunters">🛩️</div>
@@ -7025,6 +7025,10 @@ function toggleLayer(id) {
   if (id === 'cams') {
     if (activeLayers[id]) loadWindyCams();
     else { _clearCams(); closeCamPopup(); }
+  }
+  if (id === 'radio') {
+    if (activeLayers.radio) loadNWRStations();
+    else { if (_nwrLayer) { map.removeLayer(_nwrLayer); } }
   }
   if (['spc1','spc2','spc3'].includes(id) && activeLayers[id]) loadSPCOutlook(id);
   if (id === 'spcrpts' && activeLayers[id]) loadStormReports();
@@ -9948,20 +9952,65 @@ function _windCanvasClick(e, mode) {
 
 let _windBarbReqId = 0, _gustBarbReqId = 0;
 
+// Phase 0 helper — 200 evenly-spaced points, single Open-Meteo call, ~300ms first paint
+async function _fetchWindQuick(bounds) {
+  const s = bounds.getSouth(), n = bounds.getNorth();
+  const w = bounds.getWest(),  e = bounds.getEast();
+  const area    = (n - s) * (e - w);
+  const spacing = Math.max(0.5, Math.sqrt(area / 200));
+  const pts = [];
+  for (let lat = s + spacing / 2; lat < n; lat += spacing)
+    for (let lon = w + spacing / 2; lon < e; lon += spacing)
+      pts.push({ id: `Q${lat.toFixed(2)}x${lon.toFixed(2)}`, name: '',
+                 lat: +lat.toFixed(3), lon: +lon.toFixed(3) });
+  const sample = pts.slice(0, 200);
+  if (!sample.length) return [];
+  try {
+    const latStr = sample.map(p => p.lat.toFixed(3)).join(',');
+    const lonStr = sample.map(p => p.lon.toFixed(3)).join(',');
+    const res = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}` +
+      `&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m&wind_speed_unit=kmh&forecast_days=1`,
+      { signal: _abortSignal(8000) }
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const arr  = Array.isArray(data) ? data : [data];
+    return sample.map((p, i) => ({
+      ...p, kind: 'land',
+      obs: {
+        speedKph: arr[i]?.current?.wind_speed_10m     ?? null,
+        gustKph:  arr[i]?.current?.wind_gusts_10m     ?? null,
+        dirDeg:   arr[i]?.current?.wind_direction_10m ?? null,
+        tempC: null, pressurePa: null, time: new Date().toISOString()
+      }
+    }));
+  } catch(e) { return []; }
+}
+
 async function loadWindBarbs() {
   if (!windBarbActive) return;
   const reqId = ++_windBarbReqId;
   _initWindCanvas('regular');
   try {
-    // Phase 1 — fast coarse grid (~800 pts) shows barbs in < 1 second
     const bounds = map.getBounds();
-    const zoom   = map.getZoom();
+
+    // Phase 0 — single API call, 200 evenly-distributed pts, renders in ~300ms
+    const quick = await _fetchWindQuick(bounds);
+    if (reqId !== _windBarbReqId) return;
+    if (quick.length > 0) {
+      _windBarbData = quick.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+      _drawWindCanvas('regular');
+    }
+
+    // Phase 1 — coarse grid (~800 pts, 4 parallel calls), fills gaps
     const coarse = await _fetchNWSStations(bounds, 800);
     if (reqId !== _windBarbReqId) return;
     if (coarse.length > 0) {
       _windBarbData = coarse.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
       _drawWindCanvas('regular');
     }
+
     // Phase 2 — full density in background, swapped in seamlessly
     const full = await _loadObservations();
     if (reqId !== _windBarbReqId) return;
@@ -9979,6 +10028,15 @@ async function loadGustBarbs() {
   _initWindCanvas('gust');
   try {
     const bounds = map.getBounds();
+
+    // Phase 0 — instant first paint
+    const quick = await _fetchWindQuick(bounds);
+    if (reqId !== _gustBarbReqId) return;
+    if (quick.length > 0) {
+      _gustBarbData = quick.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+      _drawWindCanvas('gust');
+    }
+
     const coarse = await _fetchNWSStations(bounds, 800);
     if (reqId !== _gustBarbReqId) return;
     if (coarse.length > 0) {
@@ -14668,6 +14726,55 @@ async function _fetchCamsForViewport() {
 function _onCamsMoveEnd() {
   clearTimeout(_camsTimer);
   _camsTimer = setTimeout(_fetchCamsForViewport, 700);
+}
+
+// ── NOAA Weather Radio (NWR) stations ────────────────────────────
+let _nwrLayer  = null;
+let _nwrLoaded = false;
+
+async function loadNWRStations() {
+  if (_nwrLoaded) {
+    if (_nwrLayer && !map.hasLayer(_nwrLayer)) _nwrLayer.addTo(map);
+    return;
+  }
+  showToast('📡 Loading NWR stations…', 1500);
+  try {
+    const res = await fetch(
+      'https://api.weather.gov/stations?stationType=NWR&limit=500',
+      { headers: { Accept: 'application/geo+json' }, signal: _abortSignal(15000) }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const features = data.features || [];
+    _nwrLayer  = L.layerGroup().addTo(map);
+    _nwrLoaded = true;
+    features.forEach(f => {
+      if (!f.geometry || f.geometry.type !== 'Point') return;
+      const [lon, lat] = f.geometry.coordinates;
+      const p = f.properties;
+      const call = p.stationIdentifier || '—';
+      const name = p.name || call;
+      const freqM = name.match(/1\d{2}\.\d{3}/);
+      const freq  = freqM ? freqM[0] + ' MHz' : '162.4–162.55 MHz';
+      L.circleMarker([lat, lon], {
+        radius: 5, color: '#00cfff', fillColor: '#004d80',
+        fillOpacity: 0.85, weight: 1.5
+      }).bindPopup(`<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:170px">
+          <div style="color:#00cfff;font-weight:bold;margin-bottom:4px;">📡 ${call}</div>
+          <div style="color:#aaa;font-size:10px;margin-bottom:6px;">${name}</div>
+          <table style="border-collapse:collapse;font-size:10px;line-height:1.6">
+            <tr><td style="color:#888;padding-right:8px">Freq</td><td style="color:#88ff88">${freq}</td></tr>
+            <tr><td style="color:#888;padding-right:8px">Type</td><td>NOAA Weather Radio</td></tr>
+          </table>
+          <div style="margin-top:6px"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#00cfff;font-size:10px">weather.gov/nwr ↗</a></div>
+        </div>`)
+        .addTo(_nwrLayer);
+    });
+    showToast(`📡 ${features.length} NWR stations`, 1800);
+  } catch(e) {
+    showToast('📡 NWR stations unavailable', 2000);
+    console.warn('NWR load error:', e);
+  }
 }
 
 async function loadWindyCams() {
