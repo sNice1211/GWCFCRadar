@@ -9484,7 +9484,7 @@ async function _fetchNWSStations(bounds, cap) {
     try {
       const res = await fetch(
         `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}` +
-        `&current=${OM_FIELDS}&wind_speed_unit=kmh&temperature_unit=celsius&forecast_days=1`,
+        `&current=${OM_FIELDS}&wind_speed_unit=kmh&temperature_unit=celsius`,
         { signal: _abortSignal(15000) }
       );
       if (res.status === 429 && retries > 0) {
@@ -9720,7 +9720,7 @@ async function _fetchNDBCBuoys(bounds) {
       const res = await fetch(
         `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}` +
         `&current=wind_speed_10m,wind_gusts_10m,wind_direction_10m,temperature_2m,surface_pressure` +
-        `&wind_speed_unit=kmh&temperature_unit=celsius&forecast_days=1`,
+        `&wind_speed_unit=kmh&temperature_unit=celsius`,
         { signal: _abortSignal(6000) }
       );
       if (!res.ok) return [];
@@ -9828,7 +9828,7 @@ function _initWindCanvas(mode) {
   if (isGust ? _gustCanvas : _windCanvas) return;
   const c = document.createElement('canvas');
   c.id = isGust ? '_gustBarbCanvas' : '_windBarbCanvas';
-  c.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:401;';
+  c.style.cssText = 'position:absolute;top:0;left:0;display:block;pointer-events:none;z-index:1000;';
   document.getElementById('map').appendChild(c);
   const ctx = c.getContext('2d');
   if (isGust) { _gustCanvas = c; _gustCtx = ctx; }
@@ -10003,45 +10003,37 @@ async function loadWindBarbs() {
   _initWindCanvas('regular');
   _windBarbData = [];
 
-  const draw = (pts) => {
+  // Single call: 50-pt grid. No complex phases — just fetch and draw.
+  try {
+    const pts = _viewportGrid(map.getBounds(), 50);
+    if (!pts.length) return;
+    const data = await _omFetch(pts);
     if (reqId !== _windBarbReqId) return;
-    const filtered = pts.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (!filtered.length) return;
-    _windBarbData = filtered;
+    const valid = data.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!valid.length) { showToast('⚠️ Wind: no data returned', 2500); return; }
+    _windBarbData = valid;
     _drawWindCanvas('regular');
-    return filtered.length;
-  };
+    // Background: expand to full density
+    _loadWindFull(reqId);
+  } catch(e) {
+    console.error('[loadWindBarbs]', e);
+    showToast('⚠️ Wind barbs: ' + e.message, 3500);
+  }
+}
 
-  const bounds = map.getBounds();
-  const center = map.getCenter();
-
-  // Phase 0 — single center-point call (~150ms): guarantees at least 1 barb appears
+async function _loadWindFull(reqId) {
   try {
-    const cpt = [{ id: 'C', name: '', lat: +center.lat.toFixed(3), lon: +center.lng.toFixed(3) }];
-    const c0 = await _omFetch(cpt);
-    if (reqId === _windBarbReqId && c0.length) draw(c0);
-  } catch(e) { console.warn('[wind p0]', e.message); }
-
-  if (reqId !== _windBarbReqId) return;
-
-  // Phase 1 — 50-pt grid across viewport (~300ms): fills in coverage
-  try {
-    const q = await _omFetch(_viewportGrid(bounds, 50));
-    if (reqId === _windBarbReqId && q.length) draw(q);
-    else if (!q.length) console.warn('[wind p1] open-meteo returned 0 valid pts');
-  } catch(e) { console.warn('[wind p1]', e.message); showToast('⚠️ Wind data error: ' + e.message, 3000); }
-
-  if (reqId !== _windBarbReqId) return;
-
-  // Phase 2 — full density: named ASOS + dense grid + ocean buoys
-  try {
+    const bounds = map.getBounds();
     const [grid, buoys] = await Promise.all([
       _fetchNWSStations(bounds, 800).catch(() => []),
       _fetchNDBCBuoys(bounds).catch(() => [])
     ]);
-    if (reqId !== _windBarbReqId) return;
-    draw([...grid, ...buoys]);
-  } catch(e) { console.warn('[wind p2]', e.message); }
+    if (reqId !== _windBarbReqId || !windBarbActive) return;
+    const valid = [...grid, ...buoys].filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!valid.length) return;
+    _windBarbData = valid;
+    _drawWindCanvas('regular');
+  } catch(e) { console.warn('[windFull]', e.message); }
 }
 
 async function loadGustBarbs() {
@@ -10050,43 +10042,35 @@ async function loadGustBarbs() {
   _initWindCanvas('gust');
   _gustBarbData = [];
 
-  const draw = (pts) => {
+  try {
+    const pts = _viewportGrid(map.getBounds(), 50);
+    if (!pts.length) return;
+    const data = await _omFetch(pts);
     if (reqId !== _gustBarbReqId) return;
-    const filtered = pts.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (!filtered.length) return;
-    _gustBarbData = filtered;
+    const valid = data.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!valid.length) { showToast('⚠️ Gusts: no data returned', 2500); return; }
+    _gustBarbData = valid;
     _drawWindCanvas('gust');
-  };
+    _loadGustFull(reqId);
+  } catch(e) {
+    console.error('[loadGustBarbs]', e);
+    showToast('⚠️ Gust barbs: ' + e.message, 3500);
+  }
+}
 
-  const bounds = map.getBounds();
-  const center = map.getCenter();
-
-  // Phase 0 — single center point (~150ms)
+async function _loadGustFull(reqId) {
   try {
-    const cpt = [{ id: 'C', name: '', lat: +center.lat.toFixed(3), lon: +center.lng.toFixed(3) }];
-    const c0 = await _omFetch(cpt);
-    if (reqId === _gustBarbReqId && c0.length) draw(c0);
-  } catch(e) { console.warn('[gust p0]', e.message); }
-
-  if (reqId !== _gustBarbReqId) return;
-
-  // Phase 1 — 50-pt grid
-  try {
-    const q = await _omFetch(_viewportGrid(bounds, 50));
-    if (reqId === _gustBarbReqId && q.length) draw(q);
-  } catch(e) { console.warn('[gust p1]', e.message); }
-
-  if (reqId !== _gustBarbReqId) return;
-
-  // Phase 2 — full density
-  try {
+    const bounds = map.getBounds();
     const [grid, buoys] = await Promise.all([
       _fetchNWSStations(bounds, 800).catch(() => []),
       _fetchNDBCBuoys(bounds).catch(() => [])
     ]);
-    if (reqId !== _gustBarbReqId) return;
-    draw([...grid, ...buoys]);
-  } catch(e) { console.warn('[gust p2]', e.message); }
+    if (reqId !== _gustBarbReqId || !windGustBarbActive) return;
+    const valid = [...grid, ...buoys].filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
+    if (!valid.length) return;
+    _gustBarbData = valid;
+    _drawWindCanvas('gust');
+  } catch(e) { console.warn('[gustFull]', e.message); }
 }
 
 let _windBarbDebounce = null, _gustBarbDebounce = null;
