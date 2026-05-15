@@ -2526,6 +2526,7 @@ body {
   bottom: 20px;
   right: 20px;
   width: 390px;
+  touch-action: none;
   background: rgba(8,12,18,0.97);
   border: 1.5px solid var(--accent2);
   border-radius: 12px;
@@ -2543,7 +2544,10 @@ body {
   padding: 10px 12px 8px;
   border-bottom: 1px solid rgba(0,200,200,0.15);
   gap: 8px;
+  cursor: grab;
+  user-select: none;
 }
+#cam-popup-header:active { cursor: grabbing; }
 #cam-popup-name {
   font-family: var(--display);
   font-size: 13px;
@@ -9946,10 +9950,10 @@ async function loadWindBarbs() {
   const reqId = ++_windBarbReqId;
   _initWindCanvas('regular');
   try {
-    // Phase 1 — fast coarse grid (~400 pts) shows barbs in < 1 second
+    // Phase 1 — fast coarse grid (~800 pts) shows barbs in < 1 second
     const bounds = map.getBounds();
     const zoom   = map.getZoom();
-    const coarse = await _fetchNWSStations(bounds, 400);
+    const coarse = await _fetchNWSStations(bounds, 800);
     if (reqId !== _windBarbReqId) return;
     if (coarse.length > 0) {
       _windBarbData = coarse.filter(s => s.obs?.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
@@ -9972,7 +9976,7 @@ async function loadGustBarbs() {
   _initWindCanvas('gust');
   try {
     const bounds = map.getBounds();
-    const coarse = await _fetchNWSStations(bounds, 400);
+    const coarse = await _fetchNWSStations(bounds, 800);
     if (reqId !== _gustBarbReqId) return;
     if (coarse.length > 0) {
       _gustBarbData = coarse.filter(s => s.obs?.gustKph != null && _ptInPolyUnion(s.lat, s.lon));
@@ -13983,6 +13987,52 @@ function closeCamPopup() {
   clearInterval(_camPopupRefreshTimer);
 }
 
+(function _initCamDrag() {
+  let dragging = false, ox = 0, oy = 0;
+
+  function onDown(e) {
+    if (e.target.closest('#cam-popup-close')) return;
+    const popup = document.getElementById('cam-popup');
+    const r = popup.getBoundingClientRect();
+    // Switch from bottom/right anchoring to top/left so we can move freely
+    popup.style.bottom = 'auto';
+    popup.style.right  = 'auto';
+    popup.style.top    = r.top  + 'px';
+    popup.style.left   = r.left + 'px';
+    const cx = e.clientX ?? e.touches?.[0]?.clientX;
+    const cy = e.clientY ?? e.touches?.[0]?.clientY;
+    ox = cx - r.left;
+    oy = cy - r.top;
+    dragging = true;
+    e.preventDefault();
+  }
+
+  function onMove(e) {
+    if (!dragging) return;
+    const popup = document.getElementById('cam-popup');
+    const cx = e.clientX ?? e.touches?.[0]?.clientX;
+    const cy = e.clientY ?? e.touches?.[0]?.clientY;
+    const maxX = window.innerWidth  - popup.offsetWidth;
+    const maxY = window.innerHeight - popup.offsetHeight;
+    popup.style.left = Math.min(Math.max(0, cx - ox), maxX) + 'px';
+    popup.style.top  = Math.min(Math.max(0, cy - oy), maxY) + 'px';
+    e.preventDefault();
+  }
+
+  function onUp() { dragging = false; }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const hdr = document.getElementById('cam-popup-header');
+    if (!hdr) return;
+    hdr.addEventListener('mousedown',  onDown,  { passive: false });
+    hdr.addEventListener('touchstart', onDown,  { passive: false });
+    window.addEventListener('mousemove',  onMove, { passive: false });
+    window.addEventListener('touchmove',  onMove, { passive: false });
+    window.addEventListener('mouseup',    onUp);
+    window.addEventListener('touchend',   onUp);
+  });
+})();
+
 // ── Show camera live-view panel (fixed bottom-right) ─────────────
 function _showCamPopup(cam) {
   const popup   = document.getElementById('cam-popup');
@@ -14121,6 +14171,14 @@ const CAM_EARTHCAM_DB = [
   {id:'ec_budapest',  name:'EarthCam: Budapest Danube View',        lat:47.4970, lon:19.0414,   ytVid:'SPmtLnWJ4SY', link:'https://www.youtube.com/watch?v=SPmtLnWJ4SY',  meta:'Budapest, Hungary · EarthCam'},
   // ── Africa / Wildlife ─────────────────────────────────────────────
   {id:'ec_botswana',  name:'EarthCam: Chobe Watering Hole Botswana',lat:-17.800, lon:25.150,    ytVid:'FEdZ87fxV2w', link:'https://www.youtube.com/watch?v=FEdZ87fxV2w',  meta:'Chobe, Botswana · EarthCam'},
+  // ── Additional USA streams ────────────────────────────────────────
+  {id:'ec_wtc2',      name:'EarthCam: 9/11 Memorial NYC',           lat:40.7115, lon:-74.0134,  ytVid:'PI63KrE3UGo', link:'https://www.youtube.com/watch?v=PI63KrE3UGo',  meta:'Lower Manhattan, NY · EarthCam'},
+  {id:'ec_timessq2',  name:'EarthCam: Times Square Crossroads',     lat:40.7577, lon:-73.9857,  ytVid:'PGrq-2mju2s', link:'https://www.youtube.com/watch?v=PGrq-2mju2s',  meta:'New York City · EarthCam'},
+  {id:'ec_sfbay2',    name:'EarthCam: San Francisco Alcatraz View', lat:37.8070, lon:-122.4150, ytVid:'koEolHhg_J4', link:'https://www.youtube.com/watch?v=koEolHhg_J4',  meta:'San Francisco, CA · EarthCam'},
+  {id:'ec_waikiki2',  name:'EarthCam: Waikiki Hilton Hawaiian Vlg', lat:21.2800, lon:-157.8360, ytVid:'vqC7y3IWuV4', link:'https://www.youtube.com/watch?v=vqC7y3IWuV4',  meta:'Honolulu, HI · EarthCam'},
+  {id:'ec_kennedy',   name:'EarthCam: Kennedy Space Center FL',     lat:28.5734, lon:-80.6490,  ytVid:'6qUrCI9HovE', link:'https://www.youtube.com/watch?v=6qUrCI9HovE',  meta:'Cape Canaveral, FL · EarthCam'},
+  // ── Additional Europe streams ─────────────────────────────────────
+  {id:'ec_abbeyrd2',  name:'EarthCam: Abbey Road London Alt',       lat:51.5322, lon:-0.1773,   ytVid:'j-d93A6v73Q', link:'https://www.youtube.com/watch?v=j-d93A6v73Q',  meta:'London, UK · EarthCam'},
 ];
 async function _fetchEarthCamStreams() {
   return CAM_EARTHCAM_DB.map(c => ({ ...c, type: 'earthcam' }));
@@ -19293,7 +19351,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <!-- Camera Live View Panel (fixed, right-side) -->
 <div id="cam-popup">
-  <div id="cam-popup-header">
+  <div id="cam-popup-header" title="Drag to move">
+    <svg style="flex-shrink:0;opacity:0.4;" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="white"><path d="M8 6a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm8 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM8 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm8 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM8 22a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm8 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg>
     <div id="cam-popup-name">Loading…</div>
     <span id="cam-popup-close" onclick="closeCamPopup()" title="Close">✕</span>
   </div>
