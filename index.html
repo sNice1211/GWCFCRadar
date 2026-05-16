@@ -5100,7 +5100,9 @@ function initMap() {
   });
   map.on('zoomend', () => {
     document.getElementById('sb-zoom').textContent = map.getZoom();
+    _applyRadarPolyMask();
   });
+  map.on('moveend', _applyRadarPolyMask);
   document.getElementById('sb-zoom').textContent = map.getZoom();
 
   // Double-click → lat/lon popup
@@ -7075,6 +7077,41 @@ function _ptInPolyUnion(lat, lng) {
   return _polyFilter.polygons.some(poly => _ptInPoly(lat, lng, poly));
 }
 
+// ── Radar polygon clip mask ──
+let _radarClipSvg = null;
+
+function _applyRadarPolyMask() {
+  const pane = map.getPane('radarPane');
+  if (!pane) return;
+  if (_radarClipSvg && _radarClipSvg.parentNode) { _radarClipSvg.remove(); _radarClipSvg = null; }
+  pane.style.clipPath = '';
+  if (!_polyFilter.active || !_polyFilter.polygons.length) return;
+
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;pointer-events:none;';
+  const defs  = document.createElementNS(ns, 'defs');
+  const clip  = document.createElementNS(ns, 'clipPath');
+  clip.id = '_radar-poly-clip';
+  clip.setAttribute('clipPathUnits', 'userSpaceOnUse');
+
+  _polyFilter.polygons.forEach(poly => {
+    const svgPoly = document.createElementNS(ns, 'polygon');
+    const pts = poly.map(pt => {
+      const px = map.latLngToLayerPoint(L.latLng(pt.lat, pt.lng));
+      return px.x + ',' + px.y;
+    }).join(' ');
+    svgPoly.setAttribute('points', pts);
+    clip.appendChild(svgPoly);
+  });
+
+  defs.appendChild(clip);
+  svg.appendChild(defs);
+  pane.appendChild(svg);
+  _radarClipSvg = svg;
+  pane.style.clipPath = 'url(#_radar-poly-clip)';
+}
+
 // Re-run all active layers so they re-render filtered
 function _applyPolyFilterNow() {
   if (alertsLayer || activeLayers.tornado || activeLayers.tstm || activeLayers.flood) loadAlerts();
@@ -7086,6 +7123,8 @@ function _applyPolyFilterNow() {
   if (activeLayers.spc2)      loadSPCOutlook('spc2');
   if (activeLayers.spc3)      loadSPCOutlook('spc3');
   if (_reportsActive)         loadStormReports();
+  if (activeLayers.radio) { _nwrLoaded = false; if (_nwrLayer) { map.removeLayer(_nwrLayer); _nwrLayer = null; } loadNWRStations(); }
+  _applyRadarPolyMask();
   // Lightning: filter already applied live in addLightningStrike
   // EAS: text panel only, no geo coords — skip
 }
@@ -7106,6 +7145,7 @@ function _clearPolyFilter() {
   if (!_polyFilter.active) return;
   _polyFilter.active = false;
   _polyFilter.polygons = [];
+  _applyRadarPolyMask();
   // Show filter-off indicator then reload
   const pill = document.getElementById('_poly-filter-pill');
   if (pill) pill.remove();
@@ -12482,6 +12522,7 @@ async function loadNWRStations() {
       const lat = p ? parseFloat(p.LAT) : NaN;
       const lon = p ? parseFloat(p.LON) : NaN;
       if (!isFinite(lat) || !isFinite(lon)) return;
+      if (!_ptInPolyUnion(lat, lon)) return;
 
       const status   = p?.STATUS || 'NORMAL';
       const isOut    = status === 'OUT OF SERVICE';
