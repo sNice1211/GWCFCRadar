@@ -8807,63 +8807,69 @@ async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
     const latMax = Math.min( 70, bounds.getNorth());
     const lngMin = bounds.getWest();
     const lngMax = bounds.getEast();
-    const GRID = Math.min(10, Math.max(6, Math.round(map.getZoom() <= 4 ? 7 : map.getZoom() <= 6 ? 8 : 10)));
+    const zoom = map.getZoom();
+    // Dense grid: more dots at higher zoom for better coverage
+    const GRID = zoom <= 4 ? 10 : zoom <= 6 ? 13 : zoom <= 8 ? 15 : 18;
+    const BATCH = 100; // max per API call
+
     const pts = [];
     for (let r = 0; r < GRID; r++)
       for (let c = 0; c < GRID; c++)
         pts.push({ lat: latMin + (latMax-latMin)*(r/(GRID-1)),
                    lng: lngMin + (lngMax-lngMin)*(c/(GRID-1)) });
 
-    const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
-    const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
-
+    // Fetch in batches to stay within URL limits
     const allFields = 'wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,sea_surface_temperature';
-    const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}&current=${allFields}&length_unit=imperial&temperature_unit=fahrenheit`;
+    const results = new Array(pts.length).fill(null);
+    for (let start = 0; start < pts.length; start += BATCH) {
+      const chunk = pts.slice(start, start + BATCH);
+      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+      const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}&current=${allFields}&length_unit=imperial&temperature_unit=fahrenheit`;
+      try {
+        const res = await fetch(url, { signal: _abortSignal(12000) });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const arr = Array.isArray(data) ? data : (data.current ? [data] : []);
+        arr.forEach((d, i) => { results[start + i] = d; });
+      } catch(e) { /* skip batch on error */ }
+    }
 
-    const res  = await fetch(url, { signal: _abortSignal(10000) });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    // Marine API returns array for multi-point, object for single point, or error object
-    const arr = Array.isArray(data) ? data : (data.current ? [data] : null);
-    if (!arr) throw new Error(data.reason || 'Invalid response');
-
-    const hField = fieldKey === 'tide' ? 'wave_height'        : 'swell_wave_height';
-    const dField = fieldKey === 'tide' ? 'wave_direction'     : 'swell_wave_direction';
-    const label  = fieldKey === 'tide' ? 'Wave'               : 'Swell';
+    const hField = fieldKey === 'tide' ? 'wave_height'      : 'swell_wave_height';
+    const label  = fieldKey === 'tide' ? 'Wave'             : 'Swell';
+    const dirs16 = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    const compass = deg => deg != null ? dirs16[Math.round(deg/22.5)%16] + ' (' + Math.round(deg) + '°)' : '—';
+    const fmt = (v, u, dp=1) => v != null ? v.toFixed(dp) + ' ' + u : '—';
 
     pts.forEach((pt, i) => {
-      const d   = arr[i]?.current || {};
-      const h   = d[hField];
-      const dir = d[dField];
-      if (h == null) return; // land — marine API returns null
+      const d = results[i]?.current || {};
+      const h = d[hField];
+      if (h == null) return; // land — marine API returns null for land points
       const [rv,gv,bv] = _waveColor(h);
       const col = `rgb(${rv},${gv},${bv})`;
 
-      // Single SVG arrow — renders all at once, no separate polylines
-      const S = 48, cx = 24, cy = 24;
-      const rotDeg = dir != null ? dir : 0; // wave_direction = direction waves travel TO
-      const shaftLen = 10 + Math.min(h / 20, 1) * 12;
-      const tipY  = cy - shaftLen;
-      const baseY = cy + shaftLen * 0.35;
-      const headSize = 6;
-      const svgArrow = dir != null
-        ? `<line x1="${cx}" y1="${baseY}" x2="${cx}" y2="${tipY}" stroke="${col}" stroke-width="2.5" stroke-linecap="round"/>
-           <polyline points="${cx-headSize},${tipY+headSize*1.4} ${cx},${tipY} ${cx+headSize},${tipY+headSize*1.4}" stroke="${col}" stroke-width="2.5" stroke-linejoin="round" fill="none"/>`
-        : `<circle cx="${cx}" cy="${cy}" r="5" fill="${col}" opacity="0.9"/>`;
-      const ftLabel = `<text x="${cx}" y="${S-2}" text-anchor="middle" font-size="8" font-family="IBM Plex Mono,monospace" fill="${col}" opacity="0.95">${h.toFixed(1)}</text>`;
+      // Dot size scales slightly with wave height, capped
+      const dotR = Math.round(10 + Math.min(h / 25, 1) * 6); // 10–16px radius
+      const dotD = dotR * 2;
+      const ft   = h < 10 ? h.toFixed(1) : Math.round(h) + '';
+      const fSz  = dotR >= 13 ? 9 : 8;
 
-      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${S}" height="${S}" style="overflow:visible;transform:rotate(${rotDeg}deg);transform-origin:${cx}px ${cy}px;">${svgArrow}${ftLabel}</svg>`;
-      const icon = L.divIcon({ className: '', html: `<div style="width:${S}px;height:${S}px;cursor:pointer;">${svg}</div>`, iconSize: [S, S], iconAnchor: [cx, cy] });
+      const html = `<div style="
+        width:${dotD}px;height:${dotD}px;
+        background:${col};
+        border-radius:50%;
+        border:1.5px solid rgba(0,0,0,0.35);
+        box-shadow:0 0 5px ${col}88,0 1px 3px rgba(0,0,0,0.5);
+        display:flex;align-items:center;justify-content:center;
+        cursor:pointer;
+      "><span style="font-family:'IBM Plex Mono',monospace;font-size:${fSz}px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.8);line-height:1;pointer-events:none;">${ft}</span></div>`;
+      const icon = L.divIcon({ className: '', html, iconSize: [dotD, dotD], iconAnchor: [dotR, dotR] });
       const m = L.marker([pt.lat, pt.lng], { icon, interactive: true });
 
-      // Rich popup with all wave fields
-      const dirs16 = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
-      const compass = (deg) => deg != null ? dirs16[Math.round(deg/22.5)%16] + ' (' + Math.round(deg) + '°)' : '—';
-      const fmt = (v, u, dp=1) => v != null ? v.toFixed(dp) + ' ' + u : '—';
       const sstF = d.sea_surface_temperature;
       m.bindPopup(`<div class="data-popup-inner">
         <div class="dp-coord">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</div>
-        <div class="dp-section">🌊 ${label} (Combined)</div>
+        <div class="dp-section">🌊 ${label}</div>
         <div class="dp-row"><span>Height</span><b style="color:${col}">${fmt(d.wave_height,'ft')}</b></div>
         <div class="dp-row"><span>Direction</span><b>${compass(d.wave_direction)}</b></div>
         <div class="dp-row"><span>Period</span><b>${fmt(d.wave_period,'s')}</b></div>
@@ -8879,7 +8885,6 @@ async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
       </div>`, { className: 'data-popup', maxWidth: 240 });
       m.addTo(group);
     });
-    // Atomic swap: add new layer then notify caller (which removes old)
     group.addTo(map);
     onLoad(group);
   } catch(e) { console.warn('Waves render error:', e); }
