@@ -12415,11 +12415,11 @@ function _onCamsMoveEnd() {
   _camsTimer = setTimeout(_fetchCamsForViewport, 700);
 }
 
-// ── NOAA Weather Radio (NWR) stations — transmitters.weatherradio.org ──
+// ── NOAA Weather Radio (NWR) stations — transmitters + icestats ──
 let _nwrLayer  = null;
 let _nwrLoaded = false;
 
-function _nwrIcon(status, pwr) {
+function _nwrIcon(status, pwr, hasStream) {
   const isNormal  = status === 'NORMAL';
   const isOut     = status === 'OUT OF SERVICE';
   const stroke    = isNormal ? '#00d4ff' : isOut ? '#ff4040' : '#ffaa00';
@@ -12428,21 +12428,22 @@ function _nwrIcon(status, pwr) {
   const sz        = watts >= 1000 ? 24 : watts >= 300 ? 20 : 17;
   const r         = sz / 2;
   const cx = r, cy = r;
-  // Radio-wave arcs + vertical mast
   const arcs = isOut ? '' : `
     <path d="M${cx-3} ${cy+2} Q${cx} ${cy-1} ${cx+3} ${cy+2}" fill="none" stroke="${stroke}" stroke-width="1.2" stroke-linecap="round"/>
     <path d="M${cx-5} ${cy+4} Q${cx} ${cy-3} ${cx+5} ${cy+4}" fill="none" stroke="${stroke}" stroke-width="1" stroke-linecap="round" opacity="0.55"/>`;
-  const mast = `<line x1="${cx}" y1="${cy-1}" x2="${cx}" y2="${cy+r*0.6}" stroke="${stroke}" stroke-width="1.4" stroke-linecap="round"/>`;
+  const mast  = `<line x1="${cx}" y1="${cy-1}" x2="${cx}" y2="${cy+r*0.6}" stroke="${stroke}" stroke-width="1.4" stroke-linecap="round"/>`;
   const cross = isOut
     ? `<line x1="${cx-r*0.55}" y1="${cy-r*0.55}" x2="${cx+r*0.55}" y2="${cy+r*0.55}" stroke="#ff4040" stroke-width="1.8" stroke-linecap="round"/>
        <line x1="${cx+r*0.55}" y1="${cy-r*0.55}" x2="${cx-r*0.55}" y2="${cy+r*0.55}" stroke="#ff4040" stroke-width="1.8" stroke-linecap="round"/>` : '';
+  // Green live-stream dot in top-right corner
+  const live  = hasStream ? `<circle cx="${sz-2.5}" cy="2.5" r="2.8" fill="#00ff66" stroke="#000d06" stroke-width="0.8"/>` : '';
   return L.divIcon({
     className: '',
     iconSize:   [sz, sz],
     iconAnchor: [r, r],
     html: `<svg width="${sz}" height="${sz}" viewBox="0 0 ${sz} ${sz}" xmlns="http://www.w3.org/2000/svg">
       <circle cx="${cx}" cy="${cy}" r="${r-1}" fill="${bgFill}" stroke="${stroke}" stroke-width="1.5"/>
-      ${arcs}${mast}${cross}
+      ${arcs}${mast}${cross}${live}
     </svg>`
   });
 }
@@ -12454,16 +12455,40 @@ async function loadNWRStations() {
   }
   showToast('📡 Loading NWR transmitters…', 1500);
   try {
-    const res = await fetch('https://transmitters.weatherradio.org', { signal: _abortSignal(20000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const txs  = data.transmitters || {};
+    // Fetch transmitters + live stream index in parallel
+    const [txRes, iceRes] = await Promise.allSettled([
+      fetch('https://transmitters.weatherradio.org', { signal: _abortSignal(20000) }),
+      fetch('https://icestats.weatherradio.org',     { signal: _abortSignal(10000) })
+    ]);
+
+    if (txRes.status !== 'fulfilled' || !txRes.value.ok)
+      throw new Error('transmitters fetch failed');
+    const txData  = await txRes.value.json();
+    const txs     = txData.transmitters || {};
+
+    // Build callsign → stream map from icestats
+    const streamMap = new Map();
+    if (iceRes.status === 'fulfilled' && iceRes.value.ok) {
+      const iceData = await iceRes.value.json();
+      const sources = iceData?.icestats?.source || [];
+      const arr = Array.isArray(sources) ? sources : [sources];
+      arr.forEach(s => {
+        if (!s.listenurl) return;
+        // Extract callsign: last path segment, strip -ALT/-Alt suffixes
+        const call = s.listenurl.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
+        if (!streamMap.has(call)) streamMap.set(call, s);
+      });
+    }
+
     _nwrLayer  = L.layerGroup().addTo(map);
     _nwrLoaded = true;
     let count = 0;
+
     Object.values(txs).forEach(p => {
       const lat = parseFloat(p.LAT), lon = parseFloat(p.LON);
       if (!isFinite(lat) || !isFinite(lon)) return;
+
+      const stream   = streamMap.get(p.CALLSIGN);
       const isNormal = p.STATUS === 'NORMAL';
       const isOut    = p.STATUS === 'OUT OF SERVICE';
       const stroke   = isNormal ? '#00d4ff' : isOut ? '#ff4040' : '#ffaa00';
@@ -12471,9 +12496,16 @@ async function loadNWRStations() {
       const counties = Array.isArray(p.COUNTY) ? p.COUNTY.join(', ') : (p.COUNTY || '—');
       const same     = Array.isArray(p.SAME)   ? p.SAME.join(', ')   : (p.SAME   || '—');
       const wfo      = p.WFO ? p.WFO.replace('|', ' / ') : '—';
-      L.marker([lat, lon], { icon: _nwrIcon(p.STATUS, p.PWR), zIndexOffset: 150 })
+
+      const liveBlock = stream ? `
+        <div style="margin-top:8px;padding:5px 8px;background:rgba(0,255,102,0.08);border:1px solid #00cc55;border-radius:5px;display:flex;align-items:center;gap:8px">
+          <a href="${stream.listenurl}" target="_blank" style="color:#00ff66;font-weight:bold;font-size:11px;text-decoration:none">🔊 Listen Live</a>
+          <span style="color:#888;font-size:9px">${stream.listeners ?? 0} listening</span>
+        </div>` : '';
+
+      L.marker([lat, lon], { icon: _nwrIcon(p.STATUS, p.PWR, !!stream), zIndexOffset: 150 })
         .bindPopup(`<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:210px">
-          <div style="color:${stroke};font-weight:bold;font-size:13px;margin-bottom:2px;">📡 ${p.CALLSIGN}</div>
+          <div style="color:${stroke};font-weight:bold;font-size:13px;margin-bottom:2px;">📡 ${p.CALLSIGN}${stream ? ' <span style="color:#00ff66;font-size:9px;vertical-align:middle">● LIVE</span>' : ''}</div>
           <div style="color:#aaa;font-size:10px;margin-bottom:7px;">${p.SITENAME}${p.SITELOC !== p.SITENAME ? ' · ' + p.SITELOC : ''}, ${p.STATE}</div>
           <table style="border-collapse:collapse;font-size:10px;line-height:1.75;width:100%">
             <tr><td style="color:#888;padding-right:10px;white-space:nowrap">Status</td><td style="color:${statCol};font-weight:bold">${p.STATUS}</td></tr>
@@ -12484,14 +12516,16 @@ async function loadNWRStations() {
             <tr><td style="color:#888;padding-right:10px;white-space:nowrap">SAME</td><td style="font-size:9px;color:#ccc">${same}</td></tr>
             ${p.REMARKS ? `<tr><td style="color:#888;padding-right:10px;white-space:nowrap;vertical-align:top">Area</td><td style="font-size:9px;color:#bbb">${p.REMARKS}</td></tr>` : ''}
           </table>
+          ${liveBlock}
           <div style="margin-top:8px"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:${stroke};font-size:10px">weather.gov/nwr ↗</a></div>
-        </div>`, { className: 'data-popup', maxWidth: 260 })
+        </div>`, { className: 'data-popup', maxWidth: 270 })
         .addTo(_nwrLayer);
       count++;
     });
-    showToast(`📡 ${count} NWR transmitters loaded`, 2000);
+    const liveCount = streamMap.size;
+    showToast(`📡 ${count} NWR transmitters · ${liveCount} live streams`, 2500);
   } catch(e) {
-    showToast('📡 NWR stations unavailable', 2000);
+    showToast('📡 NWR unavailable', 2000);
     console.warn('NWR load error:', e);
   }
 }
