@@ -12415,49 +12415,81 @@ function _onCamsMoveEnd() {
   _camsTimer = setTimeout(_fetchCamsForViewport, 700);
 }
 
-// ── NOAA Weather Radio (NWR) stations ────────────────────────────
+// ── NOAA Weather Radio (NWR) stations — transmitters.weatherradio.org ──
 let _nwrLayer  = null;
 let _nwrLoaded = false;
+
+function _nwrIcon(status, pwr) {
+  const isNormal  = status === 'NORMAL';
+  const isOut     = status === 'OUT OF SERVICE';
+  const stroke    = isNormal ? '#00d4ff' : isOut ? '#ff4040' : '#ffaa00';
+  const bgFill    = isNormal ? '#003a55' : isOut ? '#4a0000' : '#3a2800';
+  const watts     = parseInt(pwr) || 0;
+  const sz        = watts >= 1000 ? 24 : watts >= 300 ? 20 : 17;
+  const r         = sz / 2;
+  const cx = r, cy = r;
+  // Radio-wave arcs + vertical mast
+  const arcs = isOut ? '' : `
+    <path d="M${cx-3} ${cy+2} Q${cx} ${cy-1} ${cx+3} ${cy+2}" fill="none" stroke="${stroke}" stroke-width="1.2" stroke-linecap="round"/>
+    <path d="M${cx-5} ${cy+4} Q${cx} ${cy-3} ${cx+5} ${cy+4}" fill="none" stroke="${stroke}" stroke-width="1" stroke-linecap="round" opacity="0.55"/>`;
+  const mast = `<line x1="${cx}" y1="${cy-1}" x2="${cx}" y2="${cy+r*0.6}" stroke="${stroke}" stroke-width="1.4" stroke-linecap="round"/>`;
+  const cross = isOut
+    ? `<line x1="${cx-r*0.55}" y1="${cy-r*0.55}" x2="${cx+r*0.55}" y2="${cy+r*0.55}" stroke="#ff4040" stroke-width="1.8" stroke-linecap="round"/>
+       <line x1="${cx+r*0.55}" y1="${cy-r*0.55}" x2="${cx-r*0.55}" y2="${cy+r*0.55}" stroke="#ff4040" stroke-width="1.8" stroke-linecap="round"/>` : '';
+  return L.divIcon({
+    className: '',
+    iconSize:   [sz, sz],
+    iconAnchor: [r, r],
+    html: `<svg width="${sz}" height="${sz}" viewBox="0 0 ${sz} ${sz}" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="${cx}" cy="${cy}" r="${r-1}" fill="${bgFill}" stroke="${stroke}" stroke-width="1.5"/>
+      ${arcs}${mast}${cross}
+    </svg>`
+  });
+}
 
 async function loadNWRStations() {
   if (_nwrLoaded) {
     if (_nwrLayer && !map.hasLayer(_nwrLayer)) _nwrLayer.addTo(map);
     return;
   }
-  showToast('📡 Loading NWR stations…', 1500);
+  showToast('📡 Loading NWR transmitters…', 1500);
   try {
-    const res = await fetch(
-      'https://api.weather.gov/stations?stationType=NWR&limit=500',
-      { headers: { Accept: 'application/geo+json' }, signal: _abortSignal(15000) }
-    );
+    const res = await fetch('https://transmitters.weatherradio.org', { signal: _abortSignal(20000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    const features = data.features || [];
+    const txs  = data.transmitters || {};
     _nwrLayer  = L.layerGroup().addTo(map);
     _nwrLoaded = true;
-    features.forEach(f => {
-      if (!f.geometry || f.geometry.type !== 'Point') return;
-      const [lon, lat] = f.geometry.coordinates;
-      const p = f.properties;
-      const call = p.stationIdentifier || '—';
-      const name = p.name || call;
-      const freqM = name.match(/1\d{2}\.\d{3}/);
-      const freq  = freqM ? freqM[0] + ' MHz' : '162.4–162.55 MHz';
-      L.circleMarker([lat, lon], {
-        radius: 5, color: '#00cfff', fillColor: '#004d80',
-        fillOpacity: 0.85, weight: 1.5
-      }).bindPopup(`<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:170px">
-          <div style="color:#00cfff;font-weight:bold;margin-bottom:4px;">📡 ${call}</div>
-          <div style="color:#aaa;font-size:10px;margin-bottom:6px;">${name}</div>
-          <table style="border-collapse:collapse;font-size:10px;line-height:1.6">
-            <tr><td style="color:#888;padding-right:8px">Freq</td><td style="color:#88ff88">${freq}</td></tr>
-            <tr><td style="color:#888;padding-right:8px">Type</td><td>NOAA Weather Radio</td></tr>
+    let count = 0;
+    Object.values(txs).forEach(p => {
+      const lat = parseFloat(p.LAT), lon = parseFloat(p.LON);
+      if (!isFinite(lat) || !isFinite(lon)) return;
+      const isNormal = p.STATUS === 'NORMAL';
+      const isOut    = p.STATUS === 'OUT OF SERVICE';
+      const stroke   = isNormal ? '#00d4ff' : isOut ? '#ff4040' : '#ffaa00';
+      const statCol  = isNormal ? '#00ff99' : isOut ? '#ff4040' : '#ffaa00';
+      const counties = Array.isArray(p.COUNTY) ? p.COUNTY.join(', ') : (p.COUNTY || '—');
+      const same     = Array.isArray(p.SAME)   ? p.SAME.join(', ')   : (p.SAME   || '—');
+      const wfo      = p.WFO ? p.WFO.replace('|', ' / ') : '—';
+      L.marker([lat, lon], { icon: _nwrIcon(p.STATUS, p.PWR), zIndexOffset: 150 })
+        .bindPopup(`<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:210px">
+          <div style="color:${stroke};font-weight:bold;font-size:13px;margin-bottom:2px;">📡 ${p.CALLSIGN}</div>
+          <div style="color:#aaa;font-size:10px;margin-bottom:7px;">${p.SITENAME}${p.SITELOC !== p.SITENAME ? ' · ' + p.SITELOC : ''}, ${p.STATE}</div>
+          <table style="border-collapse:collapse;font-size:10px;line-height:1.75;width:100%">
+            <tr><td style="color:#888;padding-right:10px;white-space:nowrap">Status</td><td style="color:${statCol};font-weight:bold">${p.STATUS}</td></tr>
+            <tr><td style="color:#888;padding-right:10px">Freq</td><td style="color:#88ff88;font-weight:bold">${p.FREQ} MHz</td></tr>
+            <tr><td style="color:#888;padding-right:10px">Power</td><td>${p.PWR ? p.PWR + ' W' : '—'}</td></tr>
+            <tr><td style="color:#888;padding-right:10px">WFO</td><td>${wfo}</td></tr>
+            <tr><td style="color:#888;padding-right:10px;vertical-align:top">County</td><td style="font-size:9px;color:#ccc">${counties}</td></tr>
+            <tr><td style="color:#888;padding-right:10px;white-space:nowrap">SAME</td><td style="font-size:9px;color:#ccc">${same}</td></tr>
+            ${p.REMARKS ? `<tr><td style="color:#888;padding-right:10px;white-space:nowrap;vertical-align:top">Area</td><td style="font-size:9px;color:#bbb">${p.REMARKS}</td></tr>` : ''}
           </table>
-          <div style="margin-top:6px"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#00cfff;font-size:10px">weather.gov/nwr ↗</a></div>
-        </div>`)
+          <div style="margin-top:8px"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:${stroke};font-size:10px">weather.gov/nwr ↗</a></div>
+        </div>`, { className: 'data-popup', maxWidth: 260 })
         .addTo(_nwrLayer);
+      count++;
     });
-    showToast(`📡 ${features.length} NWR stations`, 1800);
+    showToast(`📡 ${count} NWR transmitters loaded`, 2000);
   } catch(e) {
     showToast('📡 NWR stations unavailable', 2000);
     console.warn('NWR load error:', e);
