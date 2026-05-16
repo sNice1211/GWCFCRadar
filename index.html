@@ -7026,10 +7026,6 @@ function toggleLayer(id) {
     if (activeLayers[id]) loadWindyCams();
     else { _clearCams(); closeCamPopup(); }
   }
-  if (id === 'radio') {
-    if (activeLayers.radio) loadNWRStations();
-    else { if (_nwrLayer) { map.removeLayer(_nwrLayer); } }
-  }
   if (['spc1','spc2','spc3'].includes(id) && activeLayers[id]) loadSPCOutlook(id);
   if (id === 'spcrpts' && activeLayers[id]) loadStormReports();
   if (id === 'nhc' && activeLayers[id]) loadTropical();
@@ -12415,164 +12411,7 @@ function _onCamsMoveEnd() {
   _camsTimer = setTimeout(_fetchCamsForViewport, 700);
 }
 
-// ── NOAA Weather Radio (NWR) — icestats live streams only ──
-let _nwrLayer  = null;
-let _nwrLoaded = false;
-let _nwrAudioMap = {};  // callsign → Audio instance (stop previous on new open)
 
-function _nwrIcon(status) {
-  const isOut = status === 'OUT OF SERVICE';
-  const bg    = isOut ? '#5a0000' : '#d97800';
-  const ring  = isOut ? '#ff2020' : '#cc1111';
-  return L.divIcon({
-    className: '',
-    iconSize:   [38, 38],
-    iconAnchor: [19, 19],
-    html: `<svg width="38" height="38" viewBox="0 0 38 38" xmlns="http://www.w3.org/2000/svg">
-      <!-- Badge ring -->
-      <circle cx="19" cy="19" r="18" fill="${bg}" stroke="${ring}" stroke-width="3.5"/>
-      <!-- Walkie-talkie body (left) -->
-      <rect x="5" y="10" width="10" height="18" rx="1.5" fill="none" stroke="white" stroke-width="1.4"/>
-      <rect x="6.5" y="12" width="7" height="4" rx="0.8" fill="none" stroke="white" stroke-width="1"/>
-      <rect x="7" y="18" width="2" height="1.5" rx="0.3" fill="white"/>
-      <rect x="10" y="18" width="2" height="1.5" rx="0.3" fill="white"/>
-      <rect x="7" y="21" width="2" height="1.5" rx="0.3" fill="white"/>
-      <rect x="10" y="21" width="2" height="1.5" rx="0.3" fill="white"/>
-      <!-- Walkie-talkie antenna -->
-      <line x1="10" y1="10" x2="10" y2="5" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
-      <!-- Radio body (right) -->
-      <rect x="19" y="16" width="14" height="11" rx="1.5" fill="none" stroke="white" stroke-width="1.4"/>
-      <!-- Radio antenna (diagonal) -->
-      <line x1="26" y1="16" x2="31" y2="8" stroke="white" stroke-width="1.6" stroke-linecap="round"/>
-      <!-- Speaker grilles -->
-      <line x1="21" y1="20" x2="21" y2="24" stroke="white" stroke-width="1.1" stroke-linecap="round"/>
-      <line x1="23" y1="20" x2="23" y2="24" stroke="white" stroke-width="1.1" stroke-linecap="round"/>
-      <line x1="25" y1="20" x2="25" y2="24" stroke="white" stroke-width="1.1" stroke-linecap="round"/>
-      <!-- Tuner dial -->
-      <circle cx="29.5" cy="22" r="2.2" fill="none" stroke="white" stroke-width="1.1"/>
-      <!-- Signal waves from radio antenna -->
-      <path d="M32 10 Q34 9 34 12" fill="none" stroke="white" stroke-width="1.3" stroke-linecap="round"/>
-      <path d="M33 8  Q36.5 7 36.5 13" fill="none" stroke="white" stroke-width="1.1" stroke-linecap="round" opacity="0.7"/>
-      ${isOut ? '<line x1="5" y1="5" x2="33" y2="33" stroke="#ff3333" stroke-width="2.5" stroke-linecap="round" opacity="0.6"/>' : ''}
-    </svg>`
-  });
-}
-
-async function loadNWRStations() {
-  if (_nwrLoaded) {
-    if (_nwrLayer && !map.hasLayer(_nwrLayer)) _nwrLayer.addTo(map);
-    return;
-  }
-  showToast('📡 Loading NWR live streams…', 1500);
-  try {
-    const [txRes, iceRes] = await Promise.allSettled([
-      fetch('https://transmitters.weatherradio.org', { signal: _abortSignal(20000) }),
-      fetch('https://icestats.weatherradio.org',     { signal: _abortSignal(15000) })
-    ]);
-
-    if (iceRes.status !== 'fulfilled' || !iceRes.value.ok)
-      throw new Error('icestats fetch failed');
-    const iceData = await iceRes.value.json();
-    const sources = iceData?.icestats?.source || [];
-    const arr = Array.isArray(sources) ? sources : [sources];
-
-    const streamMap = new Map();
-    arr.forEach(s => {
-      if (!s.listenurl) return;
-      const call = s.listenurl.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
-      if (!streamMap.has(call)) streamMap.set(call, { ...s, callsign: call });
-    });
-
-    const txs = {};
-    if (txRes.status === 'fulfilled' && txRes.value.ok) {
-      const td = await txRes.value.json();
-      Object.assign(txs, td.transmitters || {});
-    }
-
-    _nwrLayer  = L.layerGroup().addTo(map);
-    _nwrLoaded = true;
-    let plotted = 0;
-
-    streamMap.forEach((stream, call) => {
-      const p   = txs[call];
-      const lat = p ? parseFloat(p.LAT) : NaN;
-      const lon = p ? parseFloat(p.LON) : NaN;
-      if (!isFinite(lat) || !isFinite(lon)) return;
-
-      const status   = p?.STATUS || 'NORMAL';
-      const isOut    = status === 'OUT OF SERVICE';
-      const statCol  = isOut ? '#ff4040' : '#00ff99';
-      const freq     = p?.FREQ   ? p.FREQ + ' MHz'            : '162.4–162.55 MHz';
-      const pwr      = p?.PWR    ? p.PWR + ' W'               : '—';
-      const wfo      = p?.WFO    ? p.WFO.replace('|', ' / ')  : '—';
-      const counties = p?.COUNTY ? (Array.isArray(p.COUNTY) ? p.COUNTY.join(', ') : p.COUNTY) : '—';
-      const same     = p?.SAME   ? (Array.isArray(p.SAME)   ? p.SAME.join(', ')   : p.SAME)   : '—';
-      const siteName = p?.SITENAME || stream.server_name?.split(' - ')[0] || call;
-      const state    = p?.STATE  || '';
-      const btnId    = 'nwr-play-' + call;
-      const srcUrl   = stream.listenurl;
-
-      const marker = L.marker([lat, lon], { icon: _nwrIcon(status), zIndexOffset: 200 });
-      marker.bindPopup(`<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:240px">
-        <div style="color:#ff9900;font-weight:bold;font-size:13px;margin-bottom:2px;">📡 ${call} <span style="color:#00ff66;font-size:9px">● LIVE</span></div>
-        <div style="color:#aaa;font-size:10px;margin-bottom:7px;">${siteName}${state ? ', ' + state : ''}</div>
-        <table style="border-collapse:collapse;font-size:10px;line-height:1.75;width:100%">
-          <tr><td style="color:#888;padding-right:10px;white-space:nowrap">Status</td><td style="color:${statCol};font-weight:bold">${status}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">Freq</td><td style="color:#88ff88;font-weight:bold">${freq}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">Power</td><td>${pwr}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">WFO</td><td>${wfo}</td></tr>
-          <tr><td style="color:#888;padding-right:10px;vertical-align:top">County</td><td style="font-size:9px;color:#ccc">${counties}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">SAME</td><td style="font-size:9px;color:#ccc">${same}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">Listeners</td><td>${stream.listeners ?? 0} now · ${stream.listener_peak ?? 0} peak</td></tr>
-        </table>
-        <div style="margin-top:9px;padding:8px;background:rgba(217,120,0,0.15);border:1px solid #cc6600;border-radius:6px">
-          <div style="color:#ffaa33;font-weight:bold;font-size:10px;margin-bottom:6px">🔊 LIVE AUDIO</div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <button id="${btnId}" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
-            <a href="${srcUrl}" target="_blank" style="color:#ff9900;font-size:9px;word-break:break-all">${srcUrl}</a>
-          </div>
-        </div>
-        <div style="margin-top:6px"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#ff9900;font-size:10px">weather.gov/nwr ↗</a></div>
-      </div>`, { className: 'data-popup', maxWidth: 300 });
-
-      // Wire up audio via popupopen — avoids innerHTML Audio limitations
-      marker.on('popupopen', function() {
-        const btn = document.getElementById(btnId);
-        if (!btn) return;
-        // Stop any other NWR audio
-        Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
-        const audio = new Audio(srcUrl);
-        _nwrAudioMap[call] = audio;
-        audio.onerror = () => { btn.textContent = '⚠ Error'; btn.style.background='#800'; };
-        btn.onclick = function() {
-          if (audio.paused) {
-            audio.play().then(() => { btn.textContent = '⏸ Pause'; btn.style.background='#007a00'; })
-                        .catch(() => { btn.textContent = '⚠ Error'; btn.style.background='#800'; });
-          } else {
-            audio.pause();
-            btn.textContent = '▶ Play';
-            btn.style.background = '#cc6600';
-          }
-        };
-      });
-
-      marker.on('popupclose', function() {
-        if (_nwrAudioMap[call]) {
-          try { _nwrAudioMap[call].pause(); } catch(e){}
-          delete _nwrAudioMap[call];
-        }
-      });
-
-      marker.addTo(_nwrLayer);
-      plotted++;
-    });
-
-    showToast(`📡 ${plotted} NWR live streams`, 2000);
-  } catch(e) {
-    showToast('📡 NWR unavailable', 2000);
-    console.warn('NWR load error:', e);
-  }
-}
 async function loadWindyCams() {
   _camsLayer   = L.layerGroup().addTo(map);
   _camsSeenIds = new Set();
@@ -16296,7 +16135,6 @@ function lqmToggleSetting(key, val) {
     <div class="feature-card">
       <div class="fc-icon">📻</div>
       <div class="fc-title">RADIO STATIONS</div>
-      <p class="fc-body">Plots <strong>NOAA Weather Radio (NWR)</strong> transmitter locations from the NWS station network. Each blue circle marks a radio transmitter. Click a marker to see the station ID and frequency. Useful for checking NWR coverage in your area — if you're within range of a transmitter, a dedicated weather radio receiver will pick up live NWS broadcasts 24/7.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🔮</div>
