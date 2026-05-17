@@ -2273,6 +2273,7 @@ body {
   cursor: crosshair;
   display: none;
   background: transparent;
+  pointer-events: none;
 }
 #stormlock-hint {
   position: absolute;
@@ -5307,6 +5308,15 @@ function initMap() {
     }, 50);
   });
 
+  // Storm lock: use Leaflet's own click event (works on PS5 and all platforms)
+  let _slClickPending = false;
+  map.on('click', function(e) {
+    if (!stormLockActive) return;
+    if (_slClickPending) return;
+    _slClickPending = true;
+    onStormLockClick({ latlng: e.latlng });
+  });
+
   map.on('moveend', _updateRecenterBtn);
   _initGraticule();
 }
@@ -8151,24 +8161,13 @@ function toggleStormLock() {
   stormLockActive = !stormLockActive;
   const btn = document.getElementById('rm-stormlock');
   btn.classList.toggle('active', stormLockActive);
-  const hint    = document.getElementById('stormlock-hint');
-  const overlay = document.getElementById('stormlock-overlay');
-  if (hint)    hint.style.display    = stormLockActive ? 'block' : 'none';
-  if (overlay) overlay.style.display = stormLockActive ? 'block' : 'none';
+  const hint = document.getElementById('stormlock-hint');
+  if (hint) hint.style.display = stormLockActive ? 'block' : 'none';
+  // Set crosshair cursor on the map container — works everywhere including PS5
+  try { map.getContainer().style.cursor = stormLockActive ? 'crosshair' : ''; } catch(e) {}
 }
 
-document.addEventListener('DOMContentLoaded', function() {
-  const overlay = document.getElementById('stormlock-overlay');
-  if (overlay) {
-    overlay.addEventListener('click', function(ev) {
-      if (!stormLockActive) return;
-      const rect = map.getContainer().getBoundingClientRect();
-      const pt   = L.point(ev.clientX - rect.left, ev.clientY - rect.top);
-      const ll   = map.containerPointToLatLng(pt);
-      onStormLockClick({ latlng: ll });
-    });
-  }
-});
+
 
 // ── Storm math helpers ─────────────────────────────────────────────────────
 function _haversine(lat1, lon1, lat2, lon2) {
@@ -8443,27 +8442,36 @@ function placeLock(color, id, lat, lon) {
 // ── Initial lock click ─────────────────────────────────────────────────────
 function onStormLockClick(e) {
   stormLockActive = false;
+  if (typeof _slClickPending !== 'undefined') _slClickPending = false;
   document.getElementById('rm-stormlock').classList.remove('active');
-  const hint    = document.getElementById('stormlock-hint');
-  const overlay = document.getElementById('stormlock-overlay');
-  if (hint)    hint.style.display    = 'none';
-  if (overlay) overlay.style.display = 'none';
+  const hint = document.getElementById('stormlock-hint');
+  if (hint) hint.style.display = 'none';
+  try { map.getContainer().style.cursor = ''; } catch(err) {}
+
   const color  = STORMLOCK_COLORS[stormLocks.length % STORMLOCK_COLORS.length];
   const id     = stormLockNextId++;
   const rawLat = e.latlng.lat, rawLon = e.latlng.lng;
+
+  showToast('🎯 Locking onto storm…', 1800);
+
   snapToStorm(rawLat, rawLon, 80, function(snapLat, snapLon) {
-    const { ring, label } = placeLock(color, id, snapLat, snapLon);
-    const lock = {
-      id, lat: snapLat, lon: snapLon, color, ring, label,
-      popup: null, history: [], motion: null, trackLine: null, trackDots: [],
-      _manualSpeed: null, _manualBearing: null
-    };
-    if (radarFrames[currentFrame]) {
-      lock.history.push({ lat: snapLat, lon: snapLon, t: radarFrames[currentFrame].time });
+    try {
+      const { ring, label } = placeLock(color, id, snapLat, snapLon);
+      const lock = {
+        id, lat: snapLat, lon: snapLon, color, ring, label,
+        popup: null, history: [], motion: null, trackLine: null, trackDots: [],
+        _manualSpeed: null, _manualBearing: null
+      };
+      if (radarFrames[currentFrame]) {
+        lock.history.push({ lat: snapLat, lon: snapLon, t: radarFrames[currentFrame].time });
+      }
+      stormLocks.push(lock);
+      label.on('click', () => openStormPanel(id));
+      openStormPanel(id);
+    } catch(err) {
+      console.warn('StormLock place error:', err);
+      showToast('Could not lock — try again', 2000);
     }
-    stormLocks.push(lock);
-    label.on('click', () => openStormPanel(id));
-    openStormPanel(id);
   });
 }
 
