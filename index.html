@@ -56,6 +56,19 @@
   }
 }
 
+/* PS5 / touch-only devices: kill backdrop-filter blur — biggest GPU perf win */
+@media (hover: none) {
+  *, *::before, *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+/* Layout containment: panels can't affect outside layout → faster repaints */
+#lqm-settings-overlay, #lqm-search-overlay,
+#tutorial-modal-inner, #radar-color-editor,
+.leaflet-popup-content-wrapper { contain: layout style; }
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -5111,26 +5124,11 @@ function initMap() {
   const MT_KEY = 'hhZtXzaWhHvodutvLXzo';
   const mtAttr = '© <a href="https://www.maptiler.com/">MapTiler</a> © <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
 
-  // Dark (DataViz Dark — great for radar overlays)
-  const cartoDark = L.tileLayer(
-    `https://api.maptiler.com/maps/dataviz-dark/{z}/{x}/{y}.png?key=${MT_KEY}`,
-    { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, detectRetina: true }
-  );
-  // Light
-  const cartoLight = L.tileLayer(
-    `https://api.maptiler.com/maps/dataviz/{z}/{x}/{y}.png?key=${MT_KEY}`,
-    { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, detectRetina: true }
-  );
-  // Satellite (MapTiler Satellite)
-  const satellite = L.tileLayer(
-    `https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MT_KEY}`,
-    { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, detectRetina: true }
-  );
-  // Topo (bonus style)
-  const topo = L.tileLayer(
-    `https://api.maptiler.com/maps/topo-v2/{z}/{x}/{y}.png?key=${MT_KEY}`,
-    { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, detectRetina: true }
-  );
+  const _mtOpts = { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, detectRetina: true, keepBuffer: 2, updateWhenZooming: false };
+  const cartoDark  = L.tileLayer(`https://api.maptiler.com/maps/dataviz-dark/{z}/{x}/{y}.png?key=${MT_KEY}`,  _mtOpts);
+  const cartoLight = L.tileLayer(`https://api.maptiler.com/maps/dataviz/{z}/{x}/{y}.png?key=${MT_KEY}`,        _mtOpts);
+  const satellite  = L.tileLayer(`https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MT_KEY}`,         _mtOpts);
+  const topo       = L.tileLayer(`https://api.maptiler.com/maps/topo-v2/{z}/{x}/{y}.png?key=${MT_KEY}`,        _mtOpts);
 
   mapTileLayers = { dark: cartoDark, light: cartoLight, satellite, topo };
   cartoDark.addTo(map);
@@ -5293,7 +5291,7 @@ function _buildNexradFrames() {
   now.setUTCSeconds(0, 0);
   now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
   const frames = [];
-  for (let i = 23; i >= 0; i--) {
+  for (let i = 17; i >= 0; i--) {
     const t = new Date(now.getTime() - i * 5 * 60 * 1000);
     const pad = n => String(n).padStart(2, '0');
     const iso = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
@@ -5405,6 +5403,9 @@ function _buildRadarPool() {
       crossOrigin: 'anonymous',
       attribution: 'NEXRAD © NOAA via Iowa Mesonet',
       noWrap: true,
+      keepBuffer: 0,
+      updateWhenIdle: true,
+      updateWhenZooming: false,
     });
     _radarLayerLoaded[i] = false;
     l.on('tileload', (e) => {
@@ -5437,6 +5438,9 @@ function _buildCanadaPool() {
       crossOrigin: 'anonymous',
       attribution: 'Canada Radar © ECCC via Iowa Mesonet',
       noWrap: true,
+      keepBuffer: 0,
+      updateWhenIdle: true,
+      updateWhenZooming: false,
     });
     _canadaLayerLoaded[i] = false;
     l.on('tileload', (e) => { _canadaLayerLoaded[i] = true; _remapTileColors(e.tile); });
@@ -12470,8 +12474,8 @@ async function loadNWRStations() {
       const same     = p?.SAME   ? (Array.isArray(p.SAME)   ? p.SAME.join(', ')   : p.SAME)   : '—';
       const siteName = p?.SITENAME || stream.server_name?.split(' - ')[0] || call;
       const state    = p?.STATE  || '';
-      const btnId    = 'nwr-play-' + call;
       const srcUrl   = stream.listenurl;
+      const httpsUrl = srcUrl.replace(/^http:\/\//i, 'https://');
 
       const marker = L.marker([lat, lon], { icon: _nwrIcon(), zIndexOffset: 200 });
       marker.bindPopup(`<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:240px;background:#1a1a1a;padding:10px;border-radius:6px">
@@ -12487,73 +12491,17 @@ async function loadNWRStations() {
           <tr><td style="color:#888;padding-right:10px">Listeners</td><td>${stream.listeners ?? 0} now · ${stream.listener_peak ?? 0} peak</td></tr>
         </table>
         <div style="margin-top:9px;padding:8px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px">
-          <div style="color:#ffaa33;font-weight:bold;font-size:10px;margin-bottom:6px">🔊 LIVE AUDIO</div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <button id="${btnId}" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
-            <a href="${srcUrl}" target="_blank" style="color:#ff9900;font-size:9px;word-break:break-all">${srcUrl}</a>
-          </div>
+          <div style="color:#ffaa33;font-weight:bold;font-size:10px;margin-bottom:4px">🔊 LIVE AUDIO</div>
+          <audio controls preload="none" style="width:100%;height:36px;accent-color:#ff9900;display:block">
+            <source src="${httpsUrl}" type="audio/mpeg">
+            <source src="${srcUrl}"   type="audio/mpeg">
+            <source src="${httpsUrl}" type="audio/ogg">
+            <source src="${srcUrl}"   type="audio/ogg">
+          </audio>
+          <a href="${httpsUrl}" target="_blank" style="color:#ff9900;font-size:9px;display:block;margin-top:4px;word-break:break-all">Open stream ↗</a>
         </div>
-        <div style="margin-top:6px;background:#1a1a1a"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#ff9900;font-size:10px">weather.gov/nwr ↗</a></div>
+        <div style="margin-top:6px"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#ff9900;font-size:10px">weather.gov/nwr ↗</a></div>
       </div>`, { className: 'nwr-popup', maxWidth: 300 });
-
-      marker.on('popupopen', function() {
-        const btn = document.getElementById(btnId);
-        if (!btn) return;
-        // Stop any other playing stations
-        Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
-        _nwrAudioMap = {};
-
-        btn.onclick = function() {
-          const existing = _nwrAudioMap[call];
-          if (existing && !existing.paused) {
-            existing.pause();
-            btn.textContent = '▶ Play';
-            btn.style.background = '#cc6600';
-            return;
-          }
-          // Try HTTPS first (Icecast streams are often http://, blocked as mixed content)
-          const httpsUrl = srcUrl.replace(/^http:\/\//i, 'https://');
-          const audio = new Audio(httpsUrl);
-          _nwrAudioMap[call] = audio;
-          btn.textContent = '⏳ Connecting…';
-          btn.style.background = '#555';
-          btn.disabled = true;
-
-          audio.onerror = () => {
-            btn.disabled = false;
-            if (httpsUrl !== srcUrl) {
-              // HTTPS failed — try original http (user may have already allowed mixed content)
-              const fallback = new Audio(srcUrl);
-              _nwrAudioMap[call] = fallback;
-              fallback.onerror = () => {
-                btn.textContent = '⚠ Unavailable';
-                btn.style.background = '#800';
-              };
-              fallback.oncanplay = () => { btn.disabled = false; };
-              fallback.play()
-                .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
-                .catch(() => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; });
-            } else {
-              btn.textContent = '⚠ Unavailable';
-              btn.style.background = '#800';
-            }
-          };
-          audio.play()
-            .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
-            .catch(() => {
-              btn.textContent = '⚠ Unavailable';
-              btn.style.background = '#800';
-              btn.disabled = false;
-            });
-        };
-      });
-
-      marker.on('popupclose', function() {
-        if (_nwrAudioMap[call]) {
-          try { _nwrAudioMap[call].pause(); } catch(e){}
-        }
-        _nwrAudioMap = {};
-      });
 
       marker.addTo(_nwrLayer);
       plotted++;
