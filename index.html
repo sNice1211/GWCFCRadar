@@ -1846,6 +1846,34 @@ body {
   box-shadow: none !important;
 }
 .tool-label::before { display:none !important; }
+
+/* ── Radius Tool Panel ── */
+.radius-panel .leaflet-popup-content-wrapper {
+  background: rgba(8,12,16,0.97) !important;
+  border: 1px solid rgba(0,229,255,0.45) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.7), 0 0 16px rgba(0,229,255,0.12) !important;
+  padding: 0 !important;
+}
+.radius-panel .leaflet-popup-content { margin: 0 !important; width: auto !important; }
+.radius-panel .leaflet-popup-tip-container { display: none !important; }
+.radius-panel .leaflet-popup-close-button { color: rgba(255,255,255,0.5) !important; top:6px !important; right:8px !important; font-size:18px !important; }
+.rp-inner { padding: 14px 16px 12px; min-width: 240px; }
+.rp-title { font-family: var(--mono); font-size: 11px; letter-spacing: 2px; color: #00e5ff; font-weight: 600; margin-bottom: 4px; }
+.rp-pos   { font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 10px; }
+.rp-row   { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.rp-lbl   { font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.5); letter-spacing: 1px; width: 50px; flex-shrink: 0; }
+.rp-slider { flex: 1; accent-color: #00e5ff; height: 4px; cursor: pointer; }
+.rp-val   { font-family: var(--mono); font-size: 11px; color: #00e5ff; width: 52px; text-align: right; flex-shrink: 0; }
+.rp-km    { font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.35); text-align: right; margin-bottom: 8px; }
+.rp-inp   { width: 58px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.18); border-radius: 6px; color: #fff; font-family: var(--mono); font-size: 11px; padding: 4px 6px; text-align: center; }
+.rp-inp:focus { outline: none; border-color: #00e5ff; }
+.rp-unit  { font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.4); }
+.rp-filter-btn { width: 100%; margin-top: 10px; padding: 7px 0; border-radius: 7px; border: 1px solid rgba(0,229,255,0.5); background: rgba(0,229,255,0.1); color: #00e5ff; font-family: var(--mono); font-size: 11px; letter-spacing: 1px; cursor: pointer; transition: background 0.15s; }
+.rp-filter-btn:hover { background: rgba(0,229,255,0.2); }
+.rp-filter-btn.active { background: rgba(0,229,255,0.25); border-color: #00e5ff; box-shadow: 0 0 8px rgba(0,229,255,0.3); }
+.rp-clear-btn { width: 100%; margin-top: 6px; padding: 6px 0; border-radius: 7px; border: 1px solid rgba(255,80,80,0.4); background: transparent; color: rgba(255,100,100,0.8); font-family: var(--mono); font-size: 10px; cursor: pointer; }
+.rp-clear-btn:hover { background: rgba(255,80,80,0.1); }
 /* ── MAP ROTATION ── */
 #map {
   transform-origin: center center;
@@ -4878,6 +4906,16 @@ body.gwcfc-crosshair #map::after {
     </svg>
   </button>
 
+  <!-- 5: Radius Maker -->
+  <button class="tool-btn" id="tool-radius" onclick="startRadiusTool()" title="Radius Maker — click map to place center, then set radius">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
+      <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8" stroke-dasharray="3 2.2"/>
+      <circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+      <line x1="12" y1="12" x2="19.5" y2="8.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      <circle cx="19.5" cy="8.5" r="1.4" fill="currentColor"/>
+    </svg>
+  </button>
+
 </div>
 
       <div class="right-bubble" id="rm-satellite" onclick="setMapType('satellite'); rmActivate('rm-satellite')"><span class="rb-icon">🛰</span> Satellite</div>
@@ -7303,10 +7341,14 @@ function _ptInPoly(lat, lng, poly) {
   return inside;
 }
 
-// Returns true if point is inside ANY of the filter polygons (union)
+// Returns true if point passes all active spatial filters
 function _ptInPolyUnion(lat, lng) {
-  if (!_polyFilter.active || !_polyFilter.polygons.length) return true;
-  return _polyFilter.polygons.some(poly => _ptInPoly(lat, lng, poly));
+  const hasPoly   = _polyFilter.active && _polyFilter.polygons.length;
+  const hasRadius = _radiusFilterActive && _radiusCenter;
+  if (!hasPoly && !hasRadius) return true;
+  if (hasPoly   && !_polyFilter.polygons.some(poly => _ptInPoly(lat, lng, poly))) return false;
+  if (hasRadius && !_ptInRadius(lat, lng)) return false;
+  return true;
 }
 
 // ── Radar polygon clip mask ──
@@ -7317,25 +7359,47 @@ function _applyRadarPolyMask() {
   if (!pane) return;
   if (_radarClipSvg && _radarClipSvg.parentNode) { _radarClipSvg.remove(); _radarClipSvg = null; }
   pane.style.clipPath = '';
-  if (!_polyFilter.active || !_polyFilter.polygons.length) return;
+  const hasPoly   = _polyFilter.active && _polyFilter.polygons.length;
+  const hasRadius = _radiusFilterActive && _radiusCenter;
+  if (!hasPoly && !hasRadius) return;
 
   const ns = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(ns, 'svg');
   svg.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;pointer-events:none;';
-  const defs  = document.createElementNS(ns, 'defs');
-  const clip  = document.createElementNS(ns, 'clipPath');
+  const defs = document.createElementNS(ns, 'defs');
+  const clip = document.createElementNS(ns, 'clipPath');
   clip.id = '_radar-poly-clip';
   clip.setAttribute('clipPathUnits', 'userSpaceOnUse');
 
-  _polyFilter.polygons.forEach(poly => {
+  if (hasPoly) {
+    _polyFilter.polygons.forEach(poly => {
+      const svgPoly = document.createElementNS(ns, 'polygon');
+      svgPoly.setAttribute('points', poly.map(pt => {
+        const px = map.latLngToLayerPoint(L.latLng(pt.lat, pt.lng));
+        return px.x + ',' + px.y;
+      }).join(' '));
+      clip.appendChild(svgPoly);
+    });
+  }
+
+  if (hasRadius) {
+    const SEGS = 72;
+    const rm = _radiusMiles * 1609.34;
+    const cosLat = Math.cos(_radiusCenter.lat * Math.PI / 180);
+    const pts = [];
+    for (let i = 0; i < SEGS; i++) {
+      const ang = (2 * Math.PI * i) / SEGS;
+      const ll = L.latLng(
+        _radiusCenter.lat + (rm * Math.cos(ang)) / 111320,
+        _radiusCenter.lng + (rm * Math.sin(ang)) / (111320 * cosLat)
+      );
+      const px = map.latLngToLayerPoint(ll);
+      pts.push(px.x + ',' + px.y);
+    }
     const svgPoly = document.createElementNS(ns, 'polygon');
-    const pts = poly.map(pt => {
-      const px = map.latLngToLayerPoint(L.latLng(pt.lat, pt.lng));
-      return px.x + ',' + px.y;
-    }).join(' ');
-    svgPoly.setAttribute('points', pts);
+    svgPoly.setAttribute('points', pts.join(' '));
     clip.appendChild(svgPoly);
-  });
+  }
 
   defs.appendChild(clip);
   svg.appendChild(defs);
@@ -7381,6 +7445,147 @@ function _clearPolyFilter() {
   const pill = document.getElementById('_poly-filter-pill');
   if (pill) pill.remove();
   _applyPolyFilterNow();
+}
+
+// ── RADIUS TOOL ────────────────────────────────────────────────────────────
+let _radiusCenter       = null;   // { lat, lng }
+let _radiusMiles        = 50;     // current radius in miles
+let _radiusMarker       = null;   // L.circleMarker at center
+let _radiusCircle       = null;   // L.circle on map
+let _radiusPanel        = null;   // L.popup panel
+let _radiusFilterActive = false;
+
+// Haversine distance test for radius filter
+function _ptInRadius(lat, lng) {
+  if (!_radiusCenter) return true;
+  const R = 3958.8, r = Math.PI / 180;
+  const dLat = (lat - _radiusCenter.lat) * r;
+  const dLng = (lng - _radiusCenter.lng) * r;
+  const a = Math.sin(dLat/2)**2 +
+    Math.cos(_radiusCenter.lat * r) * Math.cos(lat * r) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)) <= _radiusMiles;
+}
+
+function startRadiusTool() {
+  if (activeTool === 'radius') { deactivateTool(); return; }
+  deactivateTool();
+  activeTool = 'radius';
+  document.getElementById('tool-radius')?.classList.add('active');
+  _showHint('⊙  Click on the map to place the radius center');
+  map.on('click', _onRadiusClick);
+}
+
+function _onRadiusClick(e) {
+  if (activeTool !== 'radius') return;
+  L.DomEvent.stopPropagation(e);
+  map.off('click', _onRadiusClick);
+  _radiusCenter = { lat: e.latlng.lat, lng: e.latlng.lng };
+  _radiusDrawCircle();
+  _openRadiusPanel();
+  _showHint('');
+  activeTool = null;
+  document.getElementById('tool-radius')?.classList.remove('active');
+  map.getContainer().style.cursor = '';
+}
+
+function _radiusDrawCircle() {
+  if (_radiusMarker) { try { map.removeLayer(_radiusMarker); } catch(ex){} _radiusMarker = null; }
+  if (_radiusCircle) { try { map.removeLayer(_radiusCircle); } catch(ex){} _radiusCircle = null; }
+  if (!_radiusCenter) return;
+  const rm = _radiusMiles * 1609.34;
+  _radiusCircle = L.circle([_radiusCenter.lat, _radiusCenter.lng], {
+    radius: rm, color: '#00e5ff', weight: 2, dashArray: '8 5',
+    fillColor: '#00e5ff', fillOpacity: 0.06, interactive: false
+  }).addTo(map);
+  _radiusMarker = L.circleMarker([_radiusCenter.lat, _radiusCenter.lng], {
+    radius: 5, color: '#00e5ff', fillColor: '#00e5ff', fillOpacity: 1,
+    weight: 2, interactive: false
+  }).addTo(map);
+}
+
+function _openRadiusPanel() {
+  if (_radiusPanel) { try { _radiusPanel.remove(); } catch(ex){} _radiusPanel = null; }
+  _radiusPanel = L.popup({ className: 'radius-panel', maxWidth: 280, autoPan: true, closeButton: true })
+    .setLatLng([_radiusCenter.lat, _radiusCenter.lng])
+    .setContent(_buildRadiusPanelHTML())
+    .openOn(map);
+  _radiusPanel.on('remove', () => { _radiusPanel = null; });
+}
+
+function _buildRadiusPanelHTML() {
+  const mi = _radiusMiles;
+  const km = Math.round(mi * 1.60934);
+  const lat = _radiusCenter.lat, lng = _radiusCenter.lng;
+  const pos = `${Math.abs(lat).toFixed(3)}\xb0${lat>=0?'N':'S'} \xa0${Math.abs(lng).toFixed(3)}\xb0${lng>=0?'E':'W'}`;
+  return `<div class="rp-inner">
+    <div class="rp-title">&#x2299; RADIUS MAKER</div>
+    <div class="rp-pos">${pos}</div>
+    <div class="rp-row">
+      <span class="rp-lbl">RADIUS</span>
+      <input type="range" class="rp-slider" id="rp-slider" min="5" max="500" step="5" value="${mi}" oninput="_rpSlider(this.value)">
+      <span class="rp-val" id="rp-val">${mi} mi</span>
+    </div>
+    <div class="rp-km" id="rp-km-lbl">${km} km</div>
+    <div class="rp-row">
+      <span class="rp-lbl">MANUAL</span>
+      <input type="number" class="rp-inp" id="rp-mi" min="1" max="1500" step="1" value="${mi}" oninput="_rpMi(this.value)">
+      <span class="rp-unit">mi</span>
+      <input type="number" class="rp-inp" id="rp-km-inp" min="1" max="2400" step="1" value="${km}" oninput="_rpKm(this.value)">
+      <span class="rp-unit">km</span>
+    </div>
+    <button class="rp-filter-btn${_radiusFilterActive?' active':''}" id="rp-filter-btn" onclick="_rpToggleFilter()">
+      ${_radiusFilterActive ? '&#x2715; Clear Radius Filter' : '&#x2299; Apply as Filter'}
+    </button>
+    <button class="rp-clear-btn" onclick="_rpRemove()">🗑 Remove Radius</button>
+  </div>`;
+}
+
+function _rpRefreshDisplay() {
+  const mi = _radiusMiles, km = Math.round(mi * 1.60934);
+  const s   = document.getElementById('rp-slider');
+  const v   = document.getElementById('rp-val');
+  const kLbl = document.getElementById('rp-km-lbl');
+  const mI  = document.getElementById('rp-mi');
+  const kI  = document.getElementById('rp-km-inp');
+  if (s)    s.value = Math.min(500, mi);
+  if (v)    v.textContent = mi + ' mi';
+  if (kLbl) kLbl.textContent = km + ' km';
+  if (mI)   mI.value = mi;
+  if (kI)   kI.value = km;
+}
+
+function _rpSlider(val) {
+  _radiusMiles = parseFloat(val);
+  _rpRefreshDisplay();
+  _radiusDrawCircle();
+  if (_radiusFilterActive) { _applyRadarPolyMask(); _applyPolyFilterNow(); }
+}
+function _rpMi(val) {
+  const v = parseFloat(val); if (isNaN(v) || v < 1) return;
+  _radiusMiles = v; _rpRefreshDisplay(); _radiusDrawCircle();
+  if (_radiusFilterActive) { _applyRadarPolyMask(); _applyPolyFilterNow(); }
+}
+function _rpKm(val) {
+  const v = parseFloat(val); if (isNaN(v) || v < 1) return;
+  _radiusMiles = Math.round(v / 1.60934); _rpRefreshDisplay(); _radiusDrawCircle();
+  if (_radiusFilterActive) { _applyRadarPolyMask(); _applyPolyFilterNow(); }
+}
+
+function _rpToggleFilter() {
+  _radiusFilterActive = !_radiusFilterActive;
+  _applyRadarPolyMask();
+  _applyPolyFilterNow();
+  if (_radiusPanel) _radiusPanel.setContent(_buildRadiusPanelHTML());
+}
+
+function _rpRemove() {
+  _radiusFilterActive = false;
+  _applyRadarPolyMask();
+  _applyPolyFilterNow();
+  if (_radiusMarker) { try { map.removeLayer(_radiusMarker); } catch(ex){} _radiusMarker = null; }
+  if (_radiusCircle) { try { map.removeLayer(_radiusCircle); } catch(ex){} _radiusCircle = null; }
+  if (_radiusPanel)  { try { _radiusPanel.remove(); } catch(ex){} _radiusPanel = null; }
+  _radiusCenter = null;
 }
 
 // Show the filter-active pill in the overlay bar area
@@ -9989,6 +10194,7 @@ const LOAD_FACTS = [
   "Alert polygons are fully interactive — <b>tap any warning polygon</b> to see the event name, issued and expiry times, affected counties, severity, and the full NWS message.",
   "Use the <b>Draw tool</b> to annotate the map freehand in pencil or highlighter mode, with a color picker, adjustable line width, and full undo/redo.",
   "The <b>Polygon tool</b> lets you draw a custom area on the map — all radar, alert, and storm report layers are then filtered to show only what's inside that zone.",
+  "The <b>Radius Maker</b> (5th toolbar icon) lets you drop a center point, set a distance in miles or km, and apply it as a circular filter across all layers — just like the polygon filter but round.",
   "Switch between <b>Reflectivity and Velocity</b> radar products using the radar layer sub-menu — velocity shows rotation and wind shear inside storms.",
   "The <b>Recenter button</b> pops up automatically the moment you pan away from your saved location — tap it to snap straight back.",
   "You can play the radar animation <b>forwards or backwards</b> — perfect for watching a storm's full lifecycle from development to dissipation.",
@@ -10162,6 +10368,7 @@ function _clearListeners() {
 }
 function deactivateTool() {
   _clearListeners();
+  map.off('click', _onRadiusClick);
   activeTool = null;
   _setBtn(null);
   _showHint('');
