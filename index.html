@@ -5336,11 +5336,8 @@ function initMap() {
   });
 
   // Storm lock: use Leaflet's own click event (works on PS5 and all platforms)
-  let _slClickPending = false;
   map.on('click', function(e) {
     if (!stormLockActive) return;
-    if (_slClickPending) return;
-    _slClickPending = true;
     onStormLockClick({ latlng: e.latlng });
   });
 
@@ -8551,7 +8548,6 @@ function placeLock(color, id, lat, lon) {
 // ── Initial lock click ─────────────────────────────────────────────────────
 function onStormLockClick(e) {
   stormLockActive = false;
-  if (typeof _slClickPending !== 'undefined') _slClickPending = false;
   document.getElementById('rm-stormlock').classList.remove('active');
   const hint = document.getElementById('stormlock-hint');
   if (hint) hint.style.display = 'none';
@@ -10481,25 +10477,30 @@ const LOAD_FACTS = [
   "The <b>Satellite layer</b> pulls in GOES and global IR composite imagery — switch regions and products from the layer sub-menu.",
   "All drawing tool windows are <b>draggable</b> — grab the handle at the top of any tool panel and reposition it anywhere on screen."
 ];
-let _factIdx = -1, _factTimer = null;
+let _factQueue = [], _factQueueIdx = 0, _factTimer = null;
+function _shuffleFacts() {
+  _factQueue = LOAD_FACTS.slice();
+  for (let i = _factQueue.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [_factQueue[i], _factQueue[j]] = [_factQueue[j], _factQueue[i]];
+  }
+  _factQueueIdx = 0;
+}
 function rotateLoadFact() {
   const el = document.getElementById('load-fact-text');
   if (!el) return;
   el.classList.add('fading');
   setTimeout(() => {
-    let next;
-    do { next = Math.floor(Math.random() * LOAD_FACTS.length); }
-    while (next === _factIdx && LOAD_FACTS.length > 1);
-    _factIdx = next;
-    el.innerHTML = LOAD_FACTS[_factIdx];
+    if (_factQueueIdx >= _factQueue.length) _shuffleFacts();
+    el.innerHTML = _factQueue[_factQueueIdx++];
     el.classList.remove('fading');
   }, 380);
 }
 function startLoadFacts() {
   const el = document.getElementById('load-fact-text');
   if (!el) return;
-  _factIdx = Math.floor(Math.random() * LOAD_FACTS.length);
-  el.innerHTML = LOAD_FACTS[_factIdx];
+  _shuffleFacts();
+  el.innerHTML = _factQueue[_factQueueIdx++];
   if (_factTimer) clearInterval(_factTimer);
   _factTimer = setInterval(rotateLoadFact, 3800);
 }
