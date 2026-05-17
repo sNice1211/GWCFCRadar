@@ -2287,6 +2287,37 @@ body {
   z-index: 1000;
   display: none;
 }
+/* ── Storm Lock Panel ── */
+.stormlock-label { cursor: pointer; pointer-events: auto !important; }
+.sl-popup .leaflet-popup-content-wrapper {
+  background: rgb(8,12,16);
+  border: 1px solid rgba(255,255,255,0.13);
+  border-radius: 10px;
+  padding: 0;
+  min-width: 215px;
+  box-shadow: 0 4px 28px rgba(0,0,0,0.7);
+}
+.sl-popup .leaflet-popup-tip-container { display: none; }
+.sl-popup .leaflet-popup-content { margin: 0; width: auto !important; }
+.sl-popup .leaflet-popup-close-button { color: rgba(255,255,255,0.35); top: 8px; right: 8px; font-size: 16px; }
+.sl-popup .leaflet-popup-close-button:hover { color: #fff; background: none; }
+.sl-inner { padding: 12px 14px 10px; }
+.sl-hdr { display: flex; align-items: center; margin-bottom: 6px; }
+.sl-title { font-family: var(--display); font-size: 12px; font-weight: 700; letter-spacing: 1px; }
+.sl-pos-line { font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.5); margin-bottom: 6px; }
+.sl-section { font-family: var(--display); font-size: 8px; letter-spacing: 2px; color: rgba(255,255,255,0.28); margin: 8px 0 3px; text-transform: uppercase; }
+.sl-motion-row { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; }
+.sl-speed { font-weight: 700; }
+.sl-bearing-deg { color: rgba(255,255,255,0.38); font-size: 9px; }
+.sl-track-table { width: 100%; border-collapse: collapse; }
+.sl-track-table td { font-family: var(--mono); font-size: 9px; padding: 2px 0; }
+.sl-track-table td:first-child { color: rgba(255,255,255,0.4); width: 50px; }
+.sl-track-table td:last-child { color: rgba(255,255,255,0.8); }
+.sl-eta-row { font-family: var(--mono); font-size: 9px; margin-top: 4px; color: rgba(255,200,60,0.9); }
+.sl-status-text { font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,0.28); font-style: italic; }
+.sl-remove-btn { margin-top: 10px; width: 100%; background: rgba(255,60,60,0.08); border: 1px solid rgba(255,60,60,0.28); color: #ff6060; font-family: var(--display); font-size: 9px; letter-spacing: 1px; padding: 5px 10px; border-radius: 5px; cursor: pointer; transition: background 0.15s; }
+.sl-remove-btn:hover { background: rgba(255,60,60,0.2); }
+.sl-dot-tip.leaflet-tooltip { background: rgba(8,12,16,0.92); border: 1px solid rgba(255,255,255,0.18); color: rgba(255,255,255,0.65); font-family: var(--mono); font-size: 9px; padding: 2px 6px; border-radius: 3px; box-shadow: none; }
 
 /* ── CITY MARKERS ── */
 .city-dot {
@@ -8056,20 +8087,19 @@ function _loadSSTMapLayer() {
 // ── STORMLOCK ─────────────────────────────────────────────────────────────
 const STORMLOCK_COLORS = ['#ff4444','#ff8800','#ffff00','#44ff44','#44aaff','#cc44ff'];
 let stormLockActive = false;
-let stormLocks = [];      // { id, lat, lon, color, ring, label, marker }
+let stormLocks = [];   // { id, lat, lon, color, ring, label, popup, history, motion, trackLine, trackDots }
 let stormLockNextId = 1;
 
 function toggleStormLock() {
   stormLockActive = !stormLockActive;
   const btn = document.getElementById('rm-stormlock');
   btn.classList.toggle('active', stormLockActive);
-  const hint = document.getElementById('stormlock-hint');
+  const hint    = document.getElementById('stormlock-hint');
   const overlay = document.getElementById('stormlock-overlay');
-  if (hint) hint.style.display = stormLockActive ? 'block' : 'none';
+  if (hint)    hint.style.display    = stormLockActive ? 'block' : 'none';
   if (overlay) overlay.style.display = stormLockActive ? 'block' : 'none';
 }
 
-// Overlay click → convert to latlng and call handler
 document.addEventListener('DOMContentLoaded', function() {
   const overlay = document.getElementById('stormlock-overlay');
   if (overlay) {
@@ -8083,114 +8113,210 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
-// ── Storm centroid snap via fresh tile Image load ─────────────────────────
-// Fetches the radar tile that covers (lat,lon) directly as a new Image
-// (bypasses any Leaflet _tiles key-format issues), draws to canvas,
-// finds weighted centroid of bright storm pixels, calls back with snapped pos.
+// ── Storm math helpers ─────────────────────────────────────────────────────
+function _haversine(lat1, lon1, lat2, lon2) {
+  const R = 3958.8, r = Math.PI / 180;
+  const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*r)*Math.cos(lat2*r)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+function _bearing(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180;
+  const y = Math.sin((lon2-lon1)*r) * Math.cos(lat2*r);
+  const x = Math.cos(lat1*r)*Math.sin(lat2*r) - Math.sin(lat1*r)*Math.cos(lat2*r)*Math.cos((lon2-lon1)*r);
+  return (Math.atan2(y, x) * 180/Math.PI + 360) % 360;
+}
+function _bearingToCardinal(b) {
+  return ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(b/22.5)%16];
+}
+function _projectStorm(lat, lon, bearing, speedMph, minutes) {
+  const R = 3958.8, r = Math.PI / 180;
+  const d = speedMph * (minutes / 60) / R;
+  const brR = bearing*r, latR = lat*r, lonR = lon*r;
+  const lat2 = Math.asin(Math.sin(latR)*Math.cos(d) + Math.cos(latR)*Math.sin(d)*Math.cos(brR));
+  const lon2 = lonR + Math.atan2(Math.sin(brR)*Math.sin(d)*Math.cos(latR), Math.cos(d)-Math.sin(latR)*Math.sin(lat2));
+  return { lat: lat2/r, lon: lon2/r };
+}
+function _computeStormMotion(history) {
+  if (history.length < 2) return null;
+  const p1 = history[0], p2 = history[history.length - 1];
+  const dt = (p2.t - p1.t) / 3600;
+  if (Math.abs(dt) < 0.001) return null;
+  const dist = _haversine(p1.lat, p1.lon, p2.lat, p2.lon);
+  const speedMph = Math.round(dist / Math.abs(dt));
+  const brg = _bearing(p1.lat, p1.lon, p2.lat, p2.lon);
+  return { speedMph, bearing: Math.round(brg), dirLabel: _bearingToCardinal(brg) };
+}
+function _slFmt(lat, lon) {
+  return `${Math.abs(lat).toFixed(3)}\xb0${lat>=0?'N':'S'} ${Math.abs(lon).toFixed(3)}\xb0${lon>=0?'E':'W'}`;
+}
+
+// ── Storm centroid snap ────────────────────────────────────────────────────
 function snapToStorm(lat, lon, radiusPx, callback) {
   if (!radarFrames.length || !radarFrames[currentFrame]) { callback(lat, lon); return; }
-
-  // Tile URL zoom = map zoom - 1 (zoomOffset:-1), hard-capped at 7
   const tileZ = Math.max(0, Math.min(Math.floor(map.getZoom()) - 1, 7));
-  const n = Math.pow(2, tileZ);
-
-  // Tile indices containing this lat/lon
+  const n  = Math.pow(2, tileZ);
   const tX = Math.floor((lon + 180) / 360 * n);
   const sinL = Math.sin(lat * Math.PI / 180);
   const tY = Math.floor((1 - Math.log((1 + sinL) / (1 - sinL)) / (2 * Math.PI)) / 2 * n);
-
-  // Build the actual tile URL from the current frame template
   const tileUrl = radarFrames[currentFrame].url
     .replace('{z}', tileZ).replace('{x}', tX).replace('{y}', tY);
-
   const img = new Image();
   img.crossOrigin = 'anonymous';
-
   img.onload = function() {
     const SZ = 512;
     const canvas = document.createElement('canvas');
     canvas.width = canvas.height = SZ;
     const ctx = canvas.getContext('2d');
     try { ctx.drawImage(img, 0, 0, SZ, SZ); } catch(e) { callback(lat, lon); return; }
-
-    // Pixel position of lat/lon within this tile
     const fracX = (lon + 180) / 360 * n - tX;
     const sinL2 = Math.sin(lat * Math.PI / 180);
     const fracY = (1 - Math.log((1 + sinL2) / (1 - sinL2)) / (2 * Math.PI)) / 2 * n - tY;
-    const cPx = Math.round(fracX * SZ);
-    const cPy = Math.round(fracY * SZ);
-
+    const cPx = Math.round(fracX * SZ), cPy = Math.round(fracY * SZ);
     const x0 = Math.max(0, cPx - radiusPx), y0 = Math.max(0, cPy - radiusPx);
     const w  = Math.min(SZ - x0, radiusPx * 2), h = Math.min(SZ - y0, radiusPx * 2);
-
     let pixels;
     try { pixels = ctx.getImageData(x0, y0, w, h).data; }
-    catch(e) { callback(lat, lon); return; }  // CORS blocked
-
-    // Weighted centroid of storm (bright, non-transparent) pixels
+    catch(e) { callback(lat, lon); return; }
     let wX = 0, wY = 0, wSum = 0;
     for (let i = 0; i < pixels.length; i += 4) {
       if (pixels[i+3] < 60) continue;
       const bright = pixels[i] + pixels[i+1] + pixels[i+2];
       if (bright < 120) continue;
-      const px = x0 + (i >> 2) % w;
-      const py = y0 + Math.floor((i >> 2) / w);
+      const px = x0 + (i >> 2) % w, py = y0 + Math.floor((i >> 2) / w);
       wX += px * bright; wY += py * bright; wSum += bright;
     }
-
     if (wSum < 1) { callback(lat, lon); return; }
-
     const sPx = wX / wSum, sPy = wY / wSum;
     const snapLon = (sPx / SZ + tX) / n * 360 - 180;
     const mercN   = Math.PI - 2 * Math.PI * (sPy / SZ + tY) / n;
     const snapLat = (180 / Math.PI) * Math.atan(0.5 * (Math.exp(mercN) - Math.exp(-mercN)));
     callback(snapLat, snapLon);
   };
-
   img.onerror = function() { callback(lat, lon); };
   img.src = tileUrl;
 }
 
+// ── Storm panel HTML ───────────────────────────────────────────────────────
+function _buildStormPanelHTML(lock) {
+  const m = lock.motion;
+  let motionHtml, trackHtml, etaHtml = '';
+  if (!m || m.speedMph < 1) {
+    motionHtml = '<span class="sl-status-text">Play animation frames to calculate motion…</span>';
+    trackHtml  = '<span class="sl-status-text">—</span>';
+  } else {
+    const arrow = `<span style="display:inline-block;transform:rotate(${m.bearing}deg);font-size:16px;line-height:1">↑</span>`;
+    motionHtml  = `<div class="sl-motion-row">${arrow}<span class="sl-speed" style="color:${lock.color}">${m.speedMph} mph</span><span class="sl-bearing-deg">${m.dirLabel} · ${m.bearing}\xb0</span></div>`;
+    const p30   = _projectStorm(lock.lat, lock.lon, m.bearing, m.speedMph,  30);
+    const p60   = _projectStorm(lock.lat, lock.lon, m.bearing, m.speedMph,  60);
+    const p120  = _projectStorm(lock.lat, lock.lon, m.bearing, m.speedMph, 120);
+    trackHtml = `<table class="sl-track-table">
+      <tr><td>+30 min</td><td>${_slFmt(p30.lat,p30.lon)}</td></tr>
+      <tr><td>+1 hr</td><td>${_slFmt(p60.lat,p60.lon)}</td></tr>
+      <tr><td>+2 hr</td><td>${_slFmt(p120.lat,p120.lon)}</td></tr>
+    </table>`;
+    if (_recenterLat != null) {
+      const distMi = _haversine(lock.lat, lock.lon, _recenterLat, _recenterLng);
+      const towardBrg = _bearing(lock.lat, lock.lon, _recenterLat, _recenterLng);
+      const diff = Math.abs(((towardBrg - m.bearing) + 360) % 360);
+      const approaching = diff < 90 || diff > 270;
+      const etaMin = approaching ? Math.round(distMi / m.speedMph * 60) : null;
+      etaHtml = `<div class="sl-section">📍 SAVED LOCATION</div>
+        <div class="sl-eta-row">${approaching ? '⚠️ Approaching' : 'Moving away'} · ${Math.round(distMi)} mi${etaMin !== null ? ` · ETA ~${etaMin} min` : ''}</div>`;
+    }
+  }
+  return `<div class="sl-inner">
+    <div class="sl-hdr"><div class="sl-title" style="color:${lock.color}">🎯 STORM ${lock.id}</div></div>
+    <div class="sl-pos-line">${_slFmt(lock.lat, lock.lon)}</div>
+    <div class="sl-section">MOTION</div>${motionHtml}
+    <div class="sl-section">PROJECTED TRACK</div>${trackHtml}
+    ${etaHtml}
+    <button class="sl-remove-btn" onclick="removeStormLock(${lock.id})">🗑 Remove lock</button>
+  </div>`;
+}
+
+// ── Track polyline + projection dots ──────────────────────────────────────
+function _updateStormTrack(lock) {
+  if (lock.trackLine) { try { map.removeLayer(lock.trackLine); } catch(e){} lock.trackLine = null; }
+  (lock.trackDots || []).forEach(d => { try { map.removeLayer(d); } catch(e){} });
+  lock.trackDots = [];
+  const m = lock.motion;
+  if (!m || m.speedMph < 1) return;
+  const proj = [30, 60, 120].map(mins => {
+    const p = _projectStorm(lock.lat, lock.lon, m.bearing, m.speedMph, mins);
+    return [p.lat, p.lon];
+  });
+  lock.trackLine = L.polyline([[lock.lat, lock.lon], ...proj], {
+    color: lock.color, weight: 2, opacity: 0.6,
+    dashArray: '7 5', interactive: false
+  }).addTo(map);
+  ['+30m', '+1h', '+2h'].forEach((lbl, i) => {
+    const dot = L.circleMarker(proj[i], {
+      radius: 5, color: lock.color,
+      fillColor: 'rgb(8,12,16)', fillOpacity: 1, weight: 2, interactive: true
+    });
+    dot.bindTooltip(lbl, { permanent: false, direction: 'top', className: 'sl-dot-tip' });
+    dot.addTo(map);
+    lock.trackDots.push(dot);
+  });
+}
+
+// ── Open / refresh panel popup ────────────────────────────────────────────
+function openStormPanel(id) {
+  const lock = stormLocks.find(l => l.id === id);
+  if (!lock) return;
+  if (lock.popup) { try { lock.popup.remove(); } catch(e){} lock.popup = null; }
+  lock.popup = L.popup({ className: 'sl-popup', maxWidth: 290, autoPan: true, closeButton: true })
+    .setLatLng([lock.lat, lock.lon])
+    .setContent(_buildStormPanelHTML(lock))
+    .openOn(map);
+  lock.popup.on('remove', () => { lock.popup = null; });
+}
+
+// ── Place ring + label markers ─────────────────────────────────────────────
 function placeLock(color, id, lat, lon) {
-  const ringSize = 90;
   const ringIcon = L.divIcon({
     className: '',
-    html: `<div class="stormlock-ring" style="width:${ringSize}px;height:${ringSize}px;border-color:${color};position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"></div>`,
+    html: `<div class="stormlock-ring" style="width:90px;height:90px;border-color:${color};position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"></div>`,
     iconSize: [0, 0], iconAnchor: [0, 0]
   });
   const ring = L.marker([lat, lon], { icon: ringIcon, zIndexOffset: 800, interactive: false }).addTo(map);
-
   const labelIcon = L.divIcon({
     className: '',
     html: `<div class="stormlock-label" style="background:${color}22;border:1px solid ${color};color:${color};">🎯 LOCK ${id}</div>`,
     iconSize: [0, 0], iconAnchor: [-8, 40]
   });
-  const label = L.marker([lat, lon], { icon: labelIcon, zIndexOffset: 801, interactive: false }).addTo(map);
+  const label = L.marker([lat, lon], { icon: labelIcon, zIndexOffset: 802, interactive: true }).addTo(map);
   return { ring, label };
 }
 
+// ── Initial lock click ─────────────────────────────────────────────────────
 function onStormLockClick(e) {
   stormLockActive = false;
   document.getElementById('rm-stormlock').classList.remove('active');
-  const hint = document.getElementById('stormlock-hint');
-  if (hint) hint.style.display = 'none';
+  const hint    = document.getElementById('stormlock-hint');
   const overlay = document.getElementById('stormlock-overlay');
+  if (hint)    hint.style.display    = 'none';
   if (overlay) overlay.style.display = 'none';
-
-  const color = STORMLOCK_COLORS[stormLocks.length % STORMLOCK_COLORS.length];
-  const id    = stormLockNextId++;
+  const color  = STORMLOCK_COLORS[stormLocks.length % STORMLOCK_COLORS.length];
+  const id     = stormLockNextId++;
   const rawLat = e.latlng.lat, rawLon = e.latlng.lng;
-
-  // Snap to the nearest storm centroid in the radar tile, then create the lock
   snapToStorm(rawLat, rawLon, 80, function(snapLat, snapLon) {
     const { ring, label } = placeLock(color, id, snapLat, snapLon);
-    const lock = { id, lat: snapLat, lon: snapLon, color, ring, label };
+    const lock = {
+      id, lat: snapLat, lon: snapLon, color, ring, label,
+      popup: null, history: [], motion: null, trackLine: null, trackDots: []
+    };
+    if (radarFrames[currentFrame]) {
+      lock.history.push({ lat: snapLat, lon: snapLon, t: radarFrames[currentFrame].time });
+    }
     stormLocks.push(lock);
+    label.on('click', () => openStormPanel(id));
+    openStormPanel(id);
   });
 }
 
-// Called by showFrame() — re-snaps each lock to the nearest storm
-// centroid in the new radar frame so the ring follows the actual storm.
+// ── Frame update: re-snap + compute motion ─────────────────────────────────
 function updateStormLocks(newFrameTime) {
   if (!stormLocks.length) return;
   stormLocks.forEach(lock => {
@@ -8198,25 +8324,38 @@ function updateStormLocks(newFrameTime) {
       lock.lat = snapLat; lock.lon = snapLon;
       lock.ring.setLatLng([snapLat, snapLon]);
       lock.label.setLatLng([snapLat, snapLon]);
+      lock.history.push({ lat: snapLat, lon: snapLon, t: newFrameTime });
+      if (lock.history.length > 6) lock.history.shift();
+      lock.motion = _computeStormMotion(lock.history);
+      _updateStormTrack(lock);
+      if (lock.popup) {
+        lock.popup.setLatLng([snapLat, snapLon]).setContent(_buildStormPanelHTML(lock));
+      }
     });
   });
 }
 
+// ── Remove / clear ─────────────────────────────────────────────────────────
 function removeStormLock(id) {
   const idx = stormLocks.findIndex(l => l.id === id);
   if (idx === -1) return;
   const lock = stormLocks[idx];
-  map.removeLayer(lock.ring);
-  map.removeLayer(lock.label);
+  [lock.ring, lock.label].forEach(m => { try { map.removeLayer(m); } catch(e){} });
+  if (lock.trackLine) try { map.removeLayer(lock.trackLine); } catch(e){}
+  (lock.trackDots || []).forEach(d => { try { map.removeLayer(d); } catch(e){} });
+  if (lock.popup) { try { lock.popup.remove(); } catch(e){} }
   stormLocks.splice(idx, 1);
+  map.closePopup();
 }
 
 function clearAllStormLocks() {
   stormLocks.forEach(l => {
-    map.removeLayer(l.ring);
-    map.removeLayer(l.label);
+    [l.ring, l.label].forEach(m => { try { map.removeLayer(m); } catch(e){} });
+    if (l.trackLine) try { map.removeLayer(l.trackLine); } catch(e){}
+    (l.trackDots || []).forEach(d => { try { map.removeLayer(d); } catch(e){} });
+    if (l.popup) { try { l.popup.remove(); } catch(e){} }
   });
-  stormLocks = [];
+  stormLocks = []; stormLockNextId = 1;
 }
 
 // ── MAP TYPE ──
