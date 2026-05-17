@@ -520,17 +520,29 @@ body {
   border-top: 1px solid rgba(255,255,255,0.07);
   line-height: 1.7;
 }
+.cp-actions {
+  display: flex; gap: 6px; margin-top: 9px;
+}
 .cp-copy {
-  margin-top: 8px;
   background: rgba(0,200,255,0.1);
   border: 1px solid rgba(0,200,255,0.3);
   color: var(--accent2);
   font-family: var(--mono); font-size: 9px; letter-spacing: 1px;
-  padding: 4px 10px; border-radius: 5px;
-  cursor: pointer; width: 100%;
+  padding: 5px 10px; border-radius: 5px;
+  cursor: pointer; flex: 1;
   transition: background 0.15s;
 }
 .cp-copy:hover { background: rgba(0,200,255,0.22); }
+.cp-recenter-set {
+  background: rgba(255,153,0,0.12);
+  border: 1px solid rgba(255,153,0,0.35);
+  color: #ff9900;
+  font-family: var(--mono); font-size: 9px; letter-spacing: 1px;
+  padding: 5px 10px; border-radius: 5px;
+  cursor: pointer; flex: 1;
+  transition: background 0.15s;
+}
+.cp-recenter-set:hover { background: rgba(255,153,0,0.25); }
 
 /* ── DATA CLICK POPUP ── */
 .data-popup .leaflet-popup-content-wrapper {
@@ -4832,6 +4844,7 @@ body.gwcfc-crosshair #map::after {
       <div class="right-bubble" id="rm-satellite" onclick="setMapType('satellite'); rmActivate('rm-satellite')"><span class="rb-icon">🛰</span> Satellite</div>
       <div class="right-bubble" id="rm-light"   onclick="setMapType('light');   rmActivate('rm-light')"><span class="rb-icon">🌤</span> Light</div>
       <div class="right-bubble" id="rm-topo"    onclick="setMapType('topo');    rmActivate('rm-topo')"><span class="rb-icon">🗺</span> Topo</div>
+      <div class="right-bubble" id="rm-recenter" onclick="recenterMap()" style="display:none" title="Go to saved recenter location"><span class="rb-icon">🎯</span> Recenter</div>
       <div class="right-bubble" id="rm-locate"  onclick="locateUser()"><span class="rb-icon">📍</span> Locate</div>
       <div class="right-bubble" id="rm-smooth"  onclick="toggleSmooth(); this.classList.toggle('active')"><span class="rb-icon">✨</span> Smooth</div>
       <div class="right-bubble" id="rm-fullscreen" onclick="toggleFullscreen()"><span class="rb-icon">⛶</span> Fullscreen</div>
@@ -5156,30 +5169,49 @@ function initMap() {
     const latDMS = _toDMS(lat, true);
     const lonDMS = _toDMS(lng, false);
     const decStr = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-    const id = 'cp-' + Date.now();
+    const copyId = 'cp-' + Date.now();
+    const rctId  = 'rc-' + Date.now();
     const html = `<div class="coord-popup-inner">
       <div class="cp-title">📍 Coordinates</div>
-      <div class="cp-row"><span>Latitude</span>  <b>${lat >= 0 ? '+' : ''}${lat.toFixed(5)}°</b></div>
-      <div class="cp-row"><span>Longitude</span> <b>${lng >= 0 ? '+' : ''}${lng.toFixed(5)}°</b></div>
+      <div class="cp-row"><span>Latitude</span><b>${lat >= 0 ? '+' : ''}${lat.toFixed(5)}°</b></div>
+      <div class="cp-row"><span>Longitude</span><b>${lng >= 0 ? '+' : ''}${lng.toFixed(5)}°</b></div>
       <div class="cp-dms">${latDMS}<br>${lonDMS}</div>
-      <button class="cp-copy" id="${id}">⎘ Copy decimal coords</button>
+      <div class="cp-actions">
+        <button class="cp-copy" id="${copyId}">⎘ Copy coords</button>
+        <button class="cp-recenter-set" id="${rctId}">🎯 Set recenter</button>
+      </div>
     </div>`;
     L.popup({ className: 'coord-popup', maxWidth: 280, autoPan: true })
       .setLatLng(e.latlng)
       .setContent(html)
       .openOn(map);
-    // Wire copy button after popup is inserted
     setTimeout(() => {
-      const btn = document.getElementById(id);
-      if (btn) btn.onclick = () => {
+      const copyBtn = document.getElementById(copyId);
+      if (copyBtn) copyBtn.onclick = () => {
         navigator.clipboard.writeText(decStr).catch(() => {});
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => { btn.textContent = '⎘ Copy decimal coords'; }, 1800);
+        copyBtn.textContent = '✓ Copied!';
+        setTimeout(() => { copyBtn.textContent = '⎘ Copy coords'; }, 1800);
       };
+      const rctBtn = document.getElementById(rctId);
+      if (rctBtn) rctBtn.onclick = () => _setRecenterLocation(lat, lng);
     }, 50);
   });
 
   _initGraticule();
+}
+
+// ── RECENTER LOCATION ──
+let _recenterLat = null, _recenterLng = null;
+function _setRecenterLocation(lat, lng) {
+  _recenterLat = lat; _recenterLng = lng;
+  const btn = document.getElementById('rm-recenter');
+  if (btn) btn.style.display = '';
+  map.closePopup();
+  showToast(`🎯 Recenter set — tap 🎯 in the menu to return here`, 2500);
+}
+function recenterMap() {
+  if (_recenterLat == null) return;
+  map.setView([_recenterLat, _recenterLng], map.getZoom(), { animate: true });
 }
 
 // ── COORD HELPERS ──
@@ -10027,7 +10059,7 @@ if (document.readyState === 'loading') {
 
 // ── DISMISS LOADING (always called) ──
 // Minimum display time so users can actually read a fun fact or two.
-const LOAD_MIN_MS = 1000;
+const LOAD_MIN_MS = 6500;
 const _loadStart = Date.now();
 let _dismissPending = false;
 function dismissLoading() {
