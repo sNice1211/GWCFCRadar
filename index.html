@@ -5,6 +5,8 @@
 <link rel="preconnect" href="https://api.open-meteo.com">
 <link rel="preconnect" href="https://api.weather.gov">
 <link rel="preconnect" href="https://api.maptiler.com">
+<link rel="preconnect" href="https://mesonet.agron.iastate.edu">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preconnect" href="https://marine-api.open-meteo.com">
 <link rel="preconnect" href="https://opengeo.ncep.noaa.gov">
 <link rel="preconnect" href="https://www.spc.noaa.gov">
@@ -19,7 +21,7 @@
 
 <!-- Google Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 
 <style>
 :root {
@@ -5116,7 +5118,7 @@ function initMap() {
   const mtAttr = '© <a href="https://www.maptiler.com/">MapTiler</a> © <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
 
   // Dark (DataViz Dark — great for radar overlays)
-  const _mtOpts = { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, detectRetina: true, keepBuffer: 2, updateWhenZooming: false };
+  const _mtOpts = { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, keepBuffer: 2, updateWhenZooming: false };
   const cartoDark  = L.tileLayer(`https://api.maptiler.com/maps/dataviz-dark/{z}/{x}/{y}.png?key=${MT_KEY}`, _mtOpts);
   const cartoLight = L.tileLayer(`https://api.maptiler.com/maps/dataviz/{z}/{x}/{y}.png?key=${MT_KEY}`,        _mtOpts);
   const satellite  = L.tileLayer(`https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MT_KEY}`,         _mtOpts);
@@ -5131,6 +5133,7 @@ function initMap() {
   map.getPane('alertsPane').style.pointerEvents = 'auto';
 
   let _mmRaf = null;
+  try { map.getContainer().addEventListener('touchstart', ()=>{}, {passive:true}); } catch(e){}
   map.on('mousemove', e => {
     if (_mmRaf) return;
     const lat = e.latlng.lat, lng = e.latlng.lng;
@@ -10024,7 +10027,7 @@ if (document.readyState === 'loading') {
 
 // ── DISMISS LOADING (always called) ──
 // Minimum display time so users can actually read a fun fact or two.
-const LOAD_MIN_MS = 6500;
+const LOAD_MIN_MS = 1000;
 const _loadStart = Date.now();
 let _dismissPending = false;
 function dismissLoading() {
@@ -10045,11 +10048,10 @@ function dismissLoading() {
 // ── STARTUP ──
 async function init() {
   // Safety net: always dismiss after this long no matter what
-  const safetyTimer = setTimeout(dismissLoading, 9000);
+  const safetyTimer = setTimeout(dismissLoading, 4000);
 
   try {
     initMap();
-    initCityMarkers();
     updateLegend('ref');
     renderSubBubbles('regular');
   } catch(e) {
@@ -10059,19 +10061,20 @@ async function init() {
   updateLoadStatus('Loading frame index...');
   // Pre-build the radar frame list so seeking works instantly when user enables radar
   // but do NOT display any tiles yet (nexrad starts false)
-  try { await Promise.race([loadNEXRAD(), new Promise(r => setTimeout(r, 6000))]); }
+  try { await Promise.race([loadNEXRAD(), new Promise(r => setTimeout(r, 2500))]); }
   catch(e) { console.warn('Radar frame index error:', e); }
 
   // Show radar site markers now that the map is ready
   _syncNexradSites();
 
   updateLoadStatus('Loading alerts...');
-  try { await Promise.race([loadAlerts(), new Promise(r => setTimeout(r, 3000))]); }
+  try { await Promise.race([loadAlerts(), new Promise(r => setTimeout(r, 1500))]); }
   catch(e) { console.warn('Alerts load error:', e); }
 
   clearTimeout(safetyTimer);
   updateLoadStatus('Ready.');
   dismissLoading();
+  setTimeout(initCityMarkers, 200); // defer until after map is visible
 
   // Sync overlay bar pill active states on startup
   ['lightning','cams','radio','forecasts'].forEach(id => {
