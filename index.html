@@ -341,6 +341,28 @@ body {
 }
 
 /* ── BOTTOM ANIMATION BAR ── */
+#recenter-float {
+  position: absolute;
+  bottom: calc(40px + env(safe-area-inset-bottom, 0px) + 52px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 820;
+  background: rgba(8,12,16,0.92);
+  border: 1px solid rgba(255,153,0,0.55);
+  color: #ff9900;
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 8px 20px;
+  border-radius: 20px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 14px rgba(255,153,0,0.22);
+  transition: opacity 0.2s, transform 0.2s;
+  white-space: nowrap;
+}
+#recenter-float:hover { background: rgba(255,153,0,0.18); }
 #animbar {
   position: absolute;
   bottom: calc(40px + env(safe-area-inset-bottom, 0px));
@@ -4756,6 +4778,7 @@ body.gwcfc-crosshair #map::after {
 </div>
 
     <!-- Animation Bar -->
+    <div id="recenter-float" onclick="recenterMap()" style="display:none">🎯 Tap to recenter</div>
     <div id="animbar">
       <!-- LEFT: play backwards + speed input -->
       <button id="play-back-btn" onclick="togglePlayBack()" title="Play Backwards">◀</button>
@@ -4844,7 +4867,6 @@ body.gwcfc-crosshair #map::after {
       <div class="right-bubble" id="rm-satellite" onclick="setMapType('satellite'); rmActivate('rm-satellite')"><span class="rb-icon">🛰</span> Satellite</div>
       <div class="right-bubble" id="rm-light"   onclick="setMapType('light');   rmActivate('rm-light')"><span class="rb-icon">🌤</span> Light</div>
       <div class="right-bubble" id="rm-topo"    onclick="setMapType('topo');    rmActivate('rm-topo')"><span class="rb-icon">🗺</span> Topo</div>
-      <div class="right-bubble" id="rm-recenter" onclick="recenterMap()" style="display:none" title="Go to saved recenter location"><span class="rb-icon">🎯</span> Recenter</div>
       <div class="right-bubble" id="rm-locate"  onclick="locateUser()"><span class="rb-icon">📍</span> Locate</div>
       <div class="right-bubble" id="rm-smooth"  onclick="toggleSmooth(); this.classList.toggle('active')"><span class="rb-icon">✨</span> Smooth</div>
       <div class="right-bubble" id="rm-fullscreen" onclick="toggleFullscreen()"><span class="rb-icon">⛶</span> Fullscreen</div>
@@ -5202,17 +5224,26 @@ function initMap() {
 
 // ── RECENTER LOCATION ──
 let _recenterLat = null, _recenterLng = null;
+function _updateRecenterBtn() {
+  const btn = document.getElementById('recenter-float');
+  if (!btn || _recenterLat == null) return;
+  const c = map.getCenter();
+  const px = map.latLngToContainerPoint([_recenterLat, _recenterLng]);
+  const w = map.getSize().x, h = map.getSize().y;
+  const onScreen = px.x >= 0 && px.x <= w && px.y >= 0 && px.y <= h;
+  btn.style.display = onScreen ? 'none' : '';
+}
 function _setRecenterLocation(lat, lng) {
   _recenterLat = lat; _recenterLng = lng;
-  const btn = document.getElementById('rm-recenter');
-  if (btn) btn.style.display = '';
   map.closePopup();
-  showToast(`🎯 Recenter set — tap 🎯 in the menu to return here`, 2500);
+  _updateRecenterBtn();
+  showToast(`🎯 Recenter set — button appears when you drift away`, 2500);
 }
 function recenterMap() {
   if (_recenterLat == null) return;
   map.setView([_recenterLat, _recenterLng], map.getZoom(), { animate: true });
 }
+map.on('moveend', _updateRecenterBtn);
 
 // ── COORD HELPERS ──
 function _toDMS(dec, isLat) {
