@@ -15,8 +15,7 @@
 <!-- Leaflet -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
-<!-- html2canvas for track PNG export -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<!-- html2canvas loaded on-demand for track PNG export -->
 
 <!-- Google Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -42,6 +41,20 @@
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* GPU compositing hints — keeps map tiles smooth during pan/zoom */
+#map { will-change: transform; }
+.leaflet-tile-container { will-change: transform; }
+.leaflet-map-pane       { will-change: transform; }
+
+/* Honour OS/browser reduced-motion preference (also helps PS5 & low-end devices) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 
 body {
   background: var(--bg);
@@ -4909,6 +4922,8 @@ let _customRadarColors = null;
 let _radarContrast   = 100; // %
 let _radarBrightness = 100; // %
 let _rceDebounce     = null;
+// Cache packed-RGB → mapped [r,g,b] so each unique color is only nearest-neighbour searched once
+const _colorRemapCache = new Map();
 
 function _hexToRgb(hex) {
   const v = parseInt(hex.slice(1), 16);
@@ -4926,21 +4941,23 @@ function _remapTileColors(tile) {
   const imgData = ctx.getImageData(0, 0, w, h);
   const px = imgData.data;
   const n = NWS_SOURCE_COLORS.length;
-  // Pre-parse custom colors to RGB once
   const targets = _customRadarColors.map(_hexToRgb);
   for (let i = 0; i < px.length; i += 4) {
     if (px[i+3] < 10) continue;
     const r = px[i], g = px[i+1], b = px[i+2];
-    let bestD = 3600, bestJ = -1;
-    for (let j = 0; j < n; j++) {
-      const s = NWS_SOURCE_COLORS[j];
-      const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
-      if (d < bestD) { bestD = d; bestJ = j; }
+    const key = (r << 16) | (g << 8) | b;
+    let mapped = _colorRemapCache.get(key);
+    if (mapped === undefined) {
+      let bestD = 3600, bestJ = -1;
+      for (let j = 0; j < n; j++) {
+        const s = NWS_SOURCE_COLORS[j];
+        const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
+        if (d < bestD) { bestD = d; bestJ = j; }
+      }
+      mapped = bestJ >= 0 ? targets[bestJ] : null;
+      _colorRemapCache.set(key, mapped);
     }
-    if (bestJ >= 0) {
-      const t = targets[bestJ];
-      px[i] = t[0]; px[i+1] = t[1]; px[i+2] = t[2];
-    }
+    if (mapped) { px[i] = mapped[0]; px[i+1] = mapped[1]; px[i+2] = mapped[2]; }
   }
   ctx.putImageData(imgData, 0, 0);
   tile.src = canvas.toDataURL('image/png');
@@ -4953,6 +4970,7 @@ function _applyRadarPaneFilter() {
 }
 
 function _rebuildRadarTiles() {
+  _colorRemapCache.clear();
   if (_radarPoolBuilt) { _buildRadarPool(); showFrame(currentFrame); }
   if (_refStation)     { _loadSingleSiteRef(_refStation); }
   _rceUpdateLegend();
@@ -5122,9 +5140,15 @@ function initMap() {
   map.getPane('alertsPane').style.zIndex = 450;
   map.getPane('alertsPane').style.pointerEvents = 'auto';
 
+  let _mmRaf = null;
   map.on('mousemove', e => {
-    document.getElementById('sb-lat').textContent = e.latlng.lat.toFixed(4);
-    document.getElementById('sb-lon').textContent = e.latlng.lng.toFixed(4);
+    if (_mmRaf) return;
+    const lat = e.latlng.lat, lng = e.latlng.lng;
+    _mmRaf = requestAnimationFrame(() => {
+      document.getElementById('sb-lat').textContent = lat.toFixed(4);
+      document.getElementById('sb-lon').textContent = lng.toFixed(4);
+      _mmRaf = null;
+    });
   });
   map.on('zoomend', () => {
     document.getElementById('sb-zoom').textContent = map.getZoom();
@@ -5249,7 +5273,12 @@ function _initGraticule() {
     }
   }
 
-  map.on('move zoom moveend zoomend resize', redraw);
+  let _gratRaf = null;
+  const _gratDraw = () => {
+    if (_gratRaf) return;
+    _gratRaf = requestAnimationFrame(() => { _gratRaf = null; redraw(); });
+  };
+  map.on('move zoom moveend zoomend resize', _gratDraw);
   redraw();
 }
 
@@ -7790,7 +7819,11 @@ function toggleWindRegularBarbs() {
   if (windRegularBarbActive) {
     loadWindBarbs();
     // pan/zoom only redraws existing barbs — no re-fetch, no extra API calls
-    map._windBarbDrawHandler = () => _drawWindCanvas('regular');
+    let _windBarbRaf = null;
+    map._windBarbDrawHandler = () => {
+      if (_windBarbRaf) return;
+      _windBarbRaf = requestAnimationFrame(() => { _windBarbRaf = null; _drawWindCanvas('regular'); });
+    };
     map.on('move zoom resize', map._windBarbDrawHandler);
     const mapEl = document.getElementById('map');
     mapEl._windClickHandler = e => _windCanvasClick(e, 'regular');
@@ -7812,7 +7845,11 @@ function toggleGustBarbs() {
   windGustBarbActive = windGustActive = !windGustBarbActive;
   if (windGustBarbActive) {
     loadGustBarbs();
-    map._gustBarbDrawHandler = () => _drawWindCanvas('gust');
+    let _gustBarbRaf = null;
+    map._gustBarbDrawHandler = () => {
+      if (_gustBarbRaf) return;
+      _gustBarbRaf = requestAnimationFrame(() => { _gustBarbRaf = null; _drawWindCanvas('gust'); });
+    };
     map.on('move zoom resize', map._gustBarbDrawHandler);
     const mapEl = document.getElementById('map');
     mapEl._gustClickHandler = e => _windCanvasClick(e, 'gust');
@@ -11001,7 +11038,7 @@ function _ttbSaveImage() {
   const stormName = (document.getElementById('ttb-storm-name') || {}).value || 'track';
   const safeName = stormName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'track';
   const filename = 'gwcfc_' + safeName + '_' + new Date().toISOString().slice(0,10) + '.png';
-  html2canvas(mapEl, {
+  const _doCapture = () => html2canvas(mapEl, {
     useCORS: true,
     allowTaint: true,
     scale: window.devicePixelRatio || 1,
@@ -11018,6 +11055,15 @@ function _ttbSaveImage() {
   }).finally(function() {
     if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
   });
+  if (typeof html2canvas === 'function') {
+    _doCapture();
+  } else {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+    s.onload = _doCapture;
+    s.onerror = () => { if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; } alert('Failed to load screenshot library.'); };
+    document.head.appendChild(s);
+  }
 }
 
 // ── ANIMATION CONTROLS ──
