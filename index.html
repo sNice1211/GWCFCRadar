@@ -1221,6 +1221,33 @@ body {
   font-size: 12px !important;
   padding: 10px 14px !important;
 }
+/* ── Alert detail popup ── */
+.ap-popup-container .leaflet-popup-content-wrapper {
+  background: rgb(8,12,16) !important;
+  border: 2px solid #888 !important;
+  border-radius: 10px !important;
+  padding: 0 !important;
+  min-width: 275px !important;
+  box-shadow: 0 4px 28px rgba(0,0,0,0.75) !important;
+}
+.ap-popup-container .leaflet-popup-tip-container { display: none !important; }
+.ap-popup-container .leaflet-popup-content { margin: 0 !important; width: auto !important; }
+.ap-popup-container .leaflet-popup-close-button { color: rgba(255,255,255,0.38) !important; top: 8px !important; right: 8px !important; font-size: 16px !important; z-index: 2; }
+.ap-popup-container .leaflet-popup-close-button:hover { color: #fff !important; background: none !important; }
+.ap-header { padding: 11px 36px 9px 13px; border-radius: 8px 8px 0 0; display: flex; align-items: center; gap: 8px; }
+.ap-event-icon { font-size: 18px; line-height: 1; flex-shrink: 0; }
+.ap-event-name { font-family: var(--display); font-size: 12px; font-weight: 700; letter-spacing: 0.5px; color: #fff; }
+.ap-body { padding: 10px 13px 12px; }
+.ap-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 14px; margin-bottom: 10px; }
+.ap-meta-cell { display: flex; flex-direction: column; gap: 2px; }
+.ap-meta-lbl { font-family: var(--display); font-size: 7px; letter-spacing: 1.5px; color: rgba(255,255,255,0.28); text-transform: uppercase; }
+.ap-meta-val { font-family: var(--mono); font-size: 9.5px; color: rgba(255,255,255,0.75); }
+.ap-section { font-family: var(--display); font-size: 7px; letter-spacing: 2px; color: rgba(255,255,255,0.25); text-transform: uppercase; margin: 9px 0 3px; }
+.ap-counties { font-family: var(--mono); font-size: 8.5px; color: rgba(255,255,255,0.58); line-height: 1.6; word-break: break-word; }
+.ap-headline { font-family: var(--sans); font-size: 11px; color: rgba(212,232,255,0.88); line-height: 1.55; font-weight: 300; }
+.ap-desc { font-family: var(--mono); font-size: 8.5px; color: rgba(255,255,255,0.48); line-height: 1.65; margin-top: 4px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
+.ap-more-btn { width: 100%; margin-top: 9px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.42); font-family: var(--display); font-size: 8px; letter-spacing: 1px; padding: 5px 10px; border-radius: 5px; cursor: pointer; transition: background 0.15s; }
+.ap-more-btn:hover { background: rgba(255,255,255,0.11); color: rgba(255,255,255,0.8); }
 .leaflet-popup-content-wrapper { background: transparent !important; border: none !important; box-shadow: none !important; padding: 0 !important; }
 .leaflet-popup-content { margin: 0 !important; }
 .leaflet-popup-tip { background: var(--surface) !important; }
@@ -6093,6 +6120,73 @@ function formatAlertArea(areaDesc) {
   return state ? shown+' +'+(cleanParts.length-2)+' more, '+state : shown+' +'+(cleanParts.length-2)+' more';
 }
 
+function _apFmtTime(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZoneName:'short' });
+  } catch(e) { return iso; }
+}
+function _apToggleDesc(uid) {
+  const desc = document.getElementById('ap-desc-' + uid);
+  const btn  = document.getElementById('ap-btn-'  + uid);
+  if (!desc || !btn) return;
+  const isOpen = desc.style.display !== 'none';
+  desc.style.display = isOpen ? 'none' : '';
+  btn.textContent = isOpen ? 'View Full Message ▼' : 'Hide Full Message ▲';
+}
+function _buildAlertPopupHTML(p, color) {
+  const uid = 'ap' + Math.random().toString(36).slice(2, 8);
+  const ev  = p.event || 'Unknown Alert';
+  const icon = ev.includes('Tornado')    ? '🌪'
+    : ev.includes('Thunderstorm')        ? '⛈'
+    : ev.includes('Hurricane') || ev.includes('Tropical') ? '🌀'
+    : ev.includes('Flash Flood') || ev.includes('Flood')  ? '🌊'
+    : ev.includes('Winter') || ev.includes('Snow') || ev.includes('Blizzard') || ev.includes('Ice') ? '❄️'
+    : ev.includes('Heat')  ? '🌡'
+    : ev.includes('Wind')  ? '💨'
+    : ev.includes('Fire') || ev.includes('Red Flag') ? '🔥'
+    : ev.includes('Fog')   ? '🌫'
+    : ev.includes('Freeze') || ev.includes('Frost') ? '🧣'
+    : '⚠️';
+  const counties = (p.areaDesc || '').split(';').map(s => s.trim()).filter(Boolean);
+  const countiesHtml = counties.length ? counties.join(' · ') : 'Area not specified';
+  const issued  = _apFmtTime(p.onset || p.sent);
+  const expires = _apFmtTime(p.expires);
+  const sender  = (p.senderName || 'NWS').replace('National Weather Service ', 'NWS ');
+  const sevLine = [p.severity, p.urgency].filter(Boolean).join(' · ') || '—';
+  const colorBg  = color + '18';
+  const colorBdr = color + '50';
+  const fullDesc = (p.description || '').trim();
+  const headline = (p.headline || '').trim();
+  const summary  = headline || fullDesc.split('\n\n')[0] || '—';
+  const hasMore  = fullDesc.length > 10 && fullDesc !== headline;
+  const safeDesc = fullDesc.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return \`
+    <div class="ap-header" style="background:\${colorBg};border-bottom:1px solid \${colorBdr}">
+      <div class="ap-event-icon">\${icon}</div>
+      <div class="ap-event-name">\${ev.toUpperCase()}</div>
+    </div>
+    <div class="ap-body">
+      <div class="ap-meta-grid">
+        <div class="ap-meta-cell"><div class="ap-meta-lbl">ISSUED</div><div class="ap-meta-val">\${issued}</div></div>
+        <div class="ap-meta-cell"><div class="ap-meta-lbl">EXPIRES</div><div class="ap-meta-val">\${expires}</div></div>
+        <div class="ap-meta-cell"><div class="ap-meta-lbl">SOURCE</div><div class="ap-meta-val">\${sender}</div></div>
+        <div class="ap-meta-cell"><div class="ap-meta-lbl">SEVERITY</div><div class="ap-meta-val">\${sevLine}</div></div>
+      </div>
+      <div class="ap-section">AFFECTED AREAS</div>
+      <div class="ap-counties">\${countiesHtml}</div>
+      <div class="ap-section">SUMMARY</div>
+      <div class="ap-headline">\${summary}</div>
+      \${hasMore ? \`
+        <div id="ap-desc-\${uid}" style="display:none">
+          <div class="ap-section" style="margin-top:8px">FULL MESSAGE</div>
+          <div class="ap-desc">\${safeDesc}</div>
+        </div>
+        <button class="ap-more-btn" id="ap-btn-\${uid}" onclick="_apToggleDesc('\${uid}')">View Full Message ▼</button>
+      \` : ''}
+    </div>\`;
+}
 let alertsLayerVisible = true;  // always on
 
 function renderAlerts(features) {
@@ -6148,7 +6242,22 @@ function renderAlerts(features) {
       const p = f.properties;
       const fid = p.id || p['@id'] || f.id;
       if (fid) layerMap[fid] = layer;
-      layer.bindPopup(`<div class="alert-popup"><b>${p.event}</b><br>${formatAlertArea(p.areaDesc)}<br><small>${p.headline || ''}</small></div>`);
+      const ev2 = p.event || '';
+      const inf2 = Object.entries(ALERT_COLORS).find(([k]) => ev2.includes(k));
+      const aColor = inf2 ? inf2[1].color : '#aaaaaa';
+      layer.on('click', function(ev) {
+        L.DomEvent.stop(ev);
+        const html = _buildAlertPopupHTML(p, aColor);
+        const pop = L.popup({ className: 'ap-popup-container', maxWidth: 340, autoPan: true, closeButton: true })
+          .setLatLng(ev.latlng).setContent(html).openOn(map);
+        // Apply dynamic border color after DOM insertion
+        setTimeout(() => {
+          const el = pop.getElement ? pop.getElement() : null;
+          if (!el) return;
+          const cw = el.querySelector('.leaflet-popup-content-wrapper');
+          if (cw) { cw.style.borderColor = aColor; cw.style.boxShadow = `0 4px 28px rgba(0,0,0,0.7), 0 0 0 1px ${aColor}33`; }
+        }, 10);
+      });
     }
   });
   alertsLayer.addTo(map);
