@@ -13168,8 +13168,8 @@ function _nwrPlayAudio(srcUrl, btnId, callKey) {
 function _nwrSwitchTab(call, tab) {
   Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
   _nwrAudioMap = {};
-  const activeStyle   = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff';
-  const inactiveStyle = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
+  const activeStyle   = 'flex:1;padding:6px 4px;border:0;border-top:2px solid #ff9900;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#2d1a00;color:#ff9900;letter-spacing:.03em';
+  const inactiveStyle = 'flex:1;padding:6px 4px;border:0;border-top:2px solid transparent;cursor:pointer;font-family:inherit;font-size:10px;background:#111;color:#555;letter-spacing:.03em';
   [['g','gwes'], ['w','wxr'], ['u','wusa']].forEach(([id, name]) => {
     const tabEl   = document.getElementById(`nwr-tab-${id}-${call}`);
     const panelEl = document.getElementById(`nwr-panel-${id}-${call}`);
@@ -13198,8 +13198,8 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
   const state    = p?.STATE  || '';
 
   const tabStyle = (active) => active
-    ? 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff'
-    : 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
+    ? 'flex:1;padding:6px 4px;border:0;border-top:2px solid #ff9900;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#2d1a00;color:#ff9900;letter-spacing:.03em'
+    : 'flex:1;padding:6px 4px;border:0;border-top:2px solid transparent;cursor:pointer;font-family:inherit;font-size:10px;background:#111;color:#555;letter-spacing:.03em';
 
   const streamPanel = (src, listeners, playId, callKey) => `
     <div style="padding:8px">
@@ -13317,22 +13317,30 @@ async function loadNWRStations() {
 
     if (gwesMap.size === 0 && wxrMap.size === 0 && wusaMap.size === 0) throw new Error('no streams');
 
+    console.log('[NWR] sources loaded — GWES:', gwesMap.size, 'WXR:', wxrMap.size, 'NWRO:', wusaMap.size, 'txs entries:', Object.keys(txs).length);
+
     _nwrLayer  = L.layerGroup().addTo(map);
     _nwrLoaded = true;
-    let plotted = 0;
+    let plotted = 0, nwroOnly = 0;
 
     const allCalls = new Set([...gwesMap.keys(), ...wxrMap.keys(), ...wusaMap.keys()]);
     allCalls.forEach(call => {
       const p   = txs[call];
       const lat = p ? parseFloat(p.LAT) : NaN;
       const lon = p ? parseFloat(p.LON) : NaN;
-      if (!isFinite(lat) || !isFinite(lon)) return;
+      if (!isFinite(lat) || !isFinite(lon)) {
+        if (wusaMap.has(call) && !gwesMap.has(call) && !wxrMap.has(call))
+          console.log('[NWR] NWRO-only station has no txs coords, skipped:', call);
+        return;
+      }
       if (!_ptInPolyUnion(lat, lon)) return;
 
       const gwesStream = gwesMap.get(call)  || null;
       const wxrStream  = wxrMap.get(call)   || null;
       const wusaStream = wusaMap.get(call)  || null;
       const useGwes    = !!gwesStream;
+
+      if (wusaStream && !gwesStream && !wxrStream) nwroOnly++;
 
       const icon   = useGwes ? _gwesIcon() : _nwrIcon();
       const popup  = _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream);
@@ -13348,7 +13356,8 @@ async function loadNWRStations() {
       plotted++;
     });
 
-    showToast(`📡 ${plotted} NWR stations`, 2000);
+    console.log('[NWR] plotted:', plotted, '| NWRO-only new:', nwroOnly);
+    showToast(`📡 ${plotted} NWR stations${nwroOnly ? ` · ${nwroOnly} new NWRO` : ''}`, 2500);
   } catch(e) {
     showToast('📡 NWR unavailable', 2000);
     console.warn('NWR load error:', e);
