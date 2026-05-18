@@ -10681,25 +10681,47 @@ function _hideEraserCursor() {
 }
 function _dtbEraseAt(containerPoint) {
   const r = Math.max(_dtbSize * 3, 10);
-  const toErase = [];
-  for (const layer of _allToolLayers) {
+  const r2 = r * r;
+  // Snapshot layers list so splicing mid-loop doesn't skip entries
+  const layers = [..._allToolLayers];
+  for (const layer of layers) {
     if (!layer.getLatLngs) continue;
     let lls = layer.getLatLngs();
     if (lls.length && Array.isArray(lls[0])) lls = lls.flat();
-    for (const ll of lls) {
+    if (!lls.length) continue;
+    // Classify each vertex as kept or erased
+    let anyErased = false;
+    const kept = lls.map(ll => {
       const pt = map.latLngToContainerPoint(ll);
       const dx = pt.x - containerPoint.x, dy = pt.y - containerPoint.y;
-      if (dx * dx + dy * dy <= r * r) { toErase.push(layer); break; }
+      const inside = dx * dx + dy * dy <= r2;
+      if (inside) anyErased = true;
+      return !inside;
+    });
+    if (!anyErased) continue;
+    // Split into contiguous groups of kept vertices (need ≥2 to form a visible line)
+    const segments = [];
+    let cur = [];
+    for (let i = 0; i < lls.length; i++) {
+      if (kept[i]) { cur.push(lls[i]); }
+      else { if (cur.length >= 2) segments.push([...cur]); cur = []; }
     }
-  }
-  for (const layer of toErase) {
-    map.removeLayer(layer);
+    if (cur.length >= 2) segments.push(cur);
+    // Copy relevant style options
+    const opts = {
+      color: layer.options.color, weight: layer.options.weight,
+      opacity: layer.options.opacity, dashArray: layer.options.dashArray,
+      lineCap: layer.options.lineCap, lineJoin: layer.options.lineJoin,
+    };
+    // Replace original with surviving segments (inserted at same position)
     const idx = _allToolLayers.indexOf(layer);
     if (idx !== -1) _allToolLayers.splice(idx, 1);
-    _dtbRedoStack.push(layer);
+    map.removeLayer(layer);
+    segments.forEach((seg, i) => {
+      const nl = L.polyline(seg, opts).addTo(map);
+      _allToolLayers.splice(idx === -1 ? _allToolLayers.length : idx + i, 0, nl);
+    });
   }
-  if (toErase.length)
-    document.getElementById('dtb-redo-btn')?.classList.toggle('active', _dtbRedoStack.length > 0);
 }
 function _dtbEraserHover(e) {
   if (_dtbMode !== 'eraser' || activeTool !== 'draw') return;
