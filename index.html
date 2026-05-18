@@ -13025,17 +13025,54 @@ async function _fetchEarthCamStreams() {
   return CAM_EARTHCAM_DB.map(c => ({ ...c, type: 'earthcam' }));
 }
 
-async function _fetchWindyWebcams(bounds) {
+// In-memory cache of webcams loaded from the GH-Actions-generated JSON file
+let _windyCacheData = null;
+let _windyCacheLoaded = false;
+
+async function _loadWindyCache() {
+  if (_windyCacheLoaded) return _windyCacheData;
+  _windyCacheLoaded = true;
   try {
-    const s = bounds.getSouth().toFixed(4), w = bounds.getWest().toFixed(4);
-    const n = bounds.getNorth().toFixed(4), e = bounds.getEast().toFixed(4);
+    const r = await fetch('/GWCFCRadar/windy-webcams.json', { signal: _abortSignal(8000) });
+    if (r.ok) { _windyCacheData = await r.json(); console.log(`[Windy] cache: ${_windyCacheData?.webcams?.length} cams`); }
+  } catch(e) {}
+  return _windyCacheData;
+}
+
+async function _fetchWindyWebcams(bounds) {
+  const s = bounds.getSouth(), w = bounds.getWest();
+  const n = bounds.getNorth(), e = bounds.getEast();
+
+  // Try local cache first (populated by GitHub Actions — no CORS/domain issues)
+  const cache = await _loadWindyCache();
+  if (cache?.webcams?.length) {
+    const inBbox = cache.webcams.filter(c =>
+      c.lat >= s && c.lat <= n && c.lon >= w && c.lon <= e
+    );
+    if (inBbox.length > 0) {
+      console.log(`[Windy] using cache: ${inBbox.length} cams in bbox`);
+      _windyDomainBlocked = false;
+      _dismissWindyAlert();
+      return inBbox.map(c => ({
+        id: 'windy_' + c.id,
+        name: c.title || 'Windy Webcam',
+        lat: parseFloat(c.lat), lon: parseFloat(c.lon),
+        img: c.preview || c.thumb || '',
+        imgThumb: c.thumb || '',
+        embedUrl: null,
+        link: c.detail || `https://www.windy.com/webcams/${c.id}`,
+        meta: [c.city, c.region, c.country].filter(Boolean).join(', ') + ' · Windy Webcams',
+        type: 'windy_snapshot',
+      }));
+    }
+  }
+
+  // Fall back to direct API (works from browser when domain allowlist is correct)
+  try {
     const url = `https://api.windy.com/api/webcams/v3/webcams` +
-      `?bbox=${s},${w},${n},${e}&limit=100` +
+      `?key=${WINDY_CAM_KEY}&bbox=${s.toFixed(4)},${w.toFixed(4)},${n.toFixed(4)},${e.toFixed(4)}&limit=100` +
       `&include=location,images,player,urls`;
-    const res = await fetch(url, {
-      signal: _abortSignal(15000),
-      headers: { 'x-windy-api-key': WINDY_CAM_KEY },
-    });
+    const res = await fetch(url, { signal: _abortSignal(15000) });
     if (!res.ok) {
       const body = await res.text().catch(() => String(res.status));
       console.error(`[Windy] HTTP ${res.status}:`, body);
