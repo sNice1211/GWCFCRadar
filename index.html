@@ -12246,8 +12246,10 @@ function _clearSingleSiteRef() {
 }
 
 // ── WEBCAM LAYER ─────────────────────────────────────────────────
-// Sources: EarthCam (YouTube live streams) + WSDOT ArcGIS (traffic cameras)
+// Sources: EarthCam (YouTube live streams) + WSDOT ArcGIS (traffic cameras) + Windy Webcams API
 // Preview thumbnails use <img> tags — no CORS needed for image loading.
+
+const WINDY_CAM_KEY = 'ttZyJ5dx6DjlG7EVDDvlh3PTKpKs1RsM';
 
 let _camsLayer    = null;
 let _camsFetching = false;
@@ -12352,24 +12354,39 @@ function _showCamPopup(cam) {
     return;
   }
 
-  // ── JPEG image fallback ──────────────────────────────────────────
+  // ── Windy live stream embed ───────────────────────────────────────
+  if (cam.type === 'windy_live' && cam.embedUrl) {
+    ph.style.display = 'none';
+    if (badge) badge.textContent = '▶ LIVE';
+    iframe.src = cam.embedUrl;
+    iframe.style.display = 'block';
+    popup.style.display = 'block';
+    return;
+  }
+
+  // ── JPEG / snapshot image (Windy snapshot, WSDOT, etc.) ─────────
   const imgUrl = cam.img || cam.imgUrl || '';
-  if (badge) badge.textContent = '↻ LIVE';
+  if (badge) badge.textContent = cam.type === 'windy_snapshot' ? '📷 PREVIEW' : '↻ LIVE';
 
   function _loadImg() {
     img.style.display = 'none';
     ph.style.display  = 'flex';
     if (phText) phText.textContent = imgUrl ? 'Loading feed…' : 'No feed available';
     if (!imgUrl) return;
-    const sep = imgUrl.includes('?') ? '&' : '?';
+    // Windy preview URLs are already unique per update — skip cache-buster
+    const src = cam.type === 'windy_snapshot'
+      ? imgUrl
+      : imgUrl + (imgUrl.includes('?') ? '&' : '?') + '_t=' + Math.floor(Date.now() / 30000);
     const tmp = new Image();
     tmp.onload = () => { img.src = tmp.src; img.style.display = 'block'; ph.style.display = 'none'; };
     tmp.onerror = () => { ph.style.display = 'flex'; if (phText) phText.textContent = 'Feed unavailable'; };
-    tmp.src = imgUrl + sep + '_t=' + Math.floor(Date.now() / 30000);
+    tmp.src = src;
   }
 
   _loadImg();
-  _camPopupRefreshTimer = setInterval(_loadImg, 300000); // re-fetch every 5 min
+  // Windy updates previews every ~10 min; traffic cams every 5 min
+  const refreshMs = cam.type === 'windy_snapshot' ? 600000 : 300000;
+  _camPopupRefreshTimer = setInterval(_loadImg, refreshMs);
   popup.style.display = 'block';
 }
 
@@ -12380,22 +12397,30 @@ function _placeCamMarker(cam) {
   if (isNaN(lat) || isNaN(lng)) return;
   if (!_ptInPolyUnion(lat, lng)) return;
 
-  const thumbUrl = cam.img || cam.imgUrl ||
+  // Use smaller thumbnail for map markers; fall back to preview/img
+  const thumbUrl = cam.imgThumb || cam.img || cam.imgUrl ||
     (cam.images?.current?.thumbnail) || '';
 
-  const isVideo = cam.type === 'earthcam';
+  const isWindyLive  = cam.type === 'windy_live';
+  const isVideo = cam.type === 'earthcam' || isWindyLive;
   const thumbStyle = thumbUrl
     ? `background-image:url('${thumbUrl}');background-size:cover;background-position:center;`
-    : isVideo
-      ? 'background:rgba(200,30,30,0.92);'   // red = EarthCam live video
-      : 'background:rgba(0,150,180,0.90);';
+    : isWindyLive
+      ? 'background:rgba(0,170,100,0.92);'   // green  = Windy live stream
+      : cam.type === 'windy_snapshot'
+        ? 'background:rgba(0,130,180,0.92);' // teal   = Windy snapshot
+        : isVideo
+          ? 'background:rgba(200,30,30,0.92);'   // red = EarthCam live video
+          : 'background:rgba(0,150,180,0.90);';
   const shortName = (cam.name || cam.title || 'Cam').replace('EarthCam: ', '').slice(0, 18);
 
   const innerIcon = thumbUrl
     ? ''
     : isVideo
       ? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>'
-      : '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>';
+      : cam.type && cam.type.startsWith('windy')
+        ? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4"/><path d="M16 12h-4"/></svg>'
+        : '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>';
 
   const icon = L.divIcon({
     className: '',
@@ -12920,6 +12945,40 @@ async function _fetchEarthCamStreams() {
   return CAM_EARTHCAM_DB.map(c => ({ ...c, type: 'earthcam' }));
 }
 
+async function _fetchWindyWebcams(bounds) {
+  try {
+    const s = bounds.getSouth().toFixed(5), w = bounds.getWest().toFixed(5);
+    const n = bounds.getNorth().toFixed(5), e = bounds.getEast().toFixed(5);
+    const url = `https://api.windy.com/api/webcams/v3/webcams?bbox=${s},${w},${n},${e}` +
+      `&show=webcams:location,images,player,urls&limit=100&orderby=popularity`;
+    const res = await fetch(url, {
+      headers: { 'x-windy-api-key': WINDY_CAM_KEY },
+      signal: _abortSignal(15000),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data.webcams || [])
+      .filter(w => w.status === 'active' && w.location?.latitude && w.location?.longitude)
+      .map(w => {
+        const isLive = w.player?.live?.available;
+        return {
+          id:       'windy_' + w.webcamId,
+          name:     w.title || 'Windy Webcam',
+          lat:      w.location.latitude,
+          lon:      w.location.longitude,
+          // preview = popup display; imgThumb = map marker thumbnail
+          img:      w.images?.current?.preview || w.images?.current?.thumbnail || '',
+          imgThumb: w.images?.current?.thumbnail || w.images?.current?.icon || '',
+          embedUrl: isLive ? (w.player.live.embedUrl || null) : null,
+          link:     w.urls?.detail || `https://www.windy.com/webcams/${w.webcamId}`,
+          meta:     [w.location.city, w.location.region, w.location.country]
+                      .filter(Boolean).join(', ') + ' · Windy Webcams',
+          type:     isLive ? 'windy_live' : 'windy_snapshot',
+        };
+      });
+  } catch(e) { console.warn('Windy webcams:', e); return []; }
+}
+
 async function _fetchCamsForViewport() {
   if (_camsFetching || !activeLayers['cams']) return;
   _camsFetching = true;
@@ -12928,13 +12987,13 @@ async function _fetchCamsForViewport() {
 
   const bounds = map.getBounds();
 
-  // EarthCam loads globally; WSDOT filtered by viewport
-  const [ecCams, wsdotCams] = await Promise.all([
+  const [ecCams, wsdotCams, windyCams] = await Promise.all([
     _fetchEarthCamStreams(),
     _fetchWSDOTCams(),
+    _fetchWindyWebcams(bounds),
   ]);
 
-  const allCams = [...ecCams, ...wsdotCams];
+  const allCams = [...ecCams, ...wsdotCams, ...windyCams];
   let added = 0;
   allCams.forEach(cam => {
     if (_camsSeenIds.has(cam.id)) return;
