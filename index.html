@@ -12955,13 +12955,18 @@ async function loadNWRStations() {
       Object.assign(txs, td.transmitters || {});
     }
 
+    // GWES mounts: /CALLSIGN or /CALLSIGN-alt1 → strip alt, take whole segment
+    const _gwesCallsign = url => url.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
+    // WXR mounts: /ST-City-CALLSIGN or /ST-City-CALLSIGN-alt1 → strip alt, take last segment
+    const _wxrCallsign  = url => url.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '').split('-').pop();
+
     const gwesMap = new Map();
     if (gwesRes.status === 'fulfilled' && gwesRes.value.ok) {
       const gd = await gwesRes.value.json();
       const arr = Array.isArray(gd?.icestats?.source) ? gd.icestats.source : (gd?.icestats?.source ? [gd.icestats.source] : []);
       arr.forEach(s => {
         if (!s.listenurl) return;
-        const call = s.listenurl.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
+        const call = _gwesCallsign(s.listenurl);
         if (!gwesMap.has(call)) gwesMap.set(call, { ...s, callsign: call });
       });
     }
@@ -12972,7 +12977,7 @@ async function loadNWRStations() {
       const arr = Array.isArray(wd?.icestats?.source) ? wd.icestats.source : (wd?.icestats?.source ? [wd.icestats.source] : []);
       arr.forEach(s => {
         if (!s.listenurl) return;
-        const call = s.listenurl.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
+        const call = _wxrCallsign(s.listenurl);
         if (!wxrMap.has(call)) wxrMap.set(call, { ...s, callsign: call });
       });
     }
