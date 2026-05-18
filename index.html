@@ -2204,6 +2204,40 @@ body {
 }
 #ptb-close:hover { background:rgba(255,60,60,0.25); border-color:rgba(255,60,60,0.6); color:#fff; }
 
+#ptb-stats {
+  display: none;
+  position: absolute;
+  bottom: calc(134px + env(safe-area-inset-bottom, 0px));
+  left: 50%; transform: translateX(-50%);
+  z-index: 1099;
+  background: rgb(10,15,20);
+  border: 1px solid rgba(255,204,0,0.28);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-family: var(--mono); font-size: 10px;
+  color: rgba(255,255,255,0.75);
+  white-space: nowrap;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+  line-height: 1.8;
+  max-width: calc(100vw - 24px);
+}
+#ptb-stats.visible { display: block; }
+#ptb-stats .pstat-row { display: flex; gap: 18px; flex-wrap: wrap; }
+#ptb-stats .pstat-lbl { color: rgba(255,204,0,0.7); font-size: 9px; letter-spacing: 0.8px; }
+#ptb-stats .pstat-val { color: #fff; }
+#ptb-stats .pstat-zone { border-top: 1px solid rgba(255,204,0,0.15); margin-top: 5px; padding-top: 5px; }
+#ptb-stats .pstat-zone:first-child { border-top: none; margin-top: 0; padding-top: 0; }
+
+.rtb-stats {
+  font-family: var(--mono); font-size: 9px;
+  color: rgba(255,255,255,0.6);
+  padding: 3px 4px 4px 22px;
+  display: flex; gap: 12px; flex-wrap: wrap;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  margin-top: 2px; line-height: 1.6;
+}
+.rtb-stats span { color: rgba(0,229,255,0.85); }
+
 /* ── DRAW TOOLBAR ── */
 #draw-toolbar {
   display: none;
@@ -4907,6 +4941,7 @@ body.gwcfc-crosshair #map::after {
   <!-- Close -->
   <button id="ptb-close" onclick="deactivateTool()" title="Exit polygon tool">✕</button>
 </div>
+<div id="ptb-stats"></div>
 
     <!-- Animation Bar -->
     <div id="recenter-float" onclick="recenterMap()" style="display:none">🎯 Tap to recenter</div>
@@ -7396,6 +7431,75 @@ let _polyFilter = {
   polygons: []   // array of arrays of {lat,lng} — union mode
 };
 
+// ── GEO MATH HELPERS ──
+function _haversineMi(lat1, lng1, lat2, lng2) {
+  const R = 3958.8, r = Math.PI / 180;
+  const dLat = (lat2 - lat1) * r, dLng = (lng2 - lng1) * r;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*r)*Math.cos(lat2*r)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function _computePolygonStats(pts) {
+  if (!pts || pts.length < 3) return null;
+  let perimeterMi = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    perimeterMi += _haversineMi(pts[i].lat, pts[i].lng, pts[j].lat, pts[j].lng);
+  }
+  const R = 6371000;
+  let areaSqM = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    const lat1 = pts[i].lat * Math.PI/180, lat2 = pts[j].lat * Math.PI/180;
+    const lng1 = pts[i].lng * Math.PI/180, lng2 = pts[j].lng * Math.PI/180;
+    areaSqM += (lng2 - lng1) * (2 + Math.sin(lat1) + Math.sin(lat2));
+  }
+  areaSqM = Math.abs(areaSqM * R * R / 2);
+  // Edge lengths for vertex-distance list
+  const edges = pts.map((p, i) => {
+    const j = (i + 1) % pts.length;
+    return _haversineMi(p.lat, p.lng, pts[j].lat, pts[j].lng);
+  });
+  const centLat = pts.reduce((s, p) => s + p.lat, 0) / pts.length;
+  const centLng = pts.reduce((s, p) => s + p.lng, 0) / pts.length;
+  const fmt = (n, dec) => n >= 10 ? n.toFixed(dec) : n.toFixed(dec + 1);
+  return {
+    vertices:     pts.length,
+    perimeterMi,
+    perimeterKm:  perimeterMi * 1.60934,
+    areaSqMi:     areaSqM / 2589988.11,
+    areaSqKm:     areaSqM / 1e6,
+    centLat, centLng, edges, fmt
+  };
+}
+
+function _updatePolyStats() {
+  const el = document.getElementById('ptb-stats');
+  if (!el) return;
+  const polys = _polyFilter.polygons;
+  if (!polys || !polys.length) { el.classList.remove('visible'); el.innerHTML = ''; return; }
+  const parts = polys.map((pts, zi) => {
+    const s = _computePolygonStats(pts);
+    if (!s) return '';
+    const edgeRows = s.edges.map((d, i) =>
+      `<span class="pstat-lbl">V${i+1}→V${(i+1)%pts.length+1}</span> <span class="pstat-val">${d.toFixed(1)} mi / ${(d*1.60934).toFixed(1)} km</span>`
+    ).join('  ');
+    const zoneLabel = polys.length > 1 ? `<div class="pstat-lbl" style="margin-bottom:2px">ZONE ${zi+1}</div>` : '';
+    return `<div class="pstat-zone">
+      ${zoneLabel}
+      <div class="pstat-row">
+        <div><span class="pstat-lbl">VERTICES </span><span class="pstat-val">${s.vertices}</span></div>
+        <div><span class="pstat-lbl">PERIMETER </span><span class="pstat-val">${s.perimeterMi.toFixed(1)} mi / ${s.perimeterKm.toFixed(1)} km</span></div>
+        <div><span class="pstat-lbl">AREA </span><span class="pstat-val">${s.areaSqMi.toFixed(1)} mi² / ${s.areaSqKm.toFixed(1)} km²</span></div>
+        <div><span class="pstat-lbl">CENTER </span><span class="pstat-val">${s.centLat.toFixed(3)}°, ${s.centLng.toFixed(3)}°</span></div>
+      </div>
+      <div class="pstat-row" style="margin-top:3px;font-size:9px;gap:10px">${edgeRows}</div>
+    </div>`;
+  });
+  el.innerHTML = parts.join('');
+  el.classList.add('visible');
+}
+
 // Ray-cast point-in-polygon — works for any simple polygon
 function _ptInPoly(lat, lng, poly) {
   let inside = false;
@@ -7489,9 +7593,12 @@ function _applyPolyFilterNow() {
   if (activeLayers.spc2)      loadSPCOutlook('spc2');
   if (activeLayers.spc3)      loadSPCOutlook('spc3');
   if (activeLayers.radio) { _nwrLoaded = false; if (_nwrLayer) { map.removeLayer(_nwrLayer); _nwrLayer = null; } loadNWRStations(); }
+  if (activeLayers.cams && _camsLayer) {
+    _camsLayer.clearLayers();
+    _camsSeenIds = new Set();
+    _fetchCamsForViewport();
+  }
   _applyRadarPolyMask();
-  // Lightning: filter already applied live in addLightningStrike
-  // EAS: text panel only, no geo coords — skip
 }
 
 // Filter city markers layer in-place (no reload needed)
@@ -7511,10 +7618,10 @@ function _clearPolyFilter() {
   _polyFilter.active = false;
   _polyFilter.polygons = [];
   _applyRadarPolyMask();
-  // Show filter-off indicator then reload
   const pill = document.getElementById('_poly-filter-pill');
   if (pill) pill.remove();
   _applyPolyFilterNow();
+  _updatePolyStats();
 }
 
 // ── RADIUS TOOL ────────────────────────────────────────────────────────────
@@ -7598,6 +7705,22 @@ function _onRadiusClick(e) {
   if (_radiusFilterActive) { _applyRadarPolyMask(); _applyPolyFilterNow(); }
 }
 
+function _rtbRadiusStatsHTML(miles) {
+  const km   = miles * 1.60934;
+  const diam = miles * 2;
+  const diamKm = km * 2;
+  const circMi = 2 * Math.PI * miles;
+  const circKm = 2 * Math.PI * km;
+  const areaSqMi = Math.PI * miles * miles;
+  const areaSqKm = Math.PI * km * km;
+  const f = (n) => n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2);
+  return `<div class="rtb-stats">
+    <div>⌀ <span>${f(diam)} mi / ${f(diamKm)} km</span></div>
+    <div>C <span>${f(circMi)} mi / ${f(circKm)} km</span></div>
+    <div>A <span>${f(areaSqMi)} mi² / ${f(areaSqKm)} km²</span></div>
+  </div>`;
+}
+
 function _rtbRebuildList() {
   const el = document.getElementById('rtb-list');
   if (!el) return;
@@ -7616,7 +7739,8 @@ function _rtbRebuildList() {
         id="rtb-km-${r.id}" oninput="_rtbKm(${r.id},this.value)" title="km">
       <span class="rtb-unit">km</span>
       <button class="rtb-del" onclick="_rtbDelete(${r.id})" title="Remove">&#x2715;</button>
-    </div>`;
+    </div>
+    <div id="rtb-stats-${r.id}">${_rtbRadiusStatsHTML(r.miles)}</div>`;
   }).join('');
 }
 
@@ -7632,6 +7756,8 @@ function _rtbSetMiles(id, miles) {
   if (miEl)  miEl.value = miles;
   if (kmEl)  kmEl.value = km;
   r.circle.setRadius(miles * 1609.34);
+  const statsEl = document.getElementById(`rtb-stats-${id}`);
+  if (statsEl) statsEl.innerHTML = _rtbRadiusStatsHTML(miles);
   if (_radiusFilterActive) { _applyRadarPolyMask(); _applyPolyFilterNow(); }
 }
 function _rtbSlide(id, val) { _rtbSetMiles(id, parseFloat(val)); }
@@ -11032,6 +11158,7 @@ function _polyToggleFilter() {
   _applyPolyFilterNow();
   _showPolyFilterPill();
   document.getElementById('ptb-filter')?.classList.add('active');
+  _updatePolyStats();
 }
 
 // Collect all closed polygons from allToolLayers (L.Polygon only — excludes lines/tracks)
@@ -12133,6 +12260,7 @@ function _placeCamMarker(cam) {
   const lat = parseFloat(cam.lat ?? cam.location?.latitude);
   const lng = parseFloat(cam.lon ?? cam.lng ?? cam.location?.longitude);
   if (isNaN(lat) || isNaN(lng)) return;
+  if (!_ptInPolyUnion(lat, lng)) return;
 
   const thumbUrl = cam.img || cam.imgUrl ||
     (cam.images?.current?.thumbnail) || '';
