@@ -2290,6 +2290,11 @@ body {
 }
 .dtb-btn:active { background:rgba(255,255,255,0.18); }
 .dtb-btn.active { background:rgba(180,0,0,0.65); border-color:#cc0000; color:#fff; box-shadow:0 0 8px rgba(200,0,0,0.45); }
+#dtb-eraser-cursor {
+  display:none; position:fixed; border-radius:50%; pointer-events:none; z-index:10000;
+  border:2px solid rgba(255,255,255,0.85); background:rgba(255,255,255,0.08);
+  box-shadow:0 0 0 1px rgba(0,0,0,0.55); transform:translate(-50%,-50%);
+}
 #dtb-color-swatch {
   width:26px; height:26px;
   border-radius:6px;
@@ -4798,6 +4803,9 @@ body.gwcfc-crosshair #map::after {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><line x1="15" y1="5" x2="19" y2="9"/></svg>
   </button>
   <button class="dtb-btn" id="dtb-mode-highlighter" onclick="_dtbSetMode('highlighter')" title="Highlighter">🖍️</button>
+  <button class="dtb-btn" id="dtb-mode-eraser" onclick="_dtbSetMode('eraser')" title="Eraser">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M20 20H7L3 16l10-10 7 7-3.5 3.5"/><path d="M6 11l7 7"/></svg>
+  </button>
   <div class="dtb-sep"></div>
   <!-- Color swatch + palette trigger -->
   <div style="position:relative;flex-shrink:0;">
@@ -10655,8 +10663,49 @@ const DTB_COLORS = [
 ];
 let _dtbColor = '#ff2222';
 let _dtbSize  = 3;
-let _dtbMode  = 'pencil'; // 'pencil' | 'highlighter'
+let _dtbMode  = 'pencil'; // 'pencil' | 'highlighter' | 'eraser'
 const _dtbRedoStack = [];
+let _erasing = false, _eraserHoverActive = false, _eraserCursor = null;
+
+function _showEraserCursor(clientX, clientY, r) {
+  if (!_eraserCursor) {
+    _eraserCursor = document.createElement('div');
+    _eraserCursor.id = 'dtb-eraser-cursor';
+    document.body.appendChild(_eraserCursor);
+  }
+  const d = r * 2;
+  _eraserCursor.style.cssText = `position:fixed;display:block;width:${d}px;height:${d}px;left:${clientX}px;top:${clientY}px;border:2px solid rgba(255,255,255,0.85);border-radius:50%;pointer-events:none;z-index:10000;background:rgba(255,255,255,0.08);box-shadow:0 0 0 1px rgba(0,0,0,0.55);transform:translate(-50%,-50%);`;
+}
+function _hideEraserCursor() {
+  if (_eraserCursor) _eraserCursor.style.display = 'none';
+}
+function _dtbEraseAt(containerPoint) {
+  const r = Math.max(_dtbSize * 3, 10);
+  const toErase = [];
+  for (const layer of _allToolLayers) {
+    if (!layer.getLatLngs) continue;
+    let lls = layer.getLatLngs();
+    if (lls.length && Array.isArray(lls[0])) lls = lls.flat();
+    for (const ll of lls) {
+      const pt = map.latLngToContainerPoint(ll);
+      const dx = pt.x - containerPoint.x, dy = pt.y - containerPoint.y;
+      if (dx * dx + dy * dy <= r * r) { toErase.push(layer); break; }
+    }
+  }
+  for (const layer of toErase) {
+    map.removeLayer(layer);
+    const idx = _allToolLayers.indexOf(layer);
+    if (idx !== -1) _allToolLayers.splice(idx, 1);
+    _dtbRedoStack.push(layer);
+  }
+  if (toErase.length)
+    document.getElementById('dtb-redo-btn')?.classList.toggle('active', _dtbRedoStack.length > 0);
+}
+function _dtbEraserHover(e) {
+  if (_dtbMode !== 'eraser' || activeTool !== 'draw') return;
+  const oe = e.originalEvent;
+  if (oe) _showEraserCursor(oe.clientX, oe.clientY, Math.max(_dtbSize * 3, 10));
+}
 let _dtbPaletteOpen = false;
 
 function _dtbInit() {
@@ -10731,7 +10780,15 @@ function _dtbSetMode(mode) {
   _dtbMode = mode;
   document.getElementById('dtb-mode-pencil')?.classList.toggle('active', mode === 'pencil');
   document.getElementById('dtb-mode-highlighter')?.classList.toggle('active', mode === 'highlighter');
-  _dtbSetStatus(mode === 'highlighter' ? 'Highlighter mode' : 'Pencil mode');
+  document.getElementById('dtb-mode-eraser')?.classList.toggle('active', mode === 'eraser');
+  if (mode === 'eraser') {
+    if (!_eraserHoverActive) { map.on('mousemove', _dtbEraserHover); _eraserHoverActive = true; }
+    _dtbSetStatus('Eraser mode – drag to erase strokes');
+  } else {
+    if (_eraserHoverActive) { map.off('mousemove', _dtbEraserHover); _eraserHoverActive = false; }
+    _hideEraserCursor();
+    _dtbSetStatus(mode === 'highlighter' ? 'Highlighter mode' : 'Pencil mode');
+  }
 }
 function _dtbUndo() {
   if (!_allToolLayers.length) return;
@@ -10784,6 +10841,9 @@ const _origDeactivate = deactivateTool;
 deactivateTool = function() {
   _origDeactivate();
   _dtbShowToolbar(false);
+  if (_eraserHoverActive) { map.off('mousemove', _dtbEraserHover); _eraserHoverActive = false; }
+  _hideEraserCursor();
+  _erasing = false;
   const _ttb = document.getElementById('track-toolbar');
   if (_ttb) _ttb.classList.remove('visible');
 };
@@ -10795,9 +10855,16 @@ function _onDrawTouchStart(e) {
   e.preventDefault();
   if (_dtbPaletteOpen) { _dtbTogglePalette(); return; }
   const touch = e.touches[0];
-  const latlng = map.containerPointToLatLng(
-    map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY })
-  );
+  const containerPt = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
+  if (_dtbMode === 'eraser') {
+    _erasing = true;
+    _showEraserCursor(touch.clientX, touch.clientY, Math.max(_dtbSize * 3, 10));
+    _dtbEraseAt(containerPt);
+    map.getContainer().addEventListener('touchmove', _onDrawTouchMove, { passive: false });
+    map.getContainer().addEventListener('touchend',  _onDrawTouchEnd,  { passive: false });
+    return;
+  }
+  const latlng = map.containerPointToLatLng(containerPt);
   _drawing = true; _drawPts = [latlng];
   _drawStroke = L.polyline(_drawPts, _getDrawStyle()).addTo(map);
   _allToolLayers.push(_drawStroke);
@@ -10808,25 +10875,42 @@ function _onDrawTouchStart(e) {
   map.getContainer().addEventListener('touchend',   _onDrawTouchEnd,  { passive: false });
 }
 function _onDrawTouchMove(e) {
-  if (!_drawing || !_drawStroke) return;
   e.preventDefault();
   const touch = e.touches[0];
-  const latlng = map.containerPointToLatLng(
-    map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY })
-  );
+  const containerPt = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
+  if (_dtbMode === 'eraser') {
+    _showEraserCursor(touch.clientX, touch.clientY, Math.max(_dtbSize * 3, 10));
+    if (_erasing) _dtbEraseAt(containerPt);
+    return;
+  }
+  if (!_drawing || !_drawStroke) return;
+  const latlng = map.containerPointToLatLng(containerPt);
   _drawPts.push(latlng);
   _drawStroke.setLatLngs(_drawPts);
 }
 function _onDrawTouchEnd(e) {
   e.preventDefault();
-  _drawing = false; _drawStroke = null; _drawPts = [];
-  _dtbSetStatus('Drawing mode active');
+  if (_dtbMode === 'eraser') {
+    _erasing = false;
+    _hideEraserCursor();
+    _dtbSetStatus('Eraser mode – drag to erase strokes');
+  } else {
+    _drawing = false; _drawStroke = null; _drawPts = [];
+    _dtbSetStatus('Drawing mode active');
+  }
   map.getContainer().removeEventListener('touchmove', _onDrawTouchMove);
   map.getContainer().removeEventListener('touchend',  _onDrawTouchEnd);
 }
 function _onDrawDown(e) {
   if (activeTool !== 'draw') return;
   if (_dtbPaletteOpen) { _dtbTogglePalette(); return; }
+  if (_dtbMode === 'eraser') {
+    _erasing = true;
+    _dtbEraseAt(map.latLngToContainerPoint(e.latlng));
+    map.on('mousemove', _onDrawMove);
+    map.on('mouseup',   _onDrawUp);
+    return;
+  }
   _drawing = true; _drawPts = [e.latlng];
   _drawStroke = L.polyline(_drawPts, _getDrawStyle()).addTo(map);
   _allToolLayers.push(_drawStroke);
@@ -10837,11 +10921,24 @@ function _onDrawDown(e) {
   map.on('mouseup',   _onDrawUp);
 }
 function _onDrawMove(e) {
+  if (_dtbMode === 'eraser') {
+    const oe = e.originalEvent;
+    if (oe) _showEraserCursor(oe.clientX, oe.clientY, Math.max(_dtbSize * 3, 10));
+    if (_erasing) _dtbEraseAt(map.latLngToContainerPoint(e.latlng));
+    return;
+  }
   if (!_drawing || !_drawStroke) return;
   _drawPts.push(e.latlng);
   _drawStroke.setLatLngs(_drawPts);
 }
 function _onDrawUp() {
+  if (_dtbMode === 'eraser') {
+    _erasing = false;
+    map.off('mousemove', _onDrawMove);
+    map.off('mouseup',   _onDrawUp);
+    _dtbSetStatus('Eraser mode – drag to erase strokes');
+    return;
+  }
   _drawing = false; _drawStroke = null; _drawPts = [];
   _dtbSetStatus('Drawing mode active');
   map.off('mousemove', _onDrawMove);
