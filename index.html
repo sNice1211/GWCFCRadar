@@ -5571,7 +5571,7 @@ function _buildRadarPool() {
   _radarLayerPool.length = 0;
   _radarLayerLoaded.length = 0;
   _radarPoolBuilt = false;
-  // Fill sparse array slots so indices are defined
+  _lastWindowS = -1; _lastWindowE = -1;
   for (let i = 0; i < radarFrames.length; i++) {
     _radarLayerPool[i] = null;
     _radarLayerLoaded[i] = false;
@@ -5638,9 +5638,14 @@ function _ensureCanadaLayer(i) {
   _canadaLayerPool[i] = l;
 }
 
+let _lastWindowS = -1, _lastWindowE = -1;
+
 function _activateWindow(idx) {
   const { s, e } = _poolWindow(idx);
-  // Remove layers outside the window
+  // Skip all DOM/layer work if the window range hasn't shifted
+  if (s === _lastWindowS && e === _lastWindowE) return;
+  _lastWindowS = s; _lastWindowE = e;
+
   _radarLayerPool.forEach((l, i) => {
     if (l && (i < s || i > e)) {
       try { map.removeLayer(l); } catch(ex) {}
@@ -5655,7 +5660,6 @@ function _activateWindow(idx) {
       _canadaLayerLoaded[i] = false;
     }
   });
-  // Ensure all frames in window are added to map
   for (let i = s; i <= e; i++) {
     _ensureNexradLayer(i);
     _ensureCanadaLayer(i);
@@ -5665,27 +5669,32 @@ function _activateWindow(idx) {
 // Keep _preloadFrame as a no-op stub so existing callers don't break
 function _preloadFrame(idx) {}
 
+// Cached hot-path DOM references — set once after DOMContentLoaded
+let _elTimeline = null, _elAnimTime = null, _elFcstBadge = null;
+
 function updateFrameLabel(idx) {
   const d = new Date(radarFrames[idx].time * 1000);
   const ts = `${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')} UTC`;
-  const animTimeEl = document.getElementById('anim-time');
+  if (!_elAnimTime) _elAnimTime = document.getElementById('anim-time');
   const isForecast = !!radarFrames[idx].forecast;
-  animTimeEl.textContent = (isForecast ? 'FCST ' : '') + ts;
-  animTimeEl.style.color  = isForecast ? '#ffe066' : '';
-  animTimeEl.style.visibility = 'visible';
-  let fcstBadge = document.getElementById('fcst-badge');
-  if (!fcstBadge) {
-    fcstBadge = document.createElement('span');
-    fcstBadge.id = 'fcst-badge';
-    fcstBadge.title = 'Forecast frame';
-    fcstBadge.style.cssText =
-      'font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:10px;' +
-      'background:rgba(255,224,102,0.18);color:#ffe066;border:1px solid rgba(255,224,102,0.4);' +
-      'letter-spacing:1px;flex-shrink:0;';
-    fcstBadge.textContent = 'FCST';
-    document.getElementById('animbar').appendChild(fcstBadge);
+  _elAnimTime.textContent = (isForecast ? 'FCST ' : '') + ts;
+  _elAnimTime.style.color  = isForecast ? '#ffe066' : '';
+  _elAnimTime.style.visibility = 'visible';
+  if (!_elFcstBadge) {
+    _elFcstBadge = document.getElementById('fcst-badge');
+    if (!_elFcstBadge) {
+      _elFcstBadge = document.createElement('span');
+      _elFcstBadge.id = 'fcst-badge';
+      _elFcstBadge.title = 'Forecast frame';
+      _elFcstBadge.style.cssText =
+        'font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:10px;' +
+        'background:rgba(255,224,102,0.18);color:#ffe066;border:1px solid rgba(255,224,102,0.4);' +
+        'letter-spacing:1px;flex-shrink:0;';
+      _elFcstBadge.textContent = 'FCST';
+      document.getElementById('animbar').appendChild(_elFcstBadge);
+    }
   }
-  fcstBadge.style.display = isForecast ? 'inline-block' : 'none';
+  _elFcstBadge.style.display = isForecast ? 'inline-block' : 'none';
 }
 
 function showFrame(idx) {
@@ -5697,49 +5706,17 @@ function showFrame(idx) {
   if (!radarFrames.length) return;
   idx = Math.max(0, Math.min(radarFrames.length - 1, idx));
   currentFrame = idx;
-  document.getElementById('timeline').value = idx;
+  if (!_elTimeline) _elTimeline = document.getElementById('timeline');
+  _elTimeline.value = idx;
 
   if (activeLayers.nexrad && _radarPoolBuilt) {
-    if (_pendingFrameTick) { clearInterval(_pendingFrameTick); _pendingFrameTick = null; }
-    if (_pendingCanadaTick) { clearInterval(_pendingCanadaTick); _pendingCanadaTick = null; }
-
     _activateWindow(idx);
 
-    const showNexrad = () => {
-      _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
-      radarLayer = _radarLayerPool[idx];
-    };
-    const showCanada = () => {
-      _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
-    };
-
-    if (_radarLayerLoaded[idx]) {
-      showNexrad();
-    } else {
-      // Show immediately anyway; tiles will paint in as they arrive
-      showNexrad();
-      let waited = 0;
-      _pendingFrameTick = setInterval(() => {
-        waited += 100;
-        if (_radarLayerLoaded[idx] || waited >= 3000) {
-          clearInterval(_pendingFrameTick); _pendingFrameTick = null;
-        }
-      }, 100);
-    }
+    _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
+    radarLayer = _radarLayerPool[idx];
 
     if (_canadaPoolBuilt) {
-      if (_canadaLayerLoaded[idx]) {
-        showCanada();
-      } else {
-        showCanada();
-        let waited = 0;
-        _pendingCanadaTick = setInterval(() => {
-          waited += 100;
-          if (_canadaLayerLoaded[idx] || waited >= 3000) {
-            clearInterval(_pendingCanadaTick); _pendingCanadaTick = null;
-          }
-        }, 100);
-      }
+      _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
     }
   }
 
@@ -6091,17 +6068,30 @@ const ALERT_COLORS = {
   'Air Quality Alert':                  { color: '#808080', cls: 'fog'  },
 };
 
-async function loadAlerts() {
+let _lastAlertSig = '';
+let _alertDebounceTimer = null;
+
+function loadAlerts(forceRender) {
+  clearTimeout(_alertDebounceTimer);
+  _alertDebounceTimer = setTimeout(() => _doLoadAlerts(forceRender), 120);
+}
+
+async function _doLoadAlerts(forceRender) {
   updateLoadStatus('Intercepting severe weather alerts…');
   try {
     const [activeRes, pastRes] = await Promise.all([
       fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert'),
       fetch('https://api.weather.gov/alerts?status=actual&message_type=alert&severity=Extreme,Severe,Moderate&limit=100')
     ]);
-    const activeData = await activeRes.json();
-    const pastData   = await pastRes.json();
+    const [activeData, pastData] = await Promise.all([activeRes.json(), pastRes.json()]);
     const activeFeatures = activeData.features || [];
     const activeIds = new Set(activeFeatures.map(f => f.properties.id || f.id));
+
+    // Skip full re-render on 60s refresh if nothing changed
+    const sig = [...activeIds].sort().join(',');
+    const unchanged = sig === _lastAlertSig;
+    _lastAlertSig = sig;
+
     const now = Date.now();
     const pastFeatures = (pastData.features || []).filter(f => {
       const p = f.properties;
@@ -6113,8 +6103,11 @@ async function loadAlerts() {
       const duration = (onset && expires > onset) ? (expires - onset) : 3600000;
       return now < expires + duration;
     });
-    renderAlerts(activeFeatures);
-    renderPastAlerts(pastFeatures);
+
+    if (!unchanged || forceRender) {
+      renderAlerts(activeFeatures);
+      renderPastAlerts(pastFeatures);
+    }
     document.getElementById('alerts-status').textContent = activeFeatures.length + ' active';
     document.getElementById('alerts-status-dot').style.background =
       activeFeatures.length > 0 ? 'var(--warn)' : 'var(--success)';
@@ -7391,7 +7384,7 @@ function toggleLayer(id) {
   if (id === 'spcrpts' && activeLayers[id]) loadStormReports();
   if (id === 'nhc' && activeLayers[id]) loadTropical();
   if (id === 'models') updateModelInfo(currentModel);
-  if (['tornado','tstm','flood','watch'].includes(id)) loadAlerts();
+  if (['tornado','tstm','flood','watch'].includes(id)) loadAlerts(true);
 }
 
 
@@ -7487,7 +7480,7 @@ function _applyRadarPolyMask() {
 
 // Re-run all active layers so they re-render filtered
 function _applyPolyFilterNow() {
-  if (alertsLayer || activeLayers.tornado || activeLayers.tstm || activeLayers.flood) loadAlerts();
+  if (alertsLayer || activeLayers.tornado || activeLayers.tstm || activeLayers.flood) loadAlerts(true);
   if (_metarActive)           _loadMetarTemp();
   if (windBarbActive)         loadWindBarbs();
   if (windGustBarbActive)     loadGustBarbs();
@@ -8751,7 +8744,7 @@ function _buildGoesLayer(prodKey, regionKey, timeStr) {
     attribution: cfg.attr || '© Iowa Mesonet',
     noWrap: true,
     TIME: timeStr,
-    updateWhenIdle: false,
+    updateWhenIdle: true,
     updateWhenZooming: false,
   }).addTo(map);
   return layer;
@@ -8851,7 +8844,7 @@ function showGoesFrame(idx) {
       const layer = L.tileLayer(frame.url, {
         opacity: 0.85, zIndex: 11, tileSize: 256, noWrap: false,
         attribution: '© RainViewer · Global Satellite (Himawari/GOES/Meteosat)',
-        updateWhenIdle: false, updateWhenZooming: false,
+        updateWhenIdle: true, updateWhenZooming: false,
       }).addTo(map);
       _goesActiveLayers = [layer];
       _goesActiveProduct = '__rv__';
@@ -10392,7 +10385,7 @@ async function init() {
   _syncNexradSites();
 
   updateLoadStatus('Loading alerts...');
-  try { await Promise.race([loadAlerts(), new Promise(r => setTimeout(r, 1500))]); }
+  try { await Promise.race([_doLoadAlerts(true), new Promise(r => setTimeout(r, 1500))]); }
   catch(e) { console.warn('Alerts load error:', e); }
 
   clearTimeout(safetyTimer);
@@ -12838,7 +12831,6 @@ function _nwrSwitchTab(call, tab) {
   const wTab = document.getElementById('nwr-tab-w-' + call);
   const gPanel = document.getElementById('nwr-panel-g-' + call);
   const wPanel = document.getElementById('nwr-panel-w-' + call);
-  const playBtn = document.getElementById('nwr-play-' + call);
   if (!gTab || !wTab || !gPanel || !wPanel) return;
   const activeStyle  = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff';
   const inactiveStyle = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
@@ -12849,7 +12841,11 @@ function _nwrSwitchTab(call, tab) {
     wTab.style.cssText = activeStyle; gTab.style.cssText = inactiveStyle;
     wPanel.style.display = 'block'; gPanel.style.display = 'none';
   }
-  if (playBtn) { playBtn.textContent = '▶ Play'; playBtn.style.background = '#cc6600'; playBtn.disabled = false; }
+  // Reset both play buttons so neither shows stale playing/disabled state
+  ['nwr-play-' + call, 'nwr-play-w-' + call].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) { btn.textContent = '▶ Play'; btn.style.background = '#cc6600'; btn.disabled = false; }
+  });
 }
 
 function _nwrBuildPopup(call, p, gwesStream, wxrStream) {
