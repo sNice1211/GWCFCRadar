@@ -5062,8 +5062,6 @@ body.gwcfc-crosshair #map::after {
 
 <!-- Status Bar -->
 <div id="statusbar">
-  <div class="status-item"><div class="status-dot" id="radar-dot"></div> Radar <span id="radar-status">Connecting…</span></div>
-  <div class="status-item"><div class="status-dot" id="alerts-status-dot"></div> Alerts <span id="alerts-status">Loading…</span></div>
   <div class="status-item">Lat <span id="sb-lat">--</span></div>
   <div class="status-item">Lon <span id="sb-lon">--</span></div>
   <div class="status-item">Zoom <span id="sb-zoom">--</span></div>
@@ -5350,6 +5348,11 @@ function initMap() {
   map.on('zoomend', () => {
     document.getElementById('sb-zoom').textContent = map.getZoom();
     _applyRadarPolyMask();
+    // Re-evaluate active window size (dynamic by zoom) and shed stale tiles
+    if (_radarPoolBuilt) {
+      _lastWindowS = -1; _lastWindowE = -1;
+      _activateWindow(currentFrame);
+    }
   });
   map.on('moveend', _applyRadarPolyMask);
   document.getElementById('sb-zoom').textContent = map.getZoom();
@@ -5543,11 +5546,7 @@ async function loadNEXRAD() {
     _buildRadarPool();
     showFrame(currentFrame);
 
-    document.getElementById('radar-status').textContent = 'Live';
-    document.getElementById('radar-dot').style.background = 'var(--success)';
   } catch (e) {
-    document.getElementById('radar-status').textContent = 'Error';
-    document.getElementById('radar-dot').style.background = 'var(--danger)';
     console.warn('NEXRAD load error:', e);
   }
 }
@@ -5635,13 +5634,15 @@ function _buildCanadaPool() {
   _canadaPoolBuilt = true;
 }
 
-const _POOL_WINDOW = 5;
-
+// At low zoom the browser handles more tiles per frame — shrink the active window
+// to reduce simultaneous WMS requests and prevent lag/OOM at wide views.
 function _poolWindow(idx) {
-  const half = Math.floor(_POOL_WINDOW / 2);
+  const z = map ? map.getZoom() : 7;
+  const sz = z <= 4 ? 2 : z <= 6 ? 3 : 5;
+  const half = Math.floor(sz / 2);
   let s = Math.max(0, idx - half);
-  let e = Math.min(radarFrames.length - 1, s + _POOL_WINDOW - 1);
-  s = Math.max(0, e - _POOL_WINDOW + 1);
+  let e = Math.min(radarFrames.length - 1, s + sz - 1);
+  s = Math.max(0, e - sz + 1);
   return { s, e };
 }
 
@@ -5651,8 +5652,9 @@ function _ensureNexradLayer(i) {
     layers: NEXRAD_LAYER, format: 'image/png', transparent: true,
     version: '1.1.1', TIME: radarFrames[i].iso,
     opacity: 0, zIndex: 10, pane: 'radarPane',
-    crossOrigin: 'anonymous', noWrap: true,
+    crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
     keepBuffer: 0, updateWhenIdle: true, updateWhenZooming: false,
+    detectRetina: false,
     attribution: 'NEXRAD © NOAA via Iowa Mesonet',
   });
   _radarLayerLoaded[i] = false;
@@ -5671,8 +5673,9 @@ function _ensureCanadaLayer(i) {
     layers: CANADA_LAYER, format: 'image/png', transparent: true,
     version: '1.1.1', TIME: radarFrames[i].iso,
     opacity: 0, zIndex: 11, pane: 'radarPane',
-    crossOrigin: 'anonymous', noWrap: true,
+    crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
     keepBuffer: 0, updateWhenIdle: true, updateWhenZooming: false,
+    detectRetina: false,
     attribution: 'Canada Radar © ECCC via Iowa Mesonet',
   });
   _canadaLayerLoaded[i] = false;
@@ -6151,12 +6154,8 @@ async function _doLoadAlerts(forceRender) {
       renderAlerts(activeFeatures);
       renderPastAlerts(pastFeatures);
     }
-    document.getElementById('alerts-status').textContent = activeFeatures.length + ' active';
-    document.getElementById('alerts-status-dot').style.background =
-      activeFeatures.length > 0 ? 'var(--warn)' : 'var(--success)';
     if (activeFeatures.length > 0) document.getElementById('alerts-dot').classList.add('has-data');
   } catch (e) {
-    document.getElementById('alerts-status').textContent = 'Error';
     console.warn('Alerts error:', e);
   }
 }
