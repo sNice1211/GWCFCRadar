@@ -4767,7 +4767,7 @@ body.gwcfc-crosshair #map::after {
       <!-- Overlay icon buttons — top of scale bar -->
       <div id="overlay-bar">
         <div class="overlay-pill" id="op-lightning" onclick="toggleOverlayPill('lightning')" title="Lightning"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></div>
-        <div class="overlay-pill" id="op-cams"      onclick="toggleOverlayPill('cams')"      title="Cams"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
+        <div class="overlay-pill" id="op-cams"      onclick="if(event.shiftKey||event.ctrlKey){windyTest();}else{toggleOverlayPill('cams');}"      title="Cams (Shift+tap = diagnostic)"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg></div>
         <div class="overlay-pill" id="op-radio"     onclick="toggleOverlayPill('radio')"     title="NOAA Weather Radio Stations"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></div>
         <div class="overlay-pill active" id="op-forecasts" onclick="toggleOverlayPill('forecasts')" title="Forecasts"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="12" cy="12" r="3.5"/><circle cx="5" cy="5" r="2.5"/><circle cx="19" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/></svg></div>
         <div class="overlay-pill" id="op-hhunt" onclick="toggleOverlayPill('hhunt')" title="Hurricane Hunters"><svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg></div>
@@ -12256,6 +12256,30 @@ let _camsFetching = false;
 let _camsTimer    = null;
 let _camsSeenIds  = new Set();
 let _camPopupRefreshTimer = null;
+let _windyDomainBlocked = false;
+
+function _showWindyAlert() {
+  if (document.getElementById('_windy-alert')) return;
+  const el = document.createElement('div');
+  el.id = '_windy-alert';
+  el.style.cssText =
+    'position:fixed;top:62px;left:50%;transform:translateX(-50%);' +
+    'max-width:94vw;background:#1a0500;border:1px solid #cc4400;color:#ff9933;' +
+    'font-family:monospace;font-size:11px;padding:9px 14px;border-radius:8px;' +
+    'z-index:9999;text-align:center;line-height:1.6;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.6);';
+  el.innerHTML =
+    '⚠ <b>Windy webcams blocked (API key domain restriction)</b><br>' +
+    'In <a href="https://api.windy.com/keys" target="_blank" style="color:#ffaa55">api.windy.com/keys</a>, ' +
+    'set allowed domain to: <b>https://ralphhtml.github.io</b><br>' +
+    '<span style="opacity:.6;font-size:10px">Tap to dismiss</span>';
+  el.onclick = () => el.remove();
+  document.body.appendChild(el);
+}
+
+function _dismissWindyAlert() {
+  const el = document.getElementById('_windy-alert');
+  if (el) el.remove();
+}
 
 
 function _clearCams() {
@@ -12265,6 +12289,7 @@ function _clearCams() {
   _camsSeenIds.clear();
   map.off('moveend', _onCamsMoveEnd);
   if (_camsLayer) { map.removeLayer(_camsLayer); _camsLayer = null; }
+  _dismissWindyAlert();
 }
 
 function closeCamPopup() {
@@ -12941,6 +12966,61 @@ async function _fetchWSDOTCams() {
   } catch(e) { return []; }
 }
 
+// Caltrans districts and their approximate lat/lon bounding boxes (for filtering by viewport)
+const _CALTRANS_DISTRICTS = [
+  { d:'d1', n:42.0, s:38.7, w:-124.5, e:-122.5 }, // North Coast
+  { d:'d2', n:42.0, s:39.5, w:-124.0, e:-120.0 }, // Northern California
+  { d:'d3', n:40.0, s:38.4, w:-122.5, e:-119.5 }, // North Central
+  { d:'d4', n:38.9, s:36.8, w:-123.6, e:-121.0 }, // Bay Area
+  { d:'d5', n:37.2, s:34.8, w:-121.9, e:-119.5 }, // Central Coast
+  { d:'d6', n:37.6, s:35.0, w:-121.5, e:-118.2 }, // Central Valley
+  { d:'d7', n:35.2, s:33.3, w:-119.2, e:-116.8 }, // LA Metro
+  { d:'d8', n:34.8, s:32.5, w:-117.8, e:-114.4 }, // San Bernardino/Riverside
+  { d:'d9', n:37.7, s:35.1, w:-119.3, e:-116.7 }, // Eastern Sierra
+  { d:'d10',n:38.7, s:35.5, w:-122.0, e:-118.8 }, // San Joaquin Valley
+  { d:'d11',n:33.3, s:32.4, w:-117.6, e:-114.4 }, // San Diego
+  { d:'d12',n:33.9, s:33.3, w:-118.1, e:-117.1 }, // Orange County
+];
+
+async function _fetchCaltransCams(bounds) {
+  try {
+    const s = bounds.getSouth(), w = bounds.getWest();
+    const n = bounds.getNorth(), e = bounds.getEast();
+    // Only fetch districts that overlap the current viewport
+    const districts = _CALTRANS_DISTRICTS.filter(d =>
+      d.n >= s && d.s <= n && d.e >= w && d.w <= e
+    );
+    if (!districts.length) return [];
+    const results = await Promise.allSettled(districts.map(async ({ d }) => {
+      const num = d.replace('d', '').padStart(2, '0');
+      const url = `https://cwwp2.dot.ca.gov/data/${d}/cctv/cctvStatusD${num}.json`;
+      const res = await fetch(url, { signal: _abortSignal(12000) });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const raw = data.data || data.cctv || [];
+      return raw.map(item => {
+        const cam  = item.roadwayCameras || item;
+        const loc  = cam.location || {};
+        const img  = cam.imageData?.imageURL || cam.imageData?.streamURL || '';
+        const lat  = parseFloat(loc.latitude  || loc.lat  || 0);
+        const lon  = parseFloat(loc.longitude || loc.lng  || loc.lon || 0);
+        if (!lat || !lon || !img || CAM_URL_BLOCKLIST.has(img)) return null;
+        return {
+          id:   'caltrans_' + (cam.cctv_id || item.cctv_id || img.split('/').at(-1)),
+          name: (loc.locationDescription || 'Caltrans Camera').slice(0, 60),
+          lat, lon, img,
+          link: 'https://cwwp2.dot.ca.gov/tools/googlemaps/mapviewer.htm',
+          meta: `Traffic · Caltrans ${d.toUpperCase()}`,
+          type: 'snapshot',
+        };
+      }).filter(Boolean);
+    }));
+    return results.flatMap(r => r.status === 'fulfilled' ? r.value : []);
+  } catch(e) {
+    return [];
+  }
+}
+
 async function _fetchEarthCamStreams() {
   return CAM_EARTHCAM_DB.map(c => ({ ...c, type: 'earthcam' }));
 }
@@ -12955,11 +13035,17 @@ async function _fetchWindyWebcams(bounds) {
     const res = await fetch(url, { signal: _abortSignal(15000) });
     if (!res.ok) {
       const body = await res.text().catch(() => String(res.status));
-      console.error(`[Windy] ${res.status}:`, body);
+      console.error(`[Windy] HTTP ${res.status}:`, body);
+      if (res.status === 403) {
+        _windyDomainBlocked = true;
+        _showWindyAlert();
+      }
       return [];
     }
+    _windyDomainBlocked = false;
+    _dismissWindyAlert();
     const data = await res.json();
-    // v3 API may return { webcams: [...] } or { result: { webcams: [...] } }
+    // v3 API returns { webcams: [...], total: N }
     const list = Array.isArray(data.webcams)         ? data.webcams
                : Array.isArray(data.result?.webcams) ? data.result.webcams
                : null;
@@ -12968,24 +13054,25 @@ async function _fetchWindyWebcams(bounds) {
       return [];
     }
     const cams = [];
-    for (const w of list) {
-      const lat = w.location?.latitude, lng = w.location?.longitude;
+    for (const wc of list) {
+      const lat = wc.location?.latitude ?? wc.location?.lat;
+      const lng = wc.location?.longitude ?? wc.location?.lng ?? wc.location?.lon;
       if (!lat || !lng) continue;
-      // Accept any status value — inactive cams still have useful images
-      const isLive = w.player?.live?.available === true;
+      const isLive = wc.player?.live?.available === true;
       cams.push({
-        id:       'windy_' + (w.webcamId || w.id),
-        name:     w.title || 'Windy Webcam',
-        lat, lon: lng,
-        img:      w.images?.current?.preview || w.images?.current?.thumbnail || '',
-        imgThumb: w.images?.current?.thumbnail || w.images?.current?.icon || '',
-        embedUrl: isLive ? (w.player.live.embedUrl || null) : null,
-        link:     w.urls?.detail || `https://www.windy.com/webcams/${w.webcamId || w.id}`,
-        meta:     [w.location.city, w.location.region, w.location.country]
+        id:       'windy_' + (wc.webcamId || wc.id),
+        name:     wc.title || 'Windy Webcam',
+        lat: parseFloat(lat), lon: parseFloat(lng),
+        img:      wc.images?.current?.preview || wc.images?.current?.thumbnail || '',
+        imgThumb: wc.images?.current?.thumbnail || wc.images?.current?.icon || '',
+        embedUrl: isLive ? (wc.player.live.embedUrl || null) : null,
+        link:     wc.urls?.detail || `https://www.windy.com/webcams/${wc.webcamId || wc.id}`,
+        meta:     [wc.location?.city, wc.location?.region, wc.location?.country]
                     .filter(Boolean).join(', ') + ' · Windy Webcams',
         type:     isLive ? 'windy_live' : 'windy_snapshot',
       });
     }
+    console.log(`[Windy] ${cams.length} webcams in bbox`);
     return cams;
   } catch(err) {
     console.error('[Windy] fetch error:', err);
@@ -13001,15 +13088,16 @@ async function _fetchCamsForViewport() {
 
     const bounds = map.getBounds();
 
-    const [ecCams, wsdotCams, windyCams] = await Promise.all([
+    const [ecCams, wsdotCams, caltransCams, windyCams] = await Promise.all([
       _fetchEarthCamStreams(),
       _fetchWSDOTCams(),
+      _fetchCaltransCams(bounds),
       _fetchWindyWebcams(bounds),
     ]);
 
-    console.log(`[Cams] EarthCam:${ecCams.length} WSDOT:${wsdotCams.length} Windy:${windyCams.length}`);
+    console.log(`[Cams] EC:${ecCams.length} WSDOT:${wsdotCams.length} Caltrans:${caltransCams.length} Windy:${windyCams.length}`);
 
-    const allCams = [...ecCams, ...wsdotCams, ...windyCams];
+    const allCams = [...ecCams, ...wsdotCams, ...caltransCams, ...windyCams];
     let added = 0;
     allCams.forEach(cam => {
       if (_camsSeenIds.has(cam.id)) return;
@@ -13018,8 +13106,9 @@ async function _fetchCamsForViewport() {
       added++;
     });
 
-    if (added > 0) showToast(`📹 ${added} cams · EC:${ecCams.length} W:${windyCams.length}`, 2000);
-    else           showToast('📹 No cameras in view', 1500);
+    const windyStatus = _windyDomainBlocked ? 'blocked' : windyCams.length;
+    if (added > 0) showToast(`📹 ${added} cams · EC:${ecCams.length} CA:${caltransCams.length} W:${windyStatus}`, 2500);
+    else           showToast(`📹 No cameras · CA:${caltransCams.length} W:${windyStatus}`, 2000);
   } catch(err) {
     console.error('[Cams] _fetchCamsForViewport error:', err);
     showToast('📹 Cam load error', 1500);
@@ -13398,18 +13487,43 @@ async function loadWindyCams() {
   map.on('moveend', _onCamsMoveEnd);
 }
 
-// Debug helper — call windyTest() in the browser console to inspect the raw API response
+// Debug helper: call windyTest() in console or tap the cam button while holding Shift
 window.windyTest = async function() {
   const b = map.getBounds();
   const url = `https://api.windy.com/api/webcams/v3/webcams?key=${WINDY_CAM_KEY}` +
     `&bbox=${b.getSouth().toFixed(4)},${b.getWest().toFixed(4)},${b.getNorth().toFixed(4)},${b.getEast().toFixed(4)}&limit=5` +
     `&include=location,images,player,urls`;
   console.log('[windyTest] GET', url);
-  const res = await fetch(url);
-  console.log('[windyTest] status:', res.status, res.statusText);
-  const text = await res.text();
-  console.log('[windyTest] body:', text.slice(0, 2000));
-  try { console.log('[windyTest] parsed:', JSON.parse(text)); } catch(e) {}
+  let status = '…', body = '';
+  try {
+    const res = await fetch(url);
+    status = res.status + ' ' + res.statusText;
+    body = await res.text();
+    console.log('[windyTest] status:', status);
+    console.log('[windyTest] body:', body.slice(0, 2000));
+    try { console.log('[windyTest] parsed:', JSON.parse(body)); } catch(e) {}
+  } catch(e) {
+    status = 'FETCH ERROR';
+    body = String(e);
+    console.error('[windyTest]', e);
+  }
+  // Show result in on-screen overlay (works on mobile without devtools)
+  const old = document.getElementById('_windy-test-overlay');
+  if (old) old.remove();
+  const ov = document.createElement('div');
+  ov.id = '_windy-test-overlay';
+  ov.style.cssText =
+    'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
+    'width:90vw;max-height:80vh;overflow-y:auto;background:#0d0d0d;' +
+    'border:1px solid #444;color:#ccc;font-family:monospace;font-size:10px;' +
+    'padding:14px;border-radius:10px;z-index:99999;white-space:pre-wrap;word-break:break-all;';
+  ov.textContent = `Windy API Test\nStatus: ${status}\n\n${body.slice(0, 1500)}`;
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕ Close';
+  closeBtn.style.cssText = 'display:block;margin-top:10px;padding:6px 18px;background:#333;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:12px;';
+  closeBtn.onclick = () => ov.remove();
+  ov.appendChild(closeBtn);
+  document.body.appendChild(ov);
 };
 
 document.addEventListener('DOMContentLoaded', () => {
