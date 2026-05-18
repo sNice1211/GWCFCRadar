@@ -12831,6 +12831,27 @@ function _nwrPlayAudio(srcUrl, btnId, callKey) {
     .catch(() => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; });
 }
 
+function _nwrSwitchTab(call, tab) {
+  Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
+  _nwrAudioMap = {};
+  const gTab = document.getElementById('nwr-tab-g-' + call);
+  const wTab = document.getElementById('nwr-tab-w-' + call);
+  const gPanel = document.getElementById('nwr-panel-g-' + call);
+  const wPanel = document.getElementById('nwr-panel-w-' + call);
+  const playBtn = document.getElementById('nwr-play-' + call);
+  if (!gTab || !wTab || !gPanel || !wPanel) return;
+  const activeStyle  = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff';
+  const inactiveStyle = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
+  if (tab === 'gwes') {
+    gTab.style.cssText = activeStyle; wTab.style.cssText = inactiveStyle;
+    gPanel.style.display = 'block'; wPanel.style.display = 'none';
+  } else {
+    wTab.style.cssText = activeStyle; gTab.style.cssText = inactiveStyle;
+    wPanel.style.display = 'block'; gPanel.style.display = 'none';
+  }
+  if (playBtn) { playBtn.textContent = '▶ Play'; playBtn.style.background = '#cc6600'; playBtn.disabled = false; }
+}
+
 function _nwrBuildPopup(call, p, gwesStream, wxrStream) {
   const status   = p?.STATUS || 'NORMAL';
   const isOut    = status === 'OUT OF SERVICE';
@@ -12845,18 +12866,59 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream) {
   const state    = p?.STATE  || '';
   const hasBoth  = !!(gwesStream && wxrStream);
 
-  const audioSection = (src, btnId, label, listeners) => `
-    <div style="margin-top:9px;padding:8px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px">
-      <div style="color:#ffaa33;font-weight:bold;font-size:10px;margin-bottom:6px">🔊 ${label}</div>
+  const tabStyle  = (active) => active
+    ? 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff'
+    : 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
+
+  const singlePanel = (src, listeners) => `
+    <div style="padding:8px">
       <div style="display:flex;align-items:center;gap:8px">
-        <button id="${btnId}" onclick="_nwrPlayAudio('${src}','${btnId}','${call}-${btnId}')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
+        <button id="nwr-play-${call}" onclick="_nwrPlayAudio('${src}','nwr-play-${call}','${call}')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
         <span style="color:#aaa;font-size:9px">${listeners ?? 0} live</span>
-        <a href="${src}" target="_blank" style="color:#ff9900;font-size:9px;word-break:break-all;flex:1;text-align:right">link ↗</a>
+        <a href="${src}" target="_blank" style="color:#ff9900;font-size:9px;flex:1;text-align:right">link ↗</a>
       </div>
     </div>`;
 
-  const gwesSection = gwesStream ? audioSection(gwesStream.listenurl, `nwr-g-${call}`, 'LIVE AUDIO · GWES', gwesStream.listeners) : '';
-  const wxrSection  = wxrStream  ? audioSection(wxrStream.listenurl,  `nwr-w-${call}`, hasBoth ? 'LIVE AUDIO · NOAA WXR' : 'LIVE AUDIO', wxrStream.listeners) : '';
+  let audioHTML;
+  if (hasBoth) {
+    const gSrc = gwesStream.listenurl;
+    const wSrc = wxrStream.listenurl;
+    audioHTML = `
+    <div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
+      <div style="display:flex;border-bottom:1px solid #553300">
+        <button id="nwr-tab-g-${call}" onclick="_nwrSwitchTab('${call}','gwes')" style="${tabStyle(true)}">GWES</button>
+        <button id="nwr-tab-w-${call}" onclick="_nwrSwitchTab('${call}','wxr')"  style="${tabStyle(false)}">NOAA WXR</button>
+      </div>
+      <div id="nwr-panel-g-${call}">
+        <div style="padding:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <button id="nwr-play-${call}" onclick="_nwrPlayAudio('${gSrc}','nwr-play-${call}','${call}')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
+            <span style="color:#aaa;font-size:9px">${gwesStream.listeners ?? 0} live</span>
+            <a href="${gSrc}" target="_blank" style="color:#ff9900;font-size:9px;flex:1;text-align:right">link ↗</a>
+          </div>
+        </div>
+      </div>
+      <div id="nwr-panel-w-${call}" style="display:none">
+        <div style="padding:8px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <button id="nwr-play-w-${call}" onclick="_nwrPlayAudio('${wSrc}','nwr-play-w-${call}','${call}-w')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
+            <span style="color:#aaa;font-size:9px">${wxrStream.listeners ?? 0} live</span>
+            <a href="${wSrc}" target="_blank" style="color:#ff9900;font-size:9px;flex:1;text-align:right">link ↗</a>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  } else if (gwesStream) {
+    audioHTML = `<div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
+      <div style="padding:4px 8px 0;color:#ffaa33;font-weight:bold;font-size:10px">🔊 GWES · LIVE AUDIO</div>
+      ${singlePanel(gwesStream.listenurl, gwesStream.listeners)}
+    </div>`;
+  } else {
+    audioHTML = `<div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
+      <div style="padding:4px 8px 0;color:#ffaa33;font-weight:bold;font-size:10px">🔊 NOAA WXR · LIVE AUDIO</div>
+      ${singlePanel(wxrStream.listenurl, wxrStream.listeners)}
+    </div>`;
+  }
 
   return `<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:240px;background:#1a1a1a;padding:10px;border-radius:6px">
     <div style="color:#ff9900;font-weight:bold;font-size:13px;margin-bottom:2px;">📡 ${call} <span style="color:#00ff66;font-size:9px">● LIVE</span></div>
@@ -12869,7 +12931,7 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream) {
       <tr><td style="color:#888;padding-right:10px;vertical-align:top">County</td><td style="font-size:9px;color:#ccc">${counties}</td></tr>
       <tr><td style="color:#888;padding-right:10px">SAME</td><td style="font-size:9px;color:#ccc">${same}</td></tr>
     </table>
-    ${gwesSection}${wxrSection}
+    ${audioHTML}
     <div style="margin-top:6px;background:#1a1a1a"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#ff9900;font-size:10px">weather.gov/nwr ↗</a></div>
   </div>`;
 }
