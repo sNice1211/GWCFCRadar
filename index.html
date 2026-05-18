@@ -12949,23 +12949,25 @@ async function _fetchWindyWebcams(bounds) {
   try {
     const s = bounds.getSouth().toFixed(4), w = bounds.getWest().toFixed(4);
     const n = bounds.getNorth().toFixed(4), e = bounds.getEast().toFixed(4);
-    // Key as query param (works alongside header; avoids pre-flight CORS issues)
-    // Omit 'show' — let the API return all fields to avoid undocumented 400s
     const url = `https://api.windy.com/api/webcams/v3/webcams` +
       `?key=${WINDY_CAM_KEY}&bbox=${s},${w},${n},${e}&limit=100`;
     const res = await fetch(url, { signal: _abortSignal(15000) });
     if (!res.ok) {
-      const body = await res.text().catch(() => res.status);
+      const body = await res.text().catch(() => String(res.status));
       console.error(`[Windy] ${res.status}:`, body);
       return [];
     }
     const data = await res.json();
-    if (!Array.isArray(data.webcams)) {
-      console.error('[Windy] unexpected response shape:', data);
+    // v3 API may return { webcams: [...] } or { result: { webcams: [...] } }
+    const list = Array.isArray(data.webcams)         ? data.webcams
+               : Array.isArray(data.result?.webcams) ? data.result.webcams
+               : null;
+    if (!list) {
+      console.error('[Windy] unexpected shape — keys:', Object.keys(data));
       return [];
     }
     const cams = [];
-    for (const w of data.webcams) {
+    for (const w of list) {
       const lat = w.location?.latitude, lng = w.location?.longitude;
       if (!lat || !lng) continue;
       // Accept any status value — inactive cams still have useful images
@@ -13168,8 +13170,8 @@ function _nwrPlayAudio(srcUrl, btnId, callKey) {
 function _nwrSwitchTab(call, tab) {
   Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
   _nwrAudioMap = {};
-  const activeStyle   = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff';
-  const inactiveStyle = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
+  const activeStyle   = 'flex:1;padding:6px 4px;border:0;border-top:2px solid #ff9900;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#2d1a00;color:#ff9900;letter-spacing:.03em';
+  const inactiveStyle = 'flex:1;padding:6px 4px;border:0;border-top:2px solid transparent;cursor:pointer;font-family:inherit;font-size:10px;background:#111;color:#555;letter-spacing:.03em';
   [['g','gwes'], ['w','wxr'], ['u','wusa']].forEach(([id, name]) => {
     const tabEl   = document.getElementById(`nwr-tab-${id}-${call}`);
     const panelEl = document.getElementById(`nwr-panel-${id}-${call}`);
@@ -13198,8 +13200,8 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
   const state    = p?.STATE  || '';
 
   const tabStyle = (active) => active
-    ? 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff'
-    : 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
+    ? 'flex:1;padding:6px 4px;border:0;border-top:2px solid #ff9900;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#2d1a00;color:#ff9900;letter-spacing:.03em'
+    : 'flex:1;padding:6px 4px;border:0;border-top:2px solid transparent;cursor:pointer;font-family:inherit;font-size:10px;background:#111;color:#555;letter-spacing:.03em';
 
   const streamPanel = (src, listeners, playId, callKey) => `
     <div style="padding:8px">
@@ -13262,31 +13264,52 @@ async function loadNWRStations() {
   _nwrLoading = true;
   showToast('📡 Loading NWR live streams…', 1500);
   try {
-    const [txRes, gwesRes, wxrRes, wusaRes] = await Promise.allSettled([
-      fetch('https://transmitters.weatherradio.org',        { signal: _abortSignal(20000) }),
-      fetch('https://icestats.weatherradio.org',            { signal: _abortSignal(15000) }),
-      fetch('https://wxradio.org/status-json.xsl',         { signal: _abortSignal(15000) }),
-      fetch('https://radio.weatherusa.net/status-json.xsl', { signal: _abortSignal(15000) })
+    // radio.weatherusa.net is HTTP-only; try direct HTTPS then two CORS proxies
+    const _fetchWusa = async () => {
+      const tries = [
+        'https://radio.weatherusa.net/status-json.xsl',
+        'https://corsproxy.io/?http://radio.weatherusa.net/status-json.xsl',
+        'https://api.allorigins.win/raw?url=' + encodeURIComponent('http://radio.weatherusa.net/status-json.xsl'),
+      ];
+      for (const url of tries) {
+        try {
+          const r = await fetch(url, { signal: _abortSignal(12000) });
+          if (!r.ok) continue;
+          const d = await r.json();
+          if (d?.icestats?.source) { console.log('[NWR] NWRO loaded via', url); return d; }
+        } catch(_) {}
+      }
+      console.warn('[NWR] NWRO all endpoints failed');
+      return null;
+    };
+
+    const [txRes, gwesRes, wxrRes, wusaData] = await Promise.all([
+      fetch('https://transmitters.weatherradio.org',     { signal: _abortSignal(20000) }).catch(() => null),
+      fetch('https://icestats.weatherradio.org',         { signal: _abortSignal(15000) }).catch(() => null),
+      fetch('https://wxradio.org/status-json.xsl',      { signal: _abortSignal(15000) }).catch(() => null),
+      _fetchWusa(),
     ]);
 
+    const _iceArr = d => Array.isArray(d?.icestats?.source) ? d.icestats.source
+                       : d?.icestats?.source ? [d.icestats.source] : [];
+
     const txs = {};
-    if (txRes.status === 'fulfilled' && txRes.value.ok) {
-      const td = await txRes.value.json();
-      Object.assign(txs, td.transmitters || {});
+    if (txRes?.ok) {
+      const td = await txRes.json().catch(() => null);
+      if (td) Object.assign(txs, td.transmitters || {});
     }
 
-    // GWES mounts: /CALLSIGN or /CALLSIGN-alt1 → strip alt, take whole segment
+    // GWES mounts: /CALLSIGN or /CALLSIGN-alt1
     const _gwesCallsign = url => url.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
-    // WXR mounts: /ST-City-CALLSIGN or /ST-City-CALLSIGN-alt1 → strip alt, take last segment
+    // WXR mounts: /ST-City-CALLSIGN or /ST-City-CALLSIGN-alt1
     const _wxrCallsign  = url => url.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '').split('-').pop();
-    // WUSA mounts: /NWR/CALLSIGN.mp3 or /NWR/CALLSIGN_2.mp3 → strip extension and alternate suffix
+    // WUSA mounts: /NWR/CALLSIGN.mp3 or /NWR/CALLSIGN_2.mp3
     const _wusaCallsign = url => url.split('/NWR/').pop().replace(/\.[^.]+$/, '').replace(/_[A-Za-z0-9]+$/, '');
 
     const gwesMap = new Map();
-    if (gwesRes.status === 'fulfilled' && gwesRes.value.ok) {
-      const gd = await gwesRes.value.json();
-      const arr = Array.isArray(gd?.icestats?.source) ? gd.icestats.source : (gd?.icestats?.source ? [gd.icestats.source] : []);
-      arr.forEach(s => {
+    if (gwesRes?.ok) {
+      const gd = await gwesRes.json().catch(() => null);
+      _iceArr(gd).forEach(s => {
         if (!s.listenurl) return;
         const call = _gwesCallsign(s.listenurl);
         if (!gwesMap.has(call)) gwesMap.set(call, { ...s, callsign: call });
@@ -13294,10 +13317,9 @@ async function loadNWRStations() {
     }
 
     const wxrMap = new Map();
-    if (wxrRes.status === 'fulfilled' && wxrRes.value.ok) {
-      const wd = await wxrRes.value.json();
-      const arr = Array.isArray(wd?.icestats?.source) ? wd.icestats.source : (wd?.icestats?.source ? [wd.icestats.source] : []);
-      arr.forEach(s => {
+    if (wxrRes?.ok) {
+      const wd = await wxrRes.json().catch(() => null);
+      _iceArr(wd).forEach(s => {
         if (!s.listenurl) return;
         const call = _wxrCallsign(s.listenurl);
         if (!wxrMap.has(call)) wxrMap.set(call, { ...s, callsign: call });
@@ -13305,34 +13327,37 @@ async function loadNWRStations() {
     }
 
     const wusaMap = new Map();
-    if (wusaRes.status === 'fulfilled' && wusaRes.value.ok) {
-      const ud = await wusaRes.value.json();
-      const arr = Array.isArray(ud?.icestats?.source) ? ud.icestats.source : (ud?.icestats?.source ? [ud.icestats.source] : []);
-      arr.forEach(s => {
-        if (!s.listenurl) return;
-        const call = _wusaCallsign(s.listenurl);
-        if (!wusaMap.has(call)) wusaMap.set(call, { ...s, callsign: call });
-      });
-    }
+    _iceArr(wusaData).forEach(s => {
+      if (!s.listenurl) return;
+      const call = _wusaCallsign(s.listenurl);
+      if (!wusaMap.has(call)) wusaMap.set(call, { ...s, callsign: call });
+    });
 
     if (gwesMap.size === 0 && wxrMap.size === 0 && wusaMap.size === 0) throw new Error('no streams');
 
-    _nwrLayer  = L.layerGroup().addTo(map);
-    _nwrLoaded = true;
-    let plotted = 0;
+    console.log('[NWR] GWES:', gwesMap.size, 'WXR:', wxrMap.size, 'NWRO:', wusaMap.size, 'txs:', Object.keys(txs).length);
+
+    _nwrLayer = L.layerGroup().addTo(map);
+    let plotted = 0, nwroOnly = 0;
 
     const allCalls = new Set([...gwesMap.keys(), ...wxrMap.keys(), ...wusaMap.keys()]);
     allCalls.forEach(call => {
       const p   = txs[call];
       const lat = p ? parseFloat(p.LAT) : NaN;
       const lon = p ? parseFloat(p.LON) : NaN;
-      if (!isFinite(lat) || !isFinite(lon)) return;
+      if (!isFinite(lat) || !isFinite(lon)) {
+        if (wusaMap.has(call) && !gwesMap.has(call) && !wxrMap.has(call))
+          console.log('[NWR] NWRO-only station has no txs coords, skipped:', call);
+        return;
+      }
       if (!_ptInPolyUnion(lat, lon)) return;
 
       const gwesStream = gwesMap.get(call)  || null;
       const wxrStream  = wxrMap.get(call)   || null;
       const wusaStream = wusaMap.get(call)  || null;
       const useGwes    = !!gwesStream;
+
+      if (wusaStream && !gwesStream && !wxrStream) nwroOnly++;
 
       const icon   = useGwes ? _gwesIcon() : _nwrIcon();
       const popup  = _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream);
@@ -13348,10 +13373,13 @@ async function loadNWRStations() {
       plotted++;
     });
 
-    showToast(`📡 ${plotted} NWR stations`, 2000);
+    _nwrLoaded = true;  // set only after successful plot so errors allow retry
+    console.log('[NWR] plotted:', plotted, '| NWRO-only new:', nwroOnly);
+    showToast(`📡 ${plotted} NWR stations${nwroOnly ? ` · ${nwroOnly} new NWRO` : ''}`, 2500);
   } catch(e) {
+    if (_nwrLayer) { try { map.removeLayer(_nwrLayer); } catch(_) {} _nwrLayer = null; }
     showToast('📡 NWR unavailable', 2000);
-    console.warn('NWR load error:', e);
+    console.warn('[NWR] load error:', e);
   } finally {
     _nwrLoading = false;
   }
