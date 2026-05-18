@@ -12742,6 +12742,138 @@ function _nwrIcon() {
   });
 }
 
+function _gwesIcon() {
+  return L.divIcon({
+    className: '',
+    iconSize:    [40, 40],
+    iconAnchor:  [20, 20],
+    popupAnchor: [0, -23],
+    html: `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+      <!-- Red outer ring + amber fill -->
+      <circle cx="20" cy="20" r="19" fill="#f5a000" stroke="#cc0000" stroke-width="3.5"/>
+      <!-- Walkie-talkie (left side, black filled) -->
+      <g fill="#111" stroke="#111" stroke-width="0.5">
+        <!-- body -->
+        <rect x="7" y="13" width="9" height="16" rx="1.5"/>
+        <!-- antenna -->
+        <rect x="9" y="8" width="2" height="6" rx="1"/>
+        <!-- speaker grille lines -->
+        <rect x="8.5" y="15" width="6" height="1" rx="0.5" fill="#f5a000" stroke="none"/>
+        <rect x="8.5" y="17" width="6" height="1" rx="0.5" fill="#f5a000" stroke="none"/>
+        <!-- screen -->
+        <rect x="8.5" y="19.5" width="6" height="3.5" rx="0.5" fill="#334" stroke="none"/>
+        <!-- keypad dots -->
+        <circle cx="9.5" cy="25" r="0.8" fill="#f5a000" stroke="none"/>
+        <circle cx="11.5" cy="25" r="0.8" fill="#f5a000" stroke="none"/>
+        <circle cx="13.5" cy="25" r="0.8" fill="#f5a000" stroke="none"/>
+        <circle cx="9.5" cy="27" r="0.8" fill="#f5a000" stroke="none"/>
+        <circle cx="11.5" cy="27" r="0.8" fill="#f5a000" stroke="none"/>
+        <circle cx="13.5" cy="27" r="0.8" fill="#f5a000" stroke="none"/>
+      </g>
+      <!-- Portable radio (right side, white outline) -->
+      <g fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <!-- body -->
+        <rect x="19" y="20" width="13" height="9" rx="1.5"/>
+        <!-- antenna line -->
+        <line x1="29" y1="20" x2="33" y2="13"/>
+        <!-- tuner bar -->
+        <line x1="20.5" y1="23" x2="26.5" y2="23"/>
+        <!-- speaker circles -->
+        <circle cx="28.5" cy="24.5" r="1.5"/>
+        <circle cx="28.5" cy="24.5" r="0.6" fill="#fff"/>
+        <!-- speaker vents -->
+        <line x1="20.5" y1="25.5" x2="20.5" y2="27.5"/>
+        <line x1="22" y1="25.5" x2="22" y2="27.5"/>
+        <line x1="23.5" y1="25.5" x2="23.5" y2="27.5"/>
+      </g>
+      <!-- WiFi signal arcs (white, top-right near antenna) -->
+      <g fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round">
+        <path d="M30,16 Q32.5,13.5 35,16"/>
+        <path d="M31.5,14.5 Q33,12.5 34.5,14.5"/>
+        <circle cx="32.8" cy="17" r="0.9" fill="#fff"/>
+      </g>
+    </svg>`
+  });
+}
+
+function _nwrPlayAudio(srcUrl, btnId, callKey) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  const existing = _nwrAudioMap[callKey];
+  if (existing && !existing.paused) {
+    existing.pause();
+    btn.textContent = '▶ Play';
+    btn.style.background = '#cc6600';
+    return;
+  }
+  Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
+  _nwrAudioMap = {};
+  const httpsUrl = srcUrl.replace(/^http:\/\//i, 'https://');
+  const audio = new Audio(httpsUrl);
+  _nwrAudioMap[callKey] = audio;
+  btn.textContent = '⏳ Connecting…';
+  btn.style.background = '#555';
+  btn.disabled = true;
+  const tryFallback = () => {
+    if (httpsUrl === srcUrl) {
+      btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; return;
+    }
+    const fb = new Audio(srcUrl);
+    _nwrAudioMap[callKey] = fb;
+    fb.onerror = () => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; };
+    fb.play()
+      .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
+      .catch(() => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; });
+  };
+  audio.onerror = () => { btn.disabled = false; tryFallback(); };
+  audio.play()
+    .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
+    .catch(() => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; });
+}
+
+function _nwrBuildPopup(call, p, gwesStream, wxrStream) {
+  const status   = p?.STATUS || 'NORMAL';
+  const isOut    = status === 'OUT OF SERVICE';
+  const statCol  = isOut ? '#ff4040' : '#00ff99';
+  const freq     = p?.FREQ   ? p.FREQ + ' MHz'           : '162.4–162.55 MHz';
+  const pwr      = p?.PWR    ? p.PWR + ' W'              : '—';
+  const wfo      = p?.WFO    ? p.WFO.replace('|', ' / ') : '—';
+  const counties = p?.COUNTY ? (Array.isArray(p.COUNTY) ? p.COUNTY.join(', ') : p.COUNTY) : '—';
+  const same     = p?.SAME   ? (Array.isArray(p.SAME)   ? p.SAME.join(', ')   : p.SAME)   : '—';
+  const stream   = gwesStream || wxrStream;
+  const siteName = p?.SITENAME || stream?.server_name?.split(' - ')[0] || call;
+  const state    = p?.STATE  || '';
+  const hasBoth  = !!(gwesStream && wxrStream);
+
+  const audioSection = (src, btnId, label, listeners) => `
+    <div style="margin-top:9px;padding:8px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px">
+      <div style="color:#ffaa33;font-weight:bold;font-size:10px;margin-bottom:6px">🔊 ${label}</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button id="${btnId}" onclick="_nwrPlayAudio('${src}','${btnId}','${call}-${btnId}')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
+        <span style="color:#aaa;font-size:9px">${listeners ?? 0} live</span>
+        <a href="${src}" target="_blank" style="color:#ff9900;font-size:9px;word-break:break-all;flex:1;text-align:right">link ↗</a>
+      </div>
+    </div>`;
+
+  const gwesSection = gwesStream ? audioSection(gwesStream.listenurl, `nwr-g-${call}`, 'LIVE AUDIO · GWES', gwesStream.listeners) : '';
+  const wxrSection  = wxrStream  ? audioSection(wxrStream.listenurl,  `nwr-w-${call}`, hasBoth ? 'LIVE AUDIO · NOAA WXR' : 'LIVE AUDIO', wxrStream.listeners) : '';
+
+  return `<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:240px;background:#1a1a1a;padding:10px;border-radius:6px">
+    <div style="color:#ff9900;font-weight:bold;font-size:13px;margin-bottom:2px;">📡 ${call} <span style="color:#00ff66;font-size:9px">● LIVE</span></div>
+    <div style="color:#aaa;font-size:10px;margin-bottom:7px;">${siteName}${state ? ', ' + state : ''}</div>
+    <table style="border-collapse:collapse;font-size:10px;line-height:1.75;width:100%;background:#1a1a1a">
+      <tr><td style="color:#888;padding-right:10px;white-space:nowrap">Status</td><td style="color:${statCol};font-weight:bold">${status}</td></tr>
+      <tr><td style="color:#888;padding-right:10px">Freq</td><td style="color:#88ff88;font-weight:bold">${freq}</td></tr>
+      <tr><td style="color:#888;padding-right:10px">Power</td><td>${pwr}</td></tr>
+      <tr><td style="color:#888;padding-right:10px">WFO</td><td>${wfo}</td></tr>
+      <tr><td style="color:#888;padding-right:10px;vertical-align:top">County</td><td style="font-size:9px;color:#ccc">${counties}</td></tr>
+      <tr><td style="color:#888;padding-right:10px">SAME</td><td style="font-size:9px;color:#ccc">${same}</td></tr>
+    </table>
+    ${gwesSection}${wxrSection}
+    <div style="margin-top:6px;background:#1a1a1a"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#ff9900;font-size:10px">weather.gov/nwr ↗</a></div>
+  </div>`;
+}
+
 async function loadNWRStations() {
   if (_nwrLoaded) {
     if (_nwrLayer && !map.hasLayer(_nwrLayer)) _nwrLayer.addTo(map);
@@ -12749,23 +12881,11 @@ async function loadNWRStations() {
   }
   showToast('📡 Loading NWR live streams…', 1500);
   try {
-    const [txRes, iceRes] = await Promise.allSettled([
-      fetch('https://transmitters.weatherradio.org', { signal: _abortSignal(20000) }),
-      fetch('https://icestats.weatherradio.org',     { signal: _abortSignal(15000) })
+    const [txRes, gwesRes, wxrRes] = await Promise.allSettled([
+      fetch('https://transmitters.weatherradio.org',   { signal: _abortSignal(20000) }),
+      fetch('https://icestats.weatherradio.org',       { signal: _abortSignal(15000) }),
+      fetch('https://wxradio.org/status-json.xsl',    { signal: _abortSignal(15000) })
     ]);
-
-    if (iceRes.status !== 'fulfilled' || !iceRes.value.ok)
-      throw new Error('icestats fetch failed');
-    const iceData = await iceRes.value.json();
-    const sources = iceData?.icestats?.source || [];
-    const arr = Array.isArray(sources) ? sources : [sources];
-
-    const streamMap = new Map();
-    arr.forEach(s => {
-      if (!s.listenurl) return;
-      const call = s.listenurl.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
-      if (!streamMap.has(call)) streamMap.set(call, { ...s, callsign: call });
-    });
 
     const txs = {};
     if (txRes.status === 'fulfilled' && txRes.value.ok) {
@@ -12773,109 +12893,53 @@ async function loadNWRStations() {
       Object.assign(txs, td.transmitters || {});
     }
 
+    const gwesMap = new Map();
+    if (gwesRes.status === 'fulfilled' && gwesRes.value.ok) {
+      const gd = await gwesRes.value.json();
+      const arr = Array.isArray(gd?.icestats?.source) ? gd.icestats.source : (gd?.icestats?.source ? [gd.icestats.source] : []);
+      arr.forEach(s => {
+        if (!s.listenurl) return;
+        const call = s.listenurl.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
+        if (!gwesMap.has(call)) gwesMap.set(call, { ...s, callsign: call });
+      });
+    }
+
+    const wxrMap = new Map();
+    if (wxrRes.status === 'fulfilled' && wxrRes.value.ok) {
+      const wd = await wxrRes.value.json();
+      const arr = Array.isArray(wd?.icestats?.source) ? wd.icestats.source : (wd?.icestats?.source ? [wd.icestats.source] : []);
+      arr.forEach(s => {
+        if (!s.listenurl) return;
+        const call = s.listenurl.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
+        if (!wxrMap.has(call)) wxrMap.set(call, { ...s, callsign: call });
+      });
+    }
+
+    if (gwesMap.size === 0 && wxrMap.size === 0) throw new Error('no streams');
+
     _nwrLayer  = L.layerGroup().addTo(map);
     _nwrLoaded = true;
     let plotted = 0;
 
-    streamMap.forEach((stream, call) => {
+    const allCalls = new Set([...gwesMap.keys(), ...wxrMap.keys()]);
+    allCalls.forEach(call => {
       const p   = txs[call];
       const lat = p ? parseFloat(p.LAT) : NaN;
       const lon = p ? parseFloat(p.LON) : NaN;
       if (!isFinite(lat) || !isFinite(lon)) return;
       if (!_ptInPolyUnion(lat, lon)) return;
 
-      const status   = p?.STATUS || 'NORMAL';
-      const isOut    = status === 'OUT OF SERVICE';
-      const statCol  = isOut ? '#ff4040' : '#00ff99';
-      const freq     = p?.FREQ   ? p.FREQ + ' MHz'            : '162.4–162.55 MHz';
-      const pwr      = p?.PWR    ? p.PWR + ' W'               : '—';
-      const wfo      = p?.WFO    ? p.WFO.replace('|', ' / ')  : '—';
-      const counties = p?.COUNTY ? (Array.isArray(p.COUNTY) ? p.COUNTY.join(', ') : p.COUNTY) : '—';
-      const same     = p?.SAME   ? (Array.isArray(p.SAME)   ? p.SAME.join(', ')   : p.SAME)   : '—';
-      const siteName = p?.SITENAME || stream.server_name?.split(' - ')[0] || call;
-      const state    = p?.STATE  || '';
-      const btnId    = 'nwr-play-' + call;
-      const srcUrl   = stream.listenurl;
+      const gwesStream = gwesMap.get(call) || null;
+      const wxrStream  = wxrMap.get(call)  || null;
+      const useGwes    = !!gwesStream;
 
-      const marker = L.marker([lat, lon], { icon: _nwrIcon(), zIndexOffset: 200 });
-      marker.bindPopup(`<div style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:#eee;min-width:240px;background:#1a1a1a;padding:10px;border-radius:6px">
-        <div style="color:#ff9900;font-weight:bold;font-size:13px;margin-bottom:2px;">📡 ${call} <span style="color:#00ff66;font-size:9px">● LIVE</span></div>
-        <div style="color:#aaa;font-size:10px;margin-bottom:7px;">${siteName}${state ? ', ' + state : ''}</div>
-        <table style="border-collapse:collapse;font-size:10px;line-height:1.75;width:100%;background:#1a1a1a">
-          <tr><td style="color:#888;padding-right:10px;white-space:nowrap">Status</td><td style="color:${statCol};font-weight:bold">${status}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">Freq</td><td style="color:#88ff88;font-weight:bold">${freq}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">Power</td><td>${pwr}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">WFO</td><td>${wfo}</td></tr>
-          <tr><td style="color:#888;padding-right:10px;vertical-align:top">County</td><td style="font-size:9px;color:#ccc">${counties}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">SAME</td><td style="font-size:9px;color:#ccc">${same}</td></tr>
-          <tr><td style="color:#888;padding-right:10px">Listeners</td><td>${stream.listeners ?? 0} now · ${stream.listener_peak ?? 0} peak</td></tr>
-        </table>
-        <div style="margin-top:9px;padding:8px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px">
-          <div style="color:#ffaa33;font-weight:bold;font-size:10px;margin-bottom:6px">🔊 LIVE AUDIO</div>
-          <div style="display:flex;align-items:center;gap:8px">
-            <button id="${btnId}" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
-            <a href="${srcUrl}" target="_blank" style="color:#ff9900;font-size:9px;word-break:break-all">${srcUrl}</a>
-          </div>
-        </div>
-        <div style="margin-top:6px;background:#1a1a1a"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#ff9900;font-size:10px">weather.gov/nwr ↗</a></div>
-      </div>`, { className: 'nwr-popup', maxWidth: 300 });
-
-      marker.on('popupopen', function() {
-        const btn = document.getElementById(btnId);
-        if (!btn) return;
-        // Stop any other playing stations
-        Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
-        _nwrAudioMap = {};
-
-        btn.onclick = function() {
-          const existing = _nwrAudioMap[call];
-          if (existing && !existing.paused) {
-            existing.pause();
-            btn.textContent = '▶ Play';
-            btn.style.background = '#cc6600';
-            return;
-          }
-          // Try HTTPS first (Icecast streams are often http://, blocked as mixed content)
-          const httpsUrl = srcUrl.replace(/^http:\/\//i, 'https://');
-          const audio = new Audio(httpsUrl);
-          _nwrAudioMap[call] = audio;
-          btn.textContent = '⏳ Connecting…';
-          btn.style.background = '#555';
-          btn.disabled = true;
-
-          audio.onerror = () => {
-            btn.disabled = false;
-            if (httpsUrl !== srcUrl) {
-              // HTTPS failed — try original http (user may have already allowed mixed content)
-              const fallback = new Audio(srcUrl);
-              _nwrAudioMap[call] = fallback;
-              fallback.onerror = () => {
-                btn.textContent = '⚠ Unavailable';
-                btn.style.background = '#800';
-              };
-              fallback.oncanplay = () => { btn.disabled = false; };
-              fallback.play()
-                .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
-                .catch(() => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; });
-            } else {
-              btn.textContent = '⚠ Unavailable';
-              btn.style.background = '#800';
-            }
-          };
-          audio.play()
-            .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
-            .catch(() => {
-              btn.textContent = '⚠ Unavailable';
-              btn.style.background = '#800';
-              btn.disabled = false;
-            });
-        };
-      });
+      const icon   = useGwes ? _gwesIcon() : _nwrIcon();
+      const popup  = _nwrBuildPopup(call, p, gwesStream, wxrStream);
+      const marker = L.marker([lat, lon], { icon, zIndexOffset: 200 });
+      marker.bindPopup(popup, { className: 'nwr-popup', maxWidth: 300 });
 
       marker.on('popupclose', function() {
-        if (_nwrAudioMap[call]) {
-          try { _nwrAudioMap[call].pause(); } catch(e){}
-        }
+        Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
         _nwrAudioMap = {};
       });
 
@@ -12883,7 +12947,7 @@ async function loadNWRStations() {
       plotted++;
     });
 
-    showToast(`📡 ${plotted} NWR live streams`, 2000);
+    showToast(`📡 ${plotted} NWR stations`, 2000);
   } catch(e) {
     showToast('📡 NWR unavailable', 2000);
     console.warn('NWR load error:', e);
