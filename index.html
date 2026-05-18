@@ -12802,27 +12802,49 @@ function _nwrPlayAudio(srcUrl, btnId, callKey) {
   }
   Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
   _nwrAudioMap = {};
-  const httpsUrl = srcUrl.replace(/^http:\/\//i, 'https://');
-  const audio = new Audio(httpsUrl);
-  _nwrAudioMap[callKey] = audio;
+
+  // Strip non-standard port when upgrading to HTTPS so the server's reverse proxy (port 443) is used.
+  // Keeping :8000 on https:// causes a silent SSL hang because port 8000 has no TLS.
+  const httpsUrl = srcUrl.replace(/^http:\/\/([^/:]+)(:\d+)?\//i, 'https://$1/');
+  const changed  = httpsUrl !== srcUrl;
+
   btn.textContent = '⏳ Connecting…';
   btn.style.background = '#555';
   btn.disabled = true;
-  const tryFallback = () => {
-    if (httpsUrl === srcUrl) {
-      btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; return;
+
+  let settled = false;
+  const fail = (tryHttp) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(connectTimeout);
+    if (tryHttp && changed) {
+      // HTTPS failed — try original HTTP (user may have mixed-content allowed)
+      const fb = new Audio(srcUrl);
+      _nwrAudioMap[callKey] = fb;
+      fb.onerror = () => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; };
+      fb.play()
+        .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
+        .catch(() => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; });
+    } else {
+      btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false;
     }
-    const fb = new Audio(srcUrl);
-    _nwrAudioMap[callKey] = fb;
-    fb.onerror = () => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; };
-    fb.play()
-      .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
-      .catch(() => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; });
   };
-  audio.onerror = () => { btn.disabled = false; tryFallback(); };
+
+  const audio = new Audio(httpsUrl);
+  _nwrAudioMap[callKey] = audio;
+
+  // 10 s safety timeout — browser won't fire onerror on a stalled SSL handshake
+  const connectTimeout = setTimeout(() => fail(true), 10000);
+
+  audio.onerror = () => fail(true);
   audio.play()
-    .then(() => { btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false; })
-    .catch(() => { btn.textContent = '⚠ Unavailable'; btn.style.background = '#800'; btn.disabled = false; });
+    .then(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(connectTimeout);
+      btn.textContent = '⏸ Pause'; btn.style.background = '#007a00'; btn.disabled = false;
+    })
+    .catch(() => fail(true));
 }
 
 function _nwrSwitchTab(call, tab) {
