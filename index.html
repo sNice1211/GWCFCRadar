@@ -12950,7 +12950,8 @@ async function _fetchWindyWebcams(bounds) {
     const s = bounds.getSouth().toFixed(4), w = bounds.getWest().toFixed(4);
     const n = bounds.getNorth().toFixed(4), e = bounds.getEast().toFixed(4);
     const url = `https://api.windy.com/api/webcams/v3/webcams` +
-      `?key=${WINDY_CAM_KEY}&bbox=${s},${w},${n},${e}&limit=100`;
+      `?key=${WINDY_CAM_KEY}&bbox=${s},${w},${n},${e}&limit=100` +
+      `&include=location,images,player,urls`;
     const res = await fetch(url, { signal: _abortSignal(15000) });
     if (!res.ok) {
       const body = await res.text().catch(() => String(res.status));
@@ -12995,32 +12996,36 @@ async function _fetchWindyWebcams(bounds) {
 async function _fetchCamsForViewport() {
   if (_camsFetching || !activeLayers['cams']) return;
   _camsFetching = true;
+  try {
+    if (!_camsLayer) _camsLayer = L.layerGroup().addTo(map);
 
-  if (!_camsLayer) _camsLayer = L.layerGroup().addTo(map);
+    const bounds = map.getBounds();
 
-  const bounds = map.getBounds();
+    const [ecCams, wsdotCams, windyCams] = await Promise.all([
+      _fetchEarthCamStreams(),
+      _fetchWSDOTCams(),
+      _fetchWindyWebcams(bounds),
+    ]);
 
-  const [ecCams, wsdotCams, windyCams] = await Promise.all([
-    _fetchEarthCamStreams(),
-    _fetchWSDOTCams(),
-    _fetchWindyWebcams(bounds),
-  ]);
+    console.log(`[Cams] EarthCam:${ecCams.length} WSDOT:${wsdotCams.length} Windy:${windyCams.length}`);
 
-  console.log(`[Cams] EarthCam:${ecCams.length} WSDOT:${wsdotCams.length} Windy:${windyCams.length}`);
+    const allCams = [...ecCams, ...wsdotCams, ...windyCams];
+    let added = 0;
+    allCams.forEach(cam => {
+      if (_camsSeenIds.has(cam.id)) return;
+      _camsSeenIds.add(cam.id);
+      _placeCamMarker(cam);
+      added++;
+    });
 
-  const allCams = [...ecCams, ...wsdotCams, ...windyCams];
-  let added = 0;
-  allCams.forEach(cam => {
-    if (_camsSeenIds.has(cam.id)) return;
-    _camsSeenIds.add(cam.id);
-    _placeCamMarker(cam);
-    added++;
-  });
-
-  if (added > 0) showToast(`📹 ${added} camera${added > 1 ? 's' : ''} loaded`, 1500);
-  else           showToast('📹 Cameras up to date', 1200);
-
-  _camsFetching = false;
+    if (added > 0) showToast(`📹 ${added} cams · EC:${ecCams.length} W:${windyCams.length}`, 2000);
+    else           showToast('📹 No cameras in view', 1500);
+  } catch(err) {
+    console.error('[Cams] _fetchCamsForViewport error:', err);
+    showToast('📹 Cam load error', 1500);
+  } finally {
+    _camsFetching = false;
+  }
 }
 
 function _onCamsMoveEnd() {
@@ -13397,7 +13402,8 @@ async function loadWindyCams() {
 window.windyTest = async function() {
   const b = map.getBounds();
   const url = `https://api.windy.com/api/webcams/v3/webcams?key=${WINDY_CAM_KEY}` +
-    `&bbox=${b.getSouth().toFixed(4)},${b.getWest().toFixed(4)},${b.getNorth().toFixed(4)},${b.getEast().toFixed(4)}&limit=5`;
+    `&bbox=${b.getSouth().toFixed(4)},${b.getWest().toFixed(4)},${b.getNorth().toFixed(4)},${b.getEast().toFixed(4)}&limit=5` +
+    `&include=location,images,player,urls`;
   console.log('[windyTest] GET', url);
   const res = await fetch(url);
   console.log('[windyTest] status:', res.status, res.statusText);
