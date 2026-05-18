@@ -13168,28 +13168,23 @@ function _nwrPlayAudio(srcUrl, btnId, callKey) {
 function _nwrSwitchTab(call, tab) {
   Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
   _nwrAudioMap = {};
-  const gTab = document.getElementById('nwr-tab-g-' + call);
-  const wTab = document.getElementById('nwr-tab-w-' + call);
-  const gPanel = document.getElementById('nwr-panel-g-' + call);
-  const wPanel = document.getElementById('nwr-panel-w-' + call);
-  if (!gTab || !wTab || !gPanel || !wPanel) return;
-  const activeStyle  = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff';
+  const activeStyle   = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff';
   const inactiveStyle = 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
-  if (tab === 'gwes') {
-    gTab.style.cssText = activeStyle; wTab.style.cssText = inactiveStyle;
-    gPanel.style.display = 'block'; wPanel.style.display = 'none';
-  } else {
-    wTab.style.cssText = activeStyle; gTab.style.cssText = inactiveStyle;
-    wPanel.style.display = 'block'; gPanel.style.display = 'none';
-  }
-  // Reset both play buttons so neither shows stale playing/disabled state
-  ['nwr-play-' + call, 'nwr-play-w-' + call].forEach(id => {
+  [['g','gwes'], ['w','wxr'], ['u','wusa']].forEach(([id, name]) => {
+    const tabEl   = document.getElementById(`nwr-tab-${id}-${call}`);
+    const panelEl = document.getElementById(`nwr-panel-${id}-${call}`);
+    if (!tabEl || !panelEl) return;
+    const active = name === tab;
+    tabEl.style.cssText   = active ? activeStyle : inactiveStyle;
+    panelEl.style.display = active ? 'block' : 'none';
+  });
+  ['nwr-play-' + call, 'nwr-play-w-' + call, 'nwr-play-u-' + call].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) { btn.textContent = '▶ Play'; btn.style.background = '#cc6600'; btn.disabled = false; }
   });
 }
 
-function _nwrBuildPopup(call, p, gwesStream, wxrStream) {
+function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
   const status   = p?.STATUS || 'NORMAL';
   const isOut    = status === 'OUT OF SERVICE';
   const statCol  = isOut ? '#ff4040' : '#00ff99';
@@ -13198,62 +13193,47 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream) {
   const wfo      = p?.WFO    ? p.WFO.replace('|', ' / ') : '—';
   const counties = p?.COUNTY ? (Array.isArray(p.COUNTY) ? p.COUNTY.join(', ') : p.COUNTY) : '—';
   const same     = p?.SAME   ? (Array.isArray(p.SAME)   ? p.SAME.join(', ')   : p.SAME)   : '—';
-  const stream   = gwesStream || wxrStream;
+  const stream   = gwesStream || wxrStream || wusaStream;
   const siteName = p?.SITENAME || stream?.server_name?.split(' - ')[0] || call;
   const state    = p?.STATE  || '';
-  const hasBoth  = !!(gwesStream && wxrStream);
 
-  const tabStyle  = (active) => active
+  const tabStyle = (active) => active
     ? 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#cc6600;color:#fff'
     : 'flex:1;padding:5px 0;border:none;border-radius:0;cursor:pointer;font-family:inherit;font-size:10px;background:#1a1a1a;color:#888';
 
-  const singlePanel = (src, listeners) => `
+  const streamPanel = (src, listeners, playId, callKey) => `
     <div style="padding:8px">
       <div style="display:flex;align-items:center;gap:8px">
-        <button id="nwr-play-${call}" onclick="_nwrPlayAudio('${src}','nwr-play-${call}','${call}')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
+        <button id="${playId}" onclick="_nwrPlayAudio('${src}','${playId}','${callKey}')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
         <span style="color:#aaa;font-size:9px">${listeners ?? 0} live</span>
         <a href="${src}" target="_blank" style="color:#ff9900;font-size:9px;flex:1;text-align:right">link ↗</a>
       </div>
     </div>`;
 
+  const activeSources = [
+    gwesStream  ? { id: 'g', name: 'gwes', label: 'GWES',     s: gwesStream,  playId: `nwr-play-${call}`,   callKey: call }         : null,
+    wxrStream   ? { id: 'w', name: 'wxr',  label: 'NOAA WXR', s: wxrStream,   playId: `nwr-play-w-${call}`, callKey: `${call}-w` }  : null,
+    wusaStream  ? { id: 'u', name: 'wusa', label: 'NWRO',     s: wusaStream,  playId: `nwr-play-u-${call}`, callKey: `${call}-u` }  : null,
+  ].filter(Boolean);
+
   let audioHTML;
-  if (hasBoth) {
-    const gSrc = gwesStream.listenurl;
-    const wSrc = wxrStream.listenurl;
-    audioHTML = `
-    <div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
-      <div style="display:flex;border-bottom:1px solid #553300">
-        <button id="nwr-tab-g-${call}" onclick="_nwrSwitchTab('${call}','gwes')" style="${tabStyle(true)}">GWES</button>
-        <button id="nwr-tab-w-${call}" onclick="_nwrSwitchTab('${call}','wxr')"  style="${tabStyle(false)}">NOAA WXR</button>
-      </div>
-      <div id="nwr-panel-g-${call}">
-        <div style="padding:8px">
-          <div style="display:flex;align-items:center;gap:8px">
-            <button id="nwr-play-${call}" onclick="_nwrPlayAudio('${gSrc}','nwr-play-${call}','${call}')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
-            <span style="color:#aaa;font-size:9px">${gwesStream.listeners ?? 0} live</span>
-            <a href="${gSrc}" target="_blank" style="color:#ff9900;font-size:9px;flex:1;text-align:right">link ↗</a>
-          </div>
-        </div>
-      </div>
-      <div id="nwr-panel-w-${call}" style="display:none">
-        <div style="padding:8px">
-          <div style="display:flex;align-items:center;gap:8px">
-            <button id="nwr-play-w-${call}" onclick="_nwrPlayAudio('${wSrc}','nwr-play-w-${call}','${call}-w')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
-            <span style="color:#aaa;font-size:9px">${wxrStream.listeners ?? 0} live</span>
-            <a href="${wSrc}" target="_blank" style="color:#ff9900;font-size:9px;flex:1;text-align:right">link ↗</a>
-          </div>
-        </div>
-      </div>
-    </div>`;
-  } else if (gwesStream) {
+  if (activeSources.length > 1) {
+    const tabBar = activeSources.map((t, i) =>
+      `<button id="nwr-tab-${t.id}-${call}" onclick="_nwrSwitchTab('${call}','${t.name}')" style="${tabStyle(i === 0)}">${t.label}</button>`
+    ).join('');
+    const panels = activeSources.map((t, i) =>
+      `<div id="nwr-panel-${t.id}-${call}" style="display:${i === 0 ? 'block' : 'none'}">${streamPanel(t.s.listenurl, t.s.listeners, t.playId, t.callKey)}</div>`
+    ).join('');
     audioHTML = `<div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
-      <div style="padding:4px 8px 0;color:#ffaa33;font-weight:bold;font-size:10px">🔊 GWES · LIVE AUDIO</div>
-      ${singlePanel(gwesStream.listenurl, gwesStream.listeners)}
+      <div style="display:flex;border-bottom:1px solid #553300">${tabBar}</div>
+      ${panels}
     </div>`;
   } else {
+    const t = activeSources[0];
+    const label = gwesStream ? 'GWES' : wusaStream ? 'NWRO' : 'NOAA WXR';
     audioHTML = `<div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
-      <div style="padding:4px 8px 0;color:#ffaa33;font-weight:bold;font-size:10px">🔊 NOAA WXR · LIVE AUDIO</div>
-      ${singlePanel(wxrStream.listenurl, wxrStream.listeners)}
+      <div style="padding:4px 8px 0;color:#ffaa33;font-weight:bold;font-size:10px">🔊 ${label} · LIVE AUDIO</div>
+      ${streamPanel(t.s.listenurl, t.s.listeners, t.playId, t.callKey)}
     </div>`;
   }
 
@@ -13282,10 +13262,11 @@ async function loadNWRStations() {
   _nwrLoading = true;
   showToast('📡 Loading NWR live streams…', 1500);
   try {
-    const [txRes, gwesRes, wxrRes] = await Promise.allSettled([
-      fetch('https://transmitters.weatherradio.org',   { signal: _abortSignal(20000) }),
-      fetch('https://icestats.weatherradio.org',       { signal: _abortSignal(15000) }),
-      fetch('https://wxradio.org/status-json.xsl',    { signal: _abortSignal(15000) })
+    const [txRes, gwesRes, wxrRes, wusaRes] = await Promise.allSettled([
+      fetch('https://transmitters.weatherradio.org',        { signal: _abortSignal(20000) }),
+      fetch('https://icestats.weatherradio.org',            { signal: _abortSignal(15000) }),
+      fetch('https://wxradio.org/status-json.xsl',         { signal: _abortSignal(15000) }),
+      fetch('https://radio.weatherusa.net/status-json.xsl', { signal: _abortSignal(15000) })
     ]);
 
     const txs = {};
@@ -13298,6 +13279,8 @@ async function loadNWRStations() {
     const _gwesCallsign = url => url.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
     // WXR mounts: /ST-City-CALLSIGN or /ST-City-CALLSIGN-alt1 → strip alt, take last segment
     const _wxrCallsign  = url => url.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '').split('-').pop();
+    // WUSA mounts: /NWR/CALLSIGN.mp3 or /NWR/CALLSIGN_2.mp3 → strip extension and alternate suffix
+    const _wusaCallsign = url => url.split('/NWR/').pop().replace(/\.[^.]+$/, '').replace(/_[A-Za-z0-9]+$/, '');
 
     const gwesMap = new Map();
     if (gwesRes.status === 'fulfilled' && gwesRes.value.ok) {
@@ -13321,13 +13304,24 @@ async function loadNWRStations() {
       });
     }
 
-    if (gwesMap.size === 0 && wxrMap.size === 0) throw new Error('no streams');
+    const wusaMap = new Map();
+    if (wusaRes.status === 'fulfilled' && wusaRes.value.ok) {
+      const ud = await wusaRes.value.json();
+      const arr = Array.isArray(ud?.icestats?.source) ? ud.icestats.source : (ud?.icestats?.source ? [ud.icestats.source] : []);
+      arr.forEach(s => {
+        if (!s.listenurl) return;
+        const call = _wusaCallsign(s.listenurl);
+        if (!wusaMap.has(call)) wusaMap.set(call, { ...s, callsign: call });
+      });
+    }
+
+    if (gwesMap.size === 0 && wxrMap.size === 0 && wusaMap.size === 0) throw new Error('no streams');
 
     _nwrLayer  = L.layerGroup().addTo(map);
     _nwrLoaded = true;
     let plotted = 0;
 
-    const allCalls = new Set([...gwesMap.keys(), ...wxrMap.keys()]);
+    const allCalls = new Set([...gwesMap.keys(), ...wxrMap.keys(), ...wusaMap.keys()]);
     allCalls.forEach(call => {
       const p   = txs[call];
       const lat = p ? parseFloat(p.LAT) : NaN;
@@ -13335,12 +13329,13 @@ async function loadNWRStations() {
       if (!isFinite(lat) || !isFinite(lon)) return;
       if (!_ptInPolyUnion(lat, lon)) return;
 
-      const gwesStream = gwesMap.get(call) || null;
-      const wxrStream  = wxrMap.get(call)  || null;
+      const gwesStream = gwesMap.get(call)  || null;
+      const wxrStream  = wxrMap.get(call)   || null;
+      const wusaStream = wusaMap.get(call)  || null;
       const useGwes    = !!gwesStream;
 
       const icon   = useGwes ? _gwesIcon() : _nwrIcon();
-      const popup  = _nwrBuildPopup(call, p, gwesStream, wxrStream);
+      const popup  = _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream);
       const marker = L.marker([lat, lon], { icon, zIndexOffset: 200 });
       marker.bindPopup(popup, { className: 'nwr-popup', maxWidth: 300 });
 
