@@ -10597,18 +10597,13 @@ async function init() {
     console.warn('Map init error:', e);
   }
 
-  updateLoadStatus('Loading frame index...');
-  // Pre-build the radar frame list so seeking works instantly when user enables radar
-  // but do NOT display any tiles yet (nexrad starts false)
-  try { await Promise.race([loadNEXRAD(), new Promise(r => setTimeout(r, 2500))]); }
-  catch(e) { console.warn('Radar frame index error:', e); }
-
-  // Show radar site markers now that the map is ready
+  updateLoadStatus('Loading radar + alerts…');
+  // Run radar init and alerts in parallel — saves ~1.5s on startup
+  await Promise.allSettled([
+    Promise.race([loadNEXRAD(),      new Promise(r => setTimeout(r, 2500))]),
+    Promise.race([_doLoadAlerts(true), new Promise(r => setTimeout(r, 1500))]),
+  ]);
   _syncNexradSites();
-
-  updateLoadStatus('Loading alerts...');
-  try { await Promise.race([_doLoadAlerts(true), new Promise(r => setTimeout(r, 1500))]); }
-  catch(e) { console.warn('Alerts load error:', e); }
 
   clearTimeout(safetyTimer);
   updateLoadStatus('Ready.');
