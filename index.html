@@ -12181,9 +12181,11 @@ async function _fetchNexradStatus() {
       if (!sid) return;
       // Only explicitly offline/shut-down counts as "down"
       const isDown = op.includes('off-line') || op.includes('offline') || op === 'shutdown';
-      // No scan in >35 min = not reporting data
-      const lastObs = p.latestObservationTime ? new Date(p.latestObservationTime).getTime() : 0;
-      const isStale = !lastObs || (Date.now() - lastObs) > STALE_MS;
+      // Not reporting: only flag stale when the timestamp field exists and is old
+      const lastObsStr = p.latestObservationTime;
+      const isStale = lastObsStr
+        ? (Date.now() - new Date(lastObsStr).getTime()) > STALE_MS
+        : false;
       if (isDown || isStale) offline.add(sid);
     });
     _nexradStatusCache = { t: now, offline };
