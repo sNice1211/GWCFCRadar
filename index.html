@@ -6,6 +6,8 @@
 <link rel="preconnect" href="https://api.weather.gov">
 <link rel="preconnect" href="https://api.maptiler.com">
 <link rel="preconnect" href="https://mesonet.agron.iastate.edu">
+<link rel="dns-prefetch" href="https://api.rainviewer.com">
+<link rel="dns-prefetch" href="https://tilecache.rainviewer.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preconnect" href="https://marine-api.open-meteo.com">
 <link rel="preconnect" href="https://opengeo.ncep.noaa.gov">
@@ -5546,6 +5548,9 @@ async function loadNEXRAD() {
     _buildRadarPool();
     showFrame(currentFrame);
 
+    // Kick off background preloads now that frames are built
+    _preloadSatBackground();
+
   } catch (e) {
     console.warn('NEXRAD load error:', e);
   }
@@ -5620,6 +5625,17 @@ function _buildRadarPool() {
   }
   _radarPoolBuilt = true;
   _buildCanadaPool();
+
+  // Eagerly pre-fetch the latest radar frames in background (opacity 0).
+  // Tiles are cached by the browser so they appear instantly when the user presses Radar.
+  setTimeout(() => {
+    if (!_radarPoolBuilt || !radarFrames.length) return;
+    const start = Math.max(0, lastPastIdx - 3);
+    for (let i = start; i <= lastPastIdx; i++) {
+      _ensureNexradLayer(i);
+      _ensureCanadaLayer(i);
+    }
+  }, 1500);
 }
 
 function _buildCanadaPool() {
@@ -8776,6 +8792,24 @@ let _goesActiveLayers = [];
 let _goesActiveProduct = null;
 let _goesActiveRegion  = null;
 
+// Pre-warm the satellite WMS connection 2s after startup.
+// Creates an opacity-0 GOES-IR CONUS layer so tiles are cached before user presses Satellite.
+function _preloadSatBackground() {
+  setTimeout(() => {
+    if (activeLayers.satellite || _goesActiveLayers.length) return;
+    try {
+      const frames = _buildGoesFrames();
+      if (!frames.length) return;
+      const region = _detectGoesRegion();
+      const layer  = _buildGoesLayer('ir', region, frames[frames.length - 1].timeStr);
+      layer.setOpacity(0);
+      _goesActiveLayers  = [layer];
+      _goesActiveProduct = 'ir';
+      _goesActiveRegion  = region;
+    } catch(e) {}
+  }, 2000);
+}
+
 function _clearGoesActiveLayers() {
   _goesActiveLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _goesActiveLayers = [];
@@ -8884,9 +8918,15 @@ function _buildGoesLayer(prodKey, regionKey, timeStr) {
 }
 
 function loadGoesLayer(product) {
-  _clearGoesActiveLayers();
   map.off('moveend', _onGoesMoveEnd);
   currentGoesProduct = ['ir','vis','wv'].includes(product) ? product : 'ir';
+  // Keep preloaded layer if it already matches product + region (showGoesFrame will setParams on it).
+  const _preRegion = _detectGoesRegion();
+  if (!(_goesActiveLayers.length && _goesActiveProduct === currentGoesProduct && _goesActiveRegion === _preRegion)) {
+    _clearGoesActiveLayers();
+  } else {
+    _goesActiveLayers[0].setOpacity(0.85); // reveal the preloaded layer immediately
+  }
 
   // Always start with Iowa Mesonet frames (instant, no async needed).
   // GOES-W full disk is used for jpac/australia as fallback while RainViewer loads.
