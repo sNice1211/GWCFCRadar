@@ -5630,12 +5630,13 @@ function _buildRadarPool() {
   // Tiles are cached by the browser so they appear instantly when the user presses Radar.
   setTimeout(() => {
     if (!_radarPoolBuilt || !radarFrames.length) return;
-    const start = Math.max(0, lastPastIdx - 3);
-    for (let i = start; i <= lastPastIdx; i++) {
+    const start = Math.max(0, lastPastIdx - 6);
+    const end   = Math.min(radarFrames.length - 1, lastPastIdx + 2);
+    for (let i = start; i <= end; i++) {
       _ensureNexradLayer(i);
       _ensureCanadaLayer(i);
     }
-  }, 1500);
+  }, 300);
 }
 
 function _buildCanadaPool() {
@@ -5669,7 +5670,7 @@ function _ensureNexradLayer(i) {
     version: '1.1.1', TIME: radarFrames[i].iso,
     opacity: 0, zIndex: 10, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
-    keepBuffer: 0, updateWhenIdle: true, updateWhenZooming: false,
+    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
     detectRetina: false,
     attribution: 'NEXRAD © NOAA via Iowa Mesonet',
   });
@@ -5690,7 +5691,7 @@ function _ensureCanadaLayer(i) {
     version: '1.1.1', TIME: radarFrames[i].iso,
     opacity: 0, zIndex: 11, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
-    keepBuffer: 0, updateWhenIdle: true, updateWhenZooming: false,
+    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
     detectRetina: false,
     attribution: 'Canada Radar © ECCC via Iowa Mesonet',
   });
@@ -8792,8 +8793,8 @@ let _goesActiveLayers = [];
 let _goesActiveProduct = null;
 let _goesActiveRegion  = null;
 
-// Pre-warm the satellite WMS connection 2s after startup.
-// Creates an opacity-0 GOES-IR CONUS layer so tiles are cached before user presses Satellite.
+// Pre-warm the satellite WMS connection shortly after startup.
+// Creates an opacity-0 GOES-IR layer so tiles are cached before user presses Satellite.
 function _preloadSatBackground() {
   setTimeout(() => {
     if (activeLayers.satellite || _goesActiveLayers.length) return;
@@ -8807,7 +8808,7 @@ function _preloadSatBackground() {
       _goesActiveProduct = 'ir';
       _goesActiveRegion  = region;
     } catch(e) {}
-  }, 2000);
+  }, 600);
 }
 
 function _clearGoesActiveLayers() {
@@ -8911,7 +8912,8 @@ function _buildGoesLayer(prodKey, regionKey, timeStr) {
     attribution: cfg.attr || '© Iowa Mesonet',
     noWrap: true,
     TIME: timeStr,
-    updateWhenIdle: true,
+    keepBuffer: 4,
+    updateWhenIdle: false,
     updateWhenZooming: false,
   }).addTo(map);
   return layer;
@@ -9017,7 +9019,7 @@ function showGoesFrame(idx) {
       const layer = L.tileLayer(frame.url, {
         opacity: 0.85, zIndex: 11, tileSize: 256, noWrap: false,
         attribution: '© RainViewer · Global Satellite (Himawari/GOES/Meteosat)',
-        updateWhenIdle: true, updateWhenZooming: false,
+        keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
       }).addTo(map);
       _goesActiveLayers = [layer];
       _goesActiveProduct = '__rv__';
