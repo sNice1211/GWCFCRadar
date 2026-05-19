@@ -12172,12 +12172,19 @@ async function _fetchNexradStatus() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     const offline = new Set();
+    const STALE_MS = 35 * 60 * 1000; // no scan in 35 min = not reporting
     (data.features || []).forEach(f => {
       const p   = f.properties || {};
       const rda = (p.rda && p.rda.properties) || {};
-      const op  = rda.operabilityStatus || '';
-      // Anything that isn't explicitly On-line counts as down.
-      if (op && op !== 'RDA - On-line') offline.add((p.id || '').toUpperCase());
+      const op  = (rda.operabilityStatus || '').toLowerCase();
+      const sid = (p.id || '').toUpperCase();
+      if (!sid) return;
+      // Only explicitly offline/shut-down counts as "down"
+      const isDown = op.includes('off-line') || op.includes('offline') || op === 'shutdown';
+      // No scan in >35 min = not reporting data
+      const lastObs = p.latestObservationTime ? new Date(p.latestObservationTime).getTime() : 0;
+      const isStale = !lastObs || (Date.now() - lastObs) > STALE_MS;
+      if (isDown || isStale) offline.add(sid);
     });
     _nexradStatusCache = { t: now, offline };
     return offline;
