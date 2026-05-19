@@ -5517,43 +5517,87 @@ function _initGraticule() {
 // Layer: nexrad-n0q-wmst  |  5-min intervals  |  supports TIME parameter
 let lastPastIdx = 0;
 
+// Fetch real scan timestamps + discover layer name from NOAA opengeo GetCapabilities
+async function _fetchConusL3Timestamps() {
+  const url = 'https://opengeo.ncep.noaa.gov/geoserver/conus/ows?service=wms&version=1.3.0&request=GetCapabilities';
+  const res = await fetch(url, { signal: _abortSignal(10000) });
+  const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
+  let timeStr = '', layerName = '';
+  for (const lyr of xml.querySelectorAll('Layer')) {
+    const nm = lyr.querySelector(':scope > Name')?.textContent?.trim() ?? '';
+    if (/bref/i.test(nm) || /reflectivity/i.test(nm)) {
+      const dim = lyr.querySelector('Dimension[name="time"]') || lyr.querySelector('Extent[name="time"]');
+      if (dim && dim.textContent.trim()) { timeStr = dim.textContent.trim(); layerName = nm; break; }
+    }
+  }
+  if (!timeStr || !layerName) throw new Error('CONUS reflectivity layer not found');
+  const times = timeStr.split(',').map(s => s.trim()).filter(Boolean).slice(-20);
+  return { layerName, frames: times.map(iso => ({ time: new Date(iso).getTime() / 1000, iso, forecast: false })) };
+}
+
+// Synthetic IEM frame list (fallback when opengeo unavailable)
 function _buildNexradFrames() {
-  // Build 24 frames at 5-min intervals = 2 hours of history
   const now = new Date();
   now.setUTCSeconds(0, 0);
   now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
-  const frames = [];
-  for (let i = 17; i >= 0; i--) {
-    const t = new Date(now.getTime() - i * 5 * 60 * 1000);
-    const pad = n => String(n).padStart(2, '0');
+  const pad = n => String(n).padStart(2, '0');
+  return Array.from({ length: 18 }, (_, idx) => {
+    const t = new Date(now.getTime() - (17 - idx) * 5 * 60 * 1000);
     const iso = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
-    frames.push({ time: t.getTime() / 1000, iso, forecast: false });
-  }
-  return frames;
+    return { time: t.getTime() / 1000, iso, forecast: false };
+  });
 }
 
 async function loadNEXRAD() {
-  updateLoadStatus('Calibrating NEXRAD radar beam…');
+  updateLoadStatus('Loading NEXRAD radar…');
   try {
-    radarFrames = _buildNexradFrames();
-    lastPastIdx = radarFrames.length - 1;
+    // Step 1: IEM frames immediately — radar works in <1ms
+    radarFrames  = _buildNexradFrames();
+    NEXRAD_WMS   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
+    NEXRAD_LAYER = 'nexrad-n0q-wmst';
+    NEXRAD_VER   = '1.1.1';
+    _nexradIsL3  = false;
 
+    lastPastIdx = radarFrames.length - 1;
     const tl = document.getElementById('timeline');
-    tl.max   = radarFrames.length - 1;
+    tl.max = radarFrames.length - 1;
     tl.value = lastPastIdx;
     currentFrame = lastPastIdx;
-
     buildTimelineLabels();
-    _updateTimelineGradient(lastPastIdx, radarFrames.length); // all past — solid grey
-
+    _updateTimelineGradient(lastPastIdx, radarFrames.length);
     _buildRadarPool();
     showFrame(currentFrame);
-
-    // Kick off background preloads now that frames are built
     _preloadSatBackground();
 
+    // Step 2: Upgrade to NOAA Level III silently in background
+    _upgradeConusToL3();
   } catch (e) {
     console.warn('NEXRAD load error:', e);
+  }
+}
+
+// Background upgrade: swap IEM composite → NOAA Level III once GetCapabilities arrives.
+// Rebuilds the pool transparently; if radar isn't active, user never sees a flicker.
+async function _upgradeConusToL3() {
+  try {
+    const { layerName, frames } = await _fetchConusL3Timestamps();
+    if (!frames.length) return;
+    NEXRAD_WMS   = 'https://opengeo.ncep.noaa.gov/geoserver/conus/ows';
+    NEXRAD_LAYER = layerName;
+    NEXRAD_VER   = '1.3.0';
+    _nexradIsL3  = true;
+    radarFrames  = frames;
+    lastPastIdx  = frames.length - 1;
+    const tl = document.getElementById('timeline');
+    if (tl) { tl.max = lastPastIdx; tl.value = lastPastIdx; }
+    currentFrame = lastPastIdx;
+    buildTimelineLabels();
+    _updateTimelineGradient(lastPastIdx, frames.length);
+    _buildRadarPool();
+    if (activeLayers.nexrad) showFrame(currentFrame);
+    console.log(`[NEXRAD] L3 upgrade: ${layerName} · ${frames.length} frames`);
+  } catch(e) {
+    console.log('[NEXRAD] L3 unavailable, keeping IEM composite:', e.message);
   }
 }
 
@@ -5604,8 +5648,10 @@ let   _radarPoolBuilt = false;
 // Per-frame loaded flags — true once at least one tile has fired 'tileload'
 const _radarLayerLoaded = [];
 
-const NEXRAD_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
-const NEXRAD_LAYER = 'nexrad-n0q-wmst';
+let NEXRAD_WMS   = 'https://opengeo.ncep.noaa.gov/geoserver/conus/ows';
+let NEXRAD_LAYER = 'conus_bref_qc';
+let NEXRAD_VER   = '1.3.0';
+let _nexradIsL3  = true;
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
 const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
@@ -5668,17 +5714,17 @@ function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const l = L.tileLayer.wms(NEXRAD_WMS, {
     layers: NEXRAD_LAYER, format: 'image/png', transparent: true,
-    version: '1.1.1', TIME: radarFrames[i].iso,
+    version: NEXRAD_VER, TIME: radarFrames[i].iso,
     opacity: 0, zIndex: 10, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
     keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
     detectRetina: false,
-    attribution: 'NEXRAD © NOAA via Iowa Mesonet',
+    attribution: _nexradIsL3 ? 'NEXRAD © NOAA Level III' : 'NEXRAD © NOAA via Iowa Mesonet',
   });
   _radarLayerLoaded[i] = false;
   l.on('tileload', (e) => {
     _radarLayerLoaded[i] = true;
-    _remapTileColors(e.tile);
+    if (!_nexradIsL3) _remapTileColors(e.tile);
     if (smoothEnabled) e.tile.style.imageRendering = 'auto';
   });
   l.addTo(map);
