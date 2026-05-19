@@ -5047,19 +5047,18 @@ body.gwcfc-crosshair #map::after {
       <div class="right-bubble" id="rm-smooth"  onclick="toggleSmooth(); this.classList.toggle('active')"><span class="rb-icon">✨</span> Smooth</div>
       <div class="right-bubble" id="rm-fullscreen" onclick="toggleFullscreen()"><span class="rb-icon">⛶</span> Fullscreen</div>
     </div>
-    <!-- S3 NEXRAD Level 2 File Browser Panel -->
+    <!-- NEXRAD Level III Station Panel -->
     <div id="s3-panel">
       <div id="s3-drag" class="drag-grip" title="Drag to move"><span class="dg-dots">⋮⋮</span><span class="dg-label">drag to move</span><span class="dg-dots">⋮⋮</span></div>
       <div id="s3-header">
         <span id="s3-station-id">----</span>
-        <span id="s3-product-badge">L2</span>
+        <span id="s3-product-badge">L3</span>
         <button id="s3-close" onclick="closeS3Panel()">✕</button>
       </div>
-      <div id="s3-subtitle">Latest Level 2 scans · unidata-nexrad-level2 S3</div>
+      <div id="s3-subtitle">NEXRAD Level III · NOAA GeoServer</div>
       <div id="s3-body"><div class="s3-loading">Loading…</div></div>
       <div id="s3-footer">
-        <a id="s3-bucket-link" href="https://unidata-nexrad-level2.s3.amazonaws.com/index.html" target="_blank">📦 Open S3 Bucket Index ↗</a>
-        <button id="s3-refresh" onclick="refreshS3Panel()">↻ Refresh</button>
+        <a id="s3-bucket-link" href="https://radar.weather.gov/" target="_blank">🔗 NOAA Radar ↗</a>
       </div>
     </div>
 </div><!-- /main -->
@@ -12069,7 +12068,7 @@ function _buildNexradSiteMarkers() {
     label.on('click', () => {
       if (currentProduct === 'ref') {
         _loadSingleSiteRef(s.id);
-        openS3Panel(s.id, 'REF');
+        openS3Panel(s.id);
       } else if (currentProduct === 'vel') {
         _velStation = s.id;
         _buildVelPool(s.id, velFrames);
@@ -12170,13 +12169,30 @@ function _syncNexradSites() {
   else         hideNexradSites();
 }
 
-// ── SINGLE-SITE REFLECTIVITY (Iowa Mesonet RIDGE per station) ──
-// Uses IEM ridge.cgi WMS — opengeo.ncep.noaa.gov dropped N0Q Level-3 in 2022.
-// IEM sector codes are 3-letter (strip leading K/P/T from 4-letter ICAO).
+// ── SINGLE-SITE REFLECTIVITY — NOAA Level III (opengeo.ncep.noaa.gov SR_BREF) ──
+// Uses Super Resolution Base Reflectivity with real scan timestamps from GetCapabilities.
+// Falls back to IEM ridge.cgi N0Q if opengeo is unavailable for this station.
+
+async function _fetchRefTimestamps(station) {
+  const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities`;
+  const res  = await fetch(url, { signal: _abortSignal(8000) });
+  const xml  = new DOMParser().parseFromString(await res.text(), 'text/xml');
+  let timeStr = '';
+  for (const lyr of xml.querySelectorAll('Layer')) {
+    const nm = lyr.querySelector(':scope > Name')?.textContent?.trim().toLowerCase() ?? '';
+    if (nm.includes('sr_bref') || nm === `${station}_sr_bref`) {
+      const dim = lyr.querySelector('Dimension[name="time"]') || lyr.querySelector('Extent[name="time"]');
+      if (dim) { timeStr = dim.textContent.trim(); break; }
+    }
+  }
+  if (!timeStr) throw new Error('SR_BREF not in GetCapabilities');
+  const times = timeStr.split(',').map(s => s.trim()).filter(Boolean).slice(-15);
+  return times.map(iso => ({ iso, time: new Date(iso).getTime() / 1000, date: new Date(iso) }));
+}
+
 async function _loadSingleSiteRef(stationId) {
   stationId = stationId.toLowerCase();
   _refStation = stationId;
-  const sector = stationId.slice(1).toUpperCase(); // KDVN → DVN
 
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
   _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
@@ -12185,49 +12201,72 @@ async function _loadSingleSiteRef(stationId) {
   _refSiteFrames = [];
 
   const animTimeEl = document.getElementById('anim-time');
-  if (animTimeEl) animTimeEl.textContent = 'Loading REF…';
+  if (animTimeEl) animTimeEl.textContent = 'Loading L3 REF…';
 
-  // Build last 12 frames at 5-min intervals
-  const now = new Date();
-  now.setUTCSeconds(0, 0);
-  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
-  for (let i = 11; i >= 0; i--) {
-    const t = new Date(now.getTime() - i * 5 * 60 * 1000);
-    _refSiteFrames.push({ time: t.getTime() / 1000, iso: t.toISOString().slice(0,19)+'Z', date: t });
+  // Try NOAA Level III SR_BREF (real timestamps)
+  let useOpengeo = false;
+  try {
+    _refSiteFrames = await _fetchRefTimestamps(stationId);
+    useOpengeo = true;
+  } catch(e) {
+    // Fall back to IEM ridge.cgi with estimated 5-min interval timestamps
+    const now = new Date();
+    now.setUTCSeconds(0, 0);
+    now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
+    for (let i = 11; i >= 0; i--) {
+      const t = new Date(now.getTime() - i * 5 * 60 * 1000);
+      _refSiteFrames.push({ time: t.getTime() / 1000, iso: t.toISOString().slice(0,19)+'Z', date: t });
+    }
   }
 
-  const wmsUrl = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/ridge.cgi';
-  _refSiteFrames.forEach((frame, i) => {
-    const d   = frame.date;
-    const yr  = d.getUTCFullYear();
-    const mo  = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const dy  = String(d.getUTCDate()).padStart(2, '0');
-    const hhmm = String(d.getUTCHours()).padStart(2,'0') + String(d.getUTCMinutes()).padStart(2,'0');
-    const isLatest = (i === _refSiteFrames.length - 1);
-    const l = L.tileLayer.wms(wmsUrl, {
-      layers:      isLatest ? 'single' : 'single-archive',
-      format:      'image/png',
-      transparent: true,
-      version:     '1.1.1',
-      sector:      sector,
-      prod:        'N0Q',
-      ...(isLatest ? {} : { year: yr, month: mo, day: dy, time: hhmm }),
-      opacity:     0,
-      zIndex:      11,
-      pane:        'radarPane',
-      crossOrigin: 'anonymous',
-      noWrap:      true,
-      attribution: `NEXRAD ${stationId.toUpperCase()} © NOAA via IEM`
+  if (useOpengeo) {
+    // NOAA GeoServer Level III SR_BREF
+    const wmsUrl  = `https://opengeo.ncep.noaa.gov/geoserver/${stationId}/ows`;
+    const layerNm = `${stationId}_sr_bref`;
+    _refSiteFrames.forEach((frame, i) => {
+      const l = L.tileLayer.wms(wmsUrl, {
+        layers: layerNm, format: 'image/png', transparent: true,
+        version: '1.3.0', TIME: frame.iso,
+        opacity: 0, zIndex: 11, pane: 'radarPane',
+        crossOrigin: 'anonymous', noWrap: true,
+        keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
+        attribution: `${stationId.toUpperCase()} SR_BREF © NOAA Level III`,
+      });
+      _refSiteLoaded[i] = false;
+      l.on('tileload', () => { _refSiteLoaded[i] = true; });
+      l.addTo(map);
+      _refSitePool[i] = l;
     });
-    _refSiteLoaded[i] = false;
-    l.on('tileload', (e) => {
-      _refSiteLoaded[i] = true;
-      _remapTileColors(e.tile);
-      if (smoothEnabled) e.tile.style.imageRendering = 'auto';
+  } else {
+    // IEM ridge.cgi fallback (N0Q)
+    const wmsUrl = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/ridge.cgi';
+    const sector = stationId.slice(1).toUpperCase();
+    _refSiteFrames.forEach((frame, i) => {
+      const d     = frame.date;
+      const yr    = d.getUTCFullYear();
+      const mo    = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dy    = String(d.getUTCDate()).padStart(2, '0');
+      const hhmm  = String(d.getUTCHours()).padStart(2,'0') + String(d.getUTCMinutes()).padStart(2,'0');
+      const isLatest = (i === _refSiteFrames.length - 1);
+      const l = L.tileLayer.wms(wmsUrl, {
+        layers: isLatest ? 'single' : 'single-archive',
+        format: 'image/png', transparent: true, version: '1.1.1',
+        sector, prod: 'N0Q',
+        ...(isLatest ? {} : { year: yr, month: mo, day: dy, time: hhmm }),
+        opacity: 0, zIndex: 11, pane: 'radarPane',
+        crossOrigin: 'anonymous', noWrap: true,
+        attribution: `${stationId.toUpperCase()} N0Q © NOAA via IEM`,
+      });
+      _refSiteLoaded[i] = false;
+      l.on('tileload', (e) => {
+        _refSiteLoaded[i] = true;
+        _remapTileColors(e.tile);
+        if (smoothEnabled) e.tile.style.imageRendering = 'auto';
+      });
+      l.addTo(map);
+      _refSitePool[i] = l;
     });
-    l.addTo(map);
-    _refSitePool[i] = l;
-  });
+  }
 
   // Update timeline
   const tl = document.getElementById('timeline');
@@ -12245,6 +12284,19 @@ async function _loadSingleSiteRef(stationId) {
     }
     wrap.innerHTML = html;
   }
+
+  // Update L3 panel info
+  const badge = document.getElementById('s3-product-badge');
+  const sub   = document.getElementById('s3-subtitle');
+  const body  = document.getElementById('s3-body');
+  if (badge) badge.textContent = 'L3';
+  if (sub)   sub.textContent   = useOpengeo ? 'NEXRAD Level III · NOAA GeoServer' : 'NEXRAD N0Q · Iowa Mesonet (fallback)';
+  if (body)  body.innerHTML    = `<div class="s3-l3-info">
+    <div>📡 ${useOpengeo ? 'SR_BREF (Super Resolution Reflectivity)' : 'N0Q Base Reflectivity'}</div>
+    <div>⏱ ${_refSiteFrames.length} frames · ${useOpengeo ? 'real scan times' : '5-min intervals'}</div>
+  </div>`;
+  const link = document.getElementById('s3-bucket-link');
+  if (link) link.href = `https://radar.weather.gov/station/${stationId}/standard`;
 
   _refreshNexradSiteStyles();
   _showSingleSiteRefFrame(_refSiteFrames.length - 1);
@@ -13623,116 +13675,24 @@ document.addEventListener('DOMContentLoaded', () => {
   }, true);
 });
 
-// ── S3 NEXRAD LEVEL 2 FILE BROWSER ──
-// Lists the latest Level 2 scans for a station from the Unidata public S3 bucket.
-// URL pattern: https://unidata-nexrad-level2.s3.amazonaws.com/?prefix=KTBW/
-// Returns XML with <Contents> blocks each having a <Key> and <LastModified>.
+// ── NEXRAD LEVEL III STATION PANEL ──
+// Shows L3 product info when a station is selected; links to NOAA Radar Viewer.
 
-async function _fetchS3Files(stationId) {
-  // S3 ListObjects v2 with prefix = uppercase station ID + /
-  const prefix  = stationId.toUpperCase() + '/';
-  // Use delimiter and max-keys to get recent files; S3 returns XML sorted lexicographically
-  // We fetch with max-keys=50 to get the most recent scans (keys sort newest last by filename date)
-  const s3url   = `https://unidata-nexrad-level2.s3.amazonaws.com/?prefix=${encodeURIComponent(prefix)}&max-keys=50`;
-  // Try direct first (bucket has public CORS), then proxy fallback
-  let xmlText = '';
-  try {
-    const r = await fetch(s3url, { signal: _abortSignal(7000) });
-    if (r.ok) xmlText = await r.text();
-  } catch(e) {}
-  if (!xmlText) {
-    // CORS proxy fallback
-    try {
-      const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(s3url)}`;
-      const r = await fetch(proxy, { signal: _abortSignal(9000) });
-      if (r.ok) xmlText = await r.text();
-    } catch(e) {}
-  }
-  if (!xmlText) throw new Error('Could not fetch S3 listing');
-
-  const parser = new DOMParser();
-  const xml    = parser.parseFromString(xmlText, 'application/xml');
-  const items  = Array.from(xml.querySelectorAll('Contents'));
-
-  const files = items.map(el => {
-    const key      = el.querySelector('Key')?.textContent?.trim() || '';
-    const modified = el.querySelector('LastModified')?.textContent?.trim() || '';
-    const size     = parseInt(el.querySelector('Size')?.textContent || '0');
-    return { key, modified, size };
-  }).filter(f => f.key && !f.key.endsWith('/') && f.size > 0);
-
-  // Sort newest first (filenames embed YYYYMMDD_HHMMSS so lex sort works)
-  files.sort((a, b) => b.key.localeCompare(a.key));
-  return files.slice(0, 30); // return top 30 most recent
-}
-
-function _parseS3Filename(key) {
-  // Key format: KTBW/KTBW20260417_120512_V06
-  const fname = key.split('/').pop();
-  // Match: STATIONyyyymmdd_HHMMSS
-  const m = fname.match(/([A-Z]{4})(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
-  if (!m) return { fname, timeStr: '', dateStr: '' };
-  const [, sta, yr, mo, dy, hh, mm, ss] = m;
-  const timeStr = `${hh}:${mm}:${ss} UTC`;
-  const dateStr = `${yr}-${mo}-${dy}`;
-  return { fname, timeStr, dateStr, sta };
-}
-
-function openS3Panel(stationId, product) {
+function openS3Panel(stationId) {
   _s3CurrentStation = stationId.toUpperCase();
   const panel = document.getElementById('s3-panel');
+  if (!panel) return;
   document.getElementById('s3-station-id').textContent = _s3CurrentStation;
-  document.getElementById('s3-product-badge').textContent = product || 'L2';
-  document.getElementById('s3-bucket-link').href =
-    `https://unidata-nexrad-level2.s3.amazonaws.com/index.html#${_s3CurrentStation}/`;
   panel.style.display = 'flex';
-  _renderS3Files();
 }
 
 function closeS3Panel() {
-  document.getElementById('s3-panel').style.display = 'none';
+  const panel = document.getElementById('s3-panel');
+  if (panel) panel.style.display = 'none';
   _s3CurrentStation = null;
 }
 
-function refreshS3Panel() {
-  if (!_s3CurrentStation) return;
-  _renderS3Files();
-}
-
-async function _renderS3Files() {
-  const body = document.getElementById('s3-body');
-  body.innerHTML = '<div class="s3-loading">Fetching latest scans…</div>';
-
-  try {
-    const files = await _fetchS3Files(_s3CurrentStation);
-    if (!files.length) {
-      body.innerHTML = '<div class="s3-empty">No files found for this station</div>';
-      return;
-    }
-    body.innerHTML = '';
-    files.forEach(f => {
-      const { fname, timeStr, dateStr } = _parseS3Filename(f.key);
-      const downloadUrl = `https://unidata-nexrad-level2.s3.amazonaws.com/${f.key}`;
-      // Detect MDM/V06/V08 type
-      const typeMatch = fname.match(/(V\d{2}|MDM)$/);
-      const ftype = typeMatch ? typeMatch[1] : 'L2';
-      const isVel = ftype === 'MDM';
-
-      const row = document.createElement('a');
-      row.className = 's3-row';
-      row.href = downloadUrl;
-      row.target = '_blank';
-      row.title = `Download ${fname}`;
-      row.innerHTML = `
-        <span class="s3-time">${timeStr || fname.slice(-6)}</span>
-        <span class="s3-fname" title="${dateStr} · ${(f.size/1024/1024).toFixed(1)} MB">${fname}</span>
-        <span class="s3-dl${isVel ? ' vel' : ''}">${ftype}</span>`;
-      body.appendChild(row);
-    });
-  } catch(e) {
-    body.innerHTML = `<div class="s3-empty">⚠ Failed to load — check network or CORS<br><small style="font-size:9px;color:#444">${e.message}</small></div>`;
-  }
-}
+function refreshS3Panel() {}
 
 const CITIES = [
   // ── USA: Northeast ──
