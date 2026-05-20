@@ -4596,6 +4596,28 @@ body.gwcfc-crosshair #map::after {
   margin-top: 2px;
 }
 
+#mag-ctrl-row { flex-direction: row; gap: 10px; }
+#mag-product-tabs {
+  display: flex; flex-direction: row; gap: 4px;
+  padding: 6px 12px 4px; flex-wrap: wrap;
+}
+#mag-cycle-row {
+  display: flex; align-items: center;
+  padding: 4px 12px; border-top: 1px solid rgba(255,255,255,0.05);
+}
+#mag-img-wrap {
+  padding: 8px 10px 4px;
+  min-height: 80px;
+  display: flex; align-items: center; justify-content: center;
+}
+#mag-img-status {
+  font-size: 9px; color: rgba(160,190,220,0.55); text-align: center;
+}
+#mag-img-credit {
+  font-size: 8px; color: rgba(160,190,220,0.35);
+  text-align: right; padding: 0 10px 6px;
+}
+
 </style>
 <!-- Firebase SDK (compat v9 — drop in your config keys to activate) -->
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
@@ -4861,8 +4883,8 @@ body.gwcfc-crosshair #map::after {
         <button id="fnv3-close-btn" onclick="closeFNV3Panel()">×</button>
       </div>
       <div id="fnv3-tabs">
-        <button class="fnv3-tab active" id="fnv3-tab-atcf" onclick="_fnv3SwitchTab('atcf')">🍝 ATCF</button>
-        <button class="fnv3-tab" id="fnv3-tab-fnv3" onclick="_fnv3SwitchTab('fnv3')">📊 FNV3</button>
+        <button class="fnv3-tab active" id="fnv3-tab-spaghetti" onclick="_fnv3SwitchTab('spaghetti')">🍝 Spaghetti</button>
+        <button class="fnv3-tab" id="fnv3-tab-runmodels" onclick="_fnv3SwitchTab('runmodels')">🗺 Run Models</button>
       </div>
 
       <!-- ATCF spaghetti section -->
@@ -4877,25 +4899,45 @@ body.gwcfc-crosshair #map::after {
         <div id="atcf-legend"></div>
       </div>
 
-      <!-- FNV3 ensemble section (hidden by default) -->
-      <div id="fnv3-fnv3-body" style="display:none">
-        <div id="fnv3-controls">
+      <!-- Run Models imagery section (hidden by default) -->
+      <div id="fnv3-runmodels-body" style="display:none">
+        <div id="mag-ctrl-row" class="fnv3-controls">
           <div>
-            <div class="fnv3-label">Model Run</div>
-            <select id="fnv3-run-sel" class="fnv3-select" onchange="_fnv3SetRun(this.value)"></select>
+            <div class="fnv3-label">Model</div>
+            <select id="mag-model-sel" class="fnv3-select" onchange="_magUpdate()">
+              <option value="gfs">GFS</option>
+            </select>
           </div>
           <div>
-            <div class="fnv3-label">Storm</div>
-            <select id="fnv3-storm-sel" class="fnv3-select" onchange="_fnv3SetStorm(this.value)"></select>
+            <div class="fnv3-label">Region</div>
+            <select id="mag-region-sel" class="fnv3-select" onchange="_magUpdate()">
+              <option value="tropatl">Tropical Atlantic</option>
+              <option value="epac">Eastern Pacific</option>
+            </select>
           </div>
         </div>
-        <div id="fnv3-status">Initializing…</div>
-        <div id="fnv3-storm-info"></div>
-        <div id="fnv3-load-url-row">
-          <div class="fnv3-label">Load custom CSV URL</div>
-          <input id="fnv3-url-input" type="text" placeholder="https://storage.googleapis.com/weathernext-public/fnv3/FNV3_…_paired.csv">
-          <button class="fnv3-btn" onclick="_fnv3LoadUrl()">↳ Load</button>
+        <div id="mag-product-tabs">
+          <div class="trop-stab active" data-pkg="mslp_precip" onclick="_magSetPkg('mslp_precip')">MSLP</div>
+          <div class="trop-stab" data-pkg="850wind" onclick="_magSetPkg('850wind')">850mb</div>
+          <div class="trop-stab" data-pkg="200wind" onclick="_magSetPkg('200wind')">200mb</div>
+          <div class="trop-stab" data-pkg="wind_shear" onclick="_magSetPkg('wind_shear')">Shear</div>
+          <div class="trop-stab" data-pkg="precip_water" onclick="_magSetPkg('precip_water')">PW</div>
         </div>
+        <div id="mag-cycle-row">
+          <span class="fnv3-label" style="margin-right:6px">Cycle:</span>
+          <span id="mag-cycle-display" style="color:rgba(0,200,255,0.85);font-size:9px">—</span>
+          <select id="mag-cycle-sel" class="fnv3-select" style="margin-left:8px;width:80px" onchange="_magUpdate()">
+            <option value="00">00Z</option>
+            <option value="06">06Z</option>
+            <option value="12">12Z</option>
+            <option value="18">18Z</option>
+          </select>
+        </div>
+        <div id="mag-img-wrap">
+          <img id="mag-img" src="" alt="Loading model image…" style="width:100%;border-radius:4px;display:none">
+          <div id="mag-img-status">Select a cycle to load.</div>
+        </div>
+        <div id="mag-img-credit">Source: <a href="https://mag.ncep.noaa.gov/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">NOAA NCEP MAG</a></div>
       </div>
     </div>
 
@@ -10853,21 +10895,35 @@ const ATCF_MODELS = {
 let _atcfLayers = [];
 let _atcfCurrentStorm = null;
 let _atcfStorms = [];   // [{ id:'AL062024', name:'HELENE', basin:'al', cy:'06', year:'2024' }]
-let _atcfCurrentTab = 'atcf';
+let _atcfCurrentTab = 'spaghetti';
 
 function _fnv3SwitchTab(tab) {
   _atcfCurrentTab = tab;
-  const atcfBody  = document.getElementById('fnv3-atcf-body');
-  const fnv3Body  = document.getElementById('fnv3-fnv3-body');
+  const atcfBody      = document.getElementById('fnv3-atcf-body');
+  const runmodelsBody = document.getElementById('fnv3-runmodels-body');
   document.querySelectorAll('.fnv3-tab').forEach(t =>
     t.classList.toggle('active', t.id === 'fnv3-tab-' + tab));
-  if (atcfBody)  atcfBody.style.display  = tab === 'atcf' ? 'block' : 'none';
-  if (fnv3Body)  fnv3Body.style.display  = tab === 'fnv3' ? 'block' : 'none';
-  if (tab === 'atcf') {
+  if (atcfBody)      atcfBody.style.display      = tab === 'spaghetti' ? 'block' : 'none';
+  if (runmodelsBody) runmodelsBody.style.display  = tab === 'runmodels' ? 'block' : 'none';
+  if (tab === 'spaghetti') {
+    // Load ATCF
     _atcfClearLayers();
     if (_atcfCurrentStorm) _atcfLoad(_atcfCurrentStorm);
+    // Load FNV3 if there's a current run
+    if (_fnv3CurrentRun) _fnv3FetchCSV(_fnv3CsvUrl(_fnv3CurrentRun));
+    else {
+      const stamps = _fnv3RunStamps();
+      if (stamps.length) {
+        _fnv3CurrentRun = stamps[0].stamp;
+        _fnv3FetchCSV(_fnv3CsvUrl(_fnv3CurrentRun));
+      }
+    }
   } else {
+    _atcfClearLayers();
     _fnv3ClearLayers();
+    if (tab === 'runmodels') {
+      if (!_magCurrentCycle) _magInit();
+    }
   }
 }
 
@@ -11051,6 +11107,103 @@ function _atcfPopulateStorms(storms) {
 }
 // ── END ATCF ────────────────────────────────────────────────────────────────
 
+// ── MAG RUN MODELS IMAGERY ─────────────────────────────────────────────────
+const MAG_BASE = 'https://mag.ncep.noaa.gov/data/';
+const PROXY_BASE = 'https://corsproxy.io/?url=';
+
+// Known-good product → filename fragment mapping for GFS
+// Pattern: {model}_{pkg}_{region}_{seq}.gif
+const MAG_PRODUCTS = {
+  gfs: {
+    mslp_precip: 'gfs_mslp_precip_{region}_1',
+    '850wind':   'gfs_850wind_{region}_1',
+    '200wind':   'gfs_200wind_{region}_1',
+    wind_shear:  'gfs_wind_shear_{region}_1',
+    precip_water:'gfs_precip_water_{region}_1',
+  }
+};
+
+let _magCurrentPkg    = 'mslp_precip';
+let _magCurrentModel  = 'gfs';
+let _magCurrentRegion = 'tropatl';
+let _magCurrentCycle  = null;   // '00','06','12','18'
+
+function _magAutoSelectCycle() {
+  const h = new Date().getUTCHours();
+  // Models lag ~4h; pick a cycle that should be available
+  if (h >= 22) return '18';
+  if (h >= 16) return '12';
+  if (h >= 10) return '06';
+  if (h >= 4)  return '00';
+  return '18';  // previous day's 18Z
+}
+
+function _magBuildUrl(model, pkg, region, cycle) {
+  const products = MAG_PRODUCTS[model];
+  if (!products || !products[pkg]) return null;
+  const template = products[pkg];
+  const filename = template.replace('{region}', region) + '.gif';
+  return `${MAG_BASE}${model}/${cycle}z/${filename}`;
+}
+
+function _magSetPkg(pkg) {
+  _magCurrentPkg = pkg;
+  document.querySelectorAll('#mag-product-tabs .trop-stab').forEach(t =>
+    t.classList.toggle('active', t.dataset.pkg === pkg));
+  _magUpdate();
+}
+
+function _magUpdate() {
+  const modelSel  = document.getElementById('mag-model-sel');
+  const regionSel = document.getElementById('mag-region-sel');
+  const cycleSel  = document.getElementById('mag-cycle-sel');
+  if (modelSel)  _magCurrentModel  = modelSel.value;
+  if (regionSel) _magCurrentRegion = regionSel.value;
+  if (cycleSel)  _magCurrentCycle  = cycleSel.value;
+
+  const cycleDisp = document.getElementById('mag-cycle-display');
+  if (cycleDisp)  cycleDisp.textContent = _magCurrentCycle + 'Z';
+
+  const url = _magBuildUrl(_magCurrentModel, _magCurrentPkg, _magCurrentRegion, _magCurrentCycle);
+  const img = document.getElementById('mag-img');
+  const st  = document.getElementById('mag-img-status');
+  if (!url) {
+    if (st) st.textContent = '⚠ Product not available for this model.';
+    if (img) img.style.display = 'none';
+    return;
+  }
+
+  if (st) st.textContent = 'Loading…';
+  if (img) {
+    img.style.display = 'none';
+    img.onerror = () => {
+      img.style.display = 'none';
+      // Try via CORS proxy on first failure
+      if (!img.dataset.proxied) {
+        img.dataset.proxied = '1';
+        img.src = PROXY_BASE + encodeURIComponent(url);
+      } else {
+        if (st) st.textContent = `⚠ Image not available (${_magCurrentCycle}Z may not be ready yet).`;
+      }
+    };
+    img.onload = () => {
+      img.style.display = 'block';
+      if (st) st.textContent = '';
+    };
+    img.dataset.proxied = '';
+    img.src = url;
+  }
+}
+
+function _magInit() {
+  const c = _magAutoSelectCycle();
+  _magCurrentCycle = c;
+  const sel = document.getElementById('mag-cycle-sel');
+  if (sel) sel.value = c;
+  _magUpdate();
+}
+// ── END MAG ─────────────────────────────────────────────────────────────────
+
 // ── FNV3 TROPICAL ENSEMBLE MODELS ──────────────────────────────────────────
 const FNV3_BASE = 'https://storage.googleapis.com/weathernext-public/fnv3/';
 const FNV3_ENS_COLORS = [
@@ -11188,8 +11341,8 @@ function openFNV3Panel() {
   if (_fnv3Open) { closeFNV3Panel(); return; }
   _fnv3Open = true; panel.style.display = 'flex';
 
-  // Default to ATCF tab; use storms collected by loadTropical()
-  _fnv3SwitchTab('atcf');
+  // Default to Spaghetti tab; use storms collected by loadTropical()
+  _fnv3SwitchTab('spaghetti');
   if (_tropActiveStorms.length) {
     _atcfPopulateStorms(_tropActiveStorms);
   } else {
@@ -11206,6 +11359,7 @@ function closeFNV3Panel() {
   _fnv3ClearLayers();
   _atcfClearLayers();
   if (_fnv3RefreshTimer) { clearInterval(_fnv3RefreshTimer); _fnv3RefreshTimer = null; }
+  _magCurrentCycle = null;
 }
 // ── END FNV3 ────────────────────────────────────────────────────────────────
 
