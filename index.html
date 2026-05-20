@@ -4749,10 +4749,7 @@ body.gwcfc-crosshair #map::after {
       <span class="lqm-label">Ask AI</span>
     </div>
     <div class="lqm-btn" id="lqm-settings-btn" onclick="lqmOpenSettings()">
-      <div class="lqm-icon-wrap"><svg width="22" height="22" viewBox="0 0 22 22" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="11" cy="11" r="3" stroke="#d4e8ff" stroke-width="1.7" fill="none"/>
-  <path d="M11 1.5V4M11 18V20.5M1.5 11H4M18 11H20.5M3.7 3.7L5.5 5.5M16.5 16.5L18.3 18.3M3.7 18.3L5.5 16.5M16.5 5.5L18.3 3.7" stroke="#d4e8ff" stroke-width="1.7" stroke-linecap="round"/>
-</svg></div>
+      <div class="lqm-icon-wrap" style="font-size:20px;line-height:1;display:flex;align-items:center;justify-content:center;">⚙️</div>
       <span class="lqm-label">Settings</span>
     </div>
     <div class="lqm-btn" id="lqm-tutorial-btn" onclick="lqmOpenTutorial()">
@@ -5128,6 +5125,9 @@ body.gwcfc-crosshair #map::after {
   </button>
   <button class="dtb-btn" onclick="_ttbClear()" title="Clear track">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+  </button>
+  <button class="dtb-btn" id="ttb-anim-btn" onclick="_ttbToggleAnim()" title="Animate track" disabled style="opacity:0.4">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none"/></svg>
   </button>
   <button class="dtb-btn" id="ttb-save-btn" onclick="_ttbSaveImage()" title="Save track as PNG">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -5861,7 +5861,7 @@ function buildTimelineLabels() {
     let html = '';
     for (let i = 0; i < n; i += step) {
       const d = goesFrames[i].time;
-      const label = `${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}`;
+      const label = _fmtHHMMshort(d);
       html += `<span>${label}</span>`;
     }
     wrap.innerHTML = html;
@@ -5872,7 +5872,7 @@ function buildTimelineLabels() {
     let html = '';
     for (let i = 0; i < n; i += step) {
       const d = new Date(radarFrames[i].time * 1000);
-      const label = `${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}`;
+      const label = _fmtHHMMshort(d);
       html += `<span>${label}</span>`;
     }
     wrap.innerHTML = html;
@@ -6019,12 +6019,37 @@ function _activateWindow(idx) {
 // Keep _preloadFrame as a no-op stub so existing callers don't break
 function _preloadFrame(idx) {}
 
+// Timezone preference — affects all displayed timestamps
+let _appTZ = (() => { try { return localStorage.getItem('gwcfc_tz') || 'utc'; } catch(e) { return 'utc'; } })();
+
+function _fmtHHMM(d) {
+  const pad = n => String(n).padStart(2,'0');
+  if (_appTZ === 'utc') return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+  const tz = _appTZ === 'local' ? Intl.DateTimeFormat().resolvedOptions().timeZone : _appTZ;
+  try {
+    const pts = new Intl.DateTimeFormat('en-US', { hour:'2-digit', minute:'2-digit', timeZone:tz, hour12:false }).formatToParts(d);
+    const h = pts.find(p=>p.type==='hour')?.value||'00';
+    const m = pts.find(p=>p.type==='minute')?.value||'00';
+    const abbr = new Intl.DateTimeFormat('en-US', { timeZoneName:'short', timeZone:tz }).formatToParts(d).find(p=>p.type==='timeZoneName')?.value||'';
+    return `${h}:${m} ${abbr}`;
+  } catch(e) { return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`; }
+}
+function _fmtHHMMshort(d) {
+  const pad = n => String(n).padStart(2,'0');
+  if (_appTZ === 'utc') return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  const tz = _appTZ === 'local' ? Intl.DateTimeFormat().resolvedOptions().timeZone : _appTZ;
+  try {
+    const pts = new Intl.DateTimeFormat('en-US', { hour:'2-digit', minute:'2-digit', timeZone:tz, hour12:false }).formatToParts(d);
+    return `${pts.find(p=>p.type==='hour')?.value||'00'}:${pts.find(p=>p.type==='minute')?.value||'00'}`;
+  } catch(e) { return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`; }
+}
+
 // Cached hot-path DOM references — set once after DOMContentLoaded
 let _elTimeline = null, _elAnimTime = null, _elFcstBadge = null;
 
 function updateFrameLabel(idx) {
   const d = new Date(radarFrames[idx].time * 1000);
-  const ts = `${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')} UTC`;
+  const ts = _fmtHHMM(d);
   if (!_elAnimTime) _elAnimTime = document.getElementById('anim-time');
   const isForecast = !!radarFrames[idx].forecast;
   _elAnimTime.textContent = (isForecast ? 'FCST ' : '') + ts;
@@ -9335,7 +9360,7 @@ function showGoesFrame(idx) {
   const pad = n => String(n).padStart(2, '0');
   const animTimeEl = document.getElementById('anim-time');
   if (animTimeEl) {
-    animTimeEl.textContent = `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} UTC`;
+    animTimeEl.textContent = _fmtHHMM(d);
     animTimeEl.style.color = '';
     animTimeEl.style.visibility = 'visible';
   }
@@ -11693,6 +11718,7 @@ deactivateTool = function() {
   _erasing = false;
   const _ttb = document.getElementById('track-toolbar');
   if (_ttb) _ttb.classList.remove('visible');
+  if (typeof _trackAnimating !== 'undefined' && _trackAnimating) _ttbStopAnim();
 };
 
 
@@ -12331,6 +12357,8 @@ function startTrackTool() {
   deactivateTool();
   activeTool = 'track';
   _trackPts = []; _trackSegs = []; _trackMarkers = [];
+  const _ab = document.getElementById('ttb-anim-btn');
+  if (_ab) { _ab.disabled = true; _ab.style.opacity = '0.4'; }
   _setBtn('tool-track');
   const tb = document.getElementById('track-toolbar');
   if (tb) tb.classList.add('visible');
@@ -12365,6 +12393,11 @@ function _onTrackClick(e) {
   _trackPts.push({ latlng: e.latlng, cat: cat });
   const m = _ttbMakeMarker(e.latlng, cat).addTo(map);
   _trackMarkers.push(m);
+  // Enable animate button once we have 2+ points
+  if (_trackPts.length === 2) {
+    const ab = document.getElementById('ttb-anim-btn');
+    if (ab) { ab.disabled = false; ab.style.opacity = '1'; }
+  }
 }
 
 function _onTrackMove(e) {
@@ -12393,10 +12426,13 @@ function _ttbUndo() {
 }
 
 function _ttbClear() {
+  if (_trackAnimating) _ttbStopAnim();
   _trackSegs.forEach(s => map.removeLayer(s));
   _trackMarkers.forEach(m => map.removeLayer(m));
   _trackSegs = []; _trackMarkers = []; _trackPts = [];
   if (_trackPreview) { map.removeLayer(_trackPreview); _trackPreview = null; }
+  const ab = document.getElementById('ttb-anim-btn');
+  if (ab) { ab.disabled = true; ab.style.opacity = '0.4'; }
 }
 
 function _onTrackDbl(e) {
@@ -12455,6 +12491,106 @@ function _ttbSaveImage() {
     document.head.appendChild(s);
   }
 }
+
+// ── TRACK ANIMATION ─────────────────────────────────────────────────────────
+let _trackAnimating  = false;
+let _trackAnimRAF    = null;
+let _trackAnimMarker = null;
+
+function _ttbToggleAnim() {
+  if (_trackAnimating) { _ttbStopAnim(); return; }
+  if (_trackPts.length < 2) return;
+  _ttbStartAnim();
+}
+
+function _ttbStartAnim() {
+  if (_trackPts.length < 2) return;
+  _trackAnimating = true;
+
+  // Hide point markers, keep segments
+  _trackMarkers.forEach(m => m.setOpacity(0));
+  // Pause click-adding while animating
+  map.off('click', _onTrackClick);
+  map.off('dblclick', _onTrackDbl);
+
+  const btn = document.getElementById('ttb-anim-btn');
+  if (btn) {
+    btn.disabled = false; btn.style.opacity = '1';
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><rect x="6" y="4" width="4" height="16" fill="currentColor" stroke="none"/><rect x="14" y="4" width="4" height="16" fill="currentColor" stroke="none"/></svg>';
+    btn.title = 'Stop animation';
+  }
+
+  if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
+  _trackAnimMarker = _ttbMakeMarker(_trackPts[0].latlng, _trackPts[0].cat).addTo(map);
+
+  // Start animating from first segment
+  _ttbAnimStep(0);
+}
+
+function _ttbAnimStep(fromIdx) {
+  if (!_trackAnimating) return;
+  const toIdx = fromIdx + 1;
+  if (toIdx >= _trackPts.length) {
+    // Done — leave final marker visible, restore controls
+    _trackAnimating = false;
+    _trackMarkers.forEach(m => m.setOpacity(1));
+    map.on('click', _onTrackClick);
+    map.on('dblclick', _onTrackDbl);
+    const btn = document.getElementById('ttb-anim-btn');
+    if (btn) {
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none"/></svg>';
+      btn.title = 'Animate track';
+    }
+    // Brief glow on final marker then remove anim marker
+    setTimeout(() => {
+      if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
+      _trackMarkers.forEach(m => m.setOpacity(1));
+    }, 900);
+    return;
+  }
+
+  const fromLL  = _trackPts[fromIdx].latlng;
+  const toLL    = _trackPts[toIdx].latlng;
+  const fromCat = _trackPts[fromIdx].cat;
+  const toCat   = _trackPts[toIdx].cat;
+  const duration = 1100; // ms per segment
+  const start = performance.now();
+
+  function frame(now) {
+    if (!_trackAnimating) return;
+    const t = Math.min((now - start) / duration, 1);
+    const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t; // ease-in-out
+    const lat = fromLL.lat + (toLL.lat - fromLL.lat) * ease;
+    const lng = fromLL.lng + (toLL.lng - fromLL.lng) * ease;
+    const cat = t > 0.65 ? toCat : fromCat; // icon upgrades in final third
+
+    if (_trackAnimMarker) map.removeLayer(_trackAnimMarker);
+    _trackAnimMarker = _ttbMakeMarker(L.latLng(lat, lng), cat).addTo(map);
+
+    if (t < 1) {
+      _trackAnimRAF = requestAnimationFrame(frame);
+    } else {
+      _trackAnimRAF = null;
+      setTimeout(() => _ttbAnimStep(toIdx), 250);
+    }
+  }
+  _trackAnimRAF = requestAnimationFrame(frame);
+}
+
+function _ttbStopAnim() {
+  _trackAnimating = false;
+  if (_trackAnimRAF) { cancelAnimationFrame(_trackAnimRAF); _trackAnimRAF = null; }
+  if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
+  _trackMarkers.forEach(m => m.setOpacity(1));
+  map.on('click', _onTrackClick);
+  map.on('dblclick', _onTrackDbl);
+  const btn = document.getElementById('ttb-anim-btn');
+  if (btn) {
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none"/></svg>';
+    btn.title = 'Animate track';
+  }
+}
+// ── END TRACK ANIMATION ─────────────────────────────────────────────────────
 
 // ── ANIMATION CONTROLS ──
 let playingBack = false, playBackTimer = null;
@@ -12768,7 +12904,7 @@ function buildVelLabels() {
   let html = '';
   for (let i = 0; i < velFrames.length; i += step) {
     const d = new Date(velFrames[i].time * 1000);
-    html += `<span>${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}</span>`;
+    html += `<span>${_fmtHHMMshort(d)}</span>`;
   }
   wrap.innerHTML = html;
 }
@@ -12821,7 +12957,7 @@ function showVelFrame(idx) {
   const d = new Date(velFrames[idx].time * 1000);
   const stationLabel = (_velStation || '').toUpperCase();
   document.getElementById('anim-time').textContent =
-    `${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')} UTC · ${stationLabel} VEL`;
+    `${_fmtHHMM(d)} · ${stationLabel} VEL`;
 }
 
 // ── NEXRAD SITE MARKERS ──
@@ -17452,6 +17588,25 @@ function selectProduct(p) {
       <option value="both">°F + °C</option>
     </select>
   </div>
+  <!-- ─── TIME ─── -->
+  <div class="lqm-settings-category">TIME</div>
+  <div class="lqm-settings-row">
+    <span class="lqm-settings-lbl">Timezone</span>
+    <select id="lqm-set-tz" class="lqm-settings-select" onchange="lqmSetTZ(this.value)">
+      <option value="utc">UTC</option>
+      <option value="local">Local (auto)</option>
+      <option value="America/New_York">Eastern (ET)</option>
+      <option value="America/Chicago">Central (CT)</option>
+      <option value="America/Denver">Mountain (MT)</option>
+      <option value="America/Los_Angeles">Pacific (PT)</option>
+      <option value="America/Anchorage">Alaska (AKT)</option>
+      <option value="Pacific/Honolulu">Hawaii (HST)</option>
+      <option value="Europe/London">London (GMT/BST)</option>
+      <option value="Europe/Berlin">Central Europe</option>
+      <option value="Asia/Tokyo">Japan (JST)</option>
+      <option value="Australia/Sydney">Australia East</option>
+    </select>
+  </div>
   <!-- ─── MAP ─── -->
   <div class="lqm-settings-category">MAP</div>
   <div class="lqm-settings-row">
@@ -17732,6 +17887,8 @@ function lqmOpenSettings() {
   if (sb && sbCb) sbCb.checked = (sb.style.display !== 'none');
   const mtSel = document.getElementById('lqm-set-maptype');
   if (mtSel) mtSel.value = currentMapType;
+  const tzSel = document.getElementById('lqm-set-tz');
+  if (tzSel) tzSel.value = _appTZ;
 }
 function lqmCloseSettings() {
   const el = document.getElementById('lqm-settings-overlay');
@@ -17754,6 +17911,17 @@ function lqmToggleSetting(key, val) {
     document.querySelectorAll('.nexrad-label').forEach(el => {
       el.style.display = val ? '' : 'none';
     });
+  }
+}
+function lqmSetTZ(tz) {
+  _appTZ = tz;
+  try { localStorage.setItem('gwcfc_tz', tz); } catch(e){}
+  // Rebuild timeline labels immediately
+  if (typeof buildVelLabels === 'function' && velFrames && velFrames.length) buildVelLabels();
+  if (typeof buildTimelineLabels === 'function') buildTimelineLabels();
+  // Re-render current frame label
+  if (typeof updateFrameLabel === 'function' && typeof currentFrameIdx !== 'undefined' && radarFrames && radarFrames[currentFrameIdx]) {
+    updateFrameLabel(currentFrameIdx);
   }
 }
 </script>
