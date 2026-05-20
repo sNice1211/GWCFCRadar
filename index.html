@@ -4529,6 +4529,73 @@ body.gwcfc-crosshair #map::after {
 }
 .fnv3-btn:hover { background: rgba(0,60,120,0.8); color: #fff; }
 
+/* ── FNV3 panel tabs ──────────────────────────────────── */
+#fnv3-tabs {
+  display: flex;
+  flex-direction: row;
+  border-bottom: 1px solid rgba(0,200,255,0.2);
+  background: rgba(0,10,24,0.7);
+}
+.fnv3-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: rgba(160,190,220,0.55);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 7px 4px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.fnv3-tab.active {
+  color: rgba(0,200,255,0.95);
+  border-bottom-color: rgba(0,200,255,0.7);
+}
+.fnv3-tab:hover:not(.active) { color: rgba(200,230,255,0.7); }
+
+/* ── ATCF section ─────────────────────────────────────── */
+#fnv3-atcf-controls {
+  padding: 8px 12px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+#atcf-status {
+  font-size: 9px;
+  color: rgba(160,190,220,0.55);
+  padding: 4px 12px;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+#atcf-legend {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.atcf-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 9px;
+  color: rgba(212,232,255,0.75);
+}
+.atcf-swatch {
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.atcf-swatch.dashed {
+  background: none !important;
+  border-top-width: 2px;
+  border-top-style: dashed;
+  height: 0;
+  margin-top: 2px;
+}
+
 </style>
 <!-- Firebase SDK (compat v9 — drop in your config keys to activate) -->
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
@@ -4790,25 +4857,45 @@ body.gwcfc-crosshair #map::after {
     <!-- FNV3 Tropical Models Panel -->
     <div id="fnv3-panel">
       <div id="fnv3-header">
-        <span id="fnv3-title">🌀 FNV3 Ensemble</span>
+        <span id="fnv3-title">🌀 Tropical Models</span>
         <button id="fnv3-close-btn" onclick="closeFNV3Panel()">×</button>
       </div>
-      <div id="fnv3-controls">
-        <div>
-          <div class="fnv3-label">Model Run</div>
-          <select id="fnv3-run-sel" class="fnv3-select" onchange="_fnv3SetRun(this.value)"></select>
-        </div>
-        <div>
-          <div class="fnv3-label">Storm</div>
-          <select id="fnv3-storm-sel" class="fnv3-select" onchange="_fnv3SetStorm(this.value)"></select>
-        </div>
+      <div id="fnv3-tabs">
+        <button class="fnv3-tab active" id="fnv3-tab-atcf" onclick="_fnv3SwitchTab('atcf')">🍝 ATCF</button>
+        <button class="fnv3-tab" id="fnv3-tab-fnv3" onclick="_fnv3SwitchTab('fnv3')">📊 FNV3</button>
       </div>
-      <div id="fnv3-status">Initializing…</div>
-      <div id="fnv3-storm-info"></div>
-      <div id="fnv3-load-url-row">
-        <div class="fnv3-label">Load custom CSV URL</div>
-        <input id="fnv3-url-input" type="text" placeholder="https://storage.googleapis.com/weathernext-public/fnv3/FNV3_…_paired.csv">
-        <button class="fnv3-btn" onclick="_fnv3LoadUrl()">↳ Load</button>
+
+      <!-- ATCF spaghetti section -->
+      <div id="fnv3-atcf-body">
+        <div id="fnv3-atcf-controls">
+          <div>
+            <div class="fnv3-label">Storm</div>
+            <select id="atcf-storm-sel" class="fnv3-select" onchange="_atcfSetStorm(this.value)"></select>
+          </div>
+        </div>
+        <div id="atcf-status">Loading storms…</div>
+        <div id="atcf-legend"></div>
+      </div>
+
+      <!-- FNV3 ensemble section (hidden by default) -->
+      <div id="fnv3-fnv3-body" style="display:none">
+        <div id="fnv3-controls">
+          <div>
+            <div class="fnv3-label">Model Run</div>
+            <select id="fnv3-run-sel" class="fnv3-select" onchange="_fnv3SetRun(this.value)"></select>
+          </div>
+          <div>
+            <div class="fnv3-label">Storm</div>
+            <select id="fnv3-storm-sel" class="fnv3-select" onchange="_fnv3SetStorm(this.value)"></select>
+          </div>
+        </div>
+        <div id="fnv3-status">Initializing…</div>
+        <div id="fnv3-storm-info"></div>
+        <div id="fnv3-load-url-row">
+          <div class="fnv3-label">Load custom CSV URL</div>
+          <input id="fnv3-url-input" type="text" placeholder="https://storage.googleapis.com/weathernext-public/fnv3/FNV3_…_paired.csv">
+          <button class="fnv3-btn" onclick="_fnv3LoadUrl()">↳ Load</button>
+        </div>
       </div>
     </div>
 
@@ -6668,6 +6755,7 @@ async function loadStormReports() {
 
 // ── NHC TROPICAL + SPAGHETTI MODELS ──
 let tropicalLayers = [];
+let _tropActiveStorms = [];  // populated by loadTropical()
 
 // Storm type display config
 const TROP_TYPE_STYLE = {
@@ -7203,6 +7291,7 @@ async function loadTropical() {
 
   tropicalLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   tropicalLayers = [];
+  _tropActiveStorms = [];
   if (nhcLayer) { try { map.removeLayer(nhcLayer); } catch(e){} nhcLayer = null; }
 
   const stormMarkers = [];
@@ -7233,6 +7322,7 @@ async function loadTropical() {
         source: 'nhc',
       };
       storm.style = TROP_TYPE_STYLE[storm.cls] || TROP_TYPE_STYLE['TS'];
+      _tropActiveStorms.push({ id: storm.id, name: storm.name, basin: 'nhc' });
       stormMarkers.push(makeTropMarker(storm));
 
       // NHC cone + track (only NHC storms have these GeoJSON files)
@@ -7280,6 +7370,7 @@ async function loadTropical() {
     for (const storm of jtwcStorms) {
       storm.source = 'jtwc';
       storm.style  = TROP_TYPE_STYLE[storm.cls] || TROP_TYPE_STYLE['TS'];
+      _tropActiveStorms.push({ id: storm.id, name: storm.name, basin: 'jtwc' });
       stormMarkers.push(makeTropMarker(storm));
 
       // JTWC track from their ATCF best-track / forecast files
@@ -10733,6 +10824,233 @@ async function init() {
 }
 
 
+
+// ── ATCF SPAGHETTI MODELS ──────────────────────────────────────────────────
+// Data source: NOAA NHC aid_public a-deck files (same data as Tropical Tidbits)
+// URL: https://ftp.nhc.noaa.gov/atcf/aid_public/{basin}{cy}{year}.dat
+
+const ATCF_BASE = 'https://ftp.nhc.noaa.gov/atcf/aid_public/';
+
+// Model display config: tech code → { label, color, dash, weight, zOrder }
+const ATCF_MODELS = {
+  OFCL: { label: 'Official (NHC/JTWC)', color: '#ffffff', dash: false, weight: 3, z: 10 },
+  GFS:  { label: 'GFS',                 color: '#4dabf7', dash: true,  weight: 1.5, z: 5 },
+  AVNO: { label: 'GFS (legacy)',        color: '#4dabf7', dash: true,  weight: 1.5, z: 5 },
+  HWRF: { label: 'HWRF',               color: '#69db7c', dash: true,  weight: 1.5, z: 5 },
+  HMON: { label: 'HMON',               color: '#a9e34b', dash: true,  weight: 1.5, z: 4 },
+  HFSA: { label: 'HAFS-A',             color: '#ff8c42', dash: true,  weight: 1.5, z: 6 },
+  HFSB: { label: 'HAFS-B',             color: '#ff6bce', dash: true,  weight: 1.5, z: 6 },
+  EMX:  { label: 'ECMWF',              color: '#ff6b6b', dash: true,  weight: 1.5, z: 7 },
+  UKX:  { label: 'UK Met Office',      color: '#f783ac', dash: true,  weight: 1.5, z: 6 },
+  CMC:  { label: 'CMC (Canada)',       color: '#38d9a9', dash: true,  weight: 1.5, z: 5 },
+  NVGM: { label: 'NAVGEM (Navy)',      color: '#748ffc', dash: true,  weight: 1.5, z: 4 },
+  IVCN: { label: 'Interp. Consensus',  color: '#ffd43b', dash: false, weight: 2.5, z: 8 },
+  TABS: { label: 'TVCA Consensus',     color: '#ffe066', dash: false, weight: 2,   z: 7 },
+  DSHP: { label: 'Decay-SHIFOR',       color: '#adb5bd', dash: true,  weight: 1.2, z: 2 },
+  SHIP: { label: 'SHIFOR',             color: '#868e96', dash: true,  weight: 1.2, z: 2 },
+};
+
+let _atcfLayers = [];
+let _atcfCurrentStorm = null;
+let _atcfStorms = [];   // [{ id:'AL062024', name:'HELENE', basin:'al', cy:'06', year:'2024' }]
+let _atcfCurrentTab = 'atcf';
+
+function _fnv3SwitchTab(tab) {
+  _atcfCurrentTab = tab;
+  const atcfBody  = document.getElementById('fnv3-atcf-body');
+  const fnv3Body  = document.getElementById('fnv3-fnv3-body');
+  document.querySelectorAll('.fnv3-tab').forEach(t =>
+    t.classList.toggle('active', t.id === 'fnv3-tab-' + tab));
+  if (atcfBody)  atcfBody.style.display  = tab === 'atcf' ? 'block' : 'none';
+  if (fnv3Body)  fnv3Body.style.display  = tab === 'fnv3' ? 'block' : 'none';
+  if (tab === 'atcf') {
+    _atcfClearLayers();
+    if (_atcfCurrentStorm) _atcfLoad(_atcfCurrentStorm);
+  } else {
+    _fnv3ClearLayers();
+  }
+}
+
+function _atcfClearLayers() {
+  _atcfLayers.forEach(l => { try { if(l) map.removeLayer(l); } catch(e){} });
+  _atcfLayers = [];
+}
+
+// Parse an ATCF lat like "285N" → 28.5, "900S" → -90.0
+function _atcfParseLat(s) {
+  s = s.trim();
+  const dir = s.slice(-1);
+  const v = parseInt(s.slice(0, -1)) / 10;
+  return dir === 'S' ? -v : v;
+}
+// Parse an ATCF lon like "805W" → -80.5, "1378E" → 137.8
+function _atcfParseLon(s) {
+  s = s.trim();
+  const dir = s.slice(-1);
+  const v = parseInt(s.slice(0, -1)) / 10;
+  return dir === 'W' ? -v : v;
+}
+
+function _atcfParseFile(text) {
+  // Returns { [tech]: { [initTime]: [{lat, lon, tau, vmax, mslp}] } }
+  const result = {};
+  for (const raw of text.split('\n')) {
+    const f = raw.split(',').map(s => s.trim());
+    if (f.length < 9) continue;
+    // f[4] = TECH, f[3]=TECHNUM, f[5]=TAU, f[6]=lat, f[7]=lon, f[8]=vmax, f[9]=mslp
+    const tech = f[4].toUpperCase();
+    const init = f[2];
+    const tau  = parseInt(f[5]);
+    const latS = f[6], lonS = f[7];
+    if (!latS || !lonS || !/[NS]$/.test(latS) || !/[EW]$/.test(lonS)) continue;
+    const lat = _atcfParseLat(latS);
+    const lon = _atcfParseLon(lonS);
+    if (isNaN(lat) || isNaN(lon) || isNaN(tau)) continue;
+    const vmax = parseInt(f[8]) || 0;
+    const mslp = parseInt(f[9]) || 0;
+    if (!result[tech]) result[tech] = {};
+    if (!result[tech][init]) result[tech][init] = [];
+    result[tech][init].push({ lat, lon, tau, vmax, mslp });
+  }
+  return result;
+}
+
+// Get the most recent init time that has at least 2 points
+function _atcfLatestInit(techData) {
+  const inits = Object.keys(techData).sort().reverse();
+  for (const init of inits) {
+    if (techData[init].length >= 2) return init;
+  }
+  return inits[0] || null;
+}
+
+function _atcfPlot(parsed, stormId) {
+  _atcfClearLayers();
+  const legend = document.getElementById('atcf-legend');
+  if (legend) legend.innerHTML = '';
+  const plotted = [];
+
+  // Sort: OFCL last (drawn on top), then by z order
+  const techOrder = Object.keys(parsed).sort((a, b) => {
+    const za = (ATCF_MODELS[a] || {}).z || 3;
+    const zb = (ATCF_MODELS[b] || {}).z || 3;
+    return za - zb;
+  });
+
+  for (const tech of techOrder) {
+    const cfg = ATCF_MODELS[tech];
+    if (!cfg) continue;  // skip unknown models
+    const initTime = _atcfLatestInit(parsed[tech]);
+    if (!initTime) continue;
+    const pts = parsed[tech][initTime]
+      .sort((a, b) => a.tau - b.tau)
+      .map(p => [p.lat, p.lon]);
+    if (pts.length < 2) continue;
+
+    const line = L.polyline(pts, {
+      color: cfg.color,
+      weight: cfg.weight,
+      opacity: cfg.dash ? 0.65 : 0.92,
+      dashArray: cfg.dash ? '5,4' : null,
+    }).addTo(map);
+    _atcfLayers.push(line);
+    plotted.push({ tech, cfg, pts });
+
+    // Tip for OFCL track
+    if (tech === 'OFCL' && parsed[tech][initTime]) {
+      parsed[tech][initTime].sort((a,b)=>a.tau-b.tau).forEach(p => {
+        const tip = `<b>Official</b><br>+${p.tau}h<br>${p.vmax} kt / ${p.mslp} mb`;
+        const cm = L.circleMarker([p.lat, p.lon], {
+          radius: 3.5, color: cfg.color, fillColor: _fnv3WindColor(p.vmax), fillOpacity: 0.9, weight: 1.5
+        }).bindTooltip(tip, { sticky: true, opacity: 0.9 }).addTo(map);
+        _atcfLayers.push(cm);
+      });
+    }
+  }
+
+  // Build legend
+  if (legend && plotted.length) {
+    for (const { tech, cfg } of plotted.slice().reverse()) {
+      const row = document.createElement('div');
+      row.className = 'atcf-legend-row';
+      const sw = document.createElement('div');
+      sw.className = cfg.dash ? 'atcf-swatch dashed' : 'atcf-swatch';
+      if (cfg.dash) sw.style.borderTopColor = cfg.color;
+      else sw.style.background = cfg.color;
+      const lbl = document.createElement('span');
+      lbl.textContent = `${tech} — ${cfg.label}`;
+      row.appendChild(sw); row.appendChild(lbl);
+      legend.appendChild(row);
+    }
+  }
+
+  // Fit to OFCL track if present, else first track
+  const ofclPts = plotted.find(p => p.tech === 'OFCL')?.pts || plotted[0]?.pts;
+  if (ofclPts && ofclPts.length > 1) {
+    try { map.fitBounds(L.latLngBounds(ofclPts).pad(0.4), { maxZoom: 6 }); } catch(e) {}
+  }
+}
+
+async function _atcfLoad(stormId) {
+  const status = document.getElementById('atcf-status');
+  const legend = document.getElementById('atcf-legend');
+  if (status) status.textContent = `Fetching ${stormId}…`;
+  if (legend) legend.innerHTML = '';
+  _atcfClearLayers();
+
+  const fileId = stormId.toLowerCase();
+  const basin2 = fileId.substring(0, 2); // al, ep, wp, io, sh
+  // JTWC basins use their own ATCF server; NHC covers al + ep + cp
+  const isJTWC = ['wp','io','sh','ag','an','bb','cp','la'].includes(basin2);
+  const url = isJTWC
+    ? `https://www.metoc.navy.mil/jtwc/products/atcf/${fileId}.dat`
+    : `${ATCF_BASE}${fileId}.dat`;
+
+  try {
+    const resp = await proxiedFetch(url, { signal: _abortSignal(15000) });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const text = await resp.text();
+    if (!text.trim()) throw new Error('Empty file');
+    const parsed = _atcfParseFile(text);
+    const techCount = Object.keys(parsed).length;
+    if (!techCount) throw new Error('No model data found');
+    _atcfPlot(parsed, stormId);
+    if (status) status.textContent = `✓ ${techCount} models loaded`;
+  } catch(e) {
+    if (status) status.textContent = `⚠ ${e.message}`;
+    console.warn('[ATCF] fetch failed:', url, e);
+  }
+}
+
+function _atcfSetStorm(stormId) {
+  _atcfCurrentStorm = stormId;
+  _atcfLoad(stormId);
+}
+
+// Populate storm selector from the storms already loaded by loadTropical()
+function _atcfPopulateStorms(storms) {
+  // storms: array of { id, name, basin, ... }
+  _atcfStorms = storms;
+  const sel = document.getElementById('atcf-storm-sel');
+  if (!sel) return;
+  sel.innerHTML = '';
+  if (!storms.length) {
+    sel.innerHTML = '<option>No active storms</option>';
+    const st = document.getElementById('atcf-status');
+    if (st) st.textContent = 'No active storms found.';
+    return;
+  }
+  storms.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.id; opt.textContent = `${s.id} ${s.name || ''}`.trim();
+    sel.appendChild(opt);
+  });
+  _atcfCurrentStorm = storms[0].id;
+  sel.value = _atcfCurrentStorm;
+  _atcfLoad(_atcfCurrentStorm);
+}
+// ── END ATCF ────────────────────────────────────────────────────────────────
+
 // ── FNV3 TROPICAL ENSEMBLE MODELS ──────────────────────────────────────────
 const FNV3_BASE = 'https://storage.googleapis.com/weathernext-public/fnv3/';
 const FNV3_ENS_COLORS = [
@@ -10869,20 +11187,24 @@ function openFNV3Panel() {
   const panel = document.getElementById('fnv3-panel'); if (!panel) return;
   if (_fnv3Open) { closeFNV3Panel(); return; }
   _fnv3Open = true; panel.style.display = 'flex';
-  const runSel = document.getElementById('fnv3-run-sel');
-  if (runSel && !runSel.options.length) {
-    const stamps = _fnv3RunStamps();
-    stamps.forEach(({stamp,label}) => { const opt=document.createElement('option'); opt.value=stamp; opt.textContent=label; runSel.appendChild(opt); });
-    _fnv3CurrentRun = stamps[0].stamp; runSel.value = _fnv3CurrentRun;
-    _fnv3FetchCSV(_fnv3CsvUrl(_fnv3CurrentRun));
+
+  // Default to ATCF tab; use storms collected by loadTropical()
+  _fnv3SwitchTab('atcf');
+  if (_tropActiveStorms.length) {
+    _atcfPopulateStorms(_tropActiveStorms);
+  } else {
+    const stormSel = document.getElementById('atcf-storm-sel');
+    const st = document.getElementById('atcf-status');
+    if (stormSel) stormSel.innerHTML = '<option value="">No active storms — check back during season</option>';
+    if (st) st.textContent = 'No active storms detected.';
   }
-  _fnv3RefreshTimer = setInterval(() => { if (_fnv3Open && _fnv3CurrentRun) _fnv3FetchCSV(_fnv3CsvUrl(_fnv3CurrentRun)); }, 10*60*1000);
 }
 
 function closeFNV3Panel() {
   _fnv3Open = false;
   const panel = document.getElementById('fnv3-panel'); if (panel) panel.style.display = 'none';
   _fnv3ClearLayers();
+  _atcfClearLayers();
   if (_fnv3RefreshTimer) { clearInterval(_fnv3RefreshTimer); _fnv3RefreshTimer = null; }
 }
 // ── END FNV3 ────────────────────────────────────────────────────────────────
