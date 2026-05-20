@@ -2304,6 +2304,7 @@ body {
 }
 .dtb-btn:active { background:rgba(255,255,255,0.18); }
 .dtb-btn.active { background:rgba(180,0,0,0.65); border-color:#cc0000; color:#fff; box-shadow:0 0 8px rgba(200,0,0,0.45); }
+.dtb-btn.ttb-active { background:rgba(0,120,220,0.35); border-color:rgba(80,180,255,0.6); color:#7df; }
 #dtb-eraser-cursor {
   display:none; position:fixed; border-radius:50%; pointer-events:none; z-index:10000;
   border:2px solid rgba(255,255,255,0.85); background:rgba(255,255,255,0.08);
@@ -5129,6 +5130,17 @@ body.gwcfc-crosshair #map::after {
   <button class="dtb-btn" id="ttb-anim-btn" onclick="_ttbToggleAnim()" title="Animate track" disabled style="opacity:0.4">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none"/></svg>
   </button>
+  <button class="dtb-btn ttb-active" id="ttb-line-btn" onclick="_ttbToggleLine()" title="Show track line during animation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" width="16" height="16"><line x1="4" y1="20" x2="20" y2="4"/><circle cx="4" cy="20" r="2" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="2" fill="currentColor" stroke="none"/></svg>
+  </button>
+  <div class="dtb-sep"></div>
+  <div style="display:flex;align-items:center;gap:4px;padding:0 2px;">
+    <span style="font-size:8px;color:rgba(180,210,255,0.6);letter-spacing:.5px;white-space:nowrap;">SZ</span>
+    <input type="range" id="ttb-size-slider" min="16" max="64" value="32" step="4"
+      style="width:52px;height:4px;cursor:pointer;accent-color:#4af;"
+      oninput="_ttbSetSize(+this.value)" title="Icon size">
+    <span id="ttb-size-val" style="font-size:8px;color:rgba(100,200,255,0.8);min-width:18px;font-family:monospace;">32</span>
+  </div>
   <button class="dtb-btn" id="ttb-save-btn" onclick="_ttbSaveImage()" title="Save track as PNG">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
   </button>
@@ -12326,12 +12338,14 @@ const TTB_ICONS = {
   x: { color: "#aaaaaa", b64: "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" },
 };
 
-let _trackPts      = [];   // [{latlng, cat}]
+let _trackPts      = [];   // [{latlng, cat, size}]
 let _trackSegs     = [];   // Leaflet polylines (one per segment)
 let _trackMarkers  = [];   // Leaflet markers (one per point)
 let _trackLine     = null; // kept for clearAllDrawings compat
 let _trackPreview  = null;
 let _ttbActiveCat  = 'cat1';
+let _ttbActiveSize = 32;          // px, applied to next point placed
+let _trackAnimShowLine = true;    // show/hide segments during animation
 // Use canvas renderer so polylines are captured by html2canvas screenshots
 const _trackRenderer = L.canvas({ padding: 0.5 });
 
@@ -12343,11 +12357,25 @@ function _ttbSetCat(cat) {
   // Update preview line color on next mousemove
 }
 
-function _ttbMakeMarker(latlng, cat) {
+function _ttbSetSize(sz) {
+  _ttbActiveSize = sz;
+  const v = document.getElementById('ttb-size-val');
+  if (v) v.textContent = sz;
+}
+
+function _ttbToggleLine() {
+  _trackAnimShowLine = !_trackAnimShowLine;
+  const btn = document.getElementById('ttb-line-btn');
+  if (btn) btn.classList.toggle('ttb-active', _trackAnimShowLine);
+}
+
+function _ttbMakeMarker(latlng, cat, size) {
+  const sz = size || 32;
+  const half = Math.round(sz / 2);
   const ic = TTB_ICONS[cat] || TTB_ICONS.td;
-  const html = '<img src="data:image/png;base64,' + ic.b64 + '" style="width:32px;height:32px;filter:drop-shadow(0 0 4px ' + ic.color + ');" />';
+  const html = '<img src="data:image/png;base64,' + ic.b64 + '" style="width:' + sz + 'px;height:' + sz + 'px;filter:drop-shadow(0 0 4px ' + ic.color + ');" />';
   return L.marker(latlng, {
-    icon: L.divIcon({ className:'', html: html, iconAnchor:[16,16] }),
+    icon: L.divIcon({ className:'', html: html, iconAnchor:[half, half] }),
     interactive: false
   });
 }
@@ -12357,8 +12385,13 @@ function startTrackTool() {
   deactivateTool();
   activeTool = 'track';
   _trackPts = []; _trackSegs = []; _trackMarkers = [];
+  _ttbActiveSize = 32;
   const _ab = document.getElementById('ttb-anim-btn');
   if (_ab) { _ab.disabled = true; _ab.style.opacity = '0.4'; }
+  const _sl = document.getElementById('ttb-size-slider');
+  if (_sl) _sl.value = 32;
+  const _sv = document.getElementById('ttb-size-val');
+  if (_sv) _sv.textContent = '32';
   _setBtn('tool-track');
   const tb = document.getElementById('track-toolbar');
   if (tb) tb.classList.add('visible');
@@ -12389,9 +12422,10 @@ function _onTrackClick(e) {
     _allToolLayers.push(seg);
   }
 
-  // Add point
-  _trackPts.push({ latlng: e.latlng, cat: cat });
-  const m = _ttbMakeMarker(e.latlng, cat).addTo(map);
+  // Add point (store current size with the point)
+  const sz = _ttbActiveSize;
+  _trackPts.push({ latlng: e.latlng, cat: cat, size: sz });
+  const m = _ttbMakeMarker(e.latlng, cat, sz).addTo(map);
   _trackMarkers.push(m);
   // Enable animate button once we have 2+ points
   if (_trackPts.length === 2) {
@@ -12507,8 +12541,9 @@ function _ttbStartAnim() {
   if (_trackPts.length < 2) return;
   _trackAnimating = true;
 
-  // Hide point markers, keep segments
+  // Hide point markers; show/hide segments based on toggle
   _trackMarkers.forEach(m => m.setOpacity(0));
+  _trackSegs.forEach(s => s.setStyle({ opacity: _trackAnimShowLine ? 0.92 : 0 }));
   // Pause click-adding while animating
   map.off('click', _onTrackClick);
   map.off('dblclick', _onTrackDbl);
@@ -12521,7 +12556,8 @@ function _ttbStartAnim() {
   }
 
   if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
-  _trackAnimMarker = _ttbMakeMarker(_trackPts[0].latlng, _trackPts[0].cat).addTo(map);
+  const pt0 = _trackPts[0];
+  _trackAnimMarker = _ttbMakeMarker(pt0.latlng, pt0.cat, pt0.size).addTo(map);
 
   // Start animating from first segment
   _ttbAnimStep(0);
@@ -12531,8 +12567,9 @@ function _ttbAnimStep(fromIdx) {
   if (!_trackAnimating) return;
   const toIdx = fromIdx + 1;
   if (toIdx >= _trackPts.length) {
-    // Done — leave final marker visible, restore controls
+    // Done — restore everything
     _trackAnimating = false;
+    _trackSegs.forEach(s => s.setStyle({ opacity: 0.92 }));
     _trackMarkers.forEach(m => m.setOpacity(1));
     map.on('click', _onTrackClick);
     map.on('dblclick', _onTrackDbl);
@@ -12541,31 +12578,34 @@ function _ttbAnimStep(fromIdx) {
       btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polygon points="5,3 19,12 5,21" fill="currentColor" stroke="none"/></svg>';
       btn.title = 'Animate track';
     }
-    // Brief glow on final marker then remove anim marker
     setTimeout(() => {
       if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
-      _trackMarkers.forEach(m => m.setOpacity(1));
     }, 900);
     return;
   }
 
-  const fromLL  = _trackPts[fromIdx].latlng;
-  const toLL    = _trackPts[toIdx].latlng;
-  const fromCat = _trackPts[fromIdx].cat;
-  const toCat   = _trackPts[toIdx].cat;
+  const fromPt  = _trackPts[fromIdx];
+  const toPt    = _trackPts[toIdx];
+  const fromLL  = fromPt.latlng;
+  const toLL    = toPt.latlng;
+  const fromCat = fromPt.cat;
+  const toCat   = toPt.cat;
+  const fromSz  = fromPt.size || 32;
+  const toSz    = toPt.size   || 32;
   const duration = 1100; // ms per segment
   const start = performance.now();
 
   function frame(now) {
     if (!_trackAnimating) return;
     const t = Math.min((now - start) / duration, 1);
-    const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t; // ease-in-out
+    const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
     const lat = fromLL.lat + (toLL.lat - fromLL.lat) * ease;
     const lng = fromLL.lng + (toLL.lng - fromLL.lng) * ease;
-    const cat = t > 0.65 ? toCat : fromCat; // icon upgrades in final third
+    const cat = t > 0.65 ? toCat : fromCat;           // category upgrades in final third
+    const sz  = Math.round(fromSz + (toSz - fromSz) * ease); // size interpolates too
 
     if (_trackAnimMarker) map.removeLayer(_trackAnimMarker);
-    _trackAnimMarker = _ttbMakeMarker(L.latLng(lat, lng), cat).addTo(map);
+    _trackAnimMarker = _ttbMakeMarker(L.latLng(lat, lng), cat, sz).addTo(map);
 
     if (t < 1) {
       _trackAnimRAF = requestAnimationFrame(frame);
@@ -12581,6 +12621,7 @@ function _ttbStopAnim() {
   _trackAnimating = false;
   if (_trackAnimRAF) { cancelAnimationFrame(_trackAnimRAF); _trackAnimRAF = null; }
   if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
+  _trackSegs.forEach(s => s.setStyle({ opacity: 0.92 }));
   _trackMarkers.forEach(m => m.setOpacity(1));
   map.on('click', _onTrackClick);
   map.on('dblclick', _onTrackDbl);
