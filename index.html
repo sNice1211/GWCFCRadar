@@ -4,16 +4,19 @@
 <meta charset="UTF-8">
 <!-- Register service worker first — caches all tile responses for instant loads -->
 <script>if('serviceWorker'in navigator)navigator.serviceWorker.register('/GWCFCRadar/sw.js',{scope:'/GWCFCRadar/'});</script>
-<link rel="preconnect" href="https://api.open-meteo.com">
-<link rel="preconnect" href="https://api.weather.gov">
+<!-- Critical: needed before first paint -->
 <link rel="preconnect" href="https://api.maptiler.com">
 <link rel="preconnect" href="https://mesonet.agron.iastate.edu">
-<link rel="dns-prefetch" href="https://api.rainviewer.com">
-<link rel="dns-prefetch" href="https://tilecache.rainviewer.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="preconnect" href="https://marine-api.open-meteo.com">
-<link rel="preconnect" href="https://opengeo.ncep.noaa.gov">
-<link rel="preconnect" href="https://www.spc.noaa.gov">
+<!-- Secondary: used almost always -->
+<link rel="preconnect" href="https://api.weather.gov">
+<link rel="preconnect" href="https://api.rainviewer.com">
+<link rel="preconnect" href="https://tilecache.rainviewer.com">
+<!-- Less-critical: DNS only -->
+<link rel="dns-prefetch" href="https://api.open-meteo.com">
+<link rel="dns-prefetch" href="https://marine-api.open-meteo.com">
+<link rel="dns-prefetch" href="https://opengeo.ncep.noaa.gov">
+<link rel="dns-prefetch" href="https://www.spc.noaa.gov">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>GWCFC Radar</title>
@@ -70,9 +73,18 @@
   }
 }
 
+/* GPU acceleration for map tiles */
+#map { will-change: transform; }
+.leaflet-tile-container { will-change: transform; }
+.leaflet-map-pane       { will-change: transform; }
+.leaflet-tile           { will-change: opacity; }
+
 /* Contain repaints inside panels so they don't trigger full-page layout */
 #lqm-settings-overlay, #lqm-search-overlay,
 #tutorial-modal-inner, #radar-color-editor,
+#alerts-panel, #eas-panel, #fnv3-panel,
+#severe-model-panel, #s3-panel, #tropical-model-panel,
+#gwcfc-auth-modal, #track-toolbar, #draw-toolbar,
 .leaflet-popup-content-wrapper { contain: layout style; }
 
 body {
@@ -1329,7 +1341,7 @@ body {
   height: 100%;
   background: linear-gradient(90deg, var(--accent2), #00ffcc);
   border-radius: 2px;
-  animation: loadbar 6s ease-in-out forwards;
+  animation: loadbar 1.5s ease-in-out forwards;
 }
 @keyframes loadbar { from { width: 0; } to { width: 100%; } }
 .load-status {
@@ -1581,7 +1593,7 @@ body {
   border: 1px solid rgba(0,200,255,0.4) !important;
   border-radius: 12px !important;
   box-shadow: 0 8px 40px rgba(0,0,0,0.8), 0 0 24px rgba(0,200,255,0.18) !important;
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(6px);
   z-index: 1500 !important;
   padding: 0 !important;
   overflow: hidden !important;
@@ -2334,7 +2346,7 @@ body {
   flex-wrap:wrap;
   width:172px;
   z-index:1200;
-  backdrop-filter:blur(16px);
+  backdrop-filter:blur(6px);
   box-shadow:0 6px 24px rgba(0,0,0,0.8);
 }
 #dtb-palette.open { display:flex !important; }
@@ -2839,8 +2851,8 @@ body {
   border-radius: 14px;
   background: rgba(50,0,0,0.82);
   border: 1px solid rgba(220,0,0,0.35);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3140,7 +3152,7 @@ body {
   padding: 6px 10px;
   align-items: center;
   gap: 6px;
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(6px);
   box-shadow: 0 4px 20px rgba(0,0,0,0.7);
   white-space: nowrap;
   flex-wrap: nowrap;
@@ -3184,7 +3196,7 @@ body {
   border: 1px solid rgba(0,160,255,0.45);
   border-radius: 11px;
   padding: 8px 12px 10px;
-  backdrop-filter: blur(16px);
+  backdrop-filter: blur(6px);
   box-shadow: 0 6px 28px rgba(0,0,0,0.85), 0 0 0 1px rgba(0,180,255,0.1);
   width: 190px;
   pointer-events: all;
@@ -3396,7 +3408,7 @@ body {
   top: 0;
   z-index: 100;
   background: rgba(50,0,0,0.92);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--border);
   display: flex;
   gap: 0;
@@ -4663,9 +4675,9 @@ body.gwcfc-crosshair #map::after {
 
 </style>
 <!-- Firebase SDK (compat v9 — drop in your config keys to activate) -->
-<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+<script defer src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
 </head>
 <body>
 
@@ -8242,7 +8254,7 @@ function _showPolyFilterPopup(center) {
     'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);' +
     'background:rgb(8,12,16);border:1px solid var(--accent2);border-radius:14px;' +
     'padding:18px 22px;z-index:2000;min-width:240px;text-align:center;' +
-    'backdrop-filter:blur(16px);box-shadow:0 8px 32px rgba(0,0,0,0.7);';
+    'backdrop-filter:blur(6px);box-shadow:0 8px 32px rgba(0,0,0,0.7);';
   pop.innerHTML = `
     <div style="font-family:var(--display);font-size:15px;font-weight:700;color:#fff;margin-bottom:6px;">⬡ Polygon Filter</div>
     <div style="font-family:var(--sans);font-size:12px;color:var(--muted);margin-bottom:16px;">Filter all active layers to this zone?</div>
@@ -10909,7 +10921,7 @@ if (document.readyState === 'loading') {
 
 // ── DISMISS LOADING (always called) ──
 // Minimum display time so users can actually read a fun fact or two.
-const LOAD_MIN_MS = 6500;
+const LOAD_MIN_MS = 1500;
 const _loadStart = Date.now();
 let _dismissPending = false;
 function dismissLoading() {
@@ -12865,7 +12877,7 @@ function togglePlay() {
   btn.textContent = playing ? '⏸' : '▶';
   btn.classList.toggle('active', playing);
   if (playing) {
-    const interval = Math.max(50, 500 / animSpeed);
+    const interval = Math.max(33, 500 / animSpeed);
     playTimer = setInterval(() => {
       if (activeLayers.satellite && goesFrames.length) {
         goesCurrentFrame = (goesCurrentFrame + 1) % goesFrames.length;
@@ -12891,7 +12903,7 @@ function togglePlayBack() {
   btn.classList.toggle('active', playingBack);
   btn.textContent = playingBack ? '⏸' : '◀';
   if (playingBack) {
-    const interval = Math.max(50, 500 / animSpeed);
+    const interval = Math.max(33, 500 / animSpeed);
     playBackTimer = setInterval(() => {
       if (activeLayers.satellite && goesFrames.length) {
         goesCurrentFrame = (goesCurrentFrame - 1 + goesFrames.length) % goesFrames.length;
@@ -13605,6 +13617,7 @@ function closeCamPopup() {
     oy = cy - r.top;
     dragging = true;
     e.preventDefault();
+    window.addEventListener('touchmove', onMove, { passive: false });
   }
 
   function onMove(e) {
@@ -13619,7 +13632,10 @@ function closeCamPopup() {
     e.preventDefault();
   }
 
-  function onUp() { dragging = false; }
+  function onUp() {
+    dragging = false;
+    window.removeEventListener('touchmove', onMove);
+  }
 
   document.addEventListener('DOMContentLoaded', () => {
     const hdr = document.getElementById('cam-popup-header');
@@ -13627,7 +13643,6 @@ function closeCamPopup() {
     hdr.addEventListener('mousedown',  onDown,  { passive: false });
     hdr.addEventListener('touchstart', onDown,  { passive: false });
     window.addEventListener('mousemove',  onMove, { passive: false });
-    window.addEventListener('touchmove',  onMove, { passive: false });
     window.addEventListener('mouseup',    onUp);
     window.addEventListener('touchend',   onUp);
   });
@@ -19722,6 +19737,7 @@ function _makeDraggable(el, handle) {
     oy = cy - r.top;
     handle.style.cursor = 'grabbing';
     e.preventDefault();
+    document.addEventListener('touchmove', _move, { passive: false });
   }
   function _move(e) {
     if (!active) return;
@@ -19733,12 +19749,15 @@ function _makeDraggable(el, handle) {
     el.style.top  = y + 'px';
     e.preventDefault();
   }
-  function _end() { active = false; handle.style.cursor = 'grab'; }
+  function _end() {
+    active = false;
+    handle.style.cursor = 'grab';
+    document.removeEventListener('touchmove', _move);
+  }
 
   handle.addEventListener('mousedown',  _start);
   handle.addEventListener('touchstart', _start, { passive: false });
   document.addEventListener('mousemove',  _move);
-  document.addEventListener('touchmove',  _move, { passive: false });
   document.addEventListener('mouseup',    _end);
   document.addEventListener('touchend',   _end);
 }
