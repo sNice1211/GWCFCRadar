@@ -3175,6 +3175,48 @@ body {
   box-shadow: 0 0 10px var(--ttb-glow, rgba(0,200,200,0.5));
   transform: scale(1.08);
 }
+/* ── WAYPOINT EDITOR POPUP ── */
+#ttb-wp-popup {
+  display: none;
+  position: fixed;
+  z-index: 1300;
+  background: rgba(10,14,22,0.96);
+  border: 1px solid rgba(0,160,255,0.45);
+  border-radius: 11px;
+  padding: 8px 12px 10px;
+  backdrop-filter: blur(16px);
+  box-shadow: 0 6px 28px rgba(0,0,0,0.85), 0 0 0 1px rgba(0,180,255,0.1);
+  width: 190px;
+  pointer-events: all;
+  user-select: none;
+}
+#ttb-wp-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+#ttb-wp-title {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 1.5px;
+  color: rgba(100,190,255,0.85); text-transform: uppercase;
+}
+#ttb-wp-close {
+  background: none; border: none; color: rgba(255,255,255,0.4);
+  cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+}
+#ttb-wp-close:hover { color: #fff; }
+.ttb-wp-row {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
+}
+.ttb-wp-lbl {
+  font-family: var(--mono); font-size: 9px; color: rgba(180,210,255,0.55);
+  min-width: 38px; letter-spacing: .5px;
+}
+.ttb-wp-row input[type=range] {
+  flex: 1; height: 4px; cursor: pointer; accent-color: #4af;
+}
+.ttb-wp-val {
+  font-family: var(--mono); font-size: 9px; color: rgba(100,200,255,0.85);
+  min-width: 28px; text-align: right;
+}
 #ttb-storm-name {
   background: rgba(255,255,255,0.07);
   border: 1px solid rgba(255,255,255,0.18);
@@ -5147,6 +5189,23 @@ body.gwcfc-crosshair #map::after {
   <button id="ttb-close-track" onclick="deactivateTool()" title="Exit Track Maker">✕</button>
 </div>
 
+<!-- WAYPOINT EDITOR POPUP -->
+<div id="ttb-wp-popup">
+  <div id="ttb-wp-header">
+    <span id="ttb-wp-title">Waypoint</span>
+    <button id="ttb-wp-close" onclick="_ttbEditClose()">✕</button>
+  </div>
+  <div class="ttb-wp-row">
+    <span class="ttb-wp-lbl">Size</span>
+    <input type="range" id="ttb-wp-size" min="16" max="80" step="4" value="32" oninput="_ttbEditUpdate()">
+    <span id="ttb-wp-size-val" class="ttb-wp-val">32px</span>
+  </div>
+  <div class="ttb-wp-row">
+    <span class="ttb-wp-lbl">Rotate</span>
+    <input type="range" id="ttb-wp-rot" min="0" max="355" step="5" value="0" oninput="_ttbEditUpdate()">
+    <span id="ttb-wp-rot-val" class="ttb-wp-val">0°</span>
+  </div>
+</div>
 
 <!-- POLY TOOLBAR -->
 <div id="radius-toolbar">
@@ -11731,6 +11790,7 @@ deactivateTool = function() {
   const _ttb = document.getElementById('track-toolbar');
   if (_ttb) _ttb.classList.remove('visible');
   if (typeof _trackAnimating !== 'undefined' && _trackAnimating) _ttbStopAnim();
+  if (typeof _ttbEditClose === 'function') _ttbEditClose();
 };
 
 
@@ -12338,13 +12398,14 @@ const TTB_ICONS = {
   x: { color: "#aaaaaa", b64: "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" },
 };
 
-let _trackPts      = [];   // [{latlng, cat, size}]
+let _trackPts      = [];   // [{latlng, cat, size, rot}]
 let _trackSegs     = [];   // Leaflet polylines (one per segment)
 let _trackMarkers  = [];   // Leaflet markers (one per point)
 let _trackLine     = null; // kept for clearAllDrawings compat
 let _trackPreview  = null;
 let _ttbActiveCat  = 'cat1';
 let _ttbActiveSize = 32;          // px, applied to next point placed
+let _ttbSelectedIdx = -1;         // index of currently-selected waypoint (-1 = none)
 let _trackAnimShowLine = true;    // show/hide segments during animation
 // Use canvas renderer so polylines are captured by html2canvas screenshots
 const _trackRenderer = L.canvas({ padding: 0.5 });
@@ -12369,14 +12430,108 @@ function _ttbToggleLine() {
   if (btn) btn.classList.toggle('ttb-active', _trackAnimShowLine);
 }
 
-function _ttbMakeMarker(latlng, cat, size) {
-  const sz = size || 32;
+// ── WAYPOINT EDITOR ─────────────────────────────────────────────────────────
+function _ttbSelectMarker(idx) {
+  // Deselect old
+  if (_ttbSelectedIdx >= 0 && _ttbSelectedIdx < _trackMarkers.length) {
+    const old = _trackMarkers[_ttbSelectedIdx];
+    if (old) {
+      const p = _trackPts[_ttbSelectedIdx];
+      const nm = _ttbMakeMarker(p.latlng, p.cat, p.size, p.rot, false);
+      nm.on('click', (ev) => { L.DomEvent.stopPropagation(ev); _ttbSelectMarker(_ttbSelectedIdx); });
+      map.removeLayer(old);
+      nm.addTo(map);
+      _trackMarkers[_ttbSelectedIdx] = nm;
+    }
+  }
+  _ttbSelectedIdx = idx;
+  // Highlight new selection
+  const pt = _trackPts[idx];
+  const cur = _trackMarkers[idx];
+  if (cur) {
+    const nm = _ttbMakeMarker(pt.latlng, pt.cat, pt.size, pt.rot, true);
+    nm.on('click', (ev) => { L.DomEvent.stopPropagation(ev); _ttbSelectMarker(idx); });
+    map.removeLayer(cur);
+    nm.addTo(map);
+    _trackMarkers[idx] = nm;
+  }
+  // Position and show popup
+  const popup = document.getElementById('ttb-wp-popup');
+  if (!popup) return;
+  document.getElementById('ttb-wp-size').value  = pt.size || 32;
+  document.getElementById('ttb-wp-size-val').textContent = (pt.size || 32) + 'px';
+  document.getElementById('ttb-wp-rot').value   = pt.rot  || 0;
+  document.getElementById('ttb-wp-rot-val').textContent  = (pt.rot || 0) + '°';
+  _ttbPositionPopup(pt.latlng);
+  popup.style.display = 'block';
+}
+
+function _ttbPositionPopup(latlng) {
+  const popup = document.getElementById('ttb-wp-popup');
+  if (!popup) return;
+  const cp   = map.latLngToContainerPoint(latlng);
+  const rect = document.getElementById('map').getBoundingClientRect();
+  const x    = rect.left + cp.x;
+  const y    = rect.top  + cp.y;
+  const pw   = 190, ph = 110;
+  const left = Math.max(8, Math.min(x - pw / 2, window.innerWidth  - pw - 8));
+  const top  = y - ph - 14 < 8 ? y + 14 : y - ph - 14;
+  popup.style.left = left + 'px';
+  popup.style.top  = top  + 'px';
+}
+
+function _ttbEditUpdate() {
+  if (_ttbSelectedIdx < 0 || _ttbSelectedIdx >= _trackPts.length) return;
+  const sz  = +document.getElementById('ttb-wp-size').value;
+  const rot = +document.getElementById('ttb-wp-rot').value;
+  document.getElementById('ttb-wp-size-val').textContent = sz  + 'px';
+  document.getElementById('ttb-wp-rot-val').textContent  = rot + '°';
+  const pt = _trackPts[_ttbSelectedIdx];
+  pt.size = sz; pt.rot = rot;
+  const old = _trackMarkers[_ttbSelectedIdx];
+  if (old) map.removeLayer(old);
+  const nm = _ttbMakeMarker(pt.latlng, pt.cat, sz, rot, true);
+  const capturedIdx = _ttbSelectedIdx;
+  nm.on('click', (ev) => { L.DomEvent.stopPropagation(ev); _ttbSelectMarker(capturedIdx); });
+  nm.addTo(map);
+  _trackMarkers[_ttbSelectedIdx] = nm;
+}
+
+function _ttbEditClose() {
+  // Remove highlight from selected marker
+  if (_ttbSelectedIdx >= 0 && _ttbSelectedIdx < _trackMarkers.length) {
+    const p  = _trackPts[_ttbSelectedIdx];
+    const old = _trackMarkers[_ttbSelectedIdx];
+    if (old && p) {
+      const nm = _ttbMakeMarker(p.latlng, p.cat, p.size, p.rot, false);
+      const capturedIdx = _ttbSelectedIdx;
+      nm.on('click', (ev) => { L.DomEvent.stopPropagation(ev); _ttbSelectMarker(capturedIdx); });
+      map.removeLayer(old);
+      nm.addTo(map);
+      _trackMarkers[_ttbSelectedIdx] = nm;
+    }
+  }
+  _ttbSelectedIdx = -1;
+  const popup = document.getElementById('ttb-wp-popup');
+  if (popup) popup.style.display = 'none';
+}
+// ── END WAYPOINT EDITOR ─────────────────────────────────────────────────────
+
+function _ttbMakeMarker(latlng, cat, size, rot, selected) {
+  const sz   = size || 32;
   const half = Math.round(sz / 2);
-  const ic = TTB_ICONS[cat] || TTB_ICONS.td;
-  const html = '<img src="data:image/png;base64,' + ic.b64 + '" style="width:' + sz + 'px;height:' + sz + 'px;filter:drop-shadow(0 0 4px ' + ic.color + ');" />';
+  const deg  = rot  || 0;
+  const ic   = TTB_ICONS[cat] || TTB_ICONS.td;
+  const ring = selected
+    ? `box-shadow:0 0 0 2px #fff,0 0 10px 3px ${ic.color};border-radius:50%;`
+    : '';
+  const html = `<div style="width:${sz}px;height:${sz}px;${ring}">` +
+    `<img src="data:image/png;base64,${ic.b64}" ` +
+    `style="width:${sz}px;height:${sz}px;transform:rotate(${deg}deg);` +
+    `filter:drop-shadow(0 0 4px ${ic.color});" /></div>`;
   return L.marker(latlng, {
     icon: L.divIcon({ className:'', html: html, iconAnchor:[half, half] }),
-    interactive: false
+    interactive: true
   });
 }
 
@@ -12422,10 +12577,13 @@ function _onTrackClick(e) {
     _allToolLayers.push(seg);
   }
 
-  // Add point (store current size with the point)
-  const sz = _ttbActiveSize;
-  _trackPts.push({ latlng: e.latlng, cat: cat, size: sz });
-  const m = _ttbMakeMarker(e.latlng, cat, sz).addTo(map);
+  // Add point
+  const sz     = _ttbActiveSize;
+  const ptIdx  = _trackPts.length;
+  _trackPts.push({ latlng: e.latlng, cat, size: sz, rot: 0 });
+  const m = _ttbMakeMarker(e.latlng, cat, sz, 0, false);
+  m.on('click', ev => { L.DomEvent.stopPropagation(ev); _ttbSelectMarker(ptIdx); });
+  m.addTo(map);
   _trackMarkers.push(m);
   // Enable animate button once we have 2+ points
   if (_trackPts.length === 2) {
@@ -12461,6 +12619,9 @@ function _ttbUndo() {
 
 function _ttbClear() {
   if (_trackAnimating) _ttbStopAnim();
+  _ttbSelectedIdx = -1;
+  const popup = document.getElementById('ttb-wp-popup');
+  if (popup) popup.style.display = 'none';
   _trackSegs.forEach(s => map.removeLayer(s));
   _trackMarkers.forEach(m => map.removeLayer(m));
   _trackSegs = []; _trackMarkers = []; _trackPts = [];
@@ -12555,9 +12716,10 @@ function _ttbStartAnim() {
     btn.title = 'Stop animation';
   }
 
+  _ttbEditClose();
   if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
   const pt0 = _trackPts[0];
-  _trackAnimMarker = _ttbMakeMarker(pt0.latlng, pt0.cat, pt0.size).addTo(map);
+  _trackAnimMarker = _ttbMakeMarker(pt0.latlng, pt0.cat, pt0.size, pt0.rot).addTo(map);
 
   // Start animating from first segment
   _ttbAnimStep(0);
@@ -12592,7 +12754,9 @@ function _ttbAnimStep(fromIdx) {
   const toCat   = toPt.cat;
   const fromSz  = fromPt.size || 32;
   const toSz    = toPt.size   || 32;
-  const duration = 1100; // ms per segment
+  const fromRot = fromPt.rot  || 0;
+  const toRot   = toPt.rot    || 0;
+  const duration = 1100;
   const start = performance.now();
 
   function frame(now) {
@@ -12601,11 +12765,12 @@ function _ttbAnimStep(fromIdx) {
     const ease = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
     const lat = fromLL.lat + (toLL.lat - fromLL.lat) * ease;
     const lng = fromLL.lng + (toLL.lng - fromLL.lng) * ease;
-    const cat = t > 0.65 ? toCat : fromCat;           // category upgrades in final third
-    const sz  = Math.round(fromSz + (toSz - fromSz) * ease); // size interpolates too
+    const cat = t > 0.65 ? toCat : fromCat;
+    const sz  = Math.round(fromSz + (toSz - fromSz) * ease);
+    const rot = Math.round(fromRot + (toRot - fromRot) * ease);
 
     if (_trackAnimMarker) map.removeLayer(_trackAnimMarker);
-    _trackAnimMarker = _ttbMakeMarker(L.latLng(lat, lng), cat, sz).addTo(map);
+    _trackAnimMarker = _ttbMakeMarker(L.latLng(lat, lng), cat, sz, rot).addTo(map);
 
     if (t < 1) {
       _trackAnimRAF = requestAnimationFrame(frame);
