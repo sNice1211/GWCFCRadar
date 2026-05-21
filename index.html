@@ -12348,6 +12348,7 @@ let _trackMarkers   = [];   // Leaflet markers (one per point)
 let _trackRedoStack = [];   // [{latlng, cat}] — points popped by undo
 let _trackLine      = null; // kept for clearAllDrawings compat
 let _trackPreview   = null;
+let _ttbAllLayers   = [];   // every layer ever added by the track tool
 let _ttbActiveCat   = 'cat1';
 let _ttbSelectedIdx = -1;         // index of currently-selected waypoint (-1 = none)
 let _trackAnimShowLine = true;    // show/hide segments during animation
@@ -12410,6 +12411,7 @@ function _ttbSelectMarker(idx) {
     map.removeLayer(cur);
     nm.addTo(map);
     _trackMarkers[idx] = nm;
+    _ttbAllLayers.push(nm);
   }
 }
 
@@ -12483,6 +12485,7 @@ function _onTrackClick(e) {
     }).addTo(map);
     _trackSegs.push(seg);
     _allToolLayers.push(seg);
+    _ttbAllLayers.push(seg);
   }
 
   // Any new placement clears redo history
@@ -12497,6 +12500,7 @@ function _onTrackClick(e) {
   m.on('click', ev => { L.DomEvent.stopPropagation(ev); _ttbSelectMarker(ptIdx); });
   m.addTo(map);
   _trackMarkers.push(m);
+  _ttbAllLayers.push(m);
   // Enable animate button once we have 2+ points
   if (_trackPts.length === 2) {
     const ab = document.getElementById('ttb-anim-btn');
@@ -12554,6 +12558,7 @@ function _ttbRedo() {
     }).addTo(map);
     _trackSegs.push(seg);
     _allToolLayers.push(seg);
+    _ttbAllLayers.push(seg);
   }
   const ptIdx = _trackPts.length;
   _trackPts.push(pt);
@@ -12561,6 +12566,7 @@ function _ttbRedo() {
   m.on('click', ev => { L.DomEvent.stopPropagation(ev); _ttbSelectMarker(ptIdx); });
   m.addTo(map);
   _trackMarkers.push(m);
+  _ttbAllLayers.push(m);
   // Enable animate button if 2+ points
   if (_trackPts.length >= 2) {
     const ab = document.getElementById('ttb-anim-btn');
@@ -12576,20 +12582,17 @@ function _ttbRedo() {
 function _ttbClear() {
   if (_trackAnimating) _ttbStopAnim();
   if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
+  if (_trackPreview)   { map.removeLayer(_trackPreview);    _trackPreview    = null; }
   _ttbSelectedIdx = -1;
   _trackRedoStack = [];
-  _trackSegs.forEach(s => {
-    try { map.removeLayer(s); } catch(e) {}
-    const i = _allToolLayers.indexOf(s);
+  // Remove every layer the track tool has ever placed (across all sessions)
+  _ttbAllLayers.forEach(l => {
+    try { map.removeLayer(l); } catch(e) {}
+    const i = _allToolLayers.indexOf(l);
     if (i !== -1) _allToolLayers.splice(i, 1);
   });
-  _trackMarkers.forEach(m => {
-    try { map.removeLayer(m); } catch(e) {}
-    const i = _allToolLayers.indexOf(m);
-    if (i !== -1) _allToolLayers.splice(i, 1);
-  });
+  _ttbAllLayers = [];
   _trackSegs = []; _trackMarkers = []; _trackPts = [];
-  if (_trackPreview) { map.removeLayer(_trackPreview); _trackPreview = null; }
   const ab = document.getElementById('ttb-anim-btn');
   if (ab) { ab.disabled = true; ab.style.opacity = '0.4'; }
   const rdoBtn = document.getElementById('ttb-redo-btn');
@@ -12613,6 +12616,7 @@ function _onTrackDbl(e) {
     interactive: false
   }).addTo(map);
   _allToolLayers.push(lbl);
+  _ttbAllLayers.push(lbl);
   _trackMarkers.forEach(m => _allToolLayers.push(m));
   deactivateTool();
 }
