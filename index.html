@@ -2811,7 +2811,7 @@ body {
 }
 #cam-popup-link:hover { background: rgba(0,200,200,0.12); }
 
-/* ── LOGO QUICK MENU (triple-tap) ── */
+/* ── LOGO QUICK MENU (hover) ── */
 #logo-wrap {
   position: absolute;
   top: 8px;
@@ -17868,90 +17868,68 @@ function selectProduct(p) {
 <script>
 // ── LOGO QUICK MENU ──
 (function() {
-  // Triple-tap detection
-  let _tapCount = 0;
-  let _tapTimer = null;
   let _menuOpen = false;
+  let _closeTimer = null;
 
-  function _resetTaps() { _tapCount = 0; _tapTimer = null; }
-
-  function _onLogoTap(e) {
-    // Increment tap counter
-    _tapCount++;
-    if (_tapTimer) clearTimeout(_tapTimer);
-
-    if (_tapCount >= 3) {
-      // Triple tap detected
-      _tapCount = 0;
-      e.preventDefault();
-      e.stopPropagation();
-      _toggleMenu();
-      // Pulse animation
-      const img = document.getElementById('topbar-logo-img');
-      if (img) {
-        img.classList.remove('lqm-tapped');
-        void img.offsetWidth; // reflow
-        img.classList.add('lqm-tapped');
-        setTimeout(() => img.classList.remove('lqm-tapped'), 400);
-      }
-    } else {
-      // Wait to see if more taps come (400ms window)
-      _tapTimer = setTimeout(function() {
-        // Only 1 or 2 taps — if menu is open, close it; otherwise let link proceed
-        if (_menuOpen) {
-          _closeMenu();
-        } else if (_tapCount === 1) {
-          // Navigate to logo link on single tap
-          window.open('https://gwcfc.my.canva.site/#page-1', '_blank', 'noopener');
-        }
-        _resetTaps();
-      }, 400);
-    }
+  function _openMenu() {
+    if (_closeTimer) { clearTimeout(_closeTimer); _closeTimer = null; }
+    if (_menuOpen) return;
+    _menuOpen = true;
+    const menu = document.getElementById('logo-quick-menu');
+    if (menu) menu.classList.add('lqm-open');
   }
 
-  function _toggleMenu() {
-    _menuOpen = !_menuOpen;
-    const menu = document.getElementById('logo-quick-menu');
-    if (menu) menu.classList.toggle('lqm-open', _menuOpen);
-    // Close any open sub-panels when closing menu
-    if (!_menuOpen) {
-      lqmCloseSearch();
-      lqmCloseSettings();
-    }
+  function _scheduleClose() {
+    if (_closeTimer) clearTimeout(_closeTimer);
+    _closeTimer = setTimeout(_closeMenu, 220);
+  }
+
+  function _cancelClose() {
+    if (_closeTimer) { clearTimeout(_closeTimer); _closeTimer = null; }
   }
 
   function _closeMenu() {
     _menuOpen = false;
+    _closeTimer = null;
     const menu = document.getElementById('logo-quick-menu');
     if (menu) menu.classList.remove('lqm-open');
     lqmCloseSearch();
     lqmCloseSettings();
   }
 
-  // Close menu when clicking elsewhere
+  // Close when clicking outside
   document.addEventListener('click', function(e) {
     if (!_menuOpen) return;
     const wrap = document.getElementById('logo-wrap');
+    const menu = document.getElementById('logo-quick-menu');
     const searchOv = document.getElementById('lqm-search-overlay');
     const settingsOv = document.getElementById('lqm-settings-overlay');
     if (wrap && wrap.contains(e.target)) return;
+    if (menu && menu.contains(e.target)) return;
     if (searchOv && searchOv.contains(e.target)) return;
     if (settingsOv && settingsOv.contains(e.target)) return;
     _closeMenu();
   }, true);
 
-  // Attach listener once DOM ready
   function _init() {
     const logo = document.getElementById('logo');
-    if (!logo) { setTimeout(_init, 200); return; }
-    // Remove the href so we control navigation ourselves
+    const wrap = document.getElementById('logo-wrap');
+    const menu = document.getElementById('logo-quick-menu');
+    if (!logo || !wrap || !menu) { setTimeout(_init, 200); return; }
+
     logo.removeAttribute('href');
-    logo.style.cursor = 'pointer';
-    logo.addEventListener('click', _onLogoTap);
-    // Touch support: treat touchend as click
+    logo.style.cursor = 'default';
+
+    // Desktop: open on hover, close when mouse leaves both logo and menu
+    wrap.addEventListener('mouseenter', _openMenu);
+    wrap.addEventListener('mouseleave', _scheduleClose);
+    menu.addEventListener('mouseenter', _cancelClose);
+    menu.addEventListener('mouseleave', _scheduleClose);
+
+    // Touch: single tap toggles (hover doesn't fire on mobile)
     logo.addEventListener('touchend', function(e) {
       e.preventDefault();
-      _onLogoTap(e);
+      if (_menuOpen) _closeMenu(); else _openMenu();
     }, { passive: false });
   }
 
