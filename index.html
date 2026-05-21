@@ -73,11 +73,13 @@
   }
 }
 
-/* GPU acceleration for map tiles */
+/* GPU acceleration for map tiles and animation bar */
 #map { will-change: transform; }
 .leaflet-tile-container { will-change: transform; }
 .leaflet-map-pane       { will-change: transform; }
 .leaflet-tile           { will-change: opacity; }
+#animbar, #timeline     { will-change: contents; }
+.sub-bubble             { will-change: transform; }
 
 /* Contain repaints inside panels so they don't trigger full-page layout */
 #lqm-settings-overlay, #lqm-search-overlay,
@@ -194,7 +196,7 @@ body {
   border-radius: 14px;
   background: rgb(60,0,0);
   border: 1px solid rgba(200,0,0,0.25);
-  -webkit-backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(4px);
   transition: all 0.2s ease;
   user-select: none;
   transform: scale(1);
@@ -331,7 +333,7 @@ body {
   border-radius: 16px;
   background: rgb(90,0,0);
   border: 1px solid rgba(255,255,255,0.08);
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(4px);
 }
 .model-option:hover { color: rgba(255,255,255,0.8); background: rgba(110,0,0,0.8); }
 .model-option.selected { color: var(--accent2); border-color: rgba(0,200,200,0.3); }
@@ -393,7 +395,7 @@ body {
   align-items: center;
   gap: 6px;
   z-index: 800;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(4px);
   width: auto;
   box-sizing: border-box;
 }
@@ -1083,7 +1085,7 @@ body {
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 20px;
   cursor: pointer;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(4px);
   transition: all 0.18s ease;
   user-select: none;
   white-space: nowrap;
@@ -1175,7 +1177,7 @@ body {
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 20px;
   cursor: pointer;
-  backdrop-filter: blur(8px);
+  backdrop-filter: blur(4px);
   transition: all 0.18s ease;
   user-select: none;
   white-space: nowrap;
@@ -1363,7 +1365,7 @@ body {
   border-radius: 10px;
   padding: 10px 12px;
   z-index: 810;
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(4px);
   display: none;
   font-family: var(--mono);
   font-size: 10px;
@@ -2711,8 +2713,8 @@ body {
   pointer-events: all;
   display: none;
   overflow: hidden;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 #cam-popup-header {
   display: flex;
@@ -3904,8 +3906,8 @@ footer {
   inset: 0 !important;
   z-index: 9998 !important;
   background: rgba(0,0,0,0.72) !important;
-  backdrop-filter: blur(8px) !important;
-  -webkit-backdrop-filter: blur(8px) !important;
+  backdrop-filter: blur(4px) !important;
+  -webkit-backdrop-filter: blur(4px) !important;
   overflow: hidden !important;
   align-items: center !important;
   justify-content: center !important;
@@ -4213,7 +4215,7 @@ footer {
   min-width: 240px;
   max-width: 260px;
   box-shadow: 0 8px 40px rgba(0,0,0,0.7);
-  backdrop-filter: blur(10px);
+  backdrop-filter: blur(4px);
 }
 #lqm-profile-overlay.lqm-panel-open { display: block; }
 #lqm-profile-close {
@@ -5999,13 +6001,11 @@ function _buildRadarPool() {
   _radarPoolBuilt = true;
   _buildCanadaPool();
 
-  // Eagerly pre-fetch the latest radar frames in background (opacity 0).
-  // Tiles are cached by the browser so they appear instantly when the user presses Radar.
+  // Preload ALL frames in background — animation becomes zero-wait after first cycle.
+  // Tiles land in the SW cache so future visits are instant.
   setTimeout(() => {
     if (!_radarPoolBuilt || !radarFrames.length) return;
-    const start = Math.max(0, lastPastIdx - 6);
-    const end   = Math.min(radarFrames.length - 1, lastPastIdx + 2);
-    for (let i = start; i <= end; i++) {
+    for (let i = 0; i < radarFrames.length; i++) {
       _ensureNexradLayer(i);
       _ensureCanadaLayer(i);
     }
@@ -6024,16 +6024,19 @@ function _buildCanadaPool() {
   _canadaPoolBuilt = true;
 }
 
-// At low zoom the browser handles more tiles per frame — shrink the active window
-// to reduce simultaneous WMS requests and prevent lag/OOM at wide views.
 function _poolWindow(idx) {
   const z = map ? map.getZoom() : 7;
-  const sz = z <= 4 ? 2 : z <= 6 ? 3 : 5;
-  const half = Math.floor(sz / 2);
-  let s = Math.max(0, idx - half);
-  let e = Math.min(radarFrames.length - 1, s + sz - 1);
-  s = Math.max(0, e - sz + 1);
-  return { s, e };
+  // z≤3: tiles cover huge area (hundreds each) — cap at 5 to avoid OOM
+  // z≥4: preload every frame so animation is zero-wait
+  const n = radarFrames.length;
+  if (z <= 3) {
+    const sz = 5, half = 2;
+    let s = Math.max(0, idx - half);
+    let e = Math.min(n - 1, s + sz - 1);
+    s = Math.max(0, e - sz + 1);
+    return { s, e };
+  }
+  return { s: 0, e: n - 1 };
 }
 
 function _ensureNexradLayer(i) {
@@ -6078,24 +6081,9 @@ let _lastWindowS = -1, _lastWindowE = -1;
 
 function _activateWindow(idx) {
   const { s, e } = _poolWindow(idx);
-  // Skip all DOM/layer work if the window range hasn't shifted
+  // Early-exit once the full window is already built — no eviction, keep all loaded frames
   if (s === _lastWindowS && e === _lastWindowE) return;
   _lastWindowS = s; _lastWindowE = e;
-
-  _radarLayerPool.forEach((l, i) => {
-    if (l && (i < s || i > e)) {
-      try { map.removeLayer(l); } catch(ex) {}
-      _radarLayerPool[i] = null;
-      _radarLayerLoaded[i] = false;
-    }
-  });
-  _canadaLayerPool.forEach((l, i) => {
-    if (l && (i < s || i > e)) {
-      try { map.removeLayer(l); } catch(ex) {}
-      _canadaLayerPool[i] = null;
-      _canadaLayerLoaded[i] = false;
-    }
-  });
   for (let i = s; i <= e; i++) {
     _ensureNexradLayer(i);
     _ensureCanadaLayer(i);
@@ -8233,7 +8221,7 @@ function _showPolyFilterPill() {
       'position:fixed;bottom:98px;left:50%;transform:translateX(-50%);' +
       'background:rgb(0,40,40);border:1px solid var(--accent2);border-radius:20px;' +
       'padding:5px 14px;font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--accent2);' +
-      'z-index:1200;display:flex;align-items:center;gap:8px;backdrop-filter:blur(8px);' +
+      'z-index:1200;display:flex;align-items:center;gap:8px;backdrop-filter:blur(4px);' +
       'box-shadow:0 0 12px rgba(0,200,200,0.25);';
     const count = _polyFilter.polygons.length;
     pill.innerHTML = `<span>⬡ POLYGON FILTER · ${count} zone${count>1?'s':''}</span>` +
@@ -10928,7 +10916,7 @@ if (document.readyState === 'loading') {
 
 // ── DISMISS LOADING (always called) ──
 // Minimum display time so users can actually read a fun fact or two.
-const LOAD_MIN_MS = 1500;
+const LOAD_MIN_MS = 0;
 const _loadStart = Date.now();
 let _dismissPending = false;
 function dismissLoading() {
@@ -10949,7 +10937,7 @@ function dismissLoading() {
 // ── STARTUP ──
 async function init() {
   // Safety net: always dismiss after this long no matter what
-  const safetyTimer = setTimeout(dismissLoading, 4000);
+  const safetyTimer = setTimeout(dismissLoading, 2000);
 
   try {
     initMap();
@@ -10962,15 +10950,15 @@ async function init() {
   updateLoadStatus('Loading radar + alerts…');
   // Run radar init and alerts in parallel — saves ~1.5s on startup
   await Promise.allSettled([
-    Promise.race([loadNEXRAD(),      new Promise(r => setTimeout(r, 2500))]),
-    Promise.race([_doLoadAlerts(true), new Promise(r => setTimeout(r, 1500))]),
+    Promise.race([loadNEXRAD(),      new Promise(r => setTimeout(r, 1000))]),
+    Promise.race([_doLoadAlerts(true), new Promise(r => setTimeout(r, 600))]),
   ]);
   _syncNexradSites();
 
   clearTimeout(safetyTimer);
   updateLoadStatus('Ready.');
   dismissLoading();
-  setTimeout(initCityMarkers, 200); // defer until after map is visible
+  (window.requestIdleCallback || setTimeout)(initCityMarkers, { timeout: 500 });
 
   // Sync overlay bar pill active states on startup
   ['lightning','cams','radio','forecasts'].forEach(id => {

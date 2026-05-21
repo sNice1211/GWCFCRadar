@@ -1,6 +1,6 @@
 // GWCFCRadar Service Worker — tile cache for instant loads
 // Bump CACHE version to force-clear old cached tiles.
-const CACHE = 'gwcfc-v3';
+const CACHE = 'gwcfc-v4';
 
 // All tile / data hosts we intercept and cache
 const CACHE_HOSTS = new Set([
@@ -16,8 +16,8 @@ const TTL_MS = {
   'api.maptiler.com':          7 * 24 * 3600 * 1000,  // 7 days  — static raster tiles
   'tilecache.rainviewer.com':  5 * 60 * 1000,          // 5 min   — satellite tiles
   'api.rainviewer.com':        5 * 60 * 1000,          // 5 min   — frame index JSON
-  'mesonet.agron.iastate.edu': 10 * 60 * 1000,         // 10 min  — radar/GOES WMS tiles
-  'opengeo.ncep.noaa.gov':     10 * 60 * 1000,         // 10 min  — NOAA Level III tiles
+  'mesonet.agron.iastate.edu': 2 * 3600 * 1000,         // 2 hr   — radar tiles are immutable per TIME param
+  'opengeo.ncep.noaa.gov':     2 * 3600 * 1000,         // 2 hr   — NOAA Level III tiles, immutable per TIME
 };
 
 self.addEventListener('install',  ()  => self.skipWaiting());
