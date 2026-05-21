@@ -2416,6 +2416,45 @@ body {
 }
 #dtb-close:active { background:#cc0000; }
 
+/* ── DRAW TEXT POPUP ── */
+#dtb-text-popup {
+  display: none;
+  position: fixed;
+  z-index: 2500;
+  align-items: center;
+  gap: 5px;
+  background: rgba(8,12,20,0.97);
+  border: 1.5px solid rgba(0,160,255,0.5);
+  border-radius: 9px;
+  padding: 5px 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.85);
+  pointer-events: all;
+  user-select: none;
+}
+#dtb-text-popup.open { display: flex; }
+#dtb-text-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e8f4ff;
+  font-family: var(--sans);
+  font-size: 13px;
+  min-width: 160px;
+  caret-color: #4af;
+}
+#dtb-text-input::placeholder { color: rgba(255,255,255,0.28); }
+#dtb-text-ok {
+  background: rgba(0,150,255,0.25);
+  border: 1px solid rgba(0,180,255,0.45);
+  border-radius: 5px;
+  color: #4af;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 7px;
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+#dtb-text-ok:hover { background: rgba(0,160,255,0.45); }
 
 /* ── CITY MARKERS ── */
 .city-dot {
@@ -5063,6 +5102,9 @@ body.gwcfc-crosshair #map::after {
   <button class="dtb-btn" id="dtb-mode-eraser" onclick="_dtbSetMode('eraser')" title="Eraser">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M20 20H7L3 16l10-10 7 7-3.5 3.5"/><path d="M6 11l7 7"/></svg>
   </button>
+  <button class="dtb-btn" id="dtb-mode-text" onclick="_dtbSetMode('text')" title="Text">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="16" height="16"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+  </button>
   <div class="dtb-sep"></div>
   <!-- Color swatch + palette trigger -->
   <div style="position:relative;flex-shrink:0;">
@@ -5096,6 +5138,10 @@ body.gwcfc-crosshair #map::after {
   <button id="dtb-close" onclick="deactivateTool()" title="Exit draw mode">✕</button>
 </div>
 <div id="dtb-status">Drawing mode paused</div>
+<div id="dtb-text-popup">
+  <input id="dtb-text-input" type="text" placeholder="Type here…" autocomplete="off" spellcheck="false">
+  <button id="dtb-text-ok" onclick="_dtbSubmitText()">✓</button>
+</div>
 <div id="track-toolbar">
   <div class="dtb-drag" id="track-drag" title="Drag to move"><span></span><span></span><span></span></div>
   <span class="dtb-label">
@@ -11668,13 +11714,22 @@ function _dtbSetMode(mode) {
   document.getElementById('dtb-mode-pencil')?.classList.toggle('active', mode === 'pencil');
   document.getElementById('dtb-mode-highlighter')?.classList.toggle('active', mode === 'highlighter');
   document.getElementById('dtb-mode-eraser')?.classList.toggle('active', mode === 'eraser');
+  document.getElementById('dtb-mode-text')?.classList.toggle('active', mode === 'text');
   if (mode === 'eraser') {
     if (!_eraserHoverActive) { map.on('mousemove', _dtbEraserHover); _eraserHoverActive = true; }
+    map.getContainer().style.cursor = '';
     _dtbSetStatus('Eraser mode – drag to erase strokes');
   } else {
     if (_eraserHoverActive) { map.off('mousemove', _dtbEraserHover); _eraserHoverActive = false; }
     _hideEraserCursor();
-    _dtbSetStatus(mode === 'highlighter' ? 'Highlighter mode' : 'Pencil mode');
+    _dtbCancelText();
+    if (mode === 'text') {
+      map.getContainer().style.cursor = 'text';
+      _dtbSetStatus('Text mode – click the map to place text');
+    } else {
+      map.getContainer().style.cursor = '';
+      _dtbSetStatus(mode === 'highlighter' ? 'Highlighter mode' : 'Pencil mode');
+    }
   }
 }
 function _dtbUndo() {
@@ -11735,6 +11790,7 @@ deactivateTool = function() {
   if (_ttb) _ttb.classList.remove('visible');
   if (typeof _trackAnimating !== 'undefined' && _trackAnimating) _ttbStopAnim();
   if (typeof _ttbEditClose === 'function') _ttbEditClose();
+  if (typeof _dtbCancelText === 'function') _dtbCancelText();
 };
 
 
@@ -11793,6 +11849,10 @@ function _onDrawTouchEnd(e) {
 function _onDrawDown(e) {
   if (activeTool !== 'draw') return;
   if (_dtbPaletteOpen) { _dtbTogglePalette(); return; }
+  if (_dtbMode === 'text') {
+    _dtbShowTextInput(e.latlng);
+    return;
+  }
   if (_dtbMode === 'eraser') {
     _erasing = true;
     _dtbEraseAt(map.latLngToContainerPoint(e.latlng));
@@ -11834,6 +11894,71 @@ function _onDrawUp() {
   map.off('mouseup',   _onDrawUp);
 }
 function _onDrawClick() {}
+
+// ── TEXT TOOL ────────────────────────────────────────────────────────────────
+let _dtbTextLatlng = null;
+
+function _dtbShowTextInput(latlng) {
+  _dtbTextLatlng = latlng;
+  const popup = document.getElementById('dtb-text-popup');
+  const inp   = document.getElementById('dtb-text-input');
+  if (!popup || !inp) return;
+  // Position popup above the clicked point on screen
+  const cp   = map.latLngToContainerPoint(latlng);
+  const rect = map.getContainer().getBoundingClientRect();
+  const x    = rect.left + cp.x;
+  const y    = rect.top  + cp.y;
+  popup.style.borderColor = _dtbColor;
+  popup.style.left = Math.max(4, Math.min(x - 90, window.innerWidth - 220)) + 'px';
+  popup.style.top  = Math.max(4, y - 54) + 'px';
+  inp.value = '';
+  inp.style.color = _dtbColor;
+  popup.classList.add('open');
+  setTimeout(() => inp.focus(), 30);
+}
+
+function _dtbSubmitText() {
+  const inp   = document.getElementById('dtb-text-input');
+  const popup = document.getElementById('dtb-text-popup');
+  if (!inp || !_dtbTextLatlng) { _dtbCancelText(); return; }
+  const text = inp.value.trim();
+  if (text) {
+    const fontSize = Math.max(12, Math.round(_dtbSize * 2));
+    const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const html = `<span style="font-family:var(--sans);font-size:${fontSize}px;color:${_dtbColor};` +
+      `font-weight:700;white-space:nowrap;` +
+      `text-shadow:1px 1px 4px rgba(0,0,0,0.95),-1px -1px 4px rgba(0,0,0,0.95),` +
+      `0 0 8px rgba(0,0,0,0.8);pointer-events:none;display:block;">${safe}</span>`;
+    const marker = L.marker(_dtbTextLatlng, {
+      icon: L.divIcon({ className: '', html, iconAnchor: [0, fontSize] }),
+      interactive: false
+    }).addTo(map);
+    _allToolLayers.push(marker);
+    _dtbRedoStack.length = 0;
+    document.getElementById('dtb-redo-btn')?.classList.remove('active');
+  }
+  popup.classList.remove('open');
+  _dtbTextLatlng = null;
+  _dtbSetStatus('Text mode – click the map to place text');
+}
+
+function _dtbCancelText() {
+  const popup = document.getElementById('dtb-text-popup');
+  if (popup) popup.classList.remove('open');
+  _dtbTextLatlng = null;
+}
+
+// Wire up Enter/Escape on the text input once DOM is ready
+(function _initTextInput() {
+  const inp = document.getElementById('dtb-text-input');
+  if (!inp) { setTimeout(_initTextInput, 300); return; }
+  inp.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); _dtbSubmitText(); }
+    if (e.key === 'Escape') { e.preventDefault(); _dtbCancelText(); }
+  });
+  // Prevent map mousedown from firing while typing
+  inp.addEventListener('mousedown', e => e.stopPropagation());
+})();
 
 
 // ── COLOR PICKER MODAL ──
