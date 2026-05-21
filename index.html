@@ -2419,23 +2419,24 @@ body {
 /* ── DRAW TEXT POPUP ── */
 /* ── TEXT TOOL PULL-UP PANEL ── */
 #dtb-text-panel {
-  display: none;
   position: fixed;
-  bottom: 0; left: 50%; transform: translateX(-50%);
+  bottom: -320px;
+  left: 50%; transform: translateX(-50%);
   z-index: 3000;
-  width: min(520px, 96vw);
+  width: min(520px, 100vw);
   background: rgba(6,10,18,0.98);
   border: 1.5px solid rgba(0,160,255,0.35);
   border-bottom: none;
   border-radius: 16px 16px 0 0;
   padding: 0 0 env(safe-area-inset-bottom,0);
   box-shadow: 0 -8px 40px rgba(0,0,0,0.7);
-  pointer-events: all;
+  pointer-events: none;
+  display: flex;
   flex-direction: column;
   gap: 0;
-  transition: transform 0.22s cubic-bezier(.4,0,.2,1);
+  transition: bottom 0.26s cubic-bezier(.4,0,.2,1);
 }
-#dtb-text-panel.open { display: flex; }
+#dtb-text-panel.open { bottom: 0; pointer-events: all; }
 #dtb-text-panel-handle {
   width: 36px; height: 4px;
   background: rgba(255,255,255,0.18);
@@ -2457,6 +2458,22 @@ body {
   transition: color 0.12s, background 0.12s;
 }
 #dtb-text-panel-close:hover { color: #fff; background: rgba(255,255,255,0.1); }
+/* Placed text handles */
+.dtb-ti-wrap { position: relative; display: inline-block; cursor: pointer; user-select: none; }
+.dtb-ti-text { white-space: nowrap; font-weight: 700; display: block; }
+.dtb-ti-rot, .dtb-ti-rsz {
+  display: none; position: absolute;
+  width: 18px; height: 18px; background: #fff;
+  border-radius: 50%; border: 2px solid rgba(0,160,255,0.9);
+  box-shadow: 0 1px 6px rgba(0,0,0,0.6); cursor: grab; z-index: 10;
+}
+.dtb-ti-rot { top: -26px; left: 50%; transform: translateX(-50%); font-size: 10px; align-items: center; justify-content: center; }
+.dtb-ti-rsz { bottom: -12px; right: -12px; border-radius: 3px; cursor: se-resize; }
+.dtb-ti-line { display: none; position: absolute; left: 50%; width: 1px; top: -24px; height: 22px; background: rgba(0,160,255,0.5); transform: translateX(-50%); }
+.dtb-ti-wrap.selected .dtb-ti-rot { display: flex; }
+.dtb-ti-wrap.selected .dtb-ti-rsz { display: block; }
+.dtb-ti-wrap.selected .dtb-ti-line { display: block; }
+.dtb-ti-wrap.selected .dtb-ti-text { outline: 1.5px dashed rgba(0,180,255,0.5); outline-offset: 3px; border-radius: 2px; }
 /* Font chips row */
 #dtb-tp-fonts {
   display: flex; gap: 6px; padding: 4px 16px 10px; overflow-x: auto;
@@ -5245,9 +5262,8 @@ body.gwcfc-crosshair #map::after {
     </div>
   </div>
   <div id="dtb-tp-input-wrap">
-    <input id="dtb-tp-input" type="text" placeholder="" autocomplete="off" spellcheck="false">
+    <input id="dtb-tp-input" type="text" placeholder="Type your text…" autocomplete="off" spellcheck="false">
   </div>
-  <button id="dtb-tp-place" onclick="_dtbTpStartPlace()">Tap map to place text</button>
 </div>
 <div id="track-toolbar">
   <div class="dtb-drag" id="track-drag" title="Drag to move"><span></span><span></span><span></span></div>
@@ -11809,9 +11825,8 @@ function _dtbSetMode(mode) {
     _hideEraserCursor();
     _dtbCancelText();
     if (mode === 'text') {
-      map.getContainer().style.cursor = 'text';
-      _dtbOpenTextPanel();
-      _dtbSetStatus('Text mode – type your text then tap the map');
+      map.getContainer().style.cursor = 'crosshair';
+      _dtbSetStatus('Text mode – tap the map where you want to add text');
     } else {
       _dtbCloseTextPanel();
       map.getContainer().style.cursor = '';
@@ -11984,7 +11999,8 @@ function _onDrawClick() {}
 
 // ── TEXT TOOL — PULL-UP PANEL ─────────────────────────────────────────────────
 let _dtbTextLatlng = null;
-let _dtbTpPlacing  = false; // waiting for map click to place
+let _dtbPreviewMkr = null;
+let _dtbSelectedTxt = null; // { marker, item: {text,font,color,size,rotation} }
 
 function _dtbOpenTextPanel() {
   const panel = document.getElementById('dtb-text-panel');
@@ -11997,11 +12013,11 @@ function _dtbOpenTextPanel() {
 function _dtbCloseTextPanel() {
   const panel = document.getElementById('dtb-text-panel');
   if (panel) panel.classList.remove('open');
-  _dtbTpPlacing = false;
-  map.getContainer().style.cursor = '';
-  const btn = document.getElementById('dtb-tp-place');
-  if (btn) btn.classList.remove('placing');
-  if (_dtbMode === 'text') _dtbSetMode('pencil');
+  _dtbTextLatlng = null;
+  if (_dtbPreviewMkr) { map.removeLayer(_dtbPreviewMkr); _dtbPreviewMkr = null; }
+  const inp = document.getElementById('dtb-tp-input');
+  if (inp) inp.value = '';
+  map.getContainer().style.cursor = _dtbMode === 'text' ? 'crosshair' : '';
 }
 
 function _dtbTpSyncInput() {
@@ -12016,6 +12032,7 @@ function _dtbSetFont(fontValue, btn) {
   document.querySelectorAll('.dtb-tp-font').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
   _dtbTpSyncInput();
+  _dtbTpUpdatePreview();
 }
 
 function _dtbTpPickColor(el) {
@@ -12023,60 +12040,155 @@ function _dtbTpPickColor(el) {
   el.classList.add('active');
   _dtbColor = el.dataset.color;
   _dtbTpSyncInput();
+  _dtbTpUpdatePreview();
 }
 
 function _dtbTpSetSize(val) {
   _dtbSize = +val;
   const lbl = document.getElementById('dtb-tp-size-lbl');
   if (lbl) lbl.textContent = val;
+  _dtbTpUpdatePreview();
 }
 
-function _dtbTpStartPlace() {
-  const text = (document.getElementById('dtb-tp-input')?.value || '').trim();
-  if (!text) { document.getElementById('dtb-tp-input')?.focus(); return; }
-  _dtbTpPlacing = true;
-  map.getContainer().style.cursor = 'crosshair';
-  const btn = document.getElementById('dtb-tp-place');
-  if (btn) { btn.classList.add('placing'); btn.textContent = 'Tap the map…'; }
+function _dtbTpBuildHtml(text, font, color, size) {
+  const fontSize = Math.max(12, Math.round(size * 2.2));
+  const safe = (text || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return { html: `<span class="dtb-ti-text" style="font-family:${font};font-size:${fontSize}px;color:${color};` +
+    `text-shadow:1px 1px 4px rgba(0,0,0,0.95),-1px -1px 4px rgba(0,0,0,0.95),0 0 8px rgba(0,0,0,0.8);">${safe || '…'}</span>`,
+    fontSize };
+}
+
+function _dtbTpUpdatePreview() {
+  if (!_dtbTextLatlng) return;
+  const text = document.getElementById('dtb-tp-input')?.value || '';
+  const { html, fontSize } = _dtbTpBuildHtml(text, _dtbFont, _dtbColor, _dtbSize);
+  const icon = L.divIcon({ className: 'dtb-preview-icon', html, iconAnchor: [0, fontSize] });
+  if (_dtbPreviewMkr) {
+    _dtbPreviewMkr.setIcon(icon);
+  } else {
+    _dtbPreviewMkr = L.marker(_dtbTextLatlng, { icon, interactive: false, zIndexOffset: 1000 }).addTo(map);
+  }
+}
+
+function _dtbTpCommit() {
+  const inp = document.getElementById('dtb-tp-input');
+  const text = (inp?.value || '').trim();
+  if (!text || !_dtbTextLatlng) { _dtbCloseTextPanel(); return; }
+
+  const latlng = _dtbTextLatlng;
+  const font = _dtbFont, color = _dtbColor, size = _dtbSize;
+  const fontSize = Math.max(12, Math.round(size * 2.2));
+
+  const item = { text, font, color, size, fontSize, rotation: 0 };
+
+  function buildIcon(sel) {
+    const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const wrapClass = 'dtb-ti-wrap' + (sel ? ' selected' : '');
+    return L.divIcon({
+      className: '',
+      html: `<div class="${wrapClass}">` +
+        `<div class="dtb-ti-line"></div>` +
+        `<div class="dtb-ti-rot">↻</div>` +
+        `<span class="dtb-ti-text" style="font-family:${font};font-size:${fontSize}px;color:${color};` +
+        `text-shadow:1px 1px 4px rgba(0,0,0,0.95),-1px -1px 4px rgba(0,0,0,0.95),0 0 8px rgba(0,0,0,0.8);">${safe}</span>` +
+        `<div class="dtb-ti-rsz"></div>` +
+        `</div>`,
+      iconAnchor: [0, fontSize]
+    });
+  }
+
+  if (_dtbPreviewMkr) { map.removeLayer(_dtbPreviewMkr); _dtbPreviewMkr = null; }
+
+  const marker = L.marker(latlng, { icon: buildIcon(false), interactive: true, zIndexOffset: 500 }).addTo(map);
+  _allToolLayers.push(marker);
+  _dtbRedoStack.length = 0;
+  document.getElementById('dtb-redo-btn')?.classList.remove('active');
+
+  // Click → select / deselect with handles
+  marker.on('click', function(e) {
+    L.DomEvent.stopPropagation(e);
+    if (_dtbSelectedTxt && _dtbSelectedTxt.marker === marker) {
+      // deselect
+      _dtbSelectedTxt = null;
+      marker.setIcon(buildIcon(false));
+      return;
+    }
+    // deselect previous
+    if (_dtbSelectedTxt) _dtbSelectedTxt.marker.setIcon(buildIcon(false));
+    _dtbSelectedTxt = { marker, item };
+    marker.setIcon(buildIcon(true));
+    // wire handles after icon renders
+    requestAnimationFrame(() => _dtbWireHandles(marker, item, buildIcon));
+  });
+
+  _dtbCloseTextPanel();
+  _dtbTextLatlng = null;
+  if (inp) inp.value = '';
+}
+
+function _dtbWireHandles(marker, item, buildIcon) {
+  const el = marker.getElement();
+  if (!el) return;
+  const rotH = el.querySelector('.dtb-ti-rot');
+  const rszH = el.querySelector('.dtb-ti-rsz');
+  if (!rotH || !rszH) return;
+
+  // Rotate handle
+  rotH.addEventListener('mousedown', function(e) {
+    e.stopPropagation(); e.preventDefault();
+    const wrap = el.querySelector('.dtb-ti-wrap');
+    const textEl = el.querySelector('.dtb-ti-text');
+    const rect = wrap.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const startAngle = Math.atan2(e.clientY - cy, e.clientX - cx);
+    const startRot = item.rotation || 0;
+    function onMove(ev) {
+      const angle = Math.atan2(ev.clientY - cy, ev.clientX - cx);
+      item.rotation = startRot + (angle - startAngle) * (180 / Math.PI);
+      if (textEl) textEl.style.transform = `rotate(${item.rotation}deg)`;
+      if (wrap) wrap.style.transform = `rotate(${item.rotation}deg)`;
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  // Resize handle
+  rszH.addEventListener('mousedown', function(e) {
+    e.stopPropagation(); e.preventDefault();
+    const wrap = el.querySelector('.dtb-ti-wrap');
+    const textEl = el.querySelector('.dtb-ti-text');
+    const rect = wrap.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const startDist = Math.hypot(e.clientX - cx, e.clientY - cy);
+    const startSize = item.fontSize;
+    function onMove(ev) {
+      const dist = Math.hypot(ev.clientX - cx, ev.clientY - cy);
+      item.fontSize = Math.max(10, Math.round(startSize * (dist / startDist)));
+      if (textEl) textEl.style.fontSize = item.fontSize + 'px';
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
 }
 
 function _dtbShowTextInput(latlng) {
   // Called when map is clicked in text mode
-  if (!_dtbTpPlacing) return; // panel not in place mode — ignore
   _dtbTextLatlng = latlng;
-  _dtbSubmitText();
+  _dtbOpenTextPanel();
+  _dtbTpUpdatePreview();
 }
 
-function _dtbSubmitText() {
-  const inp = document.getElementById('dtb-tp-input');
-  if (!inp || !_dtbTextLatlng) return;
-  const text = inp.value.trim();
-  if (text) {
-    const fontSize = Math.max(12, Math.round(_dtbSize * 2.2));
-    const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const html = `<span style="font-family:${_dtbFont};font-size:${fontSize}px;color:${_dtbColor};` +
-      `font-weight:700;white-space:nowrap;` +
-      `text-shadow:1px 1px 4px rgba(0,0,0,0.95),-1px -1px 4px rgba(0,0,0,0.95),` +
-      `0 0 8px rgba(0,0,0,0.8);pointer-events:none;display:block;">${safe}</span>`;
-    const marker = L.marker(_dtbTextLatlng, {
-      icon: L.divIcon({ className: '', html, iconAnchor: [0, fontSize] }),
-      interactive: false
-    }).addTo(map);
-    _allToolLayers.push(marker);
-    _dtbRedoStack.length = 0;
-    document.getElementById('dtb-redo-btn')?.classList.remove('active');
-  }
-  // Reset for next placement
-  _dtbTpPlacing = false;
-  _dtbTextLatlng = null;
-  map.getContainer().style.cursor = 'text';
-  const btn = document.getElementById('dtb-tp-place');
-  if (btn) { btn.classList.remove('placing'); btn.textContent = 'Tap map to place text'; }
-  inp.value = '';
-  setTimeout(() => inp.focus(), 50);
-}
-
-function _dtbCancelText() { _dtbTpPlacing = false; _dtbTextLatlng = null; }
+function _dtbCancelText() { _dtbTextLatlng = null; }
 
 // Init panel font chips + input listeners
 (function _initTextPanel() {
@@ -12088,11 +12200,12 @@ function _dtbCancelText() { _dtbTpPlacing = false; _dtbTextLatlng = null; }
     btn.addEventListener('click', () => _dtbSetFont(btn.dataset.font, btn));
   });
 
-  // Input — Enter to start placing, Escape to close
+  // Input — live preview + Enter to commit
   const inp = document.getElementById('dtb-tp-input');
   if (inp) {
+    inp.addEventListener('input', () => _dtbTpUpdatePreview());
     inp.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); _dtbTpStartPlace(); }
+      if (e.key === 'Enter') { e.preventDefault(); _dtbTpCommit(); }
       if (e.key === 'Escape') { e.preventDefault(); _dtbCloseTextPanel(); }
     });
     inp.addEventListener('mousedown', e => e.stopPropagation());
