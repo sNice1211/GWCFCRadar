@@ -17870,6 +17870,28 @@ function selectProduct(p) {
 (function() {
   let _menuOpen = false;
   let _closeTimer = null;
+  let _mouseX = 0, _mouseY = 0;
+  const PROXIMITY_PX = 64; // px — menu stays open within this distance
+
+  document.addEventListener('mousemove', function(e) {
+    _mouseX = e.clientX; _mouseY = e.clientY;
+  }, { passive: true });
+
+  function _isNear() {
+    const ids = ['logo-wrap', 'logo-quick-menu', 'lqm-search-overlay', 'lqm-settings-overlay'];
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      // Only consider visible elements
+      if (el.style.display === 'none' || el.classList.contains('lqm-hidden')) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      const dx = Math.max(0, r.left - _mouseX, _mouseX - r.right);
+      const dy = Math.max(0, r.top  - _mouseY, _mouseY - r.bottom);
+      if (Math.hypot(dx, dy) < PROXIMITY_PX) return true;
+    }
+    return false;
+  }
 
   function _openMenu() {
     if (_closeTimer) { clearTimeout(_closeTimer); _closeTimer = null; }
@@ -17881,7 +17903,14 @@ function selectProduct(p) {
 
   function _scheduleClose() {
     if (_closeTimer) clearTimeout(_closeTimer);
-    _closeTimer = setTimeout(_closeMenu, 220);
+    _closeTimer = setTimeout(function tryClose() {
+      if (_isNear()) {
+        // Still nearby — keep checking
+        _closeTimer = setTimeout(tryClose, 150);
+      } else {
+        _closeMenu();
+      }
+    }, 300);
   }
 
   function _cancelClose() {
@@ -17920,7 +17949,7 @@ function selectProduct(p) {
     logo.removeAttribute('href');
     logo.style.cursor = 'default';
 
-    // Desktop: open on hover, close when mouse leaves both logo and menu
+    // Desktop: open on hover, proximity-based close
     wrap.addEventListener('mouseenter', _openMenu);
     wrap.addEventListener('mouseleave', _scheduleClose);
     menu.addEventListener('mouseenter', _cancelClose);
