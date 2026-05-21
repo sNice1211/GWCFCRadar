@@ -12362,20 +12362,31 @@ function _ttbSetCat(cat) {
   // Update preview line color on next mousemove
 }
 
+let _trackPreviewEnabled = true; // when false, dotted preview line is hidden
+
 function _ttbToggleLine() {
   _trackAnimShowLine = !_trackAnimShowLine;
   const btn = document.getElementById('ttb-line-btn');
   if (btn) btn.classList.toggle('ttb-active', _trackAnimShowLine);
-  // Also apply immediately to any already-drawn segments
+  // Apply immediately to already-drawn segments
   const op = _trackAnimShowLine ? 0.92 : 0;
   _trackSegs.forEach(s => s.setStyle({ opacity: op }));
 }
 
+function _ttbTogglePreview() {
+  _trackPreviewEnabled = !_trackPreviewEnabled;
+  // Hide the current preview line immediately if disabling
+  if (!_trackPreviewEnabled && _trackPreview) {
+    map.removeLayer(_trackPreview);
+    _trackPreview = null;
+  }
+}
+
 // ── WAYPOINT EDITOR ─────────────────────────────────────────────────────────
 function _ttbSelectMarker(idx) {
-  // Clicking the last placed icon toggles the track line
+  // Clicking the last placed icon toggles only the dotted preview line
   if (idx === _trackPts.length - 1) {
-    _ttbToggleLine();
+    _ttbTogglePreview();
     return;
   }
   if (_ttbSelectedIdx >= 0 && _ttbSelectedIdx < _trackMarkers.length) {
@@ -12439,6 +12450,7 @@ function startTrackTool() {
   deactivateTool();
   activeTool = 'track';
   _trackPts = []; _trackSegs = []; _trackMarkers = []; _trackRedoStack = [];
+  _trackPreviewEnabled = true;
   const _ab = document.getElementById('ttb-anim-btn');
   if (_ab) { _ab.disabled = true; _ab.style.opacity = '0.4'; }
   const _rb = document.getElementById('ttb-redo-btn');
@@ -12494,7 +12506,8 @@ function _onTrackClick(e) {
 
 function _onTrackMove(e) {
   if (activeTool !== 'track' || !_trackPts.length) return;
-  if (_trackPreview) map.removeLayer(_trackPreview);
+  if (_trackPreview) { map.removeLayer(_trackPreview); _trackPreview = null; }
+  if (!_trackPreviewEnabled) return;
   const ic = TTB_ICONS[_ttbActiveCat] || TTB_ICONS.td;
   _trackPreview = L.polyline(
     [_trackPts[_trackPts.length - 1].latlng, e.latlng],
