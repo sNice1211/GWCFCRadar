@@ -9459,6 +9459,14 @@ function _disableRadar() {
   activeLayers.nexrad = false;
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
   if (radarLayer) { try { map.removeLayer(radarLayer); } catch(e){} radarLayer = null; }
+  // Clean up velocity if active
+  if (currentProduct === 'vel' || _velLayerPool.length) {
+    _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+    _velLayerPool = []; _velPoolLoaded = [];
+    if (velocityLayer) { try { map.removeLayer(velocityLayer); } catch(e){} velocityLayer = null; }
+    velFrames = []; velCurrentFrame = 0;
+    if (currentProduct === 'vel') currentProduct = 'ref';
+  }
   const el = document.getElementById('layer-nexrad');
   if (el) el.classList.remove('active');
   const sub = document.getElementById('sub-nexrad');
@@ -10624,7 +10632,7 @@ function toggleFutureRadar() {
 
 const RADAR_SUB_BUBBLES = [
   { id:'reflectivity', icon:'🌧', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
-  { id:'velocity',     icon:'💨', label:'Velocity',     action: () => { if (activeLayers.nexrad && currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
+  { id:'velocity',     icon:'💨', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
   // future radar removed
 ];
 
@@ -10641,10 +10649,9 @@ function toggleRadarSub() {
   };
   wrap.appendChild(back);
   RADAR_SUB_BUBBLES.forEach(b => {
-    const isActiveProd = activeLayers.nexrad && (
-      (b.id === 'reflectivity' && currentProduct === 'ref') ||
-      (b.id === 'velocity'     && currentProduct === 'vel')
-    );
+    const isActiveProd =
+      (b.id === 'reflectivity' && activeLayers.nexrad && currentProduct === 'ref') ||
+      (b.id === 'velocity'     && currentProduct === 'vel');
     const isFutureBubble = b.id === 'future';
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
@@ -13119,7 +13126,12 @@ function _buildVelPool(station, frames) {
       TIME:        frame.iso,
       opacity:     0,
       zIndex:      10,
+      pane:        'radarPane',
+      crossOrigin: 'anonymous',
       noWrap:      true,
+      keepBuffer:  2,
+      updateWhenIdle: false,
+      updateWhenZooming: false,
     });
     _velPoolLoaded[i] = false;
     l.on('tileload', () => { _velPoolLoaded[i] = true; });
