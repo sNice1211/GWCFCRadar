@@ -5467,7 +5467,7 @@ function _remapTileColors(tile) {
     const key = (r << 16) | (g << 8) | b;
     let mapped = _colorRemapCache.get(key);
     if (mapped === undefined) {
-      let bestD = 3600, bestJ = -1;
+      let bestD = 12000, bestJ = -1;
       for (let j = 0; j < n; j++) {
         const s = NWS_SOURCE_COLORS[j];
         const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
@@ -5839,7 +5839,7 @@ async function _fetchConusL3Timestamps() {
     }
   }
   if (!timeStr || !layerName) throw new Error('CONUS reflectivity layer not found');
-  const times = timeStr.split(',').map(s => s.trim()).filter(Boolean).slice(-20);
+  const times = timeStr.split(',').map(s => s.trim()).filter(Boolean).slice(-36);
   return { layerName, frames: times.map(iso => ({ time: new Date(iso).getTime() / 1000, iso, forecast: false })) };
 }
 
@@ -5849,8 +5849,8 @@ function _buildNexradFrames() {
   now.setUTCSeconds(0, 0);
   now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
   const pad = n => String(n).padStart(2, '0');
-  return Array.from({ length: 18 }, (_, idx) => {
-    const t = new Date(now.getTime() - (17 - idx) * 5 * 60 * 1000);
+  return Array.from({ length: 36 }, (_, idx) => {
+    const t = new Date(now.getTime() - (35 - idx) * 5 * 60 * 1000);
     const iso = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
     return { time: t.getTime() / 1000, iso, forecast: false };
   });
@@ -5894,6 +5894,7 @@ async function _upgradeConusToL3() {
     NEXRAD_LAYER = layerName;
     NEXRAD_VER   = '1.3.0';
     _nexradIsL3  = true;
+    _colorRemapCache.clear();
     radarFrames  = frames;
     lastPastIdx  = frames.length - 1;
     const tl = document.getElementById('timeline');
@@ -6027,14 +6028,14 @@ function _ensureNexradLayer(i) {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
     keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
-    detectRetina: false,
+    detectRetina: true,
     attribution: _nexradIsL3 ? 'NEXRAD © NOAA Level III' : 'NEXRAD © NOAA via Iowa Mesonet',
   });
   _radarLayerLoaded[i] = false;
   l.on('tileload', (e) => {
     _radarLayerLoaded[i] = true;
-    if (!_nexradIsL3) _remapTileColors(e.tile);
-    if (smoothEnabled) e.tile.style.imageRendering = 'auto';
+    _remapTileColors(e.tile);
+    e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
   });
   l.addTo(map);
   _radarLayerPool[i] = l;
@@ -12865,65 +12866,64 @@ function _ttbStopAnim() {
 
 // ── ANIMATION CONTROLS ──
 let playingBack = false, playBackTimer = null;
+let _rafPlayId = null, _rafLastTs = 0;
+
+function _rafTick(ts) {
+  const dir = playing ? 1 : playingBack ? -1 : 0;
+  if (!dir) return;
+  const interval = Math.max(50, 600 / animSpeed);
+  if (ts - _rafLastTs >= interval) {
+    _rafLastTs = ts;
+    if (activeLayers.satellite && goesFrames.length) {
+      goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
+      showGoesFrame(goesCurrentFrame);
+    } else if (currentProduct === 'vel') {
+      velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
+      showVelFrame(velCurrentFrame);
+    } else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) {
+      currentFrame = (currentFrame + dir + _refSiteFrames.length) % _refSiteFrames.length;
+      _showSingleSiteRefFrame(currentFrame);
+    } else {
+      currentFrame = (currentFrame + dir + radarFrames.length) % radarFrames.length;
+      showFrame(currentFrame);
+    }
+  }
+  _rafPlayId = requestAnimationFrame(_rafTick);
+}
+
+function _startRAF() {
+  if (_rafPlayId) cancelAnimationFrame(_rafPlayId);
+  _rafLastTs = 0;
+  _rafPlayId = requestAnimationFrame(_rafTick);
+}
+
+function _stopRAF() {
+  if (_rafPlayId) { cancelAnimationFrame(_rafPlayId); _rafPlayId = null; }
+}
 
 function togglePlay() {
-  if (playingBack) { clearInterval(playBackTimer); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); }
+  if (playingBack) { playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
   playing = !playing;
   const btn = document.getElementById('play-btn');
   btn.textContent = playing ? '⏸' : '▶';
   btn.classList.toggle('active', playing);
-  if (playing) {
-    const interval = Math.max(33, 500 / animSpeed);
-    playTimer = setInterval(() => {
-      if (activeLayers.satellite && goesFrames.length) {
-        goesCurrentFrame = (goesCurrentFrame + 1) % goesFrames.length;
-        showGoesFrame(goesCurrentFrame);
-      } else if (currentProduct === 'vel') {
-        velCurrentFrame = (velCurrentFrame + 1) % velFrames.length;
-        showVelFrame(velCurrentFrame);
-      } else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) {
-        currentFrame = (currentFrame + 1) % _refSiteFrames.length;
-        _showSingleSiteRefFrame(currentFrame);
-      } else {
-        currentFrame = (currentFrame + 1) % radarFrames.length;
-        showFrame(currentFrame);
-      }
-    }, interval);
-  } else { clearInterval(playTimer); }
+  if (playing) _startRAF(); else _stopRAF();
 }
 
 function togglePlayBack() {
-  if (playing) { clearInterval(playTimer); playing = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
+  if (playing) { playing = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
   playingBack = !playingBack;
   const btn = document.getElementById('play-back-btn');
   btn.classList.toggle('active', playingBack);
   btn.textContent = playingBack ? '⏸' : '◀';
-  if (playingBack) {
-    const interval = Math.max(33, 500 / animSpeed);
-    playBackTimer = setInterval(() => {
-      if (activeLayers.satellite && goesFrames.length) {
-        goesCurrentFrame = (goesCurrentFrame - 1 + goesFrames.length) % goesFrames.length;
-        showGoesFrame(goesCurrentFrame);
-      } else if (currentProduct === 'vel') {
-        velCurrentFrame = (velCurrentFrame - 1 + velFrames.length) % velFrames.length;
-        showVelFrame(velCurrentFrame);
-      } else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) {
-        currentFrame = (currentFrame - 1 + _refSiteFrames.length) % _refSiteFrames.length;
-        _showSingleSiteRefFrame(currentFrame);
-      } else {
-        currentFrame = (currentFrame - 1 + radarFrames.length) % radarFrames.length;
-        showFrame(currentFrame);
-      }
-    }, interval);
-  } else { clearInterval(playBackTimer); }
+  if (playingBack) _startRAF(); else _stopRAF();
 }
 
 function setAnimSpeed(val) {
   const parsed = parseFloat(val);
   if (isNaN(parsed) || parsed <= 0) return;
   animSpeed = parsed;
-  if (playing)    { clearInterval(playTimer);    playing    = false; togglePlay(); }
-  if (playingBack){ clearInterval(playBackTimer); playingBack = false; togglePlayBack(); }
+  // RAF loop reads animSpeed live — no restart needed
 }
 function cycleSpeed() {} // kept for compat
 
@@ -17782,7 +17782,7 @@ function selectProduct(p) {
   <div class="lqm-settings-row">
     <span class="lqm-settings-lbl">Smooth Animation</span>
     <label class="lqm-toggle">
-      <input type="checkbox" id="lqm-set-smooth" onchange="lqmToggleSetting('smooth',this.checked)">
+      <input type="checkbox" id="lqm-set-smooth" checked onchange="lqmToggleSetting('smooth',this.checked)">
       <div class="lqm-toggle-track"></div>
       <div class="lqm-toggle-knob"></div>
     </label>
@@ -19629,21 +19629,15 @@ lqmDoSearch = async function() {
 function lqmSetRadarOpacity(val) {
   document.getElementById('lqm-opacity-val').textContent = val + '%';
   try { localStorage.setItem('lqm_radaropacity', val); } catch(e){}
-  // Apply to all radar tile panes
-  const pane = window.map && map.getPane('radarPane');
-  if (pane) pane.style.opacity = val/100;
-  // Also try the tileLayer opacity if accessible
-  if (window._nexradLayer) _nexradLayer.setOpacity(val/100);
+  radarOpacity = val / 100;
+  if (typeof showFrame === 'function') showFrame(currentFrame);
 }
 
 function lqmSetLoopSpeed(val) {
   document.getElementById('lqm-loopspeed-val').textContent = val;
   try { localStorage.setItem('lqm_loopspeed', val); } catch(e){}
-  // Map 1-5 → interval ms (1=slow=600ms, 5=fast=120ms)
-  const ms = 660 - (val-1)*120;
-  if (window._animInterval) { clearInterval(window._animInterval); }
-  // The main animation uses its own interval — just store for next play
-  window._gwcfc_loopspeed_ms = ms;
+  // Map slider 1-5 → animSpeed 0.5-3.0 (RAF loop reads animSpeed live)
+  animSpeed = 0.5 + (val - 1) * 0.625;
 }
 
 function lqmSetAlertOpacity(val) {
