@@ -5023,9 +5023,9 @@ body.gwcfc-crosshair #map::after {
         <div id="mag-ctrl-row" class="fnv3-controls">
           <div>
             <div class="fnv3-label">Model</div>
-            <select id="mag-model-sel" class="fnv3-select" onchange="_magModelChange()">
+            <select id="mag-model-sel" class="fnv3-select" onchange="_magUpdate()">
               <option value="gfs">GFS</option>
-              <option value="ecmwf">Euro</option>
+              <option value="nam">NAM</option>
             </select>
           </div>
           <div>
@@ -5055,13 +5055,14 @@ body.gwcfc-crosshair #map::after {
         <div id="mag-fh-row">
           <span class="fnv3-label">Hour:</span>
           <input id="mag-fh-slider" type="range" min="0" max="20" step="1" value="0" oninput="_magFhChange(this.value)">
-          <span id="mag-fh-label" style="color:rgba(0,200,255,0.85);font-size:9px;min-width:28px">F000</span>
+          <span id="mag-fh-label" style="color:rgba(0,200,255,0.85);font-size:9px;min-width:36px">F000</span>
         </div>
         <div id="mag-img-wrap">
-          <img id="mag-img" src="" alt="" style="width:100%;border-radius:4px;display:none">
+          <img id="mag-img" src="" alt="" style="width:100%;border-radius:4px;display:none" referrerpolicy="no-referrer">
           <div id="mag-img-status">Loading…</div>
         </div>
-        <div id="mag-img-credit">Source: <a href="https://www.tropicaltidbits.com/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">Tropical Tidbits</a></div>
+        <div id="mag-debug-url" style="font-size:7px;color:rgba(160,190,220,0.4);padding:0 10px 2px;word-break:break-all"></div>
+        <div id="mag-img-credit">Source: <a href="https://mag.ncep.noaa.gov/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">NOAA NCEP MAG</a></div>
       </div>
     </div>
 
@@ -11235,36 +11236,37 @@ function _atcfPopulateStorms(storms) {
 }
 // ── END ATCF ────────────────────────────────────────────────────────────────
 
-// ── RUN MODELS — Tropical Tidbits images ────────────────────────────────────
+// ── RUN MODELS ────────────────────────────────────────────────────────────────
 
-// Tropical Tidbits product codes per model
-const TTB_PRODUCTS = {
-  gfs: {
-    mslp_precip:  'mslp_pcpn_frzn',
-    '850wind':    '850_wnd',
-    '200wind':    '200_wnd',
-    wind_shear:   'shear',
-    precip_water: 'pwat',
-  },
-  ecmwf: {
-    mslp_precip:  'mslp_pcpn_frzn',
-    '850wind':    '850_wnd',
-    '200wind':    '200_wnd',
-    wind_shear:   'shear',
-    precip_water: 'pwat',
-  },
+// Forecast hours every 6h, 0–120h
+const MAG_FH_STEPS = [0,6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120];
+
+// TTB product codes (primary source, no-referrer bypasses hotlink check)
+const TTB_PKG = {
+  mslp_precip:  'mslp_pcpn_frzn',
+  '850wind':    'uv850',
+  '200wind':    'uv200',
+  wind_shear:   'shear',
+  precip_water: 'tcwv',
 };
+const TTB_REGION = { tropatl: 'tatl', epac: 'epac' };
 
-const TTB_REGIONS = { tropatl: 'tatl', epac: 'epac' };
-
-// Each step is a forecast hour; TTB frame index = step index + 1 (1-based)
-const TTB_FH_STEPS = [0,6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120];
+// NCEP MAG product codes (fallback, government server — no hotlink protection)
+const MAG_PKG = {
+  mslp_precip:  'mslp_thk_precip',
+  '850wind':    '850_wind',
+  '200wind':    '250_wind',
+  wind_shear:   '200_850_shear',
+  precip_water: 'pwat',
+};
+const MAG_REGION = { tropatl: 'tatl', epac: 'tpac' };
 
 let _magCurrentPkg    = 'mslp_precip';
 let _magCurrentModel  = 'gfs';
 let _magCurrentRegion = 'tropatl';
-let _magCurrentCycle  = null;
+let _magCurrentCycle  = '00';
 let _magCurrentFh     = 0;
+let _magLoadToken     = 0;
 
 function _magAutoSelectCycle() {
   const h = new Date().getUTCHours();
@@ -11276,41 +11278,29 @@ function _magAutoSelectCycle() {
 }
 
 function _magBuildRun(cycle) {
-  const cc  = parseInt(cycle, 10);
+  const cc = parseInt(cycle, 10);
   const now = new Date();
   const d   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cc));
   if (d > now) d.setUTCDate(d.getUTCDate() - 1);
-  const Y  = d.getUTCFullYear();
-  const MM = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(d.getUTCDate()).padStart(2, '0');
-  const CC = String(cc).padStart(2, '0');
-  return `${Y}${MM}${DD}${CC}`;
+  return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}${String(cc).padStart(2,'0')}`;
 }
 
-function _magBuildUrl(model, pkg, region, cycle, fhIdx) {
-  const prods = TTB_PRODUCTS[model];
-  if (!prods || !prods[pkg]) return null;
-  const prod  = prods[pkg];
-  const reg   = TTB_REGIONS[region] || 'tatl';
-  const frame = fhIdx + 1;  // TTB uses 1-based frame numbers
-  const run   = _magBuildRun(cycle);
-  return `https://www.tropicaltidbits.com/analysis/models/${model}/${run}/${model}_${prod}_${reg}_${frame}.png`;
-}
-
-function _magModelChange() {
-  const modelSel = document.getElementById('mag-model-sel');
-  const cycleSel = document.getElementById('mag-cycle-sel');
-  if (!modelSel || !cycleSel) return;
-  const model = modelSel.value;
-  // ECMWF only runs 00Z and 12Z
-  const ecmwfOnly = model === 'ecmwf';
-  Array.from(cycleSel.options).forEach(o => {
-    o.disabled = ecmwfOnly && (o.value === '06' || o.value === '18');
-  });
-  if (ecmwfOnly && (cycleSel.value === '06' || cycleSel.value === '18')) {
-    cycleSel.value = '00';
+function _magBuildCandidates(model, pkg, region, cycle, fhIdx) {
+  const run    = _magBuildRun(cycle);
+  const fhHour = MAG_FH_STEPS[fhIdx] ?? 0;
+  const fhr    = String(fhHour).padStart(3, '0');
+  // TTB uses 1-based frame index
+  const ttbFrame = fhIdx + 1;
+  const ttbReg   = TTB_REGION[region] || 'tatl';
+  const magReg   = MAG_REGION[region] || 'tatl';
+  const candidates = [];
+  if (TTB_PKG[pkg]) {
+    candidates.push(`https://www.tropicaltidbits.com/analysis/models/${model}/${run}/${model}_${TTB_PKG[pkg]}_${ttbReg}_${ttbFrame}.png`);
   }
-  _magUpdate();
+  if (MAG_PKG[pkg]) {
+    candidates.push(`https://mag.ncep.noaa.gov/data/${model}/${run}/${model}_${magReg}_${fhr}_${MAG_PKG[pkg]}.gif`);
+  }
+  return candidates;
 }
 
 function _magSetPkg(pkg) {
@@ -11322,7 +11312,7 @@ function _magSetPkg(pkg) {
 
 function _magFhChange(val) {
   _magCurrentFh = parseInt(val, 10);
-  const fh = TTB_FH_STEPS[_magCurrentFh] ?? 0;
+  const fh = MAG_FH_STEPS[_magCurrentFh] ?? 0;
   const lbl = document.getElementById('mag-fh-label');
   if (lbl) lbl.textContent = 'F' + String(fh).padStart(3, '0');
   _magUpdate();
@@ -11336,20 +11326,53 @@ function _magUpdate() {
   if (cycleSel)  _magCurrentCycle  = cycleSel.value;
   if (regionSel) _magCurrentRegion = regionSel.value;
 
-  const url = _magBuildUrl(_magCurrentModel, _magCurrentPkg, _magCurrentRegion, _magCurrentCycle, _magCurrentFh);
+  const candidates = _magBuildCandidates(_magCurrentModel, _magCurrentPkg, _magCurrentRegion, _magCurrentCycle, _magCurrentFh);
   const img = document.getElementById('mag-img');
   const st  = document.getElementById('mag-img-status');
-  if (!url) {
+  const dbg = document.getElementById('mag-debug-url');
+
+  if (!candidates.length) {
     if (st) st.textContent = '⚠ Product not available.';
     return;
   }
+
+  // Show first candidate URL so user can open/inspect it
+  if (dbg) dbg.innerHTML = candidates.map((u,i) =>
+    `<a href="${u}" target="_blank" rel="noopener" style="color:rgba(0,200,255,${i===0?0.55:0.3})">${i===0?'→ ':''} ${u}</a>`
+  ).join('<br>');
+
   if (st) st.textContent = 'Loading…';
-  if (img) {
-    img.style.display = 'none';
-    img.onload  = () => { img.style.display = 'block'; if (st) st.textContent = ''; };
-    img.onerror = () => { img.style.display = 'none'; if (st) st.textContent = '⚠ Not available — try a different cycle.'; };
-    img.src = url;
+  if (img) img.style.display = 'none';
+
+  const token = ++_magLoadToken;
+  let idx = 0;
+
+  function tryNext() {
+    if (token !== _magLoadToken) return;
+    if (idx >= candidates.length) {
+      if (st) st.textContent = '⚠ Run not available — try a different cycle.';
+      return;
+    }
+    const url = candidates[idx++];
+    const probe = new Image();
+    probe.referrerPolicy = 'no-referrer'; // bypasses TTB hotlink check
+    let settled = false;
+    const timer = setTimeout(() => { if (!settled) { settled = true; tryNext(); } }, 9000);
+    probe.onload = () => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      if (token !== _magLoadToken) return;
+      img.src = url;
+      img.style.display = 'block';
+      if (st) st.textContent = '';
+    };
+    probe.onerror = () => {
+      if (settled) return; settled = true; clearTimeout(timer);
+      if (token !== _magLoadToken) return;
+      tryNext();
+    };
+    probe.src = url;
   }
+  tryNext();
 }
 
 function _magInit() {
@@ -11359,12 +11382,12 @@ function _magInit() {
   const cycleSel = document.getElementById('mag-cycle-sel');
   if (cycleSel) cycleSel.value = c;
   const slider = document.getElementById('mag-fh-slider');
-  if (slider) { slider.max = TTB_FH_STEPS.length - 1; slider.value = 0; }
+  if (slider) { slider.max = MAG_FH_STEPS.length - 1; slider.value = 0; }
   const lbl = document.getElementById('mag-fh-label');
   if (lbl) lbl.textContent = 'F000';
   _magUpdate();
 }
-// ── END RUN MODELS ───────────────────────────────────────────────────────────
+// ── END RUN MODELS ────────────────────────────────────────────────────────────
 
 // ── FNV3 TROPICAL ENSEMBLE MODELS ──────────────────────────────────────────
 const FNV3_BASE = 'https://storage.googleapis.com/weathernext-public/fnv3/';
