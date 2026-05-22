@@ -4722,17 +4722,16 @@ body.gwcfc-crosshair #map::after {
   display: flex; flex-direction: row; gap: 4px;
   padding: 6px 12px 4px; flex-wrap: wrap;
 }
-#mag-cycle-row {
-  display: flex; align-items: center;
-  padding: 4px 12px; border-top: 1px solid rgba(255,255,255,0.05);
+#mag-frame-wrap {
+  padding: 6px 10px 4px;
 }
-#mag-img-wrap {
-  padding: 8px 10px 4px;
-  min-height: 80px;
-  display: flex; align-items: center; justify-content: center;
+#mag-frame {
+  width: 100%; height: 340px;
+  border: none; border-radius: 4px;
+  background: #111;
 }
 #mag-img-status {
-  font-size: 9px; color: rgba(160,190,220,0.55); text-align: center;
+  font-size: 9px; color: rgba(160,190,220,0.55); text-align: center; padding: 4px 0;
 }
 #mag-img-credit {
   font-size: 8px; color: rgba(160,190,220,0.35);
@@ -5023,6 +5022,7 @@ body.gwcfc-crosshair #map::after {
           <div>
             <div class="fnv3-label">Model</div>
             <select id="mag-model-sel" class="fnv3-select" onchange="_magUpdate()">
+              <option value="ecmwf">ECMWF</option>
               <option value="gfs">GFS</option>
             </select>
           </div>
@@ -5037,25 +5037,15 @@ body.gwcfc-crosshair #map::after {
         <div id="mag-product-tabs">
           <div class="trop-stab active" data-pkg="mslp_precip" onclick="_magSetPkg('mslp_precip')">MSLP</div>
           <div class="trop-stab" data-pkg="850wind" onclick="_magSetPkg('850wind')">850mb</div>
-          <div class="trop-stab" data-pkg="200wind" onclick="_magSetPkg('200wind')">200mb</div>
+          <div class="trop-stab" data-pkg="200wind" onclick="_magSetPkg('200wind')">250mb</div>
           <div class="trop-stab" data-pkg="wind_shear" onclick="_magSetPkg('wind_shear')">Shear</div>
           <div class="trop-stab" data-pkg="precip_water" onclick="_magSetPkg('precip_water')">PW</div>
         </div>
-        <div id="mag-cycle-row">
-          <span class="fnv3-label" style="margin-right:6px">Cycle:</span>
-          <span id="mag-cycle-display" style="color:rgba(0,200,255,0.85);font-size:9px">—</span>
-          <select id="mag-cycle-sel" class="fnv3-select" style="margin-left:8px;width:80px" onchange="_magUpdate()">
-            <option value="00">00Z</option>
-            <option value="06">06Z</option>
-            <option value="12">12Z</option>
-            <option value="18">18Z</option>
-          </select>
+        <div id="mag-frame-wrap">
+          <iframe id="mag-frame" title="Windy model viewer" allowfullscreen></iframe>
+          <div id="mag-img-status"></div>
         </div>
-        <div id="mag-img-wrap">
-          <img id="mag-img" src="" alt="Loading model image…" style="width:100%;border-radius:4px;display:none">
-          <div id="mag-img-status">Select a cycle to load.</div>
-        </div>
-        <div id="mag-img-credit">Source: <a href="https://mag.ncep.noaa.gov/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">NOAA NCEP MAG</a></div>
+        <div id="mag-img-credit">Powered by <a href="https://www.windy.com/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">Windy.com</a></div>
       </div>
     </div>
 
@@ -11046,7 +11036,7 @@ function _fnv3SwitchTab(tab) {
     _atcfClearLayers();
     _fnv3ClearLayers();
     if (tab === 'runmodels') {
-      if (!_magCurrentCycle) _magInit();
+      _magInit();
     }
   }
 }
@@ -11229,57 +11219,51 @@ function _atcfPopulateStorms(storms) {
 }
 // ── END ATCF ────────────────────────────────────────────────────────────────
 
-// ── MAG RUN MODELS IMAGERY ─────────────────────────────────────────────────
-const MAG_BASE = 'https://mag.ncep.noaa.gov/data/';
-const PROXY_BASE = 'https://corsproxy.io/?url=';
+// ── RUN MODELS — Windy.com embed ────────────────────────────────────────────
 
-// NCEP MAG product param names  (matches the known-working pattern elsewhere in the codebase)
-const MAG_PRODUCTS = {
-  gfs: {
-    mslp_precip:  'mslp_thk_precip',
-    '850wind':    '850_wind',
-    '200wind':    '250_wind',
-    wind_shear:   '200_850_shear',
-    precip_water: 'pwat',
-  }
+// Windy overlay + level for each product tab
+const WINDY_PRODUCTS = {
+  mslp_precip:  { overlay: 'rain',    level: 'surface' },
+  '850wind':    { overlay: 'wind',    level: '850h'    },
+  '200wind':    { overlay: 'wind',    level: '250h'    },
+  wind_shear:   { overlay: 'wind',    level: 'surface' },
+  precip_water: { overlay: 'clouds',  level: 'surface' },
 };
 
-// Run-Models UI region values → NCEP MAG region codes
-const MAG_REGION_MAP = { tropatl: 'tatl', epac: 'tpac' };
+// Region centre-points for each basin
+const WINDY_REGIONS = {
+  tropatl: { lat: 22,   lon: -55,  zoom: 4 },
+  epac:    { lat: 14,   lon: -107, zoom: 4 },
+};
 
 let _magCurrentPkg    = 'mslp_precip';
-let _magCurrentModel  = 'gfs';
+let _magCurrentModel  = 'ecmwf';
 let _magCurrentRegion = 'tropatl';
-let _magCurrentCycle  = null;   // '00','06','12','18'
 
-function _magAutoSelectCycle() {
-  const h = new Date().getUTCHours();
-  // Models lag ~4h; pick a cycle that should be available
-  if (h >= 22) return '18';
-  if (h >= 16) return '12';
-  if (h >= 10) return '06';
-  if (h >= 4)  return '00';
-  return '18';  // previous day's 18Z
-}
-
-function _magBuildUrl(model, pkg, region, cycle) {
-  const products = MAG_PRODUCTS[model];
-  if (!products || !products[pkg]) return null;
-  const param     = products[pkg];
-  const magRegion = MAG_REGION_MAP[region] || region;
-
-  // Build full run directory: YYYYMMDDCC (e.g. 2024100700)
-  const cycleN = parseInt(cycle, 10);
-  const now    = new Date();
-  const d      = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cycleN));
-  if (d > now) d.setUTCDate(d.getUTCDate() - 1); // cycle hasn't run yet — use previous day
-  const Y  = d.getUTCFullYear();
-  const MM = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(d.getUTCDate()).padStart(2, '0');
-  const CC = String(cycleN).padStart(2, '0');
-  const run = `${Y}${MM}${DD}${CC}`;
-
-  return `${MAG_BASE}${model}/${run}/${model}_${magRegion}_000_${param}.gif`;
+function _magBuildUrl(model, pkg, region) {
+  const prod = WINDY_PRODUCTS[pkg];
+  const reg  = WINDY_REGIONS[region] || WINDY_REGIONS.tropatl;
+  if (!prod) return null;
+  const p = new URLSearchParams({
+    lat:          reg.lat,
+    lon:          reg.lon,
+    zoom:         reg.zoom,
+    level:        prod.level,
+    overlay:      prod.overlay,
+    product:      model,
+    menu:         '',
+    message:      '',
+    marker:       '',
+    calendar:     'now',
+    pressure:     '',
+    type:         'map',
+    location:     'coordinates',
+    detail:       '',
+    metricWind:   'kt',
+    metricTemp:   '°F',
+    radarRange:   '-1',
+  });
+  return `https://embed.windy.com/embed2.html?${p.toString()}`;
 }
 
 function _magSetPkg(pkg) {
@@ -11292,53 +11276,24 @@ function _magSetPkg(pkg) {
 function _magUpdate() {
   const modelSel  = document.getElementById('mag-model-sel');
   const regionSel = document.getElementById('mag-region-sel');
-  const cycleSel  = document.getElementById('mag-cycle-sel');
   if (modelSel)  _magCurrentModel  = modelSel.value;
   if (regionSel) _magCurrentRegion = regionSel.value;
-  if (cycleSel)  _magCurrentCycle  = cycleSel.value;
 
-  const cycleDisp = document.getElementById('mag-cycle-display');
-  if (cycleDisp)  cycleDisp.textContent = _magCurrentCycle + 'Z';
-
-  const url = _magBuildUrl(_magCurrentModel, _magCurrentPkg, _magCurrentRegion, _magCurrentCycle);
-  const img = document.getElementById('mag-img');
-  const st  = document.getElementById('mag-img-status');
+  const url    = _magBuildUrl(_magCurrentModel, _magCurrentPkg, _magCurrentRegion);
+  const frame  = document.getElementById('mag-frame');
+  const st     = document.getElementById('mag-img-status');
   if (!url) {
     if (st) st.textContent = '⚠ Product not available for this model.';
-    if (img) img.style.display = 'none';
     return;
   }
-
-  if (st) st.textContent = 'Loading…';
-  if (img) {
-    img.style.display = 'none';
-    img.onerror = () => {
-      img.style.display = 'none';
-      // Try via CORS proxy on first failure
-      if (!img.dataset.proxied) {
-        img.dataset.proxied = '1';
-        img.src = PROXY_BASE + encodeURIComponent(url);
-      } else {
-        if (st) st.textContent = `⚠ Image not available — ${_magCurrentCycle}Z run may not be ready yet, or try a different cycle.`;
-      }
-    };
-    img.onload = () => {
-      img.style.display = 'block';
-      if (st) st.textContent = '';
-    };
-    img.dataset.proxied = '';
-    img.src = url;
-  }
+  if (frame) frame.src = url;
+  if (st) st.textContent = '';
 }
 
 function _magInit() {
-  const c = _magAutoSelectCycle();
-  _magCurrentCycle = c;
-  const sel = document.getElementById('mag-cycle-sel');
-  if (sel) sel.value = c;
   _magUpdate();
 }
-// ── END MAG ─────────────────────────────────────────────────────────────────
+// ── END RUN MODELS ───────────────────────────────────────────────────────────
 
 // ── FNV3 TROPICAL ENSEMBLE MODELS ──────────────────────────────────────────
 const FNV3_BASE = 'https://storage.googleapis.com/weathernext-public/fnv3/';
@@ -11494,7 +11449,8 @@ function closeFNV3Panel() {
   _fnv3ClearLayers();
   _atcfClearLayers();
   if (_fnv3RefreshTimer) { clearInterval(_fnv3RefreshTimer); _fnv3RefreshTimer = null; }
-  _magCurrentCycle = null;
+  const frame = document.getElementById('mag-frame');
+  if (frame) frame.src = '';
 }
 // ── END FNV3 ────────────────────────────────────────────────────────────────
 
