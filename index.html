@@ -12741,20 +12741,18 @@ function _ttbEditClose() {
   _ttbSelectedIdx = -1;
 }
 
-function _ttbMakeMarker(latlng, cat, selected) {
-  const sz   = 32;
-  const half = 16;
-  const ic   = TTB_ICONS[cat] || TTB_ICONS.td;
-  const ring = selected
-    ? `box-shadow:0 0 0 2px #fff,0 0 10px 3px ${ic.color};border-radius:50%;`
-    : '';
+function _ttbMakeIcon(cat, selected) {
+  const sz = 32, half = 16;
+  const ic  = TTB_ICONS[cat] || TTB_ICONS.td;
+  const ring = selected ? `box-shadow:0 0 0 2px #fff,0 0 10px 3px ${ic.color};border-radius:50%;` : '';
   const html = `<div style="width:${sz}px;height:${sz}px;${ring}">` +
     `<img src="data:image/png;base64,${ic.b64}" ` +
     `style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 4px ${ic.color});" /></div>`;
-  return L.marker(latlng, {
-    icon: L.divIcon({ className:'', html: html, iconAnchor:[half, half] }),
-    interactive: true
-  });
+  return L.divIcon({ className: '', html, iconAnchor: [half, half] });
+}
+
+function _ttbMakeMarker(latlng, cat, selected) {
+  return L.marker(latlng, { icon: _ttbMakeIcon(cat, selected), interactive: true });
 }
 
 function startTrackTool() {
@@ -13000,6 +12998,7 @@ function _ttbStartAnim() {
   if (_trackAnimMarker) { map.removeLayer(_trackAnimMarker); _trackAnimMarker = null; }
   const pt0 = _trackPts[0];
   _trackAnimMarker = _ttbMakeMarker(pt0.latlng, pt0.cat).addTo(map);
+  _trackAnimMarker._animCat = pt0.cat;
 
   // Start animating from first segment
   _ttbAnimStep(0);
@@ -13043,8 +13042,13 @@ function _ttbAnimStep(fromIdx) {
     const lng = fromLL.lng + (toLL.lng - fromLL.lng) * ease;
     const cat = t > 0.65 ? toCat : fromCat;
 
-    if (_trackAnimMarker) map.removeLayer(_trackAnimMarker);
-    _trackAnimMarker = _ttbMakeMarker(L.latLng(lat, lng), cat).addTo(map);
+    if (_trackAnimMarker) {
+      _trackAnimMarker.setLatLng(L.latLng(lat, lng));
+      if (cat !== _trackAnimMarker._animCat) {
+        _trackAnimMarker.setIcon(_ttbMakeIcon(cat));
+        _trackAnimMarker._animCat = cat;
+      }
+    }
 
     if (t < 1) {
       _trackAnimRAF = requestAnimationFrame(frame);
