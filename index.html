@@ -12016,12 +12016,17 @@ function _dtbPlaceCanvasText(latlng, text, font, color, fontSize, rotation) {
     iconAnchor: [0, fontSize]
   });
 
-  const marker = L.marker(latlng, { icon, interactive: true, zIndexOffset: 500 }).addTo(map);
+  const marker = L.marker(latlng, { icon, interactive: true, draggable: true, zIndexOffset: 500 }).addTo(map);
   _allToolLayers.push(marker);
   _dtbRedoStack.length = 0;
   document.getElementById('dtb-redo-btn')?.classList.remove('active');
 
+  let _wasDragged = false;
+  marker.on('dragstart', () => { _wasDragged = true; });
+  marker.on('dragend',   () => { setTimeout(() => { _wasDragged = false; }, 50); });
+
   marker.on('click', function(e) {
+    if (_wasDragged) return;
     if (e.originalEvent?.target?.closest?.('.dtb-cv-h,.dtb-cv-rot')) return;
     L.DomEvent.stopPropagation(e);
     const wrap = marker.getElement()?.querySelector('.dtb-cv-wrap');
