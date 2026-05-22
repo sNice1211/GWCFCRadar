@@ -5025,15 +5025,24 @@ body.gwcfc-crosshair #map::after {
             <div class="fnv3-label">Model</div>
             <select id="mag-model-sel" class="fnv3-select" onchange="_magUpdate()">
               <option value="gfs">GFS</option>
-              <option value="euro">Euro</option>
+              <option value="ecmwf">Euro</option>
               <option value="nam">NAM</option>
+            </select>
+          </div>
+          <div>
+            <div class="fnv3-label">Cycle</div>
+            <select id="mag-cycle-sel" class="fnv3-select" onchange="_magUpdate()">
+              <option value="00">00Z</option>
+              <option value="06">06Z</option>
+              <option value="12">12Z</option>
+              <option value="18">18Z</option>
             </select>
           </div>
           <div>
             <div class="fnv3-label">Region</div>
             <select id="mag-region-sel" class="fnv3-select" onchange="_magUpdate()">
-              <option value="tropatl">Tropical Atlantic</option>
-              <option value="epac">Eastern Pacific</option>
+              <option value="tropatl">Trop Atl</option>
+              <option value="epac">E. Pacific</option>
             </select>
           </div>
         </div>
@@ -11230,6 +11239,7 @@ function _atcfPopulateStorms(storms) {
 // ── RUN MODELS — Tropical Tidbits images ────────────────────────────────────
 
 // Tropical Tidbits product codes per model
+// TTB product codes — these map directly to TTB's filename convention
 const TTB_PRODUCTS = {
   gfs: {
     mslp_precip:  'mslp_pcpn_frzn',
@@ -11238,7 +11248,7 @@ const TTB_PRODUCTS = {
     wind_shear:   'shear',
     precip_water: 'pwat',
   },
-  euro: {
+  ecmwf: {
     mslp_precip:  'mslp_pcpn_frzn',
     '850wind':    '850_wnd',
     '200wind':    '200_wnd',
@@ -11254,42 +11264,46 @@ const TTB_PRODUCTS = {
   },
 };
 
-// Tropical Tidbits region codes
 const TTB_REGIONS = { tropatl: 'tatl', epac: 'epac' };
 
-// Forecast hour steps available on Tropical Tidbits (every 6h up to 120h)
+// Each step is a forecast hour; TTB frame index = step index + 1 (1-based)
 const TTB_FH_STEPS = [0,6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120];
 
 let _magCurrentPkg    = 'mslp_precip';
 let _magCurrentModel  = 'gfs';
 let _magCurrentRegion = 'tropatl';
-let _magCurrentFh     = 0;  // index into TTB_FH_STEPS
+let _magCurrentCycle  = null;
+let _magCurrentFh     = 0;
 
-function _magAutoRun() {
-  // Pick the most recent GFS/Euro run that should be available (~4h lag)
+function _magAutoSelectCycle() {
+  const h = new Date().getUTCHours();
+  if (h >= 22) return '18';
+  if (h >= 16) return '12';
+  if (h >= 10) return '06';
+  if (h >= 4)  return '00';
+  return '18';
+}
+
+function _magBuildRun(cycle) {
+  const cc  = parseInt(cycle, 10);
   const now = new Date();
-  const h   = now.getUTCHours();
-  let cc;
-  if      (h >= 22) cc = 18;
-  else if (h >= 16) cc = 12;
-  else if (h >= 10) cc = 6;
-  else if (h >= 4)  cc = 0;
-  else { cc = 18; now.setUTCDate(now.getUTCDate() - 1); }
-  const Y  = now.getUTCFullYear();
-  const MM = String(now.getUTCMonth() + 1).padStart(2, '0');
-  const DD = String(now.getUTCDate()).padStart(2, '0');
+  const d   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cc));
+  if (d > now) d.setUTCDate(d.getUTCDate() - 1);
+  const Y  = d.getUTCFullYear();
+  const MM = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const DD = String(d.getUTCDate()).padStart(2, '0');
   const CC = String(cc).padStart(2, '0');
   return `${Y}${MM}${DD}${CC}`;
 }
 
-function _magBuildUrl(model, pkg, region, fhIdx) {
+function _magBuildUrl(model, pkg, region, cycle, fhIdx) {
   const prods = TTB_PRODUCTS[model];
   if (!prods || !prods[pkg]) return null;
-  const prod   = prods[pkg];
-  const reg    = TTB_REGIONS[region] || 'tatl';
-  const fh     = String(TTB_FH_STEPS[fhIdx] ?? 0).padStart(3, '0');
-  const run    = _magAutoRun();
-  return `https://www.tropicaltidbits.com/analysis/models/${model}/${run}/${model}_${prod}_${reg}_${fh}.png`;
+  const prod  = prods[pkg];
+  const reg   = TTB_REGIONS[region] || 'tatl';
+  const frame = fhIdx + 1;  // TTB uses 1-based frame numbers
+  const run   = _magBuildRun(cycle);
+  return `https://www.tropicaltidbits.com/analysis/models/${model}/${run}/${model}_${prod}_${reg}_${frame}.png`;
 }
 
 function _magSetPkg(pkg) {
@@ -11309,11 +11323,13 @@ function _magFhChange(val) {
 
 function _magUpdate() {
   const modelSel  = document.getElementById('mag-model-sel');
+  const cycleSel  = document.getElementById('mag-cycle-sel');
   const regionSel = document.getElementById('mag-region-sel');
   if (modelSel)  _magCurrentModel  = modelSel.value;
+  if (cycleSel)  _magCurrentCycle  = cycleSel.value;
   if (regionSel) _magCurrentRegion = regionSel.value;
 
-  const url = _magBuildUrl(_magCurrentModel, _magCurrentPkg, _magCurrentRegion, _magCurrentFh);
+  const url = _magBuildUrl(_magCurrentModel, _magCurrentPkg, _magCurrentRegion, _magCurrentCycle, _magCurrentFh);
   const img = document.getElementById('mag-img');
   const st  = document.getElementById('mag-img-status');
   if (!url) {
@@ -11324,15 +11340,21 @@ function _magUpdate() {
   if (img) {
     img.style.display = 'none';
     img.onload  = () => { img.style.display = 'block'; if (st) st.textContent = ''; };
-    img.onerror = () => { img.style.display = 'none'; if (st) st.textContent = '⚠ Image not found — run may not be ready yet.'; };
+    img.onerror = () => { img.style.display = 'none'; if (st) st.textContent = '⚠ Not available — try a different cycle.'; };
     img.src = url;
   }
 }
 
 function _magInit() {
+  const c = _magAutoSelectCycle();
+  _magCurrentCycle = c;
+  _magCurrentFh    = 0;
+  const cycleSel = document.getElementById('mag-cycle-sel');
+  if (cycleSel) cycleSel.value = c;
   const slider = document.getElementById('mag-fh-slider');
   if (slider) { slider.max = TTB_FH_STEPS.length - 1; slider.value = 0; }
-  _magCurrentFh = 0;
+  const lbl = document.getElementById('mag-fh-label');
+  if (lbl) lbl.textContent = 'F000';
   _magUpdate();
 }
 // ── END RUN MODELS ───────────────────────────────────────────────────────────
