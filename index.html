@@ -11187,13 +11187,11 @@ async function _atcfLoad(stormId) {
     : `${ATCF_BASE}${fileId}.dat`;
 
   try {
-    const resp = await proxiedFetch(url, { signal: _abortSignal(15000) });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const text = await resp.text();
-    if (!text.trim()) throw new Error('Empty file');
+    const text = await proxiedFetch(url, 15000);
+    if (!text || !text.trim()) throw new Error('Empty file — storm may have no model data yet');
     const parsed = _atcfParseFile(text);
     const techCount = Object.keys(parsed).length;
-    if (!techCount) throw new Error('No model data found');
+    if (!techCount) throw new Error('No model data found in file');
     _atcfPlot(parsed, stormId);
     if (status) status.textContent = `✓ ${techCount} models loaded`;
   } catch(e) {
@@ -11235,17 +11233,19 @@ function _atcfPopulateStorms(storms) {
 const MAG_BASE = 'https://mag.ncep.noaa.gov/data/';
 const PROXY_BASE = 'https://corsproxy.io/?url=';
 
-// Known-good product → filename fragment mapping for GFS
-// Pattern: {model}_{pkg}_{region}_{seq}.gif
+// NCEP MAG product param names  (matches the known-working pattern elsewhere in the codebase)
 const MAG_PRODUCTS = {
   gfs: {
-    mslp_precip: 'gfs_mslp_precip_{region}_1',
-    '850wind':   'gfs_850wind_{region}_1',
-    '200wind':   'gfs_200wind_{region}_1',
-    wind_shear:  'gfs_wind_shear_{region}_1',
-    precip_water:'gfs_precip_water_{region}_1',
+    mslp_precip:  'mslp_thk_precip',
+    '850wind':    '850_wind',
+    '200wind':    '250_wind',
+    wind_shear:   'shear_magnitude',
+    precip_water: 'pwat',
   }
 };
+
+// Run-Models UI region values → NCEP MAG region codes
+const MAG_REGION_MAP = { tropatl: 'tatl', epac: 'tpac' };
 
 let _magCurrentPkg    = 'mslp_precip';
 let _magCurrentModel  = 'gfs';
@@ -11265,9 +11265,21 @@ function _magAutoSelectCycle() {
 function _magBuildUrl(model, pkg, region, cycle) {
   const products = MAG_PRODUCTS[model];
   if (!products || !products[pkg]) return null;
-  const template = products[pkg];
-  const filename = template.replace('{region}', region) + '.gif';
-  return `${MAG_BASE}${model}/${cycle}z/${filename}`;
+  const param     = products[pkg];
+  const magRegion = MAG_REGION_MAP[region] || region;
+
+  // Build full run directory: YYYYMMDDCC (e.g. 2024100700)
+  const cycleN = parseInt(cycle, 10);
+  const now    = new Date();
+  const d      = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cycleN));
+  if (d > now) d.setUTCDate(d.getUTCDate() - 1); // cycle hasn't run yet — use previous day
+  const Y  = d.getUTCFullYear();
+  const MM = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const DD = String(d.getUTCDate()).padStart(2, '0');
+  const CC = String(cycleN).padStart(2, '0');
+  const run = `${Y}${MM}${DD}${CC}`;
+
+  return `${MAG_BASE}${model}/${run}/${model}_${magRegion}_000_${param}.gif`;
 }
 
 function _magSetPkg(pkg) {
@@ -11434,11 +11446,10 @@ async function _fnv3FetchCSV(url) {
   const status = document.getElementById('fnv3-status');
   if (status) status.textContent = 'Fetching…';
   try {
-    const resp = await proxiedFetch(url, { signal: _abortSignal(20000) });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const text = await resp.text();
+    const text = await proxiedFetch(url, 20000);
+    if (!text || !text.trim()) throw new Error('No ensemble data for this run');
     const rows = _fnv3ParseCSV(text);
-    if (!rows.length) throw new Error('No valid rows');
+    if (!rows.length) throw new Error('No valid rows in ensemble data');
     _fnv3Data = rows;
     _fnv3PopulateStormSel(rows);
     _fnv3PlotTracks(rows, _fnv3CurrentStorm);
