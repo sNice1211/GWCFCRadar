@@ -5023,10 +5023,9 @@ body.gwcfc-crosshair #map::after {
         <div id="mag-ctrl-row" class="fnv3-controls">
           <div>
             <div class="fnv3-label">Model</div>
-            <select id="mag-model-sel" class="fnv3-select" onchange="_magUpdate()">
+            <select id="mag-model-sel" class="fnv3-select" onchange="_magModelChange()">
               <option value="gfs">GFS</option>
               <option value="ecmwf">Euro</option>
-              <option value="nam">NAM</option>
             </select>
           </div>
           <div>
@@ -11239,7 +11238,6 @@ function _atcfPopulateStorms(storms) {
 // ── RUN MODELS — Tropical Tidbits images ────────────────────────────────────
 
 // Tropical Tidbits product codes per model
-// TTB product codes — these map directly to TTB's filename convention
 const TTB_PRODUCTS = {
   gfs: {
     mslp_precip:  'mslp_pcpn_frzn',
@@ -11249,13 +11247,6 @@ const TTB_PRODUCTS = {
     precip_water: 'pwat',
   },
   ecmwf: {
-    mslp_precip:  'mslp_pcpn_frzn',
-    '850wind':    '850_wnd',
-    '200wind':    '200_wnd',
-    wind_shear:   'shear',
-    precip_water: 'pwat',
-  },
-  nam: {
     mslp_precip:  'mslp_pcpn_frzn',
     '850wind':    '850_wnd',
     '200wind':    '200_wnd',
@@ -11304,6 +11295,22 @@ function _magBuildUrl(model, pkg, region, cycle, fhIdx) {
   const frame = fhIdx + 1;  // TTB uses 1-based frame numbers
   const run   = _magBuildRun(cycle);
   return `https://www.tropicaltidbits.com/analysis/models/${model}/${run}/${model}_${prod}_${reg}_${frame}.png`;
+}
+
+function _magModelChange() {
+  const modelSel = document.getElementById('mag-model-sel');
+  const cycleSel = document.getElementById('mag-cycle-sel');
+  if (!modelSel || !cycleSel) return;
+  const model = modelSel.value;
+  // ECMWF only runs 00Z and 12Z
+  const ecmwfOnly = model === 'ecmwf';
+  Array.from(cycleSel.options).forEach(o => {
+    o.disabled = ecmwfOnly && (o.value === '06' || o.value === '18');
+  });
+  if (ecmwfOnly && (cycleSel.value === '06' || cycleSel.value === '18')) {
+    cycleSel.value = '00';
+  }
+  _magUpdate();
 }
 
 function _magSetPkg(pkg) {
