@@ -11945,11 +11945,39 @@ function _onDrawClick() {}
 // ── CANVA-STYLE TEXT TOOL ─────────────────────────────────────────────────────
 let _dtbTextEditor  = null;  // temporary inline-editor marker
 let _dtbCurrentSel  = null;  // currently selected .dtb-cv-wrap element
+let _dtbCurrentItem = null;  // item object for the currently selected text
 
-function _dtbSelectText(wrapEl) {
+function _dtbOpenLMenu() {
+  const menu = document.getElementById('dtb-lmenu');
+  const tBtn = document.getElementById('dtb-mode-text');
+  if (!menu || !tBtn) return;
+  const r = tBtn.getBoundingClientRect();
+  menu.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+  menu.style.left   = r.left + 'px';
+  menu.classList.add('open');
+}
+
+function _dtbSyncLMenuToItem(item) {
+  document.querySelectorAll('.dtb-lm-font').forEach(b => {
+    b.classList.toggle('active', b.dataset.font === item.font);
+  });
+  const swatch = document.getElementById('dtb-lm-swatch');
+  const picker = document.getElementById('dtb-lm-colorpicker');
+  if (swatch) swatch.style.background = item.color;
+  if (picker) picker.value = item.color;
+  _dtbFont  = item.font;
+  _dtbColor = item.color;
+}
+
+function _dtbSelectText(wrapEl, item) {
   if (_dtbCurrentSel && _dtbCurrentSel !== wrapEl) _dtbCurrentSel.classList.remove('sel');
-  _dtbCurrentSel = wrapEl || null;
-  if (wrapEl) wrapEl.classList.add('sel');
+  _dtbCurrentSel  = wrapEl || null;
+  _dtbCurrentItem = item   || null;
+  if (wrapEl) {
+    wrapEl.classList.add('sel');
+    if (item) _dtbSyncLMenuToItem(item);
+    _dtbOpenLMenu();
+  }
 }
 
 function _dtbShowTextInput(latlng) {
@@ -12032,11 +12060,71 @@ function _dtbPlaceCanvasText(latlng, text, font, color, fontSize, rotation) {
     const wrap = marker.getElement()?.querySelector('.dtb-cv-wrap');
     if (!wrap) return;
     if (_dtbCurrentSel === wrap) { _dtbSelectText(null); return; }
-    _dtbSelectText(wrap);
+    _dtbSelectText(wrap, item);
     requestAnimationFrame(() => _dtbWireCanvasHandles(wrap, item));
   });
 
+  marker.on('dblclick', function(e) {
+    L.DomEvent.stopPropagation(e);
+    _dtbSelectText(null);
+    _dtbEditExistingText(marker, item);
+  });
+
   return marker;
+}
+
+function _dtbEditExistingText(marker, item) {
+  if (_dtbTextEditor) { map.removeLayer(_dtbTextEditor); _dtbTextEditor = null; }
+  const latlng = marker.getLatLng();
+  const safePre = item.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const edHtml = `<div class="dtb-cv-editor" contenteditable="true" spellcheck="false"
+    style="font-family:${item.font};font-size:${item.fontSize}px;color:${item.color};font-weight:700;
+    text-shadow:1px 1px 4px rgba(0,0,0,0.9),-1px -1px 4px rgba(0,0,0,0.9);">${safePre}</div>`;
+
+  const origEl = marker.getElement();
+  if (origEl) origEl.style.visibility = 'hidden';
+
+  _dtbTextEditor = L.marker(latlng, {
+    icon: L.divIcon({ className: '', html: edHtml, iconAnchor: [0, item.fontSize] }),
+    interactive: false, zIndexOffset: 2000
+  }).addTo(map);
+
+  setTimeout(() => {
+    const el = _dtbTextEditor?.getElement()?.querySelector('.dtb-cv-editor');
+    if (!el) return;
+    el.focus();
+    const r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+    const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+
+    let _committed = false;
+    function commit() {
+      if (_committed) return; _committed = true;
+      const text = (el.innerText || el.textContent || '').trim();
+      map.removeLayer(_dtbTextEditor); _dtbTextEditor = null;
+      if (origEl) origEl.style.visibility = '';
+      if (text) {
+        item.text = text;
+        const textEl = marker.getElement()?.querySelector('.dtb-cv-text');
+        if (textEl) {
+          const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          textEl.innerHTML = safe;
+        }
+      }
+    }
+
+    el.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); commit(); }
+      if (ev.key === 'Escape') {
+        _committed = true;
+        map.removeLayer(_dtbTextEditor); _dtbTextEditor = null;
+        if (origEl) origEl.style.visibility = '';
+      }
+      ev.stopPropagation();
+    });
+    el.addEventListener('blur', () => setTimeout(commit, 160));
+    el.addEventListener('mousedown',  ev => ev.stopPropagation());
+    el.addEventListener('touchstart', ev => ev.stopPropagation(), { passive: true });
+  }, 80);
 }
 
 function _dtbWireCanvasHandles(wrap, item) {
@@ -12095,6 +12183,11 @@ function _dtbSetFont(fontValue, btn) {
   if (btn) btn.classList.add('active');
   const ed = _dtbTextEditor?.getElement()?.querySelector('.dtb-cv-editor');
   if (ed) ed.style.fontFamily = fontValue;
+  if (_dtbCurrentSel && _dtbCurrentItem) {
+    _dtbCurrentItem.font = fontValue;
+    const textEl = _dtbCurrentSel.querySelector('.dtb-cv-text');
+    if (textEl) textEl.style.fontFamily = fontValue;
+  }
 }
 
 function _dtbLmPickColor(hex) {
@@ -12103,6 +12196,11 @@ function _dtbLmPickColor(hex) {
   if (swatch) swatch.style.background = hex;
   const ed = _dtbTextEditor?.getElement()?.querySelector('.dtb-cv-editor');
   if (ed) ed.style.color = hex;
+  if (_dtbCurrentSel && _dtbCurrentItem) {
+    _dtbCurrentItem.color = hex;
+    const textEl = _dtbCurrentSel.querySelector('.dtb-cv-text');
+    if (textEl) textEl.style.color = hex;
+  }
 }
 
 function _dtbToggleLMenu() {
@@ -12139,7 +12237,9 @@ function _dtbToggleLMenu() {
 
   // Close L-menu on outside touch/click
   function _lmenuOutside(e) {
-    if (!e.target.closest('#dtb-lmenu') && !e.target.closest('#dtb-mode-text')) lmenu.classList.remove('open');
+    if (!e.target.closest('#dtb-lmenu') && !e.target.closest('#dtb-mode-text') && !e.target.closest('.dtb-cv-wrap')) {
+      lmenu.classList.remove('open');
+    }
   }
   document.addEventListener('click',      _lmenuOutside);
   document.addEventListener('touchstart', _lmenuOutside, { passive: true });
