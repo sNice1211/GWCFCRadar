@@ -5060,7 +5060,7 @@ body.gwcfc-crosshair #map::after {
           <canvas id="mag-canvas" style="width:100%;border-radius:4px;display:none;image-rendering:pixelated"></canvas>
           <div id="mag-img-status">Loading…</div>
         </div>
-        <div id="mag-img-credit">Source: <a href="https://nomads.ncep.noaa.gov/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">NOAA NOMADS/GFS</a></div>
+        <div id="mag-img-credit">Source: <a href="https://open-meteo.com/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">Open-Meteo GFS</a></div>
       </div>
     </div>
 
@@ -11234,256 +11234,193 @@ function _atcfPopulateStorms(storms) {
 }
 // ── END ATCF ────────────────────────────────────────────────────────────────
 
-// ── RUN MODELS (NOMADS OPeNDAP + Canvas) ────────────────────────────────────
+// ── RUN MODELS (Open-Meteo GFS + Canvas) ─────────────────────────────────────
 
 const MAG_FH_STEPS = [0,6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120];
 
 const MAG_REGIONS = {
-  tropatl: { latN: 35, latS: 5,  lonW: 260, lonE: 350 },
-  epac:    { latN: 25, latS: 5,  lonW: 210, lonE: 290 },
+  tropatl: { latN:35, latS:5, lonW:-100, lonE:-10 },
+  epac:    { latN:25, latS:5, lonW:-150, lonE:-70  },
 };
 
-let _magCurrentPkg    = 'mslp_precip';
-let _magCurrentModel  = 'gfs';
-let _magCurrentRegion = 'tropatl';
-let _magCurrentCycle  = '00';
-let _magCurrentFh     = 0;
-let _magAbortCtrl     = null;
+let _magCurrentPkg='mslp_precip', _magCurrentModel='gfs';
+let _magCurrentRegion='tropatl', _magCurrentCycle='00';
+let _magCurrentFh=0, _magAbortCtrl=null;
 
 const MAG_CMAPS = {
-  mslp: [
-    {v:940, r:80,  g:0,   b:120},
-    {v:960, r:0,   g:0,   b:255},
-    {v:980, r:0,   g:180, b:255},
-    {v:1000,r:0,   g:220, b:120},
-    {v:1010,r:200, g:255, b:0  },
-    {v:1020,r:255, g:200, b:0  },
-    {v:1030,r:255, g:60,  b:0  },
-    {v:1040,r:200, g:0,   b:0  },
+  mslp:[
+    {v:940,r:80, g:0,  b:120},{v:960,r:0,  g:0,  b:255},
+    {v:980,r:0,  g:180,b:255},{v:1000,r:0, g:220,b:120},
+    {v:1010,r:200,g:255,b:0},{v:1020,r:255,g:200,b:0},
+    {v:1030,r:255,g:60, b:0},{v:1040,r:200,g:0,  b:0},
   ],
-  wind: [
-    {v:0,  r:20,  g:20,  b:80 },
-    {v:10, r:0,   g:100, b:200},
-    {v:20, r:0,   g:200, b:100},
-    {v:30, r:150, g:255, b:0  },
-    {v:40, r:255, g:255, b:0  },
-    {v:55, r:255, g:130, b:0  },
-    {v:70, r:255, g:0,   b:0  },
-    {v:90, r:180, g:0,   b:180},
+  wind:[
+    {v:0, r:20, g:20, b:80},{v:10,r:0,  g:100,b:200},
+    {v:20,r:0,  g:200,b:100},{v:30,r:150,g:255,b:0},
+    {v:40,r:255,g:255,b:0},{v:55,r:255,g:130,b:0},
+    {v:70,r:255,g:0,  b:0},{v:90,r:180,g:0,  b:180},
   ],
-  pw: [
-    {v:0,  r:0,   g:0,   b:100},
-    {v:20, r:0,   g:100, b:255},
-    {v:35, r:0,   g:200, b:100},
-    {v:45, r:100, g:255, b:0  },
-    {v:55, r:255, g:255, b:0  },
-    {v:65, r:255, g:100, b:0  },
-    {v:80, r:255, g:0,   b:0  },
+  pw:[
+    {v:0, r:0,  g:0,  b:100},{v:20,r:0,  g:100,b:255},
+    {v:35,r:0,  g:200,b:100},{v:45,r:100,g:255,b:0},
+    {v:55,r:255,g:255,b:0},{v:65,r:255,g:100,b:0},
+    {v:80,r:255,g:0,  b:0},
   ],
 };
 
 function _magColorAt(stops, val) {
   if (val <= stops[0].v) return [stops[0].r, stops[0].g, stops[0].b];
-  const last = stops[stops.length - 1];
+  const last = stops[stops.length-1];
   if (val >= last.v) return [last.r, last.g, last.b];
-  for (let i = 1; i < stops.length; i++) {
+  for (let i=1; i<stops.length; i++) {
     if (val <= stops[i].v) {
       const t = (val - stops[i-1].v) / (stops[i].v - stops[i-1].v);
       return [
-        Math.round(stops[i-1].r + (stops[i].r - stops[i-1].r) * t),
-        Math.round(stops[i-1].g + (stops[i].g - stops[i-1].g) * t),
-        Math.round(stops[i-1].b + (stops[i].b - stops[i-1].b) * t),
+        Math.round(stops[i-1].r + (stops[i].r-stops[i-1].r)*t),
+        Math.round(stops[i-1].g + (stops[i].g-stops[i-1].g)*t),
+        Math.round(stops[i-1].b + (stops[i].b-stops[i-1].b)*t),
       ];
     }
   }
-  return [255, 255, 255];
+  return [255,255,255];
 }
 
 function _magAutoSelectCycle() {
   const h = new Date().getUTCHours();
-  if (h >= 22) return '18';
-  if (h >= 16) return '12';
-  if (h >= 10) return '06';
-  if (h >= 4)  return '00';
+  if (h>=22) return '18'; if (h>=16) return '12';
+  if (h>=10) return '06'; if (h>=4)  return '00';
   return '18';
 }
 
-function _magRunDate(cycle) {
-  const cc  = parseInt(cycle, 10);
-  const now = new Date();
-  const d   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cc));
-  if (d > now) d.setUTCDate(d.getUTCDate() - 1);
-  return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}`;
-}
-
-function _magNomadsUrl(variable, cycle, fhHour, region) {
-  const yyyymmdd = _magRunDate(cycle);
-  const cc       = String(parseInt(cycle, 10)).padStart(2, '0');
-  const timeIdx  = Math.round(fhHour / 3);
-  const reg      = MAG_REGIONS[region] || MAG_REGIONS.tropatl;
-  const latStart = Math.round((90 - reg.latN) / 0.25);
-  const latEnd   = Math.round((90 - reg.latS) / 0.25);
-  const lonStart = Math.round(reg.lonW / 0.25);
-  const lonEnd   = Math.round(reg.lonE / 0.25);
-  const base     = `https://nomads.ncep.noaa.gov/dods/gfs_0p25/gfs${yyyymmdd}/gfs_0p25_${cc}z.ascii`;
-  return `${base}?${variable}[${timeIdx}][${latStart}:1:${latEnd}][${lonStart}:1:${lonEnd}]`;
-}
-
-function _magParseOpdap(text) {
-  const sep   = text.indexOf('\n-----');
-  if (sep < 0) return null;
-  const block = text.slice(sep);
-  const rows  = [];
-  for (const line of block.split('\n')) {
-    const m = line.match(/^\[\d+\]\[\d+\],\s*(.+)/);
-    if (!m) continue;
-    const vals = m[1].split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
-    if (vals.length) rows.push(vals);
-  }
-  return rows.length ? rows : null;
-}
-
 function _magRenderCanvas(canvas, grid, cmap) {
-  const H = grid.length, W = grid[0].length;
-  canvas.width  = W;
-  canvas.height = H;
-  const ctx = canvas.getContext('2d');
-  const img = ctx.createImageData(W, H);
-  const d   = img.data;
-  for (let r = 0; r < H; r++) {
-    for (let c = 0; c < W; c++) {
-      const [rr, gg, bb] = _magColorAt(cmap, grid[r][c]);
-      const i = (r * W + c) * 4;
-      d[i] = rr; d[i+1] = gg; d[i+2] = bb; d[i+3] = 255;
-    }
+  const H=grid.length, W=grid[0].length;
+  canvas.width=W; canvas.height=H;
+  const ctx=canvas.getContext('2d');
+  const img=ctx.createImageData(W,H); const d=img.data;
+  for (let r=0;r<H;r++) for (let c=0;c<W;c++) {
+    const [rr,gg,bb]=_magColorAt(cmap, grid[r][c]);
+    const i=(r*W+c)*4; d[i]=rr; d[i+1]=gg; d[i+2]=bb; d[i+3]=255;
   }
-  ctx.putImageData(img, 0, 0);
-}
-
-function _magWindGrid(uRows, vRows) {
-  return uRows.map((row, r) =>
-    row.map((u, c) => {
-      const v = (vRows[r] && vRows[r][c] != null) ? vRows[r][c] : 0;
-      return Math.sqrt(u * u + v * v) * 1.944;
-    })
-  );
-}
-
-async function _magFetchOpdap(url, signal) {
-  const r = await fetch(url, { signal });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return _magParseOpdap(await r.text());
+  ctx.putImageData(img,0,0);
 }
 
 async function _magUpdate() {
-  const modelSel  = document.getElementById('mag-model-sel');
-  const cycleSel  = document.getElementById('mag-cycle-sel');
-  const regionSel = document.getElementById('mag-region-sel');
+  const modelSel=document.getElementById('mag-model-sel');
+  const cycleSel=document.getElementById('mag-cycle-sel');
+  const regionSel=document.getElementById('mag-region-sel');
   if (modelSel)  _magCurrentModel  = modelSel.value;
   if (cycleSel)  _magCurrentCycle  = cycleSel.value;
   if (regionSel) _magCurrentRegion = regionSel.value;
 
-  const canvas = document.getElementById('mag-canvas');
-  const st     = document.getElementById('mag-img-status');
+  const canvas=document.getElementById('mag-canvas');
+  const st=document.getElementById('mag-img-status');
   if (!canvas) return;
 
   if (_magAbortCtrl) _magAbortCtrl.abort();
   _magAbortCtrl = new AbortController();
-  const { signal } = _magAbortCtrl;
+  const {signal} = _magAbortCtrl;
 
-  canvas.style.display = 'none';
-  if (st) st.textContent = 'Fetching GFS data from NOMADS…';
+  canvas.style.display='none';
+  if (st) st.textContent='Fetching GFS data…';
 
   const fhHour = MAG_FH_STEPS[_magCurrentFh] ?? 0;
-  const cycle  = _magCurrentCycle;
-  const region = _magCurrentRegion;
-  const url    = v => _magNomadsUrl(v, cycle, fhHour, region);
+  const reg = MAG_REGIONS[_magCurrentRegion] || MAG_REGIONS.tropatl;
+  const STEP = 2; // degrees between grid points
+
+  const lats=[], lons=[];
+  for (let la=reg.latS; la<=reg.latN; la+=STEP) lats.push(la);
+  for (let lo=reg.lonW; lo<=reg.lonE; lo+=STEP) lons.push(lo);
+
+  const allLats=[], allLons=[];
+  for (const la of lats) for (const lo of lons) { allLats.push(la); allLons.push(lo); }
+
+  // Variables needed per product
+  const varMap = {
+    mslp_precip:  'pressure_msl',
+    '850wind':    'windspeed_850hpa',
+    '200wind':    'windspeed_250hpa',
+    wind_shear:   'windspeed_250hpa,windspeed_850hpa',
+    precip_water: 'precipitation',
+  };
+  const cmapMap = {
+    mslp_precip: MAG_CMAPS.mslp, '850wind': MAG_CMAPS.wind,
+    '200wind': MAG_CMAPS.wind, wind_shear: MAG_CMAPS.wind, precip_water: MAG_CMAPS.pw,
+  };
+
+  // Compute target ISO time
+  const now = new Date();
+  const cc = parseInt(_magCurrentCycle, 10);
+  const d  = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cc));
+  if (d > now) d.setUTCDate(d.getUTCDate()-1);
+  const targetMs = d.getTime() + fhHour * 3600000;
+  const targetISO = new Date(targetMs).toISOString().slice(0,16); // "2026-05-22T06:00"
 
   try {
-    let grid, cmap;
+    const omVars = varMap[_magCurrentPkg] || 'pressure_msl';
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${allLats.join(',')}&longitude=${allLons.join(',')}&hourly=${omVars}&wind_speed_unit=kn&timezone=UTC&forecast_days=7&models=gfs_seamless`;
 
-    if (_magCurrentPkg === 'mslp_precip') {
-      const rows = await _magFetchOpdap(url('prmsl'), signal);
-      if (!rows) throw new Error('Parse error');
-      grid = rows.map(row => row.map(v => v / 100));
-      cmap = MAG_CMAPS.mslp;
+    const resp = await fetch(url, {signal});
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json();
 
-    } else if (_magCurrentPkg === '850wind') {
-      const [uRows, vRows] = await Promise.all([
-        _magFetchOpdap(url('ugrd850mb'), signal),
-        _magFetchOpdap(url('vgrd850mb'), signal),
-      ]);
-      if (!uRows || !vRows) throw new Error('Parse error');
-      grid = _magWindGrid(uRows, vRows);
-      cmap = MAG_CMAPS.wind;
+    const results = Array.isArray(json) ? json : [json];
+    const times = results[0].hourly.time;
+    let tIdx = times.findIndex(t => t === targetISO);
+    if (tIdx < 0) tIdx = 0; // fallback to first time step
 
-    } else if (_magCurrentPkg === '200wind') {
-      const [uRows, vRows] = await Promise.all([
-        _magFetchOpdap(url('ugrd250mb'), signal),
-        _magFetchOpdap(url('vgrd250mb'), signal),
-      ]);
-      if (!uRows || !vRows) throw new Error('Parse error');
-      grid = _magWindGrid(uRows, vRows);
-      cmap = MAG_CMAPS.wind;
-
-    } else if (_magCurrentPkg === 'wind_shear') {
-      const [u2, v2, u8, v8] = await Promise.all([
-        _magFetchOpdap(url('ugrd200mb'), signal),
-        _magFetchOpdap(url('vgrd200mb'), signal),
-        _magFetchOpdap(url('ugrd850mb'), signal),
-        _magFetchOpdap(url('vgrd850mb'), signal),
-      ]);
-      if (!u2 || !v2 || !u8 || !v8) throw new Error('Parse error');
-      grid = u2.map((row, r) => row.map((u, c) => {
-        const du = u - ((u8[r] && u8[r][c] != null) ? u8[r][c] : 0);
-        const dv = v2[r][c] - ((v8[r] && v8[r][c] != null) ? v8[r][c] : 0);
-        return Math.sqrt(du * du + dv * dv) * 1.944;
-      }));
-      cmap = MAG_CMAPS.wind;
-
-    } else {
-      const rows = await _magFetchOpdap(url('pwat'), signal);
-      if (!rows) throw new Error('Parse error');
-      grid = rows;
-      cmap = MAG_CMAPS.pw;
+    const nLat=lats.length, nLon=lons.length;
+    // grid[0] = northernmost row
+    const grid = Array.from({length:nLat}, ()=>new Array(nLon).fill(0));
+    for (let i=0; i<results.length; i++) {
+      const r = Math.floor(i/nLon);
+      const c = i % nLon;
+      const h = results[i].hourly;
+      let val;
+      if (_magCurrentPkg === 'wind_shear') {
+        val = Math.abs((h.windspeed_250hpa?.[tIdx]??0) - (h.windspeed_850hpa?.[tIdx]??0));
+      } else {
+        const v0 = omVars.split(',')[0];
+        val = h[v0]?.[tIdx] ?? 0;
+      }
+      // Flip lat axis so north is top (lats array is south-to-north)
+      grid[nLat-1-r][c] = val;
     }
 
     if (signal.aborted) return;
-    _magRenderCanvas(canvas, grid, cmap);
-    canvas.style.display = 'block';
-    if (st) st.textContent = '';
+    _magRenderCanvas(canvas, grid, cmapMap[_magCurrentPkg] || MAG_CMAPS.mslp);
+    canvas.style.display='block';
+    if (st) st.textContent='';
 
-  } catch (e) {
+  } catch(e) {
     if (signal.aborted) return;
-    if (st) st.textContent = `⚠ ${e.message || 'Load failed'} — try a different cycle.`;
+    if (st) st.textContent=`⚠ ${e.message||'Load failed'} — try a different cycle.`;
   }
 }
 
 function _magSetPkg(pkg) {
   _magCurrentPkg = pkg;
   document.querySelectorAll('#mag-product-tabs .trop-stab').forEach(t =>
-    t.classList.toggle('active', t.dataset.pkg === pkg));
+    t.classList.toggle('active', t.dataset.pkg===pkg));
   _magUpdate();
 }
 
 function _magFhChange(val) {
-  _magCurrentFh = parseInt(val, 10);
-  const fh  = MAG_FH_STEPS[_magCurrentFh] ?? 0;
+  _magCurrentFh = parseInt(val,10);
+  const fh = MAG_FH_STEPS[_magCurrentFh]??0;
   const lbl = document.getElementById('mag-fh-label');
-  if (lbl) lbl.textContent = 'F' + String(fh).padStart(3, '0');
+  if (lbl) lbl.textContent = 'F'+String(fh).padStart(3,'0');
   _magUpdate();
 }
 
 function _magInit() {
   const c = _magAutoSelectCycle();
-  _magCurrentCycle = c;
-  _magCurrentFh    = 0;
-  const cycleSel = document.getElementById('mag-cycle-sel');
-  if (cycleSel) cycleSel.value = c;
-  const slider = document.getElementById('mag-fh-slider');
-  if (slider) { slider.max = MAG_FH_STEPS.length - 1; slider.value = 0; }
-  const lbl = document.getElementById('mag-fh-label');
-  if (lbl) lbl.textContent = 'F000';
+  _magCurrentCycle=c; _magCurrentFh=0;
+  const cycleSel=document.getElementById('mag-cycle-sel');
+  if (cycleSel) cycleSel.value=c;
+  const slider=document.getElementById('mag-fh-slider');
+  if (slider) { slider.max=MAG_FH_STEPS.length-1; slider.value=0; }
+  const lbl=document.getElementById('mag-fh-label');
+  if (lbl) lbl.textContent='F000';
   _magUpdate();
 }
 // ── END RUN MODELS ────────────────────────────────────────────────────────────
