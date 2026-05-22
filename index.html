@@ -5025,7 +5025,6 @@ body.gwcfc-crosshair #map::after {
             <div class="fnv3-label">Model</div>
             <select id="mag-model-sel" class="fnv3-select" onchange="_magUpdate()">
               <option value="gfs">GFS</option>
-              <option value="nam">NAM</option>
             </select>
           </div>
           <div>
@@ -5058,11 +5057,10 @@ body.gwcfc-crosshair #map::after {
           <span id="mag-fh-label" style="color:rgba(0,200,255,0.85);font-size:9px;min-width:36px">F000</span>
         </div>
         <div id="mag-img-wrap">
-          <img id="mag-img" src="" alt="" style="width:100%;border-radius:4px;display:none">
+          <canvas id="mag-canvas" style="width:100%;border-radius:4px;display:none;image-rendering:pixelated"></canvas>
           <div id="mag-img-status">Loading…</div>
         </div>
-        <div id="mag-debug-url" style="font-size:7px;color:rgba(160,190,220,0.4);padding:0 10px 2px;word-break:break-all"></div>
-        <div id="mag-img-credit">Source: <a href="https://mag.ncep.noaa.gov/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">NOAA NCEP MAG</a></div>
+        <div id="mag-img-credit">Source: <a href="https://nomads.ncep.noaa.gov/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">NOAA NOMADS/GFS</a></div>
       </div>
     </div>
 
@@ -11236,26 +11234,70 @@ function _atcfPopulateStorms(storms) {
 }
 // ── END ATCF ────────────────────────────────────────────────────────────────
 
-// ── RUN MODELS ────────────────────────────────────────────────────────────────
+// ── RUN MODELS (NOMADS OPeNDAP + Canvas) ────────────────────────────────────
 
 const MAG_FH_STEPS = [0,6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120];
 
-// NCEP MAG — government server, publicly accessible, no hotlink protection
-const MAG_PKG = {
-  mslp_precip:  'mslp_thk_precip',
-  '850wind':    '850_wind',
-  '200wind':    '250_wind',
-  wind_shear:   '200_850_shear',
-  precip_water: 'pwat',
+const MAG_REGIONS = {
+  tropatl: { latN: 35, latS: 5,  lonW: 260, lonE: 350 },
+  epac:    { latN: 25, latS: 5,  lonW: 210, lonE: 290 },
 };
-const MAG_REGION = { tropatl: 'tatl', epac: 'tpac' };
 
 let _magCurrentPkg    = 'mslp_precip';
 let _magCurrentModel  = 'gfs';
 let _magCurrentRegion = 'tropatl';
 let _magCurrentCycle  = '00';
 let _magCurrentFh     = 0;
-let _magLoadToken     = 0;
+let _magAbortCtrl     = null;
+
+const MAG_CMAPS = {
+  mslp: [
+    {v:940, r:80,  g:0,   b:120},
+    {v:960, r:0,   g:0,   b:255},
+    {v:980, r:0,   g:180, b:255},
+    {v:1000,r:0,   g:220, b:120},
+    {v:1010,r:200, g:255, b:0  },
+    {v:1020,r:255, g:200, b:0  },
+    {v:1030,r:255, g:60,  b:0  },
+    {v:1040,r:200, g:0,   b:0  },
+  ],
+  wind: [
+    {v:0,  r:20,  g:20,  b:80 },
+    {v:10, r:0,   g:100, b:200},
+    {v:20, r:0,   g:200, b:100},
+    {v:30, r:150, g:255, b:0  },
+    {v:40, r:255, g:255, b:0  },
+    {v:55, r:255, g:130, b:0  },
+    {v:70, r:255, g:0,   b:0  },
+    {v:90, r:180, g:0,   b:180},
+  ],
+  pw: [
+    {v:0,  r:0,   g:0,   b:100},
+    {v:20, r:0,   g:100, b:255},
+    {v:35, r:0,   g:200, b:100},
+    {v:45, r:100, g:255, b:0  },
+    {v:55, r:255, g:255, b:0  },
+    {v:65, r:255, g:100, b:0  },
+    {v:80, r:255, g:0,   b:0  },
+  ],
+};
+
+function _magColorAt(stops, val) {
+  if (val <= stops[0].v) return [stops[0].r, stops[0].g, stops[0].b];
+  const last = stops[stops.length - 1];
+  if (val >= last.v) return [last.r, last.g, last.b];
+  for (let i = 1; i < stops.length; i++) {
+    if (val <= stops[i].v) {
+      const t = (val - stops[i-1].v) / (stops[i].v - stops[i-1].v);
+      return [
+        Math.round(stops[i-1].r + (stops[i].r - stops[i-1].r) * t),
+        Math.round(stops[i-1].g + (stops[i].g - stops[i-1].g) * t),
+        Math.round(stops[i-1].b + (stops[i].b - stops[i-1].b) * t),
+      ];
+    }
+  }
+  return [255, 255, 255];
+}
 
 function _magAutoSelectCycle() {
   const h = new Date().getUTCHours();
@@ -11266,20 +11308,155 @@ function _magAutoSelectCycle() {
   return '18';
 }
 
-function _magBuildRun(cycle) {
-  const cc = parseInt(cycle, 10);
+function _magRunDate(cycle) {
+  const cc  = parseInt(cycle, 10);
   const now = new Date();
   const d   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cc));
   if (d > now) d.setUTCDate(d.getUTCDate() - 1);
-  return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}${String(cc).padStart(2,'0')}`;
+  return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}`;
 }
 
-function _magBuildUrl(model, pkg, region, cycle, fhIdx) {
-  if (!MAG_PKG[pkg]) return null;
-  const run    = _magBuildRun(cycle);
-  const fhr    = String(MAG_FH_STEPS[fhIdx] ?? 0).padStart(3, '0');
-  const reg    = MAG_REGION[region] || 'tatl';
-  return `https://mag.ncep.noaa.gov/data/${model}/${run}/${model}_${reg}_${fhr}_${MAG_PKG[pkg]}.gif`;
+function _magNomadsUrl(variable, cycle, fhHour, region) {
+  const yyyymmdd = _magRunDate(cycle);
+  const cc       = String(parseInt(cycle, 10)).padStart(2, '0');
+  const timeIdx  = Math.round(fhHour / 3);
+  const reg      = MAG_REGIONS[region] || MAG_REGIONS.tropatl;
+  const latStart = Math.round((90 - reg.latN) / 0.25);
+  const latEnd   = Math.round((90 - reg.latS) / 0.25);
+  const lonStart = Math.round(reg.lonW / 0.25);
+  const lonEnd   = Math.round(reg.lonE / 0.25);
+  const base     = `https://nomads.ncep.noaa.gov/dods/gfs_0p25/gfs${yyyymmdd}/gfs_0p25_${cc}z.ascii`;
+  return `${base}?${variable}[${timeIdx}][${latStart}:1:${latEnd}][${lonStart}:1:${lonEnd}]`;
+}
+
+function _magParseOpdap(text) {
+  const sep   = text.indexOf('\n-----');
+  if (sep < 0) return null;
+  const block = text.slice(sep);
+  const rows  = [];
+  for (const line of block.split('\n')) {
+    const m = line.match(/^\[\d+\]\[\d+\],\s*(.+)/);
+    if (!m) continue;
+    const vals = m[1].split(',').map(v => parseFloat(v.trim())).filter(v => !isNaN(v));
+    if (vals.length) rows.push(vals);
+  }
+  return rows.length ? rows : null;
+}
+
+function _magRenderCanvas(canvas, grid, cmap) {
+  const H = grid.length, W = grid[0].length;
+  canvas.width  = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(W, H);
+  const d   = img.data;
+  for (let r = 0; r < H; r++) {
+    for (let c = 0; c < W; c++) {
+      const [rr, gg, bb] = _magColorAt(cmap, grid[r][c]);
+      const i = (r * W + c) * 4;
+      d[i] = rr; d[i+1] = gg; d[i+2] = bb; d[i+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function _magWindGrid(uRows, vRows) {
+  return uRows.map((row, r) =>
+    row.map((u, c) => {
+      const v = (vRows[r] && vRows[r][c] != null) ? vRows[r][c] : 0;
+      return Math.sqrt(u * u + v * v) * 1.944;
+    })
+  );
+}
+
+async function _magFetchOpdap(url, signal) {
+  const r = await fetch(url, { signal });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return _magParseOpdap(await r.text());
+}
+
+async function _magUpdate() {
+  const modelSel  = document.getElementById('mag-model-sel');
+  const cycleSel  = document.getElementById('mag-cycle-sel');
+  const regionSel = document.getElementById('mag-region-sel');
+  if (modelSel)  _magCurrentModel  = modelSel.value;
+  if (cycleSel)  _magCurrentCycle  = cycleSel.value;
+  if (regionSel) _magCurrentRegion = regionSel.value;
+
+  const canvas = document.getElementById('mag-canvas');
+  const st     = document.getElementById('mag-img-status');
+  if (!canvas) return;
+
+  if (_magAbortCtrl) _magAbortCtrl.abort();
+  _magAbortCtrl = new AbortController();
+  const { signal } = _magAbortCtrl;
+
+  canvas.style.display = 'none';
+  if (st) st.textContent = 'Fetching GFS data from NOMADS…';
+
+  const fhHour = MAG_FH_STEPS[_magCurrentFh] ?? 0;
+  const cycle  = _magCurrentCycle;
+  const region = _magCurrentRegion;
+  const url    = v => _magNomadsUrl(v, cycle, fhHour, region);
+
+  try {
+    let grid, cmap;
+
+    if (_magCurrentPkg === 'mslp_precip') {
+      const rows = await _magFetchOpdap(url('prmsl'), signal);
+      if (!rows) throw new Error('Parse error');
+      grid = rows.map(row => row.map(v => v / 100));
+      cmap = MAG_CMAPS.mslp;
+
+    } else if (_magCurrentPkg === '850wind') {
+      const [uRows, vRows] = await Promise.all([
+        _magFetchOpdap(url('ugrd850mb'), signal),
+        _magFetchOpdap(url('vgrd850mb'), signal),
+      ]);
+      if (!uRows || !vRows) throw new Error('Parse error');
+      grid = _magWindGrid(uRows, vRows);
+      cmap = MAG_CMAPS.wind;
+
+    } else if (_magCurrentPkg === '200wind') {
+      const [uRows, vRows] = await Promise.all([
+        _magFetchOpdap(url('ugrd250mb'), signal),
+        _magFetchOpdap(url('vgrd250mb'), signal),
+      ]);
+      if (!uRows || !vRows) throw new Error('Parse error');
+      grid = _magWindGrid(uRows, vRows);
+      cmap = MAG_CMAPS.wind;
+
+    } else if (_magCurrentPkg === 'wind_shear') {
+      const [u2, v2, u8, v8] = await Promise.all([
+        _magFetchOpdap(url('ugrd200mb'), signal),
+        _magFetchOpdap(url('vgrd200mb'), signal),
+        _magFetchOpdap(url('ugrd850mb'), signal),
+        _magFetchOpdap(url('vgrd850mb'), signal),
+      ]);
+      if (!u2 || !v2 || !u8 || !v8) throw new Error('Parse error');
+      grid = u2.map((row, r) => row.map((u, c) => {
+        const du = u - ((u8[r] && u8[r][c] != null) ? u8[r][c] : 0);
+        const dv = v2[r][c] - ((v8[r] && v8[r][c] != null) ? v8[r][c] : 0);
+        return Math.sqrt(du * du + dv * dv) * 1.944;
+      }));
+      cmap = MAG_CMAPS.wind;
+
+    } else {
+      const rows = await _magFetchOpdap(url('pwat'), signal);
+      if (!rows) throw new Error('Parse error');
+      grid = rows;
+      cmap = MAG_CMAPS.pw;
+    }
+
+    if (signal.aborted) return;
+    _magRenderCanvas(canvas, grid, cmap);
+    canvas.style.display = 'block';
+    if (st) st.textContent = '';
+
+  } catch (e) {
+    if (signal.aborted) return;
+    if (st) st.textContent = `⚠ ${e.message || 'Load failed'} — try a different cycle.`;
+  }
 }
 
 function _magSetPkg(pkg) {
@@ -11291,47 +11468,10 @@ function _magSetPkg(pkg) {
 
 function _magFhChange(val) {
   _magCurrentFh = parseInt(val, 10);
-  const fh = MAG_FH_STEPS[_magCurrentFh] ?? 0;
+  const fh  = MAG_FH_STEPS[_magCurrentFh] ?? 0;
   const lbl = document.getElementById('mag-fh-label');
   if (lbl) lbl.textContent = 'F' + String(fh).padStart(3, '0');
   _magUpdate();
-}
-
-function _magUpdate() {
-  const modelSel  = document.getElementById('mag-model-sel');
-  const cycleSel  = document.getElementById('mag-cycle-sel');
-  const regionSel = document.getElementById('mag-region-sel');
-  if (modelSel)  _magCurrentModel  = modelSel.value;
-  if (cycleSel)  _magCurrentCycle  = cycleSel.value;
-  if (regionSel) _magCurrentRegion = regionSel.value;
-
-  const url = _magBuildUrl(_magCurrentModel, _magCurrentPkg, _magCurrentRegion, _magCurrentCycle, _magCurrentFh);
-  const img = document.getElementById('mag-img');
-  const st  = document.getElementById('mag-img-status');
-  const dbg = document.getElementById('mag-debug-url');
-
-  if (!url) { if (st) st.textContent = '⚠ Product not available.'; return; }
-
-  // Show URL as a clickable link for debugging
-  if (dbg) dbg.innerHTML = `<a href="${url}" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.45)">${url}</a>`;
-  if (st) st.textContent = 'Loading…';
-  if (img) img.style.display = 'none';
-
-  const token = ++_magLoadToken;
-
-  // wsrv.nl fetches the image server-side and relays the bytes — bypasses MAG hotlink blocks
-  const proxyUrl = 'https://wsrv.nl/?url=' + encodeURIComponent(url) + '&n=-1';
-
-  img.onload = () => {
-    if (token !== _magLoadToken) return;
-    img.style.display = 'block';
-    if (st) st.textContent = '';
-  };
-  img.onerror = () => {
-    if (token !== _magLoadToken) return;
-    if (st) st.textContent = '⚠ Run not available — try a different cycle or hour.';
-  };
-  img.src = proxyUrl;
 }
 
 function _magInit() {
@@ -11502,8 +11642,7 @@ function closeFNV3Panel() {
   _fnv3ClearLayers();
   _atcfClearLayers();
   if (_fnv3RefreshTimer) { clearInterval(_fnv3RefreshTimer); _fnv3RefreshTimer = null; }
-  const magImg = document.getElementById('mag-img');
-  if (magImg) magImg.src = '';
+  if (_magAbortCtrl) _magAbortCtrl.abort();
 }
 // ── END FNV3 ────────────────────────────────────────────────────────────────
 
