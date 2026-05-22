@@ -14982,9 +14982,9 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
     </div>`;
 
   const activeSources = [
-    gwesStream  ? { id: 'g', name: 'gwes', label: 'GWES',     s: gwesStream,  playId: `nwr-play-${call}`,   callKey: call }         : null,
+    gwesStream  ? { id: 'g', name: 'gwes', label: 'NWRO',     s: gwesStream,  playId: `nwr-play-${call}`,   callKey: call }         : null,
     wxrStream   ? { id: 'w', name: 'wxr',  label: 'NOAA WXR', s: wxrStream,   playId: `nwr-play-w-${call}`, callKey: `${call}-w` }  : null,
-    wusaStream  ? { id: 'u', name: 'wusa', label: 'NWRO',     s: wusaStream,  playId: `nwr-play-u-${call}`, callKey: `${call}-u` }  : null,
+    wusaStream  ? { id: 'u', name: 'wusa', label: 'WXUSA',    s: wusaStream,  playId: `nwr-play-u-${call}`, callKey: `${call}-u` }  : null,
   ].filter(Boolean);
 
   let audioHTML;
@@ -15001,7 +15001,7 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
     </div>`;
   } else {
     const t = activeSources[0];
-    const label = gwesStream ? 'GWES' : wusaStream ? 'NWRO' : 'NOAA WXR';
+    const label = gwesStream ? 'NWRO' : wusaStream ? 'WXUSA' : 'NOAA WXR';
     audioHTML = `<div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
       <div style="padding:4px 8px 0;color:#ffaa33;font-weight:bold;font-size:10px">🔊 ${label} · LIVE AUDIO</div>
       ${streamPanel(t.s.listenurl, t.s.listeners, t.playId, t.callKey)}
@@ -15045,10 +15045,10 @@ async function loadNWRStations() {
           const r = await fetch(url, { signal: _abortSignal(12000) });
           if (!r.ok) continue;
           const d = await r.json();
-          if (d?.icestats?.source) { console.log('[NWR] NWRO loaded via', url); return d; }
+          if (d?.icestats?.source) { console.log('[NWR] WXUSA loaded via', url); return d; }
         } catch(_) {}
       }
-      console.warn('[NWR] NWRO all endpoints failed');
+      console.warn('[NWR] WXUSA all endpoints failed');
       return null;
     };
 
@@ -15104,7 +15104,7 @@ async function loadNWRStations() {
 
     if (gwesMap.size === 0 && wxrMap.size === 0 && wusaMap.size === 0) throw new Error('no streams');
 
-    console.log('[NWR] GWES:', gwesMap.size, 'WXR:', wxrMap.size, 'NWRO:', wusaMap.size, 'txs:', Object.keys(txs).length);
+    console.log('[NWR] NWRO:', gwesMap.size, 'WXR:', wxrMap.size, 'WXUSA:', wusaMap.size, 'txs:', Object.keys(txs).length);
 
     _nwrLayer = L.layerGroup().addTo(map);
     let plotted = 0, nwroOnly = 0;
@@ -15116,7 +15116,7 @@ async function loadNWRStations() {
       const lon = p ? parseFloat(p.LON) : NaN;
       if (!isFinite(lat) || !isFinite(lon)) {
         if (wusaMap.has(call) && !gwesMap.has(call) && !wxrMap.has(call))
-          console.log('[NWR] NWRO-only station has no txs coords, skipped:', call);
+          console.log('[NWR] WXUSA-only station has no txs coords, skipped:', call);
         return;
       }
       if (!_ptInPolyUnion(lat, lon)) return;
@@ -15143,8 +15143,8 @@ async function loadNWRStations() {
     });
 
     _nwrLoaded = true;  // set only after successful plot so errors allow retry
-    console.log('[NWR] plotted:', plotted, '| NWRO-only new:', nwroOnly);
-    showToast(`📡 ${plotted} NWR stations${nwroOnly ? ` · ${nwroOnly} new NWRO` : ''}`, 2500);
+    console.log('[NWR] plotted:', plotted, '| WXUSA-only new:', nwroOnly);
+    showToast(`📡 ${plotted} NWR stations${nwroOnly ? ` · ${nwroOnly} new WXUSA` : ''}`, 2500);
   } catch(e) {
     if (_nwrLayer) { try { map.removeLayer(_nwrLayer); } catch(_) {} _nwrLayer = null; }
     showToast('📡 NWR unavailable', 2000);
