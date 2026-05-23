@@ -5059,7 +5059,7 @@ body.gwcfc-crosshair #map::after {
         <div id="mag-img-wrap">
           <div id="mag-img-status">Loading…</div>
         </div>
-        <div id="mag-img-credit">Source: <a href="https://open-meteo.com/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">Open-Meteo GFS</a> · displayed on map</div>
+        <div id="mag-img-credit">Source: <a href="https://nomads.ncep.noaa.gov/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">NOAA NOMADS/GFS</a> · displayed on map</div>
       </div>
     </div>
 
@@ -11233,13 +11233,22 @@ function _atcfPopulateStorms(storms) {
 }
 // ── END ATCF ────────────────────────────────────────────────────────────────
 
-// ── RUN MODELS (Open-Meteo GFS + Canvas) ─────────────────────────────────────
+// ── RUN MODELS (NOMADS OPeNDAP + Map Overlay) ────────────────────────────────
 
 const MAG_FH_STEPS = [0,6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120];
 
+// Leaflet bounds use -180/180 lon; NOMADS uses 0-360
 const MAG_REGIONS = {
-  tropatl: { latN:35, latS:5, lonW:-100, lonE:-10 },
-  epac:    { latN:25, latS:5, lonW:-150, lonE:-70  },
+  tropatl: { latN:35, latS:5, lonW:-100, lonE:-10, nomLonW:260, nomLonE:350 },
+  epac:    { latN:25, latS:5, lonW:-150, lonE:-70,  nomLonW:210, nomLonE:290 },
+};
+
+const MAG_VARS = {
+  mslp_precip:  { vars:['prmsl'],                        cmap:'mslp', xform: v=>v/100 },
+  '850wind':    { vars:['ugrd850mb','vgrd850mb'],         cmap:'wind', xform: null },
+  '200wind':    { vars:['ugrd250mb','vgrd250mb'],         cmap:'wind', xform: null },
+  wind_shear:   { vars:['ugrd200mb','vgrd200mb','ugrd850mb','vgrd850mb'], cmap:'wind', xform: null },
+  precip_water: { vars:['pwat'],                          cmap:'pw',   xform: null },
 };
 
 let _magCurrentPkg='mslp_precip', _magCurrentModel='gfs';
@@ -11273,11 +11282,11 @@ function _magColorAt(stops, val) {
   if (val >= last.v) return [last.r, last.g, last.b];
   for (let i=1; i<stops.length; i++) {
     if (val <= stops[i].v) {
-      const t = (val - stops[i-1].v) / (stops[i].v - stops[i-1].v);
+      const t = (val-stops[i-1].v)/(stops[i].v-stops[i-1].v);
       return [
-        Math.round(stops[i-1].r + (stops[i].r-stops[i-1].r)*t),
-        Math.round(stops[i-1].g + (stops[i].g-stops[i-1].g)*t),
-        Math.round(stops[i-1].b + (stops[i].b-stops[i-1].b)*t),
+        Math.round(stops[i-1].r+(stops[i].r-stops[i-1].r)*t),
+        Math.round(stops[i-1].g+(stops[i].g-stops[i-1].g)*t),
+        Math.round(stops[i-1].b+(stops[i].b-stops[i-1].b)*t),
       ];
     }
   }
@@ -11291,24 +11300,62 @@ function _magAutoSelectCycle() {
   return '18';
 }
 
-function _magRenderOverlay(grid, cmap, bounds) {
-  // Remove old overlay
+function _magRunDate(cycle) {
+  const cc=parseInt(cycle,10), now=new Date();
+  const d=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate(),cc));
+  if (d>now) d.setUTCDate(d.getUTCDate()-1);
+  return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+
+function _magNomadsUrl(variable, cycle, fhHour, reg) {
+  const yyyymmdd = _magRunDate(cycle);
+  const cc       = String(parseInt(cycle,10)).padStart(2,'0');
+  const timeIdx  = Math.round(fhHour/3);
+  const latStart = Math.round((90-reg.latN)/0.25);
+  const latEnd   = Math.round((90-reg.latS)/0.25);
+  const lonStart = Math.round(reg.nomLonW/0.25);
+  const lonEnd   = Math.round(reg.nomLonE/0.25);
+  return `https://nomads.ncep.noaa.gov/dods/gfs_0p25/gfs${yyyymmdd}/gfs_0p25_${cc}z.ascii?${variable}[${timeIdx}][${latStart}:1:${latEnd}][${lonStart}:1:${lonEnd}]`;
+}
+
+function _magParseOpdap(text) {
+  const sep = text.indexOf('\n-----');
+  if (sep<0) return null;
+  const rows=[];
+  for (const line of text.slice(sep).split('\n')) {
+    const m = line.match(/^\[\d+\]\[\d+\],\s*(.+)/);
+    if (!m) continue;
+    const vals = m[1].split(',').map(v=>parseFloat(v.trim())).filter(v=>!isNaN(v));
+    if (vals.length) rows.push(vals);
+  }
+  return rows.length ? rows : null;
+}
+
+async function _magFetch(variable, cycle, fhHour, reg, signal) {
+  const url = _magNomadsUrl(variable, cycle, fhHour, reg);
+  const r = await fetch(url, {signal});
+  if (!r.ok) throw new Error(`NOMADS HTTP ${r.status} for ${variable}`);
+  return _magParseOpdap(await r.text());
+}
+
+function _magRenderOverlay(grid, cmapKey, reg) {
   if (_magOverlayLayer) { map.removeLayer(_magOverlayLayer); _magOverlayLayer=null; }
+  const cmap = MAG_CMAPS[cmapKey];
   const H=grid.length, W=grid[0].length;
   const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
   const ctx=cv.getContext('2d');
   const img=ctx.createImageData(W,H); const d=img.data;
   for (let r=0;r<H;r++) for (let c=0;c<W;c++) {
     const [rr,gg,bb]=_magColorAt(cmap, grid[r][c]);
-    const i=(r*W+c)*4; d[i]=rr; d[i+1]=gg; d[i+2]=bb; d[i+3]=200;
+    const i=(r*W+c)*4; d[i]=rr; d[i+1]=gg; d[i+2]=bb; d[i+3]=210;
   }
   ctx.putImageData(img,0,0);
-  // Scale up to a larger canvas for smoother rendering on map
   const big=document.createElement('canvas'); big.width=W*4; big.height=H*4;
   const bCtx=big.getContext('2d'); bCtx.imageSmoothingEnabled=true; bCtx.imageSmoothingQuality='high';
   bCtx.drawImage(cv,0,0,big.width,big.height);
-  _magOverlayLayer=L.imageOverlay(big.toDataURL('image/png'), bounds, {opacity:0.75,zIndex:6,interactive:false}).addTo(map);
-  map.fitBounds(bounds, {padding:[20,20]});
+  const bounds=[[reg.latS,reg.lonW],[reg.latN,reg.lonE]];
+  _magOverlayLayer=L.imageOverlay(big.toDataURL('image/png'),bounds,{opacity:0.75,zIndex:6,interactive:false}).addTo(map);
+  map.fitBounds(bounds,{padding:[20,20]});
 }
 
 async function _magUpdate() {
@@ -11320,99 +11367,77 @@ async function _magUpdate() {
   if (regionSel) _magCurrentRegion = regionSel.value;
 
   const st=document.getElementById('mag-img-status');
-
   if (_magAbortCtrl) _magAbortCtrl.abort();
-  _magAbortCtrl = new AbortController();
-  const {signal} = _magAbortCtrl;
+  _magAbortCtrl=new AbortController();
+  const {signal}=_magAbortCtrl;
 
-  if (st) st.textContent='Fetching GFS data…';
+  if (st) st.textContent='Fetching GFS from NOMADS…';
 
-  const fhHour = MAG_FH_STEPS[_magCurrentFh] ?? 0;
-  const reg = MAG_REGIONS[_magCurrentRegion] || MAG_REGIONS.tropatl;
-  const STEP = 2;
-
-  const lats=[], lons=[];
-  for (let la=reg.latS; la<=reg.latN; la+=STEP) lats.push(la);
-  for (let lo=reg.lonW; lo<=reg.lonE; lo+=STEP) lons.push(lo);
-
-  const allLats=[], allLons=[];
-  for (const la of lats) for (const lo of lons) { allLats.push(la); allLons.push(lo); }
-
-  const varMap = {
-    mslp_precip:  'pressure_msl',
-    '850wind':    'windspeed_850hpa',
-    '200wind':    'windspeed_250hpa',
-    wind_shear:   'windspeed_250hpa,windspeed_850hpa',
-    precip_water: 'precipitation',
-  };
-  const cmapMap = {
-    mslp_precip: MAG_CMAPS.mslp, '850wind': MAG_CMAPS.wind,
-    '200wind': MAG_CMAPS.wind, wind_shear: MAG_CMAPS.wind, precip_water: MAG_CMAPS.pw,
-  };
-
-  const now=new Date();
-  const cc=parseInt(_magCurrentCycle,10);
-  const d=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate(),cc));
-  if (d>now) d.setUTCDate(d.getUTCDate()-1);
-  const targetISO=new Date(d.getTime()+fhHour*3600000).toISOString().slice(0,16);
+  const fhHour=MAG_FH_STEPS[_magCurrentFh]??0;
+  const cycle=_magCurrentCycle;
+  const reg=MAG_REGIONS[_magCurrentRegion]||MAG_REGIONS.tropatl;
+  const cfg=MAG_VARS[_magCurrentPkg];
 
   try {
-    const omVars = varMap[_magCurrentPkg] || 'pressure_msl';
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${allLats.join(',')}&longitude=${allLons.join(',')}&hourly=${omVars}&wind_speed_unit=kn&timezone=UTC&forecast_days=7&models=gfs_seamless`;
+    let grid;
+    const fetch1 = v => _magFetch(v, cycle, fhHour, reg, signal);
 
-    const resp = await fetch(url, {signal});
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const json = await resp.json();
+    if (_magCurrentPkg==='mslp_precip') {
+      const rows=await fetch1('prmsl');
+      if (!rows) throw new Error('Parse failed');
+      grid=rows.map(row=>row.map(v=>v/100));
 
-    const results = Array.isArray(json) ? json : [json];
-    const times = results[0].hourly.time;
-    let tIdx = times.findIndex(t => t === targetISO);
-    if (tIdx < 0) tIdx = 0;
+    } else if (_magCurrentPkg==='850wind') {
+      const [u,v_]=await Promise.all([fetch1('ugrd850mb'),fetch1('vgrd850mb')]);
+      if (!u||!v_) throw new Error('Parse failed');
+      grid=u.map((row,r)=>row.map((uu,c)=>Math.sqrt(uu*uu+(v_[r]?.[c]??0)**2)*1.944));
 
-    const nLat=lats.length, nLon=lons.length;
-    const grid = Array.from({length:nLat}, ()=>new Array(nLon).fill(0));
-    for (let i=0; i<results.length; i++) {
-      const r=Math.floor(i/nLon), c=i%nLon;
-      const h=results[i].hourly;
-      let val;
-      if (_magCurrentPkg==='wind_shear') {
-        val=Math.abs((h.windspeed_250hpa?.[tIdx]??0)-(h.windspeed_850hpa?.[tIdx]??0));
-      } else {
-        val=h[omVars.split(',')[0]]?.[tIdx]??0;
-      }
-      grid[nLat-1-r][c]=val;
+    } else if (_magCurrentPkg==='200wind') {
+      const [u,v_]=await Promise.all([fetch1('ugrd250mb'),fetch1('vgrd250mb')]);
+      if (!u||!v_) throw new Error('Parse failed');
+      grid=u.map((row,r)=>row.map((uu,c)=>Math.sqrt(uu*uu+(v_[r]?.[c]??0)**2)*1.944));
+
+    } else if (_magCurrentPkg==='wind_shear') {
+      const [u2,v2,u8,v8]=await Promise.all([fetch1('ugrd200mb'),fetch1('vgrd200mb'),fetch1('ugrd850mb'),fetch1('vgrd850mb')]);
+      if (!u2||!v2||!u8||!v8) throw new Error('Parse failed');
+      grid=u2.map((row,r)=>row.map((uu,c)=>{
+        const du=uu-(u8[r]?.[c]??0), dv=(v2[r]?.[c]??0)-(v8[r]?.[c]??0);
+        return Math.sqrt(du*du+dv*dv)*1.944;
+      }));
+
+    } else {
+      const rows=await fetch1('pwat');
+      if (!rows) throw new Error('Parse failed');
+      grid=rows;
     }
 
     if (signal.aborted) return;
-
-    // Leaflet bounds: [[southLat, westLon], [northLat, eastLon]]
-    const bounds = [[reg.latS, reg.lonW], [reg.latN, reg.lonE]];
-    _magRenderOverlay(grid, cmapMap[_magCurrentPkg]||MAG_CMAPS.mslp, bounds);
+    _magRenderOverlay(grid, cfg.cmap, reg);
     if (st) st.textContent='✓ Showing on map';
 
   } catch(e) {
     if (signal.aborted) return;
-    if (st) st.textContent=`⚠ ${e.message||'Load failed'} — try a different cycle.`;
+    if (st) st.textContent=`⚠ ${e.message||'Load failed'} — try another cycle.`;
   }
 }
 
 function _magSetPkg(pkg) {
-  _magCurrentPkg = pkg;
-  document.querySelectorAll('#mag-product-tabs .trop-stab').forEach(t =>
-    t.classList.toggle('active', t.dataset.pkg===pkg));
+  _magCurrentPkg=pkg;
+  document.querySelectorAll('#mag-product-tabs .trop-stab').forEach(t=>
+    t.classList.toggle('active',t.dataset.pkg===pkg));
   _magUpdate();
 }
 
 function _magFhChange(val) {
-  _magCurrentFh = parseInt(val,10);
-  const fh = MAG_FH_STEPS[_magCurrentFh]??0;
-  const lbl = document.getElementById('mag-fh-label');
-  if (lbl) lbl.textContent = 'F'+String(fh).padStart(3,'0');
+  _magCurrentFh=parseInt(val,10);
+  const fh=MAG_FH_STEPS[_magCurrentFh]??0;
+  const lbl=document.getElementById('mag-fh-label');
+  if (lbl) lbl.textContent='F'+String(fh).padStart(3,'0');
   _magUpdate();
 }
 
 function _magInit() {
-  const c = _magAutoSelectCycle();
+  const c=_magAutoSelectCycle();
   _magCurrentCycle=c; _magCurrentFh=0;
   const cycleSel=document.getElementById('mag-cycle-sel');
   if (cycleSel) cycleSel.value=c;
