@@ -5057,10 +5057,9 @@ body.gwcfc-crosshair #map::after {
           <span id="mag-fh-label" style="color:rgba(0,200,255,0.85);font-size:9px;min-width:36px">F000</span>
         </div>
         <div id="mag-img-wrap">
-          <canvas id="mag-canvas" style="width:100%;border-radius:4px;display:none;image-rendering:pixelated"></canvas>
           <div id="mag-img-status">Loading…</div>
         </div>
-        <div id="mag-img-credit">Source: <a href="https://open-meteo.com/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">Open-Meteo GFS</a></div>
+        <div id="mag-img-credit">Source: <a href="https://open-meteo.com/" target="_blank" rel="noopener" style="color:rgba(0,200,255,0.7)">Open-Meteo GFS</a> · displayed on map</div>
       </div>
     </div>
 
@@ -11245,7 +11244,7 @@ const MAG_REGIONS = {
 
 let _magCurrentPkg='mslp_precip', _magCurrentModel='gfs';
 let _magCurrentRegion='tropatl', _magCurrentCycle='00';
-let _magCurrentFh=0, _magAbortCtrl=null;
+let _magCurrentFh=0, _magAbortCtrl=null, _magOverlayLayer=null;
 
 const MAG_CMAPS = {
   mslp:[
@@ -11292,16 +11291,24 @@ function _magAutoSelectCycle() {
   return '18';
 }
 
-function _magRenderCanvas(canvas, grid, cmap) {
+function _magRenderOverlay(grid, cmap, bounds) {
+  // Remove old overlay
+  if (_magOverlayLayer) { map.removeLayer(_magOverlayLayer); _magOverlayLayer=null; }
   const H=grid.length, W=grid[0].length;
-  canvas.width=W; canvas.height=H;
-  const ctx=canvas.getContext('2d');
+  const cv=document.createElement('canvas'); cv.width=W; cv.height=H;
+  const ctx=cv.getContext('2d');
   const img=ctx.createImageData(W,H); const d=img.data;
   for (let r=0;r<H;r++) for (let c=0;c<W;c++) {
     const [rr,gg,bb]=_magColorAt(cmap, grid[r][c]);
-    const i=(r*W+c)*4; d[i]=rr; d[i+1]=gg; d[i+2]=bb; d[i+3]=255;
+    const i=(r*W+c)*4; d[i]=rr; d[i+1]=gg; d[i+2]=bb; d[i+3]=200;
   }
   ctx.putImageData(img,0,0);
+  // Scale up to a larger canvas for smoother rendering on map
+  const big=document.createElement('canvas'); big.width=W*4; big.height=H*4;
+  const bCtx=big.getContext('2d'); bCtx.imageSmoothingEnabled=true; bCtx.imageSmoothingQuality='high';
+  bCtx.drawImage(cv,0,0,big.width,big.height);
+  _magOverlayLayer=L.imageOverlay(big.toDataURL('image/png'), bounds, {opacity:0.75,zIndex:6,interactive:false}).addTo(map);
+  map.fitBounds(bounds, {padding:[20,20]});
 }
 
 async function _magUpdate() {
@@ -11312,20 +11319,17 @@ async function _magUpdate() {
   if (cycleSel)  _magCurrentCycle  = cycleSel.value;
   if (regionSel) _magCurrentRegion = regionSel.value;
 
-  const canvas=document.getElementById('mag-canvas');
   const st=document.getElementById('mag-img-status');
-  if (!canvas) return;
 
   if (_magAbortCtrl) _magAbortCtrl.abort();
   _magAbortCtrl = new AbortController();
   const {signal} = _magAbortCtrl;
 
-  canvas.style.display='none';
   if (st) st.textContent='Fetching GFS data…';
 
   const fhHour = MAG_FH_STEPS[_magCurrentFh] ?? 0;
   const reg = MAG_REGIONS[_magCurrentRegion] || MAG_REGIONS.tropatl;
-  const STEP = 2; // degrees between grid points
+  const STEP = 2;
 
   const lats=[], lons=[];
   for (let la=reg.latS; la<=reg.latN; la+=STEP) lats.push(la);
@@ -11334,7 +11338,6 @@ async function _magUpdate() {
   const allLats=[], allLons=[];
   for (const la of lats) for (const lo of lons) { allLats.push(la); allLons.push(lo); }
 
-  // Variables needed per product
   const varMap = {
     mslp_precip:  'pressure_msl',
     '850wind':    'windspeed_850hpa',
@@ -11347,13 +11350,11 @@ async function _magUpdate() {
     '200wind': MAG_CMAPS.wind, wind_shear: MAG_CMAPS.wind, precip_water: MAG_CMAPS.pw,
   };
 
-  // Compute target ISO time
-  const now = new Date();
-  const cc = parseInt(_magCurrentCycle, 10);
-  const d  = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cc));
-  if (d > now) d.setUTCDate(d.getUTCDate()-1);
-  const targetMs = d.getTime() + fhHour * 3600000;
-  const targetISO = new Date(targetMs).toISOString().slice(0,16); // "2026-05-22T06:00"
+  const now=new Date();
+  const cc=parseInt(_magCurrentCycle,10);
+  const d=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate(),cc));
+  if (d>now) d.setUTCDate(d.getUTCDate()-1);
+  const targetISO=new Date(d.getTime()+fhHour*3600000).toISOString().slice(0,16);
 
   try {
     const omVars = varMap[_magCurrentPkg] || 'pressure_msl';
@@ -11366,30 +11367,28 @@ async function _magUpdate() {
     const results = Array.isArray(json) ? json : [json];
     const times = results[0].hourly.time;
     let tIdx = times.findIndex(t => t === targetISO);
-    if (tIdx < 0) tIdx = 0; // fallback to first time step
+    if (tIdx < 0) tIdx = 0;
 
     const nLat=lats.length, nLon=lons.length;
-    // grid[0] = northernmost row
     const grid = Array.from({length:nLat}, ()=>new Array(nLon).fill(0));
     for (let i=0; i<results.length; i++) {
-      const r = Math.floor(i/nLon);
-      const c = i % nLon;
-      const h = results[i].hourly;
+      const r=Math.floor(i/nLon), c=i%nLon;
+      const h=results[i].hourly;
       let val;
-      if (_magCurrentPkg === 'wind_shear') {
-        val = Math.abs((h.windspeed_250hpa?.[tIdx]??0) - (h.windspeed_850hpa?.[tIdx]??0));
+      if (_magCurrentPkg==='wind_shear') {
+        val=Math.abs((h.windspeed_250hpa?.[tIdx]??0)-(h.windspeed_850hpa?.[tIdx]??0));
       } else {
-        const v0 = omVars.split(',')[0];
-        val = h[v0]?.[tIdx] ?? 0;
+        val=h[omVars.split(',')[0]]?.[tIdx]??0;
       }
-      // Flip lat axis so north is top (lats array is south-to-north)
-      grid[nLat-1-r][c] = val;
+      grid[nLat-1-r][c]=val;
     }
 
     if (signal.aborted) return;
-    _magRenderCanvas(canvas, grid, cmapMap[_magCurrentPkg] || MAG_CMAPS.mslp);
-    canvas.style.display='block';
-    if (st) st.textContent='';
+
+    // Leaflet bounds: [[southLat, westLon], [northLat, eastLon]]
+    const bounds = [[reg.latS, reg.lonW], [reg.latN, reg.lonE]];
+    _magRenderOverlay(grid, cmapMap[_magCurrentPkg]||MAG_CMAPS.mslp, bounds);
+    if (st) st.textContent='✓ Showing on map';
 
   } catch(e) {
     if (signal.aborted) return;
@@ -11580,6 +11579,7 @@ function closeFNV3Panel() {
   _atcfClearLayers();
   if (_fnv3RefreshTimer) { clearInterval(_fnv3RefreshTimer); _fnv3RefreshTimer = null; }
   if (_magAbortCtrl) _magAbortCtrl.abort();
+  if (_magOverlayLayer) { map.removeLayer(_magOverlayLayer); _magOverlayLayer=null; }
 }
 // ── END FNV3 ────────────────────────────────────────────────────────────────
 
