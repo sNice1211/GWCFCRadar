@@ -1,10 +1,10 @@
-// GWCFCRadar Service Worker — tile cache for instant loads
+// GWCFCRadar Service Worker , tile cache for instant loads
 // Bump CACHE version to force-clear old cached tiles.
 const CACHE = 'gwcfc-v4';
 
 // All tile / data hosts we intercept and cache
 const CACHE_HOSTS = new Set([
-  'api.maptiler.com',           // base map tiles — never change
+  'api.maptiler.com',           // base map tiles , never change
   'mesonet.agron.iastate.edu',  // NEXRAD + GOES WMS tiles
   'tilecache.rainviewer.com',   // RainViewer satellite tiles
   'api.rainviewer.com',         // RainViewer frame index
@@ -13,11 +13,11 @@ const CACHE_HOSTS = new Set([
 
 // How long each host's responses stay fresh
 const TTL_MS = {
-  'api.maptiler.com':          7 * 24 * 3600 * 1000,  // 7 days  — static raster tiles
-  'tilecache.rainviewer.com':  5 * 60 * 1000,          // 5 min   — satellite tiles
-  'api.rainviewer.com':        5 * 60 * 1000,          // 5 min   — frame index JSON
-  'mesonet.agron.iastate.edu': 2 * 3600 * 1000,         // 2 hr   — radar tiles are immutable per TIME param
-  'opengeo.ncep.noaa.gov':     2 * 3600 * 1000,         // 2 hr   — NOAA Level III tiles, immutable per TIME
+  'api.maptiler.com':          7 * 24 * 3600 * 1000,  // 7 days  , static raster tiles
+  'tilecache.rainviewer.com':  5 * 60 * 1000,          // 5 min   , satellite tiles
+  'api.rainviewer.com':        5 * 60 * 1000,          // 5 min   , frame index JSON
+  'mesonet.agron.iastate.edu': 2 * 3600 * 1000,         // 2 hr   , radar tiles are immutable per TIME param
+  'opengeo.ncep.noaa.gov':     2 * 3600 * 1000,         // 2 hr   , NOAA Level III tiles, immutable per TIME
 };
 
 self.addEventListener('install',  ()  => self.skipWaiting());
@@ -34,7 +34,7 @@ self.addEventListener('fetch', e => {
   }
   // Cache same-origin data files
   if (url.pathname.endsWith('windy-webcams.json')) {
-    e.respondWith(cacheFirst(e.request, 2 * 3600 * 1000)); // 2 h — matches workflow schedule
+    e.respondWith(cacheFirst(e.request, 2 * 3600 * 1000)); // 2 h , matches workflow schedule
   }
 });
 
@@ -44,7 +44,7 @@ async function cacheFirst(req, ttl) {
 
   if (hit) {
     const age = Date.now() - +(hit.headers.get('x-sw-ts') ?? 0);
-    if (age < ttl) return hit;   // fresh — serve instantly from cache
+    if (age < ttl) return hit;   // fresh , serve instantly from cache
   }
 
   try {
@@ -59,7 +59,7 @@ async function cacheFirst(req, ttl) {
     }
     return res;
   } catch {
-    // Network failed — serve stale cache if available, else 503
+    // Network failed , serve stale cache if available, else 503
     return hit ?? new Response('', { status: 503 });
   }
 }
