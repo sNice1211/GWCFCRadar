@@ -17832,6 +17832,7 @@ async function openForecastModal(city) {
 
     // Unit helpers
     const fToC   = f  => ((f - 32) * 5/9).toFixed(1);
+    const to12h  = t => { const [h,m] = t.split(':').map(Number); const ampm = h < 12 ? 'AM' : 'PM'; const h12 = h % 12 || 12; return h12 + ':' + String(m).padStart(2,'0') + ' ' + ampm; };
     const mphToKmh = m => (m * 1.60934).toFixed(0);
     const mphToKt  = m => (m * 0.868976).toFixed(0);
     const hpaToInhg = h => (h / 33.8639).toFixed(2);
@@ -17865,6 +17866,7 @@ async function openForecastModal(city) {
     }
 
     // Current conditions card
+    const obsTime = cw.time ? (() => { const d = new Date(cw.time + 'Z'); const h = d.getHours(), m = d.getMinutes(), ampm = h < 12 ? 'AM' : 'PM'; return (h%12||12) + ':' + String(m).padStart(2,'0') + ' ' + ampm + ' local'; })() : null;
     const tF  = Math.round(cw.temperature);
     const tC  = fToC(tF);
     const flF = cw.apparent_temperature != null ? Math.round(cw.apparent_temperature) : null;
@@ -17898,6 +17900,7 @@ async function openForecastModal(city) {
           <div class="fc-now-temp">${tF}°F <span class="fc-now-temp-c">${tC}°C</span></div>
           <div class="fc-now-desc">${WMO_CODES[cw.weathercode] || 'Unknown'}</div>
           ${flF != null ? `<div class="fc-now-feels">Feels like ${flF}°F / ${flC}°C</div>` : ''}
+          ${obsTime ? `<div class="fc-now-feels">Observed ${obsTime}</div>` : ''}
         </div>
       </div>
       ${statsHtml ? `<div class="fc-stats-grid">${statsHtml}</div>` : ''}
@@ -17927,14 +17930,14 @@ async function openForecastModal(city) {
           const wLabel  = s.wind != null
             ? `${Math.round(s.wind)} mph / ${mphToKmh(s.wind)} km/h${s.windDir != null ? ' ' + degToDir(s.windDir) : ''}${s.gusts != null ? ' G' + Math.round(s.gusts) : ''}`
             : '—';
-          const rhLabel  = s.rh   != null ? s.rh + '%'  : '';
+          const rhLabel  = s.rh   != null ? Math.round(s.rh) + '%'  : '';
           const dpLabel  = s.dewpt != null ? `Dew ${Math.round(s.dewpt)}°F` : '';
           const presLabel = s.pres != null ? `${Math.round(s.pres)} hPa / ${hpaToInhg(s.pres)} inHg` : '';
           const visLabel  = s.vis  != null ? `${(s.vis/1000).toFixed(1)} km / ${kmToMi(s.vis/1000)} mi` : '';
           const ccLabel   = s.clouds != null ? s.clouds + '% cloud' : '';
 
           hourlyHtml += `<div class="fc-hourly-row">
-            <span class="fc-hr-time">${s.time}</span>
+            <span class="fc-hr-time">${to12h(s.time)}</span>
             <span class="fc-hr-icon">${WMO_ICONS[s.wcode] || '🌡️'}</span>
             <span class="fc-hr-temp">${sF}°F/${sC}°C${flLabel}</span>
             <span class="fc-hr-precip">💧${s.precip ?? 0}%</span>
