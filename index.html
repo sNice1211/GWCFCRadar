@@ -5761,14 +5761,24 @@ function initMap() {
       _mmRaf = null;
     });
   });
+  let _zoomTimer = null;
+  map.on('zoomstart', () => {
+    // Suspend all non-active radar tile layers during zoom to prevent tile avalanche
+    if (_radarPoolBuilt) {
+      _radarLayerPool.forEach((l, i) => { if (l && i !== currentFrame) l.options.updateWhenZooming = false; });
+    }
+  });
   map.on('zoomend', () => {
     document.getElementById('sb-zoom').textContent = map.getZoom();
     _applyRadarPolyMask();
-    // Re-evaluate active window size (dynamic by zoom) and shed stale tiles
-    if (_radarPoolBuilt) {
-      _lastWindowS = -1; _lastWindowE = -1;
-      _activateWindow(currentFrame);
-    }
+    // Debounce pool rebuild 300ms after zoom ends to batch requests
+    clearTimeout(_zoomTimer);
+    _zoomTimer = setTimeout(() => {
+      if (_radarPoolBuilt) {
+        _lastWindowS = -1; _lastWindowE = -1;
+        _activateWindow(currentFrame);
+      }
+    }, 300);
   });
   map.on('moveend', _applyRadarPolyMask);
   document.getElementById('sb-zoom').textContent = map.getZoom();
@@ -5931,59 +5941,30 @@ function _initGraticule() {
 let lastPastIdx = 0;
 
 // Fetch real scan timestamps + discover layer name from NOAA opengeo GetCapabilities
-async function _fetchConusL3Timestamps() {
-  const url = 'https://opengeo.ncep.noaa.gov/geoserver/conus/ows?service=wms&version=1.3.0&request=GetCapabilities';
-  const CACHE_KEY = 'gwcfc_conus_caps';
-  const CACHE_TTL = 5 * 60 * 1000; // 5 min — timestamps shift every ~6 min
-  let xmlText;
+// ── RainViewer radar frame fetch (replaces WMS GetCapabilities) ──
+async function _fetchRainViewerFrames() {
+  const CACHE_KEY = 'gwcfc_rv_radar_frames';
+  const CACHE_TTL = 2 * 60 * 1000; // 2 min
   try {
     const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
     if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
-      xmlText = cached.xml;
+      return cached.frames;
     }
   } catch(e) {}
-  if (!xmlText) {
-    const res = await fetch(url, { signal: _abortSignal(10000) });
-    xmlText = await res.text();
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), xml: xmlText })); } catch(e) {}
-  }
-  const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
-  let timeStr = '', layerName = '';
-  for (const lyr of xml.querySelectorAll('Layer')) {
-    const nm = lyr.querySelector(':scope > Name')?.textContent?.trim() ?? '';
-    if (/bref/i.test(nm) || /reflectivity/i.test(nm)) {
-      const dim = lyr.querySelector('Dimension[name="time"]') || lyr.querySelector('Extent[name="time"]');
-      if (dim && dim.textContent.trim()) { timeStr = dim.textContent.trim(); layerName = nm; break; }
-    }
-  }
-  if (!timeStr || !layerName) throw new Error('CONUS reflectivity layer not found');
-  const times = timeStr.split(',').map(s => s.trim()).filter(Boolean).slice(-36);
-  return { layerName, frames: times.map(iso => ({ time: new Date(iso).getTime() / 1000, iso, forecast: false })) };
-}
-
-// Synthetic IEM frame list (fallback when opengeo unavailable)
-function _buildNexradFrames() {
-  const now = new Date();
-  now.setUTCSeconds(0, 0);
-  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
-  const pad = n => String(n).padStart(2, '0');
-  return Array.from({ length: 36 }, (_, idx) => {
-    const t = new Date(now.getTime() - (35 - idx) * 5 * 60 * 1000);
-    const iso = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
-    return { time: t.getTime() / 1000, iso, forecast: false };
-  });
+  const res = await fetch('https://api.rainviewer.com/public/weather-maps.json', { signal: _abortSignal(10000) });
+  const data = await res.json();
+  const past = (data.radar && data.radar.past) || [];
+  if (!past.length) throw new Error('RainViewer returned no radar frames');
+  const frames = past.map(f => ({ time: f.time, path: f.path, forecast: false }));
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
+  return frames;
 }
 
 async function loadNEXRAD() {
-  updateLoadStatus('Loading NEXRAD radar…');
+  updateLoadStatus('Loading radar…');
   try {
-    // Step 1: IEM frames immediately , radar works in <1ms
-    radarFrames  = _buildNexradFrames();
-    NEXRAD_WMS   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
-    NEXRAD_LAYER = 'nexrad-n0q-wmst';
-    NEXRAD_VER   = '1.1.1';
-    _nexradIsL3  = false;
-
+    const frames = await _fetchRainViewerFrames();
+    radarFrames = frames;
     lastPastIdx = radarFrames.length - 1;
     const tl = document.getElementById('timeline');
     tl.max = radarFrames.length - 1;
@@ -5994,37 +5975,9 @@ async function loadNEXRAD() {
     _buildRadarPool();
     showFrame(currentFrame);
     _preloadSatBackground();
-
-    // Step 2: Upgrade to NOAA Level III silently in background
-    _upgradeConusToL3();
+    console.log(`[Radar] RainViewer: ${frames.length} frames loaded`);
   } catch (e) {
-    console.warn('NEXRAD load error:', e);
-  }
-}
-
-// Background upgrade: swap IEM composite → NOAA Level III once GetCapabilities arrives.
-// Rebuilds the pool transparently; if radar isn't active, user never sees a flicker.
-async function _upgradeConusToL3() {
-  try {
-    const { layerName, frames } = await _fetchConusL3Timestamps();
-    if (!frames.length) return;
-    NEXRAD_WMS   = 'https://opengeo.ncep.noaa.gov/geoserver/conus/ows';
-    NEXRAD_LAYER = layerName;
-    NEXRAD_VER   = '1.3.0';
-    _nexradIsL3  = true;
-    _colorRemapCache.clear();
-    radarFrames  = frames;
-    lastPastIdx  = frames.length - 1;
-    const tl = document.getElementById('timeline');
-    if (tl) { tl.max = lastPastIdx; tl.value = lastPastIdx; }
-    currentFrame = lastPastIdx;
-    buildTimelineLabels();
-    _updateTimelineGradient(lastPastIdx, frames.length);
-    _buildRadarPool();
-    if (activeLayers.nexrad) showFrame(currentFrame);
-    console.log(`[NEXRAD] L3 upgrade: ${layerName} · ${frames.length} frames`);
-  } catch(e) {
-    console.log('[NEXRAD] L3 unavailable, keeping IEM composite:', e.message);
+    console.warn('Radar load error:', e);
   }
 }
 
@@ -6075,10 +6028,9 @@ let   _radarPoolBuilt = false;
 // Per-frame loaded flags , true once at least one tile has fired 'tileload'
 const _radarLayerLoaded = [];
 
-let NEXRAD_WMS   = 'https://opengeo.ncep.noaa.gov/geoserver/conus/ows';
-let NEXRAD_LAYER = 'conus_bref_qc';
-let NEXRAD_VER   = '1.3.0';
-let _nexradIsL3  = true;
+// RainViewer tile base (path injected per-frame)
+const RAINVIEWER_TILE_BASE = 'https://tilecache.rainviewer.com/v2/radar';
+let _nexradIsL3  = false; // kept for attribution compat
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
 const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
@@ -6100,13 +6052,17 @@ function _buildRadarPool() {
   _radarPoolBuilt = true;
   _buildCanadaPool();
 
-  // Preload ALL frames in background , animation becomes zero-wait after first cycle.
-  // Tiles land in the SW cache so future visits are instant.
+  // Stagger background preload: current frame first, then others 80ms apart to avoid tile avalanche.
   if (_radarPoolBuilt && radarFrames.length) {
-    for (let i = 0; i < radarFrames.length; i++) {
-      _ensureNexradLayer(i);
-      _ensureCanadaLayer(i);
+    _ensureNexradLayer(currentFrame);
+    const order = [];
+    for (let d = 1; d < radarFrames.length; d++) {
+      const prev = currentFrame - d; if (prev >= 0) order.push(prev);
+      const next = currentFrame + d; if (next < radarFrames.length) order.push(next);
     }
+    order.forEach((i, idx) => setTimeout(() => {
+      if (_radarPoolBuilt) { _ensureNexradLayer(i); _ensureCanadaLayer(i); }
+    }, (idx + 1) * 80));
   }
 }
 
@@ -6139,19 +6095,18 @@ function _poolWindow(idx) {
 
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
-  const l = L.tileLayer.wms(NEXRAD_WMS, {
-    layers: NEXRAD_LAYER, format: 'image/png', transparent: true,
-    version: NEXRAD_VER, TIME: radarFrames[i].iso,
+  const path = radarFrames[i].path;
+  const url = `${RAINVIEWER_TILE_BASE}${path}/512/{z}/{x}/{y}/4/1_1.png`;
+  const l = L.tileLayer(url, {
     opacity: 0, zIndex: 10, pane: 'radarPane',
-    crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
-    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
-    detectRetina: true,
-    attribution: _nexradIsL3 ? 'NEXRAD © NOAA Level III' : 'NEXRAD © NOAA via Iowa Mesonet',
+    crossOrigin: true, noWrap: true, tileSize: 512,
+    keepBuffer: 2, updateWhenIdle: true, updateWhenZooming: false,
+    detectRetina: false,
+    attribution: 'Radar © RainViewer',
   });
   _radarLayerLoaded[i] = false;
   l.on('tileload', (e) => {
     _radarLayerLoaded[i] = true;
-    _remapTileColors(e.tile);
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
   });
   l.addTo(map);
