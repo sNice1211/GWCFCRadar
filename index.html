@@ -6099,11 +6099,8 @@ let   _radarPoolBuilt = false;
 // Per-frame loaded flags , true once at least one tile has fired 'tileload'
 const _radarLayerLoaded = [];
 
-// IEM NEXRAD L3 tile cache base — pre-rendered PNGs, no WMS overhead
+// IEM NEXRAD tile cache — pre-rendered PNGs, no CORS required
 const IEM_TILE_BASE = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
-// RainViewer tile base (fallback path injected per-frame)
-const RAINVIEWER_TILE_BASE = 'https://tilecache.rainviewer.com/v2/radar';
-let _nexradIsL3 = true;
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
 const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
@@ -6135,7 +6132,7 @@ function _buildRadarPool() {
     }
     order.forEach((i, idx) => setTimeout(() => {
       if (_radarPoolBuilt) { _ensureNexradLayer(i); _ensureCanadaLayer(i); }
-    }, (idx + 1) * 80));
+    }, (idx + 1) * 20));
   }
 }
 
@@ -6169,16 +6166,13 @@ function _poolWindow(idx) {
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const frame = radarFrames[i];
-  const url = frame._rv
-    ? `${RAINVIEWER_TILE_BASE}${frame.path}/512/{z}/{x}/{y}/4/1_1.png`
-    : `${IEM_TILE_BASE}${frame.tileKey}/{z}/{x}/{y}.png`;
-  const tileSize = frame._rv ? 512 : 256;
-  const attribution = frame._rv ? 'Radar © RainViewer' : 'Radar: NOAA NEXRAD L3 via Iowa Mesonet';
+  const url = IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png';
   const l = L.tileLayer(url, {
     opacity: 0, zIndex: 10, pane: 'radarPane',
-    crossOrigin: true, noWrap: true, tileSize,
-    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
-    detectRetina: false, attribution,
+    noWrap: true, tileSize: 256,
+    keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
+    detectRetina: false,
+    attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   _radarLayerLoaded[i] = false;
   l.on('tileload', (e) => {
