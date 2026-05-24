@@ -5984,32 +5984,47 @@ async function _fetchL3Frames() {
     if (cached && (Date.now() - cached.ts) < CACHE_TTL) return cached.frames;
   } catch(e) {}
   const now = new Date();
-  const ts2 = now.toISOString().slice(0, 16) + 'Z';
-  const ts1 = new Date(now - 2 * 60 * 60 * 1000).toISOString().slice(0, 16) + 'Z';
-  const url = `https://mesonet.agron.iastate.edu/json/radar?operation=list&product=N0Q&radar=COMPOSITE&ts1=${encodeURIComponent(ts1)}&ts2=${encodeURIComponent(ts2)}`;
-  const res = await fetch(url, { signal: _abortSignal(10000) });
+  const fmt = d => d.toISOString().slice(0, 16) + 'Z';
+  const ts2 = fmt(now);
+  const ts1 = fmt(new Date(now - 2 * 60 * 60 * 1000));
+  const apiUrl = `https://mesonet.agron.iastate.edu/json/radar.py?operation=list&product=N0Q&radar=COMPOSITE&ts1=${encodeURIComponent(ts1)}&ts2=${encodeURIComponent(ts2)}`;
+  const res = await fetch(apiUrl, { signal: _abortSignal(10000) });
   const data = await res.json();
-  const items = (data.data || []);
-  if (!items.length) throw new Error('IEM returned no L3 frames');
+  // IEM returns {scans:[...]} or {data:[...]} depending on endpoint version
+  const items = data.scans || data.data || [];
+  if (!items.length) throw new Error('IEM L3: no frames returned');
+  const pad = n => String(n).padStart(2, '0');
   const frames = items.map(f => {
-    // valid format: "2024-01-01 12:00" UTC
-    const d = new Date(f.valid.replace(' ', 'T') + 'Z');
-    // IEM tile key: YYYYMMDDHHmm
-    const pad = n => String(n).padStart(2, '0');
+    const raw = f.valid || f.utcvalid || f.ts || '';
+    const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z');
     const key = `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`;
     return { time: Math.floor(d.getTime() / 1000), tileKey: key, forecast: false };
   });
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
   return frames;
 }
-  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
-  return frames;
+
+// Fallback to RainViewer if IEM L3 is unavailable
+async function _fetchRainViewerFrames() {
+  const res = await fetch('https://api.rainviewer.com/public/weather-maps.json', { signal: _abortSignal(10000) });
+  const data = await res.json();
+  const past = (data.radar && data.radar.past) || [];
+  if (!past.length) throw new Error('RainViewer: no frames');
+  return past.map(f => ({ time: f.time, path: f.path, forecast: false, _rv: true }));
 }
 
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const frames = await _fetchL3Frames();
+    let frames;
+    try {
+      frames = await _fetchL3Frames();
+      console.log(`[Radar] NOAA L3 (IEM): ${frames.length} frames loaded`);
+    } catch(e) {
+      console.warn('[Radar] IEM L3 failed, falling back to RainViewer:', e);
+      frames = await _fetchRainViewerFrames();
+      console.log(`[Radar] RainViewer fallback: ${frames.length} frames loaded`);
+    }
     radarFrames = frames;
     lastPastIdx = radarFrames.length - 1;
     const tl = document.getElementById('timeline');
@@ -6021,9 +6036,9 @@ async function loadNEXRAD() {
     _buildRadarPool();
     showFrame(currentFrame);
     _preloadSatBackground();
-    console.log(`[Radar] NOAA L3 (IEM): ${frames.length} frames loaded`);
   } catch (e) {
     console.warn('Radar load error:', e);
+    updateLoadStatus('Radar unavailable');
   }
 }
 
@@ -6141,14 +6156,17 @@ function _poolWindow(idx) {
 
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
-  const key = radarFrames[i].tileKey;
-  const url = `${IEM_TILE_BASE}${key}/{z}/{x}/{y}.png`;
+  const frame = radarFrames[i];
+  const url = frame._rv
+    ? `https://tilecache.rainviewer.com/v2/radar${frame.path}/512/{z}/{x}/{y}/4/1_1.png`
+    : `${IEM_TILE_BASE}${frame.tileKey}/{z}/{x}/{y}.png`;
+  const tileSize = frame._rv ? 512 : 256;
+  const attribution = frame._rv ? 'Radar © RainViewer' : 'Radar: NOAA NEXRAD L3 via Iowa Mesonet';
   const l = L.tileLayer(url, {
     opacity: 0, zIndex: 10, pane: 'radarPane',
-    crossOrigin: true, noWrap: true, tileSize: 256,
+    crossOrigin: true, noWrap: true, tileSize,
     keepBuffer: 2, updateWhenIdle: true, updateWhenZooming: false,
-    detectRetina: false,
-    attribution: 'Radar: NOAA NEXRAD L3 via Iowa Mesonet',
+    detectRetina: false, attribution,
   });
   _radarLayerLoaded[i] = false;
   l.on('tileload', (e) => {
