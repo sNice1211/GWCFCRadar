@@ -6085,18 +6085,15 @@ function buildTimelineLabels() {
 // ── DOUBLE-BUFFER RADAR (no-flash frame system) ──
 // WMS layers are built once at opacity 0 and shown by toggling opacity.
 // Iowa Mesonet n0q-t.cgi with TIME param , real NOAA NEXRAD data.
-const _radarLayerPool = [];   // L.imageOverlay per frame index
+const _radarLayerPool = [];   // L.tileLayer.wms per frame index
 let   _radarPoolBuilt = false;
 
 // Per-frame loaded flags , true once at least one tile has fired 'tileload'
 const _radarLayerLoaded = [];
 
-// IEM NEXRAD WMS — CORS-enabled; use single full-CONUS image per frame (12 req vs 192+ tiled)
+// IEM NEXRAD WMS — CORS-enabled, tiled at 512px (fewer tiles = faster load, native sharpness)
 const IEM_NEXRAD_WMS   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
 const IEM_NEXRAD_LAYER = 'nexrad-n0q-wmst';
-// CONUS extent in EPSG:3857 (Web Mercator) for the imageOverlay WMS request
-const _NEXRAD_BBOX   = '-14469576,2577834,-6682607,6645895';
-const _NEXRAD_BOUNDS = [[22, -130], [52, -60]];
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
 const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
@@ -6162,17 +6159,21 @@ function _poolWindow(idx) {
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const frame = radarFrames[i];
-  // One WMS image covering the full CONUS per frame — 12 requests total vs 192+ tiled
-  const url = `${IEM_NEXRAD_WMS}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap` +
-    `&LAYERS=${IEM_NEXRAD_LAYER}&FORMAT=image%2Fpng&TRANSPARENT=true` +
-    `&SRS=EPSG%3A3857&BBOX=${_NEXRAD_BBOX}&WIDTH=4096&HEIGHT=2138&TIME=${frame.iso}`;
-  const l = L.imageOverlay(url, _NEXRAD_BOUNDS, {
+  const l = L.tileLayer.wms(IEM_NEXRAD_WMS, {
+    layers: IEM_NEXRAD_LAYER, format: 'image/png', transparent: true,
+    version: '1.1.1', TIME: frame.iso,
     opacity: 0, zIndex: 10, pane: 'radarPane',
-    interactive: false, crossOrigin: 'anonymous',
+    crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
+    keepBuffer: 0, updateWhenIdle: false, updateWhenZooming: false,
+    detectRetina: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   _radarLayerLoaded[i] = false;
-  l.on('load', () => { _radarLayerLoaded[i] = true; });
+  l.on('tileload', (e) => {
+    _radarLayerLoaded[i] = true;
+    _remapTileColors(e.tile);
+    e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
+  });
   l.addTo(map);
   _radarLayerPool[i] = l;
 }
