@@ -6028,8 +6028,13 @@ async function _fetchRainViewerFrames() {
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const frames = _generateL3Frames(12);
-    console.log(`[Radar] NOAA L3 (IEM computed): ${frames.length} frames`);
+    let frames;
+    try {
+      frames = await _fetchRainViewerFrames();
+    } catch (rvErr) {
+      console.warn('[Radar] RainViewer unavailable, using IEM fallback:', rvErr);
+      frames = _generateL3Frames(12);
+    }
     radarFrames = frames;
     lastPastIdx = radarFrames.length - 1;
     const tl = document.getElementById('timeline');
@@ -6039,7 +6044,6 @@ async function loadNEXRAD() {
     buildTimelineLabels();
     _updateTimelineGradient(lastPastIdx, radarFrames.length);
     _buildRadarPool();
-    activeLayers.nexrad = true;
     showFrame(currentFrame);
     _preloadSatBackground();
   } catch (e) {
