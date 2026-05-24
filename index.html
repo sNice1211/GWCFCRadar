@@ -427,6 +427,14 @@ body {
 }
 #animbar button:hover { background: rgba(26,143,255,0.15); border-color: var(--accent); }
 #animbar button.active { background: rgba(26,143,255,0.2); border-color: var(--accent2); color: var(--accent2); }
+#radar-palette-btn { background: none; border: 1px solid var(--border2); color: var(--text); width: 28px; height: 28px; border-radius: 6px; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; transition: background 0.1s, border-color 0.1s; flex-shrink: 0; }
+#radar-palette-btn:hover { background: rgba(26,143,255,0.15); border-color: var(--accent); }
+#radar-palette-btn.active { background: rgba(26,143,255,0.2); border-color: var(--accent2); }
+.radar-pal-option { display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:pointer;transition:background 0.12s; }
+.radar-pal-option:hover { background:rgba(26,143,255,0.15); }
+.radar-pal-option.selected { background:rgba(26,143,255,0.2);border:1px solid rgba(26,143,255,0.5); }
+.radar-pal-swatch { width:28px;height:16px;border-radius:4px;flex-shrink:0;border:1px solid rgba(255,255,255,0.15); }
+.radar-pal-label { font-family:var(--mono);font-size:10px;color:rgba(255,255,255,0.8);letter-spacing:0.5px; }
 #speed-wrap {
   display: flex;
   align-items: center;
@@ -5433,6 +5441,14 @@ body.gwcfc-crosshair #map::after {
 
       <!-- RIGHT: play forward -->
       <button id="play-btn" onclick="togglePlay()" title="Play Forward">▶</button>
+      <!-- Radar color palette picker -->
+      <div style="position:relative;flex-shrink:0;">
+        <button id="radar-palette-btn" onclick="_toggleRadarPalette(event)" title="Radar color palette" style="font-size:14px;">🎨</button>
+        <div id="radar-palette-popup" style="display:none;position:absolute;bottom:38px;right:0;background:rgba(8,14,22,0.97);border:1px solid rgba(26,143,255,0.35);border-radius:10px;padding:10px 12px;z-index:9999;min-width:160px;box-shadow:0 4px 20px rgba(0,0,0,0.6);">
+          <div style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;margin-bottom:8px;">RADAR PALETTE</div>
+          <div id="radar-palette-options"></div>
+        </div>
+      </div>
     </div>
 
 
@@ -5761,6 +5777,8 @@ function initMap() {
   const _radarPaneEl = map.createPane('radarPane');
   _radarPaneEl.style.zIndex = 400;
   _radarPaneEl.style.pointerEvents = 'none';
+  // Apply saved color palette on init
+  setTimeout(() => _applyRadarPalette(_radarPalette), 0);
 
   // ── MapTiler tile layers ──
   // Uses MapTiler SDK tile URLs , replace YOUR_KEY with your MapTiler API key if needed
@@ -5967,15 +5985,12 @@ function _initGraticule() {
   redraw();
 }
 
-// ── NOAA NEXRAD RADAR (Iowa Mesonet WMS-T) ──
-// Source: https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi
-// Layer: nexrad-n0q-wmst  |  5-min intervals  |  supports TIME parameter
+// ── NOAA NEXRAD RADAR (Iowa Mesonet IEM tile cache — NOAA L3 N0Q) ──
+// Primary: IEM JSON API for timestamps + IEM pre-rendered PNG tile cache
+// Fallback: RainViewer global composite
 let lastPastIdx = 0;
 
-// Fetch real scan timestamps + discover layer name from NOAA opengeo GetCapabilities
-// ── NOAA NEXRAD L3 via Iowa Mesonet tile cache ──
-// Timestamps from IEM JSON API (fast), tiles from IEM pre-rendered PNG cache (fast).
-// Layer: n0q (Super-Resolution Base Reflectivity) at ~250m resolution.
+// ── IEM NOAA L3 N0Q composite frame fetch ──
 async function _fetchL3Frames() {
   const CACHE_KEY = 'gwcfc_l3_frames';
   const CACHE_TTL = 2 * 60 * 1000; // 2 min
@@ -5990,7 +6005,7 @@ async function _fetchL3Frames() {
   const apiUrl = `https://mesonet.agron.iastate.edu/json/radar.py?operation=list&product=N0Q&radar=COMPOSITE&ts1=${encodeURIComponent(ts1)}&ts2=${encodeURIComponent(ts2)}`;
   const res = await fetch(apiUrl, { signal: _abortSignal(10000) });
   const data = await res.json();
-  // IEM returns {scans:[...]} or {data:[...]} depending on endpoint version
+  // IEM returns { scans: [ { valid: "2024-01-01 12:00" }, ... ] }
   const items = data.scans || data.data || [];
   if (!items.length) throw new Error('IEM L3: no frames returned');
   const pad = n => String(n).padStart(2, '0');
@@ -5998,19 +6013,30 @@ async function _fetchL3Frames() {
     const raw = f.valid || f.utcvalid || f.ts || '';
     const d = new Date(raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z');
     const key = `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`;
-    return { time: Math.floor(d.getTime() / 1000), tileKey: key, forecast: false };
+    const iso = d.toISOString().slice(0,19) + 'Z';
+    return { time: Math.floor(d.getTime() / 1000), tileKey: key, iso, forecast: false };
   });
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
   return frames;
 }
 
-// Fallback to RainViewer if IEM L3 is unavailable
+// ── RainViewer radar frame fetch (fallback) ──
 async function _fetchRainViewerFrames() {
+  const CACHE_KEY = 'gwcfc_rv_radar_frames';
+  const CACHE_TTL = 2 * 60 * 1000; // 2 min
+  try {
+    const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+    if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
+      return cached.frames;
+    }
+  } catch(e) {}
   const res = await fetch('https://api.rainviewer.com/public/weather-maps.json', { signal: _abortSignal(10000) });
   const data = await res.json();
   const past = (data.radar && data.radar.past) || [];
-  if (!past.length) throw new Error('RainViewer: no frames');
-  return past.map(f => ({ time: f.time, path: f.path, forecast: false, _rv: true }));
+  if (!past.length) throw new Error('RainViewer returned no radar frames');
+  const frames = past.map(f => ({ time: f.time, path: f.path, forecast: false, _rv: true }));
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
+  return frames;
 }
 
 async function loadNEXRAD() {
@@ -6034,6 +6060,7 @@ async function loadNEXRAD() {
     buildTimelineLabels();
     _updateTimelineGradient(lastPastIdx, radarFrames.length);
     _buildRadarPool();
+    activeLayers.nexrad = true;
     showFrame(currentFrame);
     _preloadSatBackground();
   } catch (e) {
@@ -6091,6 +6118,8 @@ const _radarLayerLoaded = [];
 
 // IEM NEXRAD L3 tile cache base — pre-rendered PNGs, no WMS overhead
 const IEM_TILE_BASE = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
+// RainViewer tile base (fallback path injected per-frame)
+const RAINVIEWER_TILE_BASE = 'https://tilecache.rainviewer.com/v2/radar';
 let _nexradIsL3 = true;
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
@@ -6158,14 +6187,14 @@ function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const frame = radarFrames[i];
   const url = frame._rv
-    ? `https://tilecache.rainviewer.com/v2/radar${frame.path}/512/{z}/{x}/{y}/4/1_1.png`
+    ? `${RAINVIEWER_TILE_BASE}${frame.path}/512/{z}/{x}/{y}/4/1_1.png`
     : `${IEM_TILE_BASE}${frame.tileKey}/{z}/{x}/{y}.png`;
   const tileSize = frame._rv ? 512 : 256;
   const attribution = frame._rv ? 'Radar © RainViewer' : 'Radar: NOAA NEXRAD L3 via Iowa Mesonet';
   const l = L.tileLayer(url, {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     crossOrigin: true, noWrap: true, tileSize,
-    keepBuffer: 2, updateWhenIdle: true, updateWhenZooming: false,
+    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
     detectRetina: false, attribution,
   });
   _radarLayerLoaded[i] = false;
@@ -6179,9 +6208,11 @@ function _ensureNexradLayer(i) {
 
 function _ensureCanadaLayer(i) {
   if (_canadaLayerPool[i]) return;
+  const frame = radarFrames[i];
+  const iso = frame.iso || new Date(frame.time * 1000).toISOString().slice(0,19) + 'Z';
   const l = L.tileLayer.wms(CANADA_WMS, {
     layers: CANADA_LAYER, format: 'image/png', transparent: true,
-    version: '1.1.1', TIME: radarFrames[i].iso,
+    version: '1.1.1', TIME: iso,
     opacity: 0, zIndex: 11, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
     keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
@@ -6195,6 +6226,62 @@ function _ensureCanadaLayer(i) {
 }
 
 let _lastWindowS = -1, _lastWindowE = -1;
+
+// ── RADAR COLOR PALETTE PICKER ──
+const RADAR_PALETTES = [
+  { id: 'standard', label: 'Standard',  filter: '',                                        swatch: 'linear-gradient(90deg,#0000ff,#00ff00,#ffff00,#ff0000)' },
+  { id: 'enhanced', label: 'Enhanced',  filter: 'saturate(1.5) contrast(1.2)',             swatch: 'linear-gradient(90deg,#0022ff,#00ff44,#ffff00,#ff2200)' },
+  { id: 'cool',     label: 'Cool',      filter: 'hue-rotate(180deg) saturate(1.3)',        swatch: 'linear-gradient(90deg,#ff00ff,#00ffff,#ffff00,#ff8800)' },
+  { id: 'classic',  label: 'Classic',   filter: 'sepia(0.3) saturate(1.8)',                swatch: 'linear-gradient(90deg,#4444aa,#44aa44,#aaaa00,#aa4400)' },
+];
+let _radarPalette = (() => { try { return localStorage.getItem('gwcfc_radar_palette') || 'standard'; } catch(e) { return 'standard'; } })();
+
+function _applyRadarPalette(id) {
+  _radarPalette = id;
+  try { localStorage.setItem('gwcfc_radar_palette', id); } catch(e) {}
+  const p = RADAR_PALETTES.find(x => x.id === id) || RADAR_PALETTES[0];
+  const pane = map && map.getPane('radarPane');
+  if (pane) pane.style.filter = p.filter;
+  // Update button active state
+  const btn = document.getElementById('radar-palette-btn');
+  if (btn) btn.classList.toggle('active', id !== 'standard');
+  // Update option highlights
+  document.querySelectorAll('.radar-pal-option').forEach(el => {
+    el.classList.toggle('selected', el.dataset.palId === id);
+  });
+}
+
+function _buildRadarPaletteUI() {
+  const container = document.getElementById('radar-palette-options');
+  if (!container) return;
+  container.innerHTML = '';
+  RADAR_PALETTES.forEach(p => {
+    const row = document.createElement('div');
+    row.className = 'radar-pal-option' + (p.id === _radarPalette ? ' selected' : '');
+    row.dataset.palId = p.id;
+    row.innerHTML = `<div class="radar-pal-swatch" style="background:${p.swatch};"></div><span class="radar-pal-label">${p.label}</span>`;
+    row.onclick = () => { _applyRadarPalette(p.id); };
+    container.appendChild(row);
+  });
+}
+
+function _toggleRadarPalette(e) {
+  e && e.stopPropagation();
+  const popup = document.getElementById('radar-palette-popup');
+  if (!popup) return;
+  const isOpen = popup.style.display !== 'none';
+  popup.style.display = isOpen ? 'none' : 'block';
+  if (!isOpen) _buildRadarPaletteUI();
+}
+
+// Close palette popup on map click
+document.addEventListener('click', function(e) {
+  const popup = document.getElementById('radar-palette-popup');
+  const btn = document.getElementById('radar-palette-btn');
+  if (popup && popup.style.display !== 'none' && !popup.contains(e.target) && e.target !== btn) {
+    popup.style.display = 'none';
+  }
+});
 
 function _activateWindow(idx) {
   const { s, e } = _poolWindow(idx);
