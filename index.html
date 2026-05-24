@@ -4839,6 +4839,8 @@ body.gwcfc-crosshair #map::after {
   font-size: 8px; color: rgba(160,190,220,0.35);
   text-align: right; padding: 0 10px 6px;
 }
+/* Smooth crossfade between radar animation frames */
+.leaflet-radar-pane img { transition: opacity 120ms ease-in-out; }
 
 </style>
 <!-- Firebase SDK (compat v9 , drop in your config keys to activate) -->
@@ -5546,7 +5548,7 @@ let map, radarLayer = null, satelliteLayer = null;
 let goesLayer = null, currentGoesProduct = 'ir';
 let alertsLayer = null, spcLayer = null, lightningMarkers = [];
 let radarFrames = [], currentFrame = 0, playing = false, playTimer = null;
-let animSpeed = 1, radarOpacity = 0.85;
+let animSpeed = 1.5, radarOpacity = 0.85;
 let _pendingFrameTick = null, _pendingCanadaTick = null;
 let currentProduct = 'ref', currentModel = 'gfs', currentModelVar = 'precip';
 
@@ -6124,9 +6126,9 @@ function _buildRadarPool() {
       const prev = currentFrame - d; if (prev >= 0) order.push(prev);
       const next = currentFrame + d; if (next < radarFrames.length) order.push(next);
     }
-    order.forEach((i, idx) => setTimeout(() => {
+    order.forEach((i) => {
       if (_radarPoolBuilt) { _ensureNexradLayer(i); _ensureCanadaLayer(i); }
-    }, (idx + 1) * 20));
+    });
   }
 }
 
@@ -6163,7 +6165,7 @@ function _ensureNexradLayer(i) {
   // One WMS image covering the full CONUS per frame — 12 requests total vs 192+ tiled
   const url = `${IEM_NEXRAD_WMS}?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap` +
     `&LAYERS=${IEM_NEXRAD_LAYER}&FORMAT=image%2Fpng&TRANSPARENT=true` +
-    `&SRS=EPSG%3A3857&BBOX=${_NEXRAD_BBOX}&WIDTH=2048&HEIGHT=1069&TIME=${frame.iso}`;
+    `&SRS=EPSG%3A3857&BBOX=${_NEXRAD_BBOX}&WIDTH=4096&HEIGHT=2138&TIME=${frame.iso}`;
   const l = L.imageOverlay(url, _NEXRAD_BOUNDS, {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     interactive: false, crossOrigin: 'anonymous',
