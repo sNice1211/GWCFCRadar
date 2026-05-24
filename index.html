@@ -5973,21 +5973,35 @@ function _initGraticule() {
 let lastPastIdx = 0;
 
 // Fetch real scan timestamps + discover layer name from NOAA opengeo GetCapabilities
-// ── RainViewer radar frame fetch (replaces WMS GetCapabilities) ──
-async function _fetchRainViewerFrames() {
-  const CACHE_KEY = 'gwcfc_rv_radar_frames';
+// ── NOAA NEXRAD L3 via Iowa Mesonet tile cache ──
+// Timestamps from IEM JSON API (fast), tiles from IEM pre-rendered PNG cache (fast).
+// Layer: n0q (Super-Resolution Base Reflectivity) at ~250m resolution.
+async function _fetchL3Frames() {
+  const CACHE_KEY = 'gwcfc_l3_frames';
   const CACHE_TTL = 2 * 60 * 1000; // 2 min
   try {
     const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-    if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
-      return cached.frames;
-    }
+    if (cached && (Date.now() - cached.ts) < CACHE_TTL) return cached.frames;
   } catch(e) {}
-  const res = await fetch('https://api.rainviewer.com/public/weather-maps.json', { signal: _abortSignal(10000) });
+  const now = new Date();
+  const ts2 = now.toISOString().slice(0, 16) + 'Z';
+  const ts1 = new Date(now - 2 * 60 * 60 * 1000).toISOString().slice(0, 16) + 'Z';
+  const url = `https://mesonet.agron.iastate.edu/json/radar?operation=list&product=N0Q&radar=COMPOSITE&ts1=${encodeURIComponent(ts1)}&ts2=${encodeURIComponent(ts2)}`;
+  const res = await fetch(url, { signal: _abortSignal(10000) });
   const data = await res.json();
-  const past = (data.radar && data.radar.past) || [];
-  if (!past.length) throw new Error('RainViewer returned no radar frames');
-  const frames = past.map(f => ({ time: f.time, path: f.path, forecast: false }));
+  const items = (data.data || []);
+  if (!items.length) throw new Error('IEM returned no L3 frames');
+  const frames = items.map(f => {
+    // valid format: "2024-01-01 12:00" UTC
+    const d = new Date(f.valid.replace(' ', 'T') + 'Z');
+    // IEM tile key: YYYYMMDDHHmm
+    const pad = n => String(n).padStart(2, '0');
+    const key = `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`;
+    return { time: Math.floor(d.getTime() / 1000), tileKey: key, forecast: false };
+  });
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
+  return frames;
+}
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
   return frames;
 }
@@ -5995,7 +6009,7 @@ async function _fetchRainViewerFrames() {
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const frames = await _fetchRainViewerFrames();
+    const frames = await _fetchL3Frames();
     radarFrames = frames;
     lastPastIdx = radarFrames.length - 1;
     const tl = document.getElementById('timeline');
@@ -6007,7 +6021,7 @@ async function loadNEXRAD() {
     _buildRadarPool();
     showFrame(currentFrame);
     _preloadSatBackground();
-    console.log(`[Radar] RainViewer: ${frames.length} frames loaded`);
+    console.log(`[Radar] NOAA L3 (IEM): ${frames.length} frames loaded`);
   } catch (e) {
     console.warn('Radar load error:', e);
   }
@@ -6060,9 +6074,9 @@ let   _radarPoolBuilt = false;
 // Per-frame loaded flags , true once at least one tile has fired 'tileload'
 const _radarLayerLoaded = [];
 
-// RainViewer tile base (path injected per-frame)
-const RAINVIEWER_TILE_BASE = 'https://tilecache.rainviewer.com/v2/radar';
-let _nexradIsL3  = false; // kept for attribution compat
+// IEM NEXRAD L3 tile cache base — pre-rendered PNGs, no WMS overhead
+const IEM_TILE_BASE = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
+let _nexradIsL3 = true;
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
 const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
@@ -6127,14 +6141,14 @@ function _poolWindow(idx) {
 
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
-  const path = radarFrames[i].path;
-  const url = `${RAINVIEWER_TILE_BASE}${path}/512/{z}/{x}/{y}/4/1_1.png`;
+  const key = radarFrames[i].tileKey;
+  const url = `${IEM_TILE_BASE}${key}/{z}/{x}/{y}.png`;
   const l = L.tileLayer(url, {
     opacity: 0, zIndex: 10, pane: 'radarPane',
-    crossOrigin: true, noWrap: true, tileSize: 512,
+    crossOrigin: true, noWrap: true, tileSize: 256,
     keepBuffer: 2, updateWhenIdle: true, updateWhenZooming: false,
     detectRetina: false,
-    attribution: 'Radar © RainViewer',
+    attribution: 'Radar: NOAA NEXRAD L3 via Iowa Mesonet',
   });
   _radarLayerLoaded[i] = false;
   l.on('tileload', (e) => {
