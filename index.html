@@ -6083,15 +6083,14 @@ function buildTimelineLabels() {
 // ── DOUBLE-BUFFER RADAR (no-flash frame system) ──
 // WMS layers are built once at opacity 0 and shown by toggling opacity.
 // Iowa Mesonet n0q-t.cgi with TIME param , real NOAA NEXRAD data.
-const _radarLayerPool = [];   // L.tileLayer.wms per frame index
+const _radarLayerPool = [];   // L.tileLayer per frame index
 let   _radarPoolBuilt = false;
 
 // Per-frame loaded flags , true once at least one tile has fired 'tileload'
 const _radarLayerLoaded = [];
 
-// IEM NEXRAD WMS — CORS-enabled, TIME parameter selects frame
-const IEM_NEXRAD_WMS   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
-const IEM_NEXRAD_LAYER = 'nexrad-n0q-wmst';
+// IEM NEXRAD tile cache — pre-rendered PNGs, no CORS required
+const IEM_TILE_BASE = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
 const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
@@ -6123,7 +6122,7 @@ function _buildRadarPool() {
     }
     order.forEach((i, idx) => setTimeout(() => {
       if (_radarPoolBuilt) { _ensureNexradLayer(i); _ensureCanadaLayer(i); }
-    }, (idx + 1) * 80));
+    }, (idx + 1) * 20));
   }
 }
 
@@ -6157,19 +6156,17 @@ function _poolWindow(idx) {
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const frame = radarFrames[i];
-  const l = L.tileLayer.wms(IEM_NEXRAD_WMS, {
-    layers: IEM_NEXRAD_LAYER, format: 'image/png', transparent: true,
-    version: '1.1.1', TIME: frame.iso,
+  const url = IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png';
+  const l = L.tileLayer(url, {
     opacity: 0, zIndex: 10, pane: 'radarPane',
-    crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
-    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
+    noWrap: true, tileSize: 256,
+    keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
     detectRetina: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   _radarLayerLoaded[i] = false;
   l.on('tileload', (e) => {
     _radarLayerLoaded[i] = true;
-    _remapTileColors(e.tile);
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
   });
   l.addTo(map);
