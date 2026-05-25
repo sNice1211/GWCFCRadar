@@ -5893,36 +5893,50 @@ async function loadNEXRAD() {
   try {
     const newFrames = _generateL3Frames(12);
 
-    // Periodic refresh (pool already built): only reload frames whose timestamp changed.
-    // Tiles are immutable per tileKey — skipping unchanged frames avoids clearing visible tiles.
+    // Periodic refresh — sliding-window layer reuse.
+    // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
+    // match layers by tileKey (not index) so every unchanged frame keeps its live tiles.
     if (_radarPoolBuilt && _radarLayerPool.some(l => l !== null)) {
-      const oldKeys = radarFrames.map(f => f.tileKey || f.iso);
+      // 1. Snapshot current key→layer mapping before touching radarFrames.
+      const oldLayerMap = new Map(); // tileKey → layer
+      const oldLoadedMap = new Map(); // tileKey → loaded bool
+      radarFrames.forEach((frame, i) => {
+        if (_radarLayerPool[i]) {
+          oldLayerMap.set(frame.tileKey, _radarLayerPool[i]);
+          oldLoadedMap.set(frame.tileKey, _radarLayerLoaded[i]);
+        }
+      });
+
       radarFrames = newFrames;
       lastPastIdx = radarFrames.length - 1;
-      const changedIdx = [];
-      radarFrames.forEach((frame, i) => {
-        const oldKey = oldKeys[i];
-        const newKey = frame.tileKey || frame.iso;
-        if (oldKey === newKey) return; // nothing changed — leave layer untouched
-        changedIdx.push(i);
-        const l = _radarLayerPool[i];
-        if (!l) { _ensureNexradLayer(i); return; }
-        if (_nexradCacheFailed) {
-          l.setParams({ TIME: frame.iso }, true);
+
+      // 2. Remap pool slots to new frame ordering, reusing layers wherever tileKey matches.
+      const reusedLayers = new Set();
+      for (let i = 0; i < radarFrames.length; i++) {
+        const key = radarFrames[i].tileKey;
+        const existing = oldLayerMap.get(key);
+        if (existing) {
+          _radarLayerPool[i] = existing;
+          _radarLayerLoaded[i] = oldLoadedMap.get(key) || false;
+          reusedLayers.add(existing);
         } else {
-          // setUrl with noRedraw=true: URL updates immediately, existing tiles stay visible
-          l.setUrl(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', true);
+          _radarLayerPool[i] = null;
+          _radarLayerLoaded[i] = false;
         }
-        _radarLayerLoaded[i] = false;
-      });
-      // Stagger redraws only for changed frames; current frame first so animation stays smooth
-      const refreshOrder = changedIdx.filter(i => i !== currentFrame);
-      if (changedIdx.includes(currentFrame) && _radarLayerPool[currentFrame]) {
-        _radarLayerPool[currentFrame].redraw();
       }
-      refreshOrder.forEach((i, k) => setTimeout(() => {
-        if (_radarLayerPool[i]) _radarLayerPool[i].redraw();
-      }, (k + 1) * 120));
+
+      // 3. Remove layers that rolled off the window (no longer in new frame list).
+      oldLayerMap.forEach((layer, key) => {
+        if (!reusedLayers.has(layer)) {
+          try { map.removeLayer(layer); } catch(e) {}
+        }
+      });
+
+      // 4. Create fresh layers only for slots with no existing layer (genuinely new timestamps).
+      radarFrames.forEach((frame, i) => {
+        if (!_radarLayerPool[i]) _ensureNexradLayer(i);
+      });
+
       currentFrame = Math.min(currentFrame, radarFrames.length - 1);
       const tl = document.getElementById('timeline');
       if (tl) { tl.max = radarFrames.length - 1; tl.value = currentFrame; }
@@ -6073,7 +6087,9 @@ function _poolWindow(idx) {
 // Replace one slot's tile-cache layer with a WMS layer in-place (no full pool rebuild)
 function _switchSlotToWms(i) {
   if (!radarFrames[i]) return;
-  if (_radarLayerPool[i] && _radarLayerLoaded[i]) return; // already loaded, keep it
+  // Keep any layer that already exists — it has loaded tiles and shouldn't be blanked.
+  // Only replace null slots (never fetched yet) or slots we know are empty.
+  if (_radarLayerPool[i]) return;
   if (_radarLayerPool[i]) { try { map.removeLayer(_radarLayerPool[i]); } catch(e){} _radarLayerPool[i] = null; }
   const frame = radarFrames[i];
   const l = L.tileLayer.wms(IEM_NEXRAD_WMS, {
