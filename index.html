@@ -6127,7 +6127,8 @@ let   _canadaPoolBuilt = false;
 const _canadaLayerLoaded = [];
 
 function _buildRadarPool() {
-  _nexradCacheFailed = false; // reset so each full rebuild retries tile cache first
+  // If custom colors are active, skip tile cache (needs crossOrigin/canvas) and go straight to WMS
+  _nexradCacheFailed = !!_customRadarColors;
   _radarLayerPool.forEach(l => { try { if (l) map.removeLayer(l); } catch(e){} });
   _radarLayerPool.length = 0;
   _radarLayerLoaded.length = 0;
@@ -6226,9 +6227,10 @@ function _ensureNexradLayer(i) {
   }
 
   // Primary: IEM pre-rendered tile cache (~100ms/tile, 10-30× faster than WMS)
+  // No crossOrigin needed for display — only WMS path uses canvas color remapping
   const l = L.tileLayer(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', {
     opacity: 0, zIndex: 10, pane: 'radarPane',
-    crossOrigin: 'anonymous', noWrap: true, tileSize: 256,
+    noWrap: true, tileSize: 256,
     keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
@@ -6240,7 +6242,6 @@ function _ensureNexradLayer(i) {
         updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
       else updateLoadStatus('');
     }
-    _remapTileColors(e.tile);
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
   });
   l.on('tileerror', () => {
