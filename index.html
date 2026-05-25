@@ -6026,22 +6026,35 @@ async function loadNEXRAD() {
   try {
     const newFrames = _generateL3Frames(12);
 
-    // Periodic refresh (pool already built): update WMS TIME in-place so radar never goes blank
+    // Periodic refresh (pool already built): update layers in-place, no blank screen
     if (_radarPoolBuilt && _radarLayerPool.some(l => l !== null)) {
       radarFrames = newFrames;
       lastPastIdx = radarFrames.length - 1;
-      _radarFramesReady = 0;
+      // Update each layer's URL/params with noRedraw=true so old tiles stay visible
       radarFrames.forEach((frame, i) => {
-        _radarLayerLoaded[i] = false;
-        if (_radarLayerPool[i]) {
-          _radarLayerPool[i].setParams({ TIME: frame.iso }, false); // redraw in-place, old tiles stay visible
+        const l = _radarLayerPool[i];
+        if (!l) { _ensureNexradLayer(i); return; }
+        if (_nexradCacheFailed) {
+          l.setParams({ TIME: frame.iso }, true);
+        } else {
+          l.setUrl(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', true);
         }
       });
+      // Stagger redraws: current frame first, others 80ms apart
+      if (_radarLayerPool[currentFrame]) _radarLayerPool[currentFrame].redraw();
+      const _refreshOrder = [];
+      for (let d = 1; d < radarFrames.length; d++) {
+        const prev = currentFrame - d; if (prev >= 0) _refreshOrder.push(prev);
+        const next = currentFrame + d; if (next < radarFrames.length) _refreshOrder.push(next);
+      }
+      _refreshOrder.forEach((i, k) => setTimeout(() => {
+        if (_radarLayerPool[i]) _radarLayerPool[i].redraw();
+      }, (k + 1) * 80));
       currentFrame = Math.min(currentFrame, radarFrames.length - 1);
       const tl = document.getElementById('timeline');
       if (tl) { tl.max = radarFrames.length - 1; tl.value = currentFrame; }
       buildTimelineLabels();
-      _updateTimelineGradient(currentFrame, radarFrames.length);
+      _updateTimelineGradient(lastPastIdx, radarFrames.length);
       if (activeLayers.nexrad) showFrame(currentFrame);
       updateLoadStatus('');
       return;
@@ -19695,12 +19708,13 @@ function _showHHToast(msg) {
 //  ► Enable: Authentication → Email/Password, and Firestore Database
 // ════════════════════════════════════════════════════════════
 const GWCFC_FB_CONFIG = {
-  apiKey:            "YOUR_API_KEY",
-  authDomain:        "YOUR_PROJECT.firebaseapp.com",
-  projectId:         "YOUR_PROJECT_ID",
-  storageBucket:     "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId:             "YOUR_APP_ID"
+  apiKey:            "AIzaSyAAPuBJFlhBFPhqPGlrNnn_c0NZFRgZTI8",
+  authDomain:        "gwcfc-radar.firebaseapp.com",
+  projectId:         "gwcfc-radar",
+  storageBucket:     "gwcfc-radar.firebasestorage.app",
+  messagingSenderId: "771831294871",
+  appId:             "1:771831294871:web:370f3a4d7617f460cdb2d2",
+  measurementId:     "G-WKS3M66F5V"
 };
 const FIREBASE_READY = GWCFC_FB_CONFIG.apiKey !== "YOUR_API_KEY";
 
