@@ -6113,9 +6113,11 @@ let   _radarPoolBuilt = false;
 const _radarLayerLoaded = [];
 let _radarFramesReady = 0; // counts frames with ≥1 tile loaded; gates lag-free animation
 
-// IEM NEXRAD: time-enabled WMS — confirmed working from browsers, CORS-enabled, correct projection
+// IEM NEXRAD: pre-rendered tile cache loads in ~100ms/tile; WMS fallback on first error
+const IEM_TILE_BASE    = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
 const IEM_NEXRAD_WMS   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
 const IEM_NEXRAD_LAYER = 'nexrad-n0q-wmst';
+let _nexradCacheFailed = false; // set true on first tile error; in-place switch to WMS
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
 const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
@@ -6125,6 +6127,7 @@ let   _canadaPoolBuilt = false;
 const _canadaLayerLoaded = [];
 
 function _buildRadarPool() {
+  _nexradCacheFailed = false; // reset so each full rebuild retries tile cache first
   _radarLayerPool.forEach(l => { try { if (l) map.removeLayer(l); } catch(e){} });
   _radarLayerPool.length = 0;
   _radarLayerLoaded.length = 0;
@@ -6180,10 +6183,12 @@ function _poolWindow(idx) {
   return { s: 0, e: n - 1 };
 }
 
-function _ensureNexradLayer(i) {
-  if (_radarLayerPool[i]) return;
+// Replace one slot's tile-cache layer with a WMS layer in-place (no full pool rebuild)
+function _switchSlotToWms(i) {
+  if (!radarFrames[i]) return;
+  if (_radarLayerPool[i] && _radarLayerLoaded[i]) return; // already loaded, keep it
+  if (_radarLayerPool[i]) { try { map.removeLayer(_radarLayerPool[i]); } catch(e){} _radarLayerPool[i] = null; }
   const frame = radarFrames[i];
-  // IEM WMS: time-enabled, CORS-enabled, correct 256px tiles — works reliably from all browsers
   const l = L.tileLayer.wms(IEM_NEXRAD_WMS, {
     layers: IEM_NEXRAD_LAYER, format: 'image/png', transparent: true,
     version: '1.1.1', TIME: frame.iso,
@@ -6202,6 +6207,49 @@ function _ensureNexradLayer(i) {
     }
     _remapTileColors(e.tile);
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
+  });
+  _radarLayerLoaded[i] = false;
+  l.addTo(map);
+  _radarLayerPool[i] = l;
+  // If this is the currently visible frame, reveal it immediately
+  if (activeLayers.nexrad && i === currentFrame) l.setOpacity(radarOpacity);
+}
+
+function _ensureNexradLayer(i) {
+  if (_radarLayerPool[i]) return;
+  const frame = radarFrames[i];
+
+  if (_nexradCacheFailed) {
+    // Already know cache is blocked — go straight to WMS
+    _switchSlotToWms(i);
+    return;
+  }
+
+  // Primary: IEM pre-rendered tile cache (~100ms/tile, 10-30× faster than WMS)
+  const l = L.tileLayer(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', {
+    opacity: 0, zIndex: 10, pane: 'radarPane',
+    crossOrigin: 'anonymous', noWrap: true, tileSize: 256,
+    keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
+    attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
+  });
+  l.on('tileload', (e) => {
+    if (!_radarLayerLoaded[i]) {
+      _radarLayerLoaded[i] = true;
+      _radarFramesReady++;
+      if (_radarFramesReady < radarFrames.length)
+        updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
+      else updateLoadStatus('');
+    }
+    _remapTileColors(e.tile);
+    e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
+  });
+  l.on('tileerror', () => {
+    if (!_nexradCacheFailed) {
+      _nexradCacheFailed = true;
+      // In-place switch: replace every unloaded slot with WMS, no full rebuild, no blank screen
+      radarFrames.forEach((_, j) => _switchSlotToWms(j));
+      if (activeLayers.nexrad) showFrame(currentFrame);
+    }
   });
   _radarLayerLoaded[i] = false;
   l.addTo(map);
