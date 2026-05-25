@@ -9310,6 +9310,7 @@ let goesCurrentFrame = 0;
 let _goesActiveLayers = [];
 let _goesActiveProduct = null;
 let _goesActiveRegion  = null;
+let _goesRefreshInterval = null;  // 60-second auto-refresh timer
 
 // Pre-warm the satellite WMS connection shortly after startup.
 // Creates an opacity-0 GOES-IR layer so tiles are cached before user presses Satellite.
@@ -9320,8 +9321,7 @@ function _preloadSatBackground() {
       const frames = _buildGoesFrames();
       if (!frames.length) return;
       const region = _detectGoesRegion();
-      const layer  = _buildGoesLayer('ir', region, frames[frames.length - 1].timeStr);
-      layer.setOpacity(0);
+      const layer  = _buildGoesLayer('ir', region, frames[frames.length - 1].timeStr, 0);
       _goesActiveLayers  = [layer];
       _goesActiveProduct = 'ir';
       _goesActiveRegion  = region;
@@ -9419,16 +9419,19 @@ function _buildGoesFrames() {
   return frames;
 }
 
-function _buildGoesLayer(prodKey, regionKey, timeStr) {
+function _buildGoesLayer(prodKey, regionKey, timeStr, initialOpacity) {
   const base = GOES_WMS_BASE[regionKey] || GOES_WMS_BASE.conus;
   const cfg  = base[prodKey] || base.ir;
   const layer = L.tileLayer.wms(cfg.wms, {
     layers: cfg.layer,
+    styles: '',
     format: 'image/png',
     transparent: true,
-    opacity: 0.85,
+    version: '1.1.1',
+    opacity: initialOpacity !== undefined ? initialOpacity : 0.85,
     zIndex: 11,
     attribution: cfg.attr || '© Iowa Mesonet',
+    crossOrigin: 'anonymous',
     noWrap: true,
     TIME: timeStr,
     keepBuffer: 4,
@@ -9439,6 +9442,7 @@ function _buildGoesLayer(prodKey, regionKey, timeStr) {
 }
 
 function loadGoesLayer(product) {
+  if (_goesRefreshInterval) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; }
   map.off('moveend', _onGoesMoveEnd);
   currentGoesProduct = ['ir','vis','wv'].includes(product) ? product : 'ir';
   // Keep preloaded layer if it already matches product + region (showGoesFrame will setParams on it).
@@ -9473,6 +9477,20 @@ function loadGoesLayer(product) {
       buildTimelineLabels();
     }
   });
+
+  // Auto-refresh every 60 seconds — rebuilds frame timestamps and shows latest
+  _goesRefreshInterval = setInterval(() => {
+    if (!activeLayers.satellite) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; return; }
+    const isHimawari = _isHimawariRegion(_goesRegion || _detectGoesRegion());
+    if (isHimawari && currentGoesProduct === 'ir' && _rvSatFrames && _rvSatFrames.length) return; // RainViewer manages its own data
+    goesFrames = _buildGoesFrames();
+    goesCurrentFrame = goesFrames.length - 1;
+    const tlR = document.getElementById('timeline');
+    if (tlR) { tlR.max = goesFrames.length - 1; tlR.value = goesCurrentFrame; }
+    _updateTimelineGradient(goesCurrentFrame, goesFrames.length);
+    showGoesFrame(goesCurrentFrame);
+    buildTimelineLabels();
+  }, 60000);
 
   map.on('moveend', _onGoesMoveEnd);
 }
@@ -9600,6 +9618,7 @@ function _disableRadar() {
 // Kill satellite cleanly, used when radar turns on
 function _disableSatellite() {
   activeLayers.satellite = false;
+  if (_goesRefreshInterval) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; }
   map.off('moveend', _onGoesMoveEnd);
   _clearGoesActiveLayers();
   _hideSatRegionMarkers();
@@ -9649,7 +9668,7 @@ function toggleSatelliteSub() {
 // ── SUB BUBBLES ──
 const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
-  { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; _showSatRegionMarkers(); } toggleSatelliteSub(); } },
+  { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(currentGoesProduct); } toggleSatelliteSub(); } },
   { id: 'alerts',    icon: '⚠', label: 'Alerts',     action: () => toggleAlertSub() },
   { id: 'wind',      icon: '💨', label: 'Wind',       action: () => toggleWindSub() },
   { id: 'temp',      icon: '🌡', label: 'Temp',       action: () => { toggleTempBarbs(); } },
