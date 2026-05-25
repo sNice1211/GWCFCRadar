@@ -14971,28 +14971,19 @@ async function _fetchCamsForViewport() {
     if (!_camsLayer) _camsLayer = L.layerGroup().addTo(map);
 
     const bounds = map.getBounds();
+    const windyCams = await _fetchWindyWebcams(bounds);
 
-    const [ecCams, wsdotCams, caltransCams, windyCams] = await Promise.all([
-      _fetchEarthCamStreams(),
-      _fetchWSDOTCams(),
-      _fetchCaltransCams(bounds),
-      _fetchWindyWebcams(bounds),
-    ]);
-
-    console.log(`[Cams] EC:${ecCams.length} WSDOT:${wsdotCams.length} Caltrans:${caltransCams.length} Windy:${windyCams.length}`);
-
-    const allCams = [...ecCams, ...wsdotCams, ...caltransCams, ...windyCams];
     let added = 0;
-    allCams.forEach(cam => {
+    windyCams.forEach(cam => {
       if (_camsSeenIds.has(cam.id)) return;
       _camsSeenIds.add(cam.id);
       _placeCamMarker(cam);
       added++;
     });
 
-    const windyStatus = _windyDomainBlocked ? 'blocked' : windyCams.length;
-    if (added > 0) showToast(`📹 ${added} cams · EC:${ecCams.length} CA:${caltransCams.length} W:${windyStatus}`, 2500);
-    else           showToast(`📹 No cameras · CA:${caltransCams.length} W:${windyStatus}`, 2000);
+    if (_windyDomainBlocked) showToast('📹 Windy API blocked — add gwcfc.net to api.windy.com/keys', 4000);
+    else if (added > 0)      showToast(`📹 ${added} Windy webcams`, 2000);
+    else                     showToast('📹 No webcams in this area', 2000);
   } catch(err) {
     console.error('[Cams] _fetchCamsForViewport error:', err);
     showToast('📹 Cam load error', 1500);
@@ -20676,6 +20667,10 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-lightning" onclick="toggleOverlayPill('lightning')" title="Lightning">
       <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
       <span class="ov-label">Lightning</span>
+    </div>
+    <div class="ov-pill" id="op-cams" onclick="toggleOverlayPill('cams')" title="Windy Webcams">
+      <span class="ov-icon">📹</span>
+      <span class="ov-label">Webcams</span>
     </div>
     <div class="ov-pill" id="op-radio" onclick="toggleOverlayPill('radio')" title="NOAA Radio">
       <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></span>
