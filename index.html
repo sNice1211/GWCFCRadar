@@ -14241,14 +14241,39 @@ function _showCamPopup(cam) {
     img.style.display = 'none';
     ph.style.display  = 'flex';
     if (phText) phText.textContent = imgUrl ? 'Loading feed…' : 'No feed available';
-    if (!imgUrl) return;
-    // Windy preview URLs are already unique per update , skip cache-buster
+    if (!imgUrl) {
+      // No image URL — go straight to Windy embed player
+      if (cam.type === 'windy_snapshot') {
+        const windyId = (cam.id || '').replace('windy_', '');
+        if (windyId) {
+          iframe.src = `https://webcams.windy.com/webcams/public/embed/player/${windyId}`;
+          iframe.style.display = 'block';
+          ph.style.display = 'none';
+          if (badge) badge.textContent = '▶ LIVE';
+        }
+      }
+      return;
+    }
     const src = cam.type === 'windy_snapshot'
       ? imgUrl
       : imgUrl + (imgUrl.includes('?') ? '&' : '?') + '_t=' + Math.floor(Date.now() / 30000);
     const tmp = new Image();
-    tmp.onload = () => { img.src = tmp.src; img.style.display = 'block'; ph.style.display = 'none'; };
-    tmp.onerror = () => { ph.style.display = 'flex'; if (phText) phText.textContent = 'Feed unavailable'; };
+    tmp.onload  = () => { img.src = tmp.src; img.style.display = 'block'; ph.style.display = 'none'; };
+    tmp.onerror = () => {
+      // Windy free tier: image URLs expire after 15 min — fall back to embed player
+      if (cam.type === 'windy_snapshot') {
+        const windyId = (cam.id || '').replace('windy_', '');
+        if (windyId) {
+          iframe.src = `https://webcams.windy.com/webcams/public/embed/player/${windyId}`;
+          iframe.style.display = 'block';
+          ph.style.display = 'none';
+          if (badge) badge.textContent = '▶ LIVE';
+          return;
+        }
+      }
+      ph.style.display = 'flex';
+      if (phText) phText.textContent = 'Feed unavailable';
+    };
     tmp.src = src;
   }
 
