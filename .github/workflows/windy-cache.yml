@@ -13,19 +13,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - name: Fetch Windy webcams (continental US)
         id: fetch
         run: |
           KEY="ttZyJ5dX6DjlG7EVDDvlh3PTKpKs1RsM"
-          # Continental US bounding box, 500 cameras
-          # Origin + Referer headers satisfy Windy's domain allowlist check
+          # Try gwcfc.net first, fall back to github.io if rejected
           STATUS=$(curl -s -o /tmp/windy_raw.json -w "%{http_code}" \
             -H "Origin: https://gwcfc.net" \
             -H "Referer: https://gwcfc.net/" \
             "https://api.windy.com/api/webcams/v3/webcams?key=${KEY}&bbox=24.0,-125.0,50.0,-66.0&limit=500&include=location,images,urls")
-          echo "HTTP status: $STATUS"
+          echo "HTTP status (gwcfc.net): $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "gwcfc.net rejected, trying ralphhtml.github.io..."
+            STATUS=$(curl -s -o /tmp/windy_raw.json -w "%{http_code}" \
+              -H "Origin: https://ralphhtml.github.io" \
+              -H "Referer: https://ralphhtml.github.io/GWCFCRadar/" \
+              "https://api.windy.com/api/webcams/v3/webcams?key=${KEY}&bbox=24.0,-125.0,50.0,-66.0&limit=500&include=location,images,urls")
+            echo "HTTP status (github.io): $STATUS"
+          fi
+          echo "Final status: $STATUS"
           echo "status=$STATUS" >> $GITHUB_OUTPUT
+          echo "--- Response preview ---"
           cat /tmp/windy_raw.json | head -c 500
 
       - name: Validate and save
@@ -37,7 +48,6 @@ jobs:
               d = json.load(f)
           cams = d.get('webcams', [])
           print(f"Got {len(cams)} webcams, total={d.get('total','?')}")
-          # Strip heavy fields to keep file small
           slim = []
           for c in cams:
               loc = c.get('location', {})
