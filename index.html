@@ -11,6 +11,7 @@
 <!-- Secondary: used almost always -->
 <link rel="preconnect" href="https://api.weather.gov">
 <!-- Less-critical: DNS only -->
+<link rel="dns-prefetch" href="https://opengeo.ncep.noaa.gov">
 <link rel="dns-prefetch" href="https://api.open-meteo.com">
 <link rel="dns-prefetch" href="https://marine-api.open-meteo.com">
 <link rel="dns-prefetch" href="https://www.spc.noaa.gov">
@@ -13415,6 +13416,8 @@ let _refStation    = null;   // station ID in single-site REF mode (null = compo
 let _refSitePool   = [];     // double-buffer pool for single-site REF
 let _refSiteLoaded = [];
 let _refSiteFrames = [];     // timing frames for single-site REF
+let _refSiteTick   = null;   // stale-interval guard for _showSingleSiteRefFrame
+let _refSiteGen    = 0;      // generation counter; incremented on each _loadSingleSiteRef call
 
 // ── S3 panel state ──
 let _s3CurrentStation = null;
@@ -13845,6 +13848,7 @@ async function _fetchRefTimestamps(station) {
 
 async function _loadSingleSiteRef(stationId) {
   stationId = stationId.toLowerCase();
+  const gen = ++_refSiteGen;   // capture generation; stale calls bail out after await
   _refStation = stationId;
 
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
@@ -13872,6 +13876,9 @@ async function _loadSingleSiteRef(stationId) {
     }
   }
 
+  // Bail if user switched away (race condition guard)
+  if (gen !== _refSiteGen) return;
+
   if (useOpengeo) {
     // NOAA GeoServer Level III SR_BREF
     const wmsUrl  = `https://opengeo.ncep.noaa.gov/geoserver/${stationId}/ows`;
@@ -13886,7 +13893,11 @@ async function _loadSingleSiteRef(stationId) {
         attribution: `${stationId.toUpperCase()} SR_BREF © NOAA Level III`,
       });
       _refSiteLoaded[i] = false;
-      l.on('tileload', () => { _refSiteLoaded[i] = true; });
+      l.on('tileload', (e) => {
+        _refSiteLoaded[i] = true;
+        _remapTileColors(e.tile);
+        if (smoothEnabled) e.tile.style.imageRendering = 'auto';
+      });
       l.addTo(map);
       _refSitePool[i] = l;
     });
@@ -13962,16 +13973,19 @@ function _showSingleSiteRefFrame(idx) {
   currentFrame  = idx;
   document.getElementById('timeline').value = idx;
 
+  // Clear any previous wait interval to avoid stale callbacks
+  if (_refSiteTick) { clearInterval(_refSiteTick); _refSiteTick = null; }
+
   if (_refSiteLoaded[idx]) {
     if (_refSitePool[prevIdx] && prevIdx !== idx) _refSitePool[prevIdx].setOpacity(0);
     _refSitePool[idx].setOpacity(radarOpacity);
   } else {
     const target = idx;
     let waited = 0;
-    const tick = setInterval(() => {
+    _refSiteTick = setInterval(() => {
       waited += 50;
       if (_refSiteLoaded[target] || waited >= 2000) {
-        clearInterval(tick);
+        clearInterval(_refSiteTick); _refSiteTick = null;
         if (_refSitePool[prevIdx] && prevIdx !== target) _refSitePool[prevIdx].setOpacity(0);
         if (_refSitePool[target]) _refSitePool[target].setOpacity(radarOpacity);
       }
@@ -13986,11 +14000,15 @@ function _showSingleSiteRefFrame(idx) {
 }
 
 function _clearSingleSiteRef() {
+  _refSiteGen++;   // invalidate any in-flight _loadSingleSiteRef
+  if (_refSiteTick) { clearInterval(_refSiteTick); _refSiteTick = null; }
   _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _refSitePool   = [];
   _refSiteLoaded = [];
   _refSiteFrames = [];
   _refStation    = null;
+  // Reset currentFrame to last composite frame so animation resumes correctly
+  if (radarFrames.length) currentFrame = radarFrames.length - 1;
   _refreshNexradSiteStyles();
 }
 
