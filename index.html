@@ -5411,7 +5411,7 @@ let currentProduct = 'ref', currentModel = 'gfs', currentModelVar = 'precip';
 // ⚠ Anyone who views this file's source can read these keys. Rotate if leaked.
 const AMBIENT_WEATHER_API_KEY         = '807d842f188e4d76bbba35960ef9449bb775e4a0f1ff4946a723e7a485554619'; // user-level
 const AMBIENT_WEATHER_APPLICATION_KEY = ''; // TODO: paste applicationKey from dashboard.ambientweather.net → Account → API Keys
-let smoothEnabled = true;
+let smoothEnabled = false;
 
 // ── RADAR COLOUR CUSTOMISER ──
 // NWS source colors: [dBZ, R, G, B] , exact values IEM WMS renders
@@ -5636,15 +5636,17 @@ function initMap() {
   const satellite  = L.tileLayer(`https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MT_KEY}`,          _mtOpts);
   const topo       = L.tileLayer(`https://api.maptiler.com/maps/topo-v2/{z}/{x}/{y}.webp?key=${MT_KEY}`,        _mtOpts);
 
-  // Fallback: if MapTiler rejects tiles (domain restriction / quota), swap to OSM silently
+  // Fallback: only switch to OSM after 8+ MapTiler tile errors (avoids triggering on transient
+  // network blips). A hard domain-restriction failure will hit this threshold quickly.
   const _osmFallback = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     { attribution: osmAttr, maxZoom: 19, noWrap: true, keepBuffer: 4 });
-  let _mtFailed = false;
+  let _mtFailed = false, _mtErrors = 0;
   [cartoDark, cartoLight, satellite, topo].forEach(layer => {
     layer.on('tileerror', () => {
       if (_mtFailed) return;
+      _mtErrors++;
+      if (_mtErrors < 8) return;
       _mtFailed = true;
-      // Remove whichever MT layer is active and swap in OSM
       Object.values(mapTileLayers).forEach(l => { try { map.removeLayer(l); } catch(e){} });
       _osmFallback.addTo(map);
       _osmFallback.bringToBack();
@@ -6087,9 +6089,7 @@ function _poolWindow(idx) {
 // Replace one slot's tile-cache layer with a WMS layer in-place (no full pool rebuild)
 function _switchSlotToWms(i) {
   if (!radarFrames[i]) return;
-  // Keep any layer that already exists — it has loaded tiles and shouldn't be blanked.
-  // Only replace null slots (never fetched yet) or slots we know are empty.
-  if (_radarLayerPool[i]) return;
+  if (_radarLayerPool[i] && _radarLayerLoaded[i]) return; // already has tiles — don't blank it
   if (_radarLayerPool[i]) { try { map.removeLayer(_radarLayerPool[i]); } catch(e){} _radarLayerPool[i] = null; }
   const frame = radarFrames[i];
   const l = L.tileLayer.wms(IEM_NEXRAD_WMS, {
@@ -6129,11 +6129,12 @@ function _ensureNexradLayer(i) {
   }
 
   // Primary: IEM pre-rendered tile cache (~100ms/tile, 10-30× faster than WMS)
-  // No crossOrigin needed for display — only WMS path uses canvas color remapping
+  // maxNativeZoom:9 — IEM composite only tiles to z9; Leaflet upscales above that (no 404/blank)
   const l = L.tileLayer(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     noWrap: true, tileSize: 256,
-    keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
+    maxNativeZoom: 9,
+    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
