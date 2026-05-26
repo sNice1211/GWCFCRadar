@@ -6251,8 +6251,9 @@ function updateFrameLabel(idx) {
 
 function showFrame(idx) {
   if (currentProduct === 'vel') return;
-  if (currentProduct === 'ref' && _refStation && _refSitePool.length) {
-    _showSingleSiteRefFrame(idx);
+  if (currentProduct === 'ref' && _refStation) {
+    // Single-site is active (or loading). Never show composite behind it.
+    if (_refSitePool.length) _showSingleSiteRefFrame(idx);
     return;
   }
   if (!radarFrames.length) return;
@@ -14186,12 +14187,13 @@ async function loadNWRStations() {
   _nwrLoading = true;
   showToast('📡 Loading NWR live streams…', 1500);
   try {
-    // radio.weatherusa.net is HTTP-only; try direct HTTPS then two CORS proxies
+    // radio.weatherusa.net is HTTP-only and CORS-restricted; route through proxies
+    const WUSA_SRC = 'http://radio.weatherusa.net/status-json.xsl';
     const _fetchWusa = async () => {
       const tries = [
-        'https://radio.weatherusa.net/status-json.xsl',
-        'https://corsproxy.io/?http://radio.weatherusa.net/status-json.xsl',
-        'https://api.allorigins.win/raw?url=' + encodeURIComponent('http://radio.weatherusa.net/status-json.xsl'),
+        'https://corsproxy.io/?' + encodeURIComponent(WUSA_SRC),
+        'https://api.allorigins.win/raw?url=' + encodeURIComponent(WUSA_SRC),
+        'https://corsproxy.io/?url=' + encodeURIComponent(WUSA_SRC),
       ];
       for (const url of tries) {
         try {
@@ -14259,34 +14261,39 @@ async function loadNWRStations() {
 
     console.log('[NWR] NWRO:', gwesMap.size, 'WXR:', wxrMap.size, 'WXUSA:', wusaMap.size, 'txs:', Object.keys(txs).length);
 
+    // Build case-insensitive tx lookup so WXUSA callsigns always match
+    // regardless of capitalisation differences between data sources.
+    const txLookup = {};
+    Object.entries(txs).forEach(([k, v]) => { txLookup[k.toUpperCase()] = v; });
+
     _nwrLayer = L.layerGroup().addTo(map);
-    let plotted = 0, nwroOnly = 0;
+    let plotted = 0, wxusaNew = 0;
 
     const allCalls = new Set([...gwesMap.keys(), ...wxrMap.keys(), ...wusaMap.keys()]);
     allCalls.forEach(call => {
-      const p   = txs[call];
+      const p   = txLookup[call.toUpperCase()];
       const lat = p ? parseFloat(p.LAT) : NaN;
       const lon = p ? parseFloat(p.LON) : NaN;
       if (!isFinite(lat) || !isFinite(lon)) {
-        if (wusaMap.has(call) && !gwesMap.has(call) && !wxrMap.has(call))
-          console.log('[NWR] WXUSA-only station has no txs coords, skipped:', call);
+        // WXUSA-only station with no tx coords — log and skip (can't plot without position)
+        console.log('[NWR] no coords for', call, '— skipped');
         return;
       }
       if (!_ptInPolyUnion(lat, lon)) return;
 
-      const gwesStream = gwesMap.get(call)  || null;
-      const wxrStream  = wxrMap.get(call)   || null;
-      const wusaStream = wusaMap.get(call)  || null;
+      const gwesStream = gwesMap.get(call) || gwesMap.get(call.toUpperCase()) || gwesMap.get(call.toLowerCase()) || null;
+      const wxrStream  = wxrMap.get(call)  || wxrMap.get(call.toUpperCase())  || wxrMap.get(call.toLowerCase())  || null;
+      const wusaStream = wusaMap.get(call) || wusaMap.get(call.toUpperCase()) || wusaMap.get(call.toLowerCase()) || null;
       const useGwes    = !!gwesStream;
 
-      if (wusaStream && !gwesStream && !wxrStream) nwroOnly++;
+      if (wusaStream && !gwesStream && !wxrStream) wxusaNew++;
 
       const icon   = useGwes ? _gwesIcon() : _nwrIcon();
       const popup  = _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream);
       const marker = L.marker([lat, lon], { icon, zIndexOffset: 200 });
       marker.bindPopup(popup, { className: 'nwr-popup', maxWidth: 300 });
 
-      marker.on('popupclose', function() {
+      marker.on('popupclose', () => {
         Object.values(_nwrAudioMap).forEach(a => { try { a.pause(); } catch(e){} });
         _nwrAudioMap = {};
       });
@@ -14295,9 +14302,9 @@ async function loadNWRStations() {
       plotted++;
     });
 
-    _nwrLoaded = true;  // set only after successful plot so errors allow retry
-    console.log('[NWR] plotted:', plotted, '| WXUSA-only new:', nwroOnly);
-    showToast(`📡 ${plotted} NWR stations${nwroOnly ? ` · ${nwroOnly} new WXUSA` : ''}`, 2500);
+    _nwrLoaded = true;
+    console.log('[NWR] plotted:', plotted, 'GWES:', gwesMap.size, 'WXR:', wxrMap.size, 'WXUSA:', wusaMap.size, 'WXUSA-new:', wxusaNew);
+    showToast(`📡 ${plotted} NWR stations${wxusaNew ? ` · ${wxusaNew} WXUSA` : ''}`, 2500);
   } catch(e) {
     if (_nwrLayer) { try { map.removeLayer(_nwrLayer); } catch(_) {} _nwrLayer = null; }
     showToast('📡 NWR unavailable', 2000);
