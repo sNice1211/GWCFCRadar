@@ -5874,18 +5874,23 @@ function _generateL3Frames(count) {
 // ── RainViewer radar frame fetch (fallback) ──
 async function _fetchRainViewerFrames() {
   const CACHE_KEY = 'gwcfc_rv_radar_frames';
-  const CACHE_TTL = 2 * 60 * 1000; // 2 min
+  const CACHE_TTL = 2 * 60 * 1000;
   try {
     const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-    if (cached && (Date.now() - cached.ts) < CACHE_TTL) {
-      return cached.frames;
-    }
+    if (cached && (Date.now() - cached.ts) < CACHE_TTL) return cached.frames;
   } catch(e) {}
   const res = await fetch('https://api.rainviewer.com/public/weather-maps.json', { signal: _abortSignal(10000) });
   const data = await res.json();
   const past = (data.radar && data.radar.past) || [];
   if (!past.length) throw new Error('RainViewer returned no radar frames');
-  const frames = past.map(f => ({ time: f.time, path: f.path, forecast: false, _rv: true }));
+  const frames = past.map(f => ({
+    time: f.time,
+    tileKey: f.path,   // unique immutable key, used by sliding-window refresh
+    path: f.path,
+    iso: new Date(f.time * 1000).toISOString().slice(0, 16) + ':00Z',
+    forecast: false,
+    _rv: true,
+  }));
   try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
   return frames;
 }
@@ -5893,7 +5898,15 @@ async function _fetchRainViewerFrames() {
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const newFrames = _generateL3Frames(12);
+    // Primary: RainViewer — 512px retina tiles, native zoom 0-15, fast global CDN
+    // Fallback: IEM L3 tile cache (zoom 0-9 only, but reliable and NOAA-sourced)
+    let newFrames;
+    try {
+      newFrames = await _fetchRainViewerFrames();
+    } catch(rvErr) {
+      console.warn('RainViewer unavailable, falling back to IEM tile cache:', rvErr);
+      newFrames = _generateL3Frames(12);
+    }
 
     // Periodic refresh — sliding-window layer reuse.
     // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
@@ -6122,14 +6135,37 @@ function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const frame = radarFrames[i];
 
-  if (_nexradCacheFailed) {
-    // Already know cache is blocked — go straight to WMS
-    _switchSlotToWms(i);
+  if (frame._rv) {
+    // RainViewer: 512×512 retina tiles, native zoom 0–15, immutable per timestamp.
+    // zoomOffset:-1 required by Leaflet when tileSize=512 so tile coords stay correct.
+    // Color scheme 6 = NEXRAD Level III palette (green→yellow→red like NWS radar).
+    const l = L.tileLayer(
+      `https://tilecache.rainviewer.com${frame.tileKey}/512/{z}/{x}/{y}/6/1_1.png`, {
+      opacity: 0, zIndex: 10, pane: 'radarPane',
+      noWrap: true, tileSize: 512, zoomOffset: -1,
+      maxNativeZoom: 15,
+      keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
+      attribution: 'Radar: © RainViewer',
+    });
+    l.on('tileload', () => {
+      if (!_radarLayerLoaded[i]) {
+        _radarLayerLoaded[i] = true;
+        _radarFramesReady++;
+        if (_radarFramesReady < radarFrames.length)
+          updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
+        else updateLoadStatus('');
+      }
+    });
+    _radarLayerLoaded[i] = false;
+    l.addTo(map);
+    _radarLayerPool[i] = l;
+    if (activeLayers.nexrad && i === currentFrame) l.setOpacity(radarOpacity);
     return;
   }
 
-  // Primary: IEM pre-rendered tile cache (~100ms/tile, 10-30× faster than WMS)
-  // maxNativeZoom:9 — IEM composite only tiles to z9; Leaflet upscales above that (no 404/blank)
+  // IEM tile cache fallback (when RainViewer unavailable)
+  if (_nexradCacheFailed) { _switchSlotToWms(i); return; }
+
   const l = L.tileLayer(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     noWrap: true, tileSize: 256,
@@ -6150,7 +6186,6 @@ function _ensureNexradLayer(i) {
   l.on('tileerror', () => {
     if (!_nexradCacheFailed) {
       _nexradCacheFailed = true;
-      // In-place switch: replace every unloaded slot with WMS, no full rebuild, no blank screen
       radarFrames.forEach((_, j) => _switchSlotToWms(j));
       if (activeLayers.nexrad) showFrame(currentFrame);
     }
