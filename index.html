@@ -14172,7 +14172,7 @@ let _nwrAudioMap = {};
 
 // ── NWR ALERT RECORDINGS ──────────────────────────────────────────────────
 const _nwrRecs  = [];       // { id, call, label, blob, url, start, dur }
-let _nwrRecActive = null;   // { recorder, audio, ctx, call, label, startMs, timerId }
+let _nwrRecActive = null;   // { stopFn, audio, ctx, call, label, startMs, timerId }
 
 function _nwrFmtDur(s) {
   return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
@@ -14187,64 +14187,96 @@ function _nwrCloseRecPanel() {
   if (p) p.style.display = 'none';
 }
 
-function _nwrStartRecord(call, rawUrl, label) {
-  if (!window.MediaRecorder) { showToast('⚠ Recording not supported in this browser', 3000); return; }
+// Lazily load lamejs (pure-JS MP3 encoder) the first time recording starts
+let _lameJsLoading = null;
+function _loadLameJs() {
+  if (window.lamejs) return Promise.resolve();
+  if (_lameJsLoading) return _lameJsLoading;
+  _lameJsLoading = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js';
+    s.onload = res; s.onerror = () => rej(new Error('lamejs load failed'));
+    document.head.appendChild(s);
+  });
+  return _lameJsLoading;
+}
+
+async function _nwrStartRecord(call, rawUrl, label) {
   if (_nwrRecActive) _nwrStopRecord();
+
+  showToast('⏳ Loading MP3 encoder…', 1500);
+  try { await _loadLameJs(); } catch(e) {
+    showToast('⚠ MP3 encoder failed to load — check connection', 4000); return;
+  }
 
   const src = rawUrl.replace(/^http:\/\/([^/:]+)(:\d+)?\//i, 'https://$1/');
   const audio = new Audio();
   audio.crossOrigin = 'anonymous';
   audio.src = src;
 
-  let ctx, source, dest, recorder;
+  let ctx, source, processor;
   try {
-    ctx    = new (window.AudioContext || window.webkitAudioContext)();
-    source = ctx.createMediaElementSource(audio);
-    dest   = ctx.createMediaStreamDestination();
-    source.connect(dest);
-    source.connect(ctx.destination);
+    ctx       = new (window.AudioContext || window.webkitAudioContext)();
+    source    = ctx.createMediaElementSource(audio);
+    processor = ctx.createScriptProcessor(8192, 2, 2); // stereo in → stereo out
+    source.connect(processor);
+    processor.connect(ctx.destination); // hear while recording
   } catch(e) {
-    showToast('⚠ Cannot capture stream (CORS). Try a different source.', 4000);
+    showToast('⚠ Cannot capture this stream (CORS restriction)', 4000);
     try { ctx && ctx.close(); } catch(_) {}
     return;
   }
 
-  const mime = ['audio/webm;codecs=opus','audio/webm','audio/ogg'].find(t => MediaRecorder.isTypeSupported(t)) || '';
-  try { recorder = new MediaRecorder(dest.stream, mime ? { mimeType: mime } : {}); }
-  catch(e) { showToast('⚠ MediaRecorder init failed', 3000); ctx.close(); return; }
+  const sampleRate = ctx.sampleRate;
+  const mp3enc     = new lamejs.Mp3Encoder(2, sampleRate, 128); // stereo, 128 kbps
+  const mp3chunks  = [];
 
-  const chunks = [];
-  recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-  recorder.onstop = () => {
-    const blobMime = mime || 'audio/webm';
-    const blob = new Blob(chunks, { type: blobMime });
-    const url  = URL.createObjectURL(blob);
-    const dur  = Math.round((Date.now() - _nwrRecActive.startMs) / 1000);
-    _nwrRecs.unshift({ id: Date.now(), call, label, blob, url, start: new Date(_nwrRecActive.startMs), dur });
-    _nwrRecActive = null;
-    _nwrRenderRecPanel();
+  processor.onaudioprocess = e => {
+    const L = e.inputBuffer.getChannelData(0);
+    const R = e.inputBuffer.getChannelData(1);
+    const li = new Int16Array(L.length), ri = new Int16Array(R.length);
+    for (let i = 0; i < L.length; i++) {
+      li[i] = Math.max(-32768, Math.min(32767, L[i] * 32768));
+      ri[i] = Math.max(-32768, Math.min(32767, R[i] * 32768));
+    }
+    const buf = mp3enc.encodeBuffer(li, ri);
+    if (buf.length > 0) mp3chunks.push(new Uint8Array(buf));
   };
 
-  recorder.start(1000);
-  audio.play().catch(() => {});
-
-  const startMs  = Date.now();
-  const timerId  = setInterval(() => {
+  const startMs = Date.now();
+  const timerId = setInterval(() => {
     const el = document.getElementById('nwr-rec-timer');
     if (el) el.textContent = _nwrFmtDur(Math.round((Date.now() - startMs) / 1000));
   }, 1000);
 
-  _nwrRecActive = { recorder, audio, ctx, call, label, startMs, timerId };
-  showToast(`🔴 Recording ${call.toUpperCase()}…`, 2000);
+  const stopFn = () => {
+    clearInterval(timerId);
+    processor.onaudioprocess = null;
+    try { processor.disconnect(); source.disconnect(); } catch(_) {}
+    try { audio.pause(); } catch(_) {}
+    try { ctx.close(); }  catch(_) {}
+
+    const tail = mp3enc.flush();
+    if (tail.length > 0) mp3chunks.push(new Uint8Array(tail));
+    const blob = new Blob(mp3chunks, { type: 'audio/mpeg' });
+    const url  = URL.createObjectURL(blob);
+    const dur  = Math.round((Date.now() - startMs) / 1000);
+    _nwrRecs.unshift({ id: Date.now(), call, label, blob, url, start: new Date(startMs), dur });
+    _nwrRecActive = null;
+    _nwrRenderRecPanel();
+    showToast(`✅ Saved ${_nwrFmtDur(dur)} MP3 — open Recordings panel`, 3000);
+  };
+
+  audio.play().catch(() => {});
+  _nwrRecActive = { stopFn, audio, ctx, processor, call, label, startMs, timerId };
+  showToast(`🔴 Recording ${call.toUpperCase()} as MP3…`, 2000);
   _nwrOpenRecPanel();
+  _nwrRenderRecPanel();
 }
 
 function _nwrStopRecord() {
   if (!_nwrRecActive) return;
-  clearInterval(_nwrRecActive.timerId);
-  try { _nwrRecActive.recorder.stop(); } catch(e) {}
-  try { _nwrRecActive.audio.pause(); }  catch(e) {}
-  try { _nwrRecActive.ctx.close(); }    catch(e) {}
+  _nwrRecActive.stopFn();
 }
 
 function _nwrDeleteRec(id) {
@@ -14256,10 +14288,9 @@ function _nwrDeleteRec(id) {
 function _nwrDownloadRec(id) {
   const rec = _nwrRecs.find(r => r.id === id);
   if (!rec) return;
-  const ext = (rec.blob.type || '').includes('ogg') ? 'ogg' : 'webm';
-  const ts  = rec.start.toISOString().replace(/[:.]/g,'-').slice(0,19);
-  const a   = document.createElement('a');
-  a.href = rec.url; a.download = `NWR_${rec.call.toUpperCase()}_${ts}.${ext}`; a.click();
+  const ts = rec.start.toISOString().replace(/[:.]/g,'-').slice(0,19);
+  const a  = document.createElement('a');
+  a.href = rec.url; a.download = `NWR_${rec.call.toUpperCase()}_${ts}.mp3`; a.click();
 }
 
 function _nwrRenderRecPanel() {
@@ -14289,13 +14320,12 @@ function _nwrRenderRecPanel() {
     _nwrRecs.forEach(rec => {
       const timeStr = rec.start.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
       const dateStr = rec.start.toLocaleDateString([],{month:'short',day:'numeric'});
-      const ext     = (rec.blob.type||'').includes('ogg') ? 'ogg' : 'webm';
       html += `<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,0.05)">
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
           <span style="font-family:var(--mono);font-size:13px;color:#ff9900;font-weight:bold">${rec.call.toUpperCase()}</span>
           <span style="font-family:var(--mono);font-size:11px;color:#888">${_nwrFmtDur(rec.dur)}</span>
           <span style="font-size:9px;color:#555;flex:1;font-family:var(--mono)">${timeStr} · ${dateStr}</span>
-          <button onclick="_nwrDownloadRec(${rec.id})" title="Save as .${ext}" style="background:#111;border:1px solid #333;color:#88aaff;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px" title="Download">⬇</button>
+          <button onclick="_nwrDownloadRec(${rec.id})" title="Save as MP3" style="background:#111;border:1px solid #333;color:#88aaff;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">⬇ MP3</button>
           <button onclick="_nwrDeleteRec(${rec.id})" title="Delete" style="background:#111;border:1px solid #333;color:#ff6666;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">🗑</button>
         </div>
         <audio controls src="${rec.url}" style="width:100%;height:28px;display:block;accent-color:#ff6600"></audio>
@@ -14536,23 +14566,38 @@ async function loadNWRStations() {
   _nwrLoading = true;
   showToast('📡 Loading NWR live streams…', 1500);
   try {
-    // radio.weatherusa.net is HTTP-only and CORS-restricted; route through proxies
-    const WUSA_SRC = 'http://radio.weatherusa.net/status-json.xsl';
+    // radio.weatherusa.net is HTTP-only and CORS-restricted; try multiple proxies
+    // and multiple source URLs (some proxies only work with one format).
     const _fetchWusa = async () => {
-      const tries = [
-        'https://corsproxy.io/?' + encodeURIComponent(WUSA_SRC),
-        'https://api.allorigins.win/raw?url=' + encodeURIComponent(WUSA_SRC),
-        'https://corsproxy.io/?url=' + encodeURIComponent(WUSA_SRC),
+      const WUSA_SRCS = [
+        'http://radio.weatherusa.net/status-json.xsl',
+        'https://radio.weatherusa.net/status-json.xsl',
+        'http://radio.weatherusa.net:8000/status-json.xsl',
       ];
-      for (const url of tries) {
-        try {
-          const r = await fetch(url, { signal: _abortSignal(12000) });
-          if (!r.ok) continue;
-          const d = await r.json();
-          if (d?.icestats?.source) { console.log('[NWR] WXUSA loaded via', url); return d; }
-        } catch(_) {}
+      const mkProxies = src => [
+        'https://corsproxy.io/?' + encodeURIComponent(src),
+        'https://api.allorigins.win/raw?url=' + encodeURIComponent(src),
+        'https://thingproxy.freeboard.io/fetch/' + src,
+        'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(src),
+      ];
+      for (const src of WUSA_SRCS) {
+        for (const proxyUrl of mkProxies(src)) {
+          try {
+            const r = await fetch(proxyUrl, { signal: _abortSignal(8000) });
+            if (!r.ok) continue;
+            const text = await r.text();
+            if (!text || text.trimStart().startsWith('<')) continue; // proxy returned HTML error
+            let d;
+            try { d = JSON.parse(text); } catch(_) { continue; }
+            if (d?.icestats?.source) {
+              const n = Array.isArray(d.icestats.source) ? d.icestats.source.length : 1;
+              console.log('[NWR] WXUSA loaded', n, 'sources via', proxyUrl.split('?')[0]);
+              return d;
+            }
+          } catch(_) {}
+        }
       }
-      console.warn('[NWR] WXUSA all endpoints failed');
+      console.warn('[NWR] WXUSA: all proxies failed');
       return null;
     };
 
@@ -14577,7 +14622,11 @@ async function loadNWRStations() {
     // WXR mounts: /ST-City-CALLSIGN or /ST-City-CALLSIGN-alt1
     const _wxrCallsign  = url => url.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '').split('-').pop();
     // WUSA mounts: /NWR/CALLSIGN.mp3 or /NWR/CALLSIGN_2.mp3
-    const _wusaCallsign = url => url.split('/NWR/').pop().replace(/\.[^.]+$/, '').replace(/_[A-Za-z0-9]+$/, '');
+    // Case-insensitive: handles /NWR/, /nwr/, alternate feeds like KXX_2.mp3
+    const _wusaCallsign = url => {
+      const m = url.match(/\/nwr\/([^/.]+)/i);
+      return m ? m[1].replace(/_\d+$/, '') : url.split('/').pop().replace(/\.[^.]+$/, '');
+    };
 
     const gwesMap = new Map();
     if (gwesRes?.ok) {
