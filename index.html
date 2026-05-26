@@ -5489,7 +5489,11 @@ function _applyRadarPaneFilter() {
 
 function _rebuildRadarTiles() {
   _colorRemapCache.clear();
-  if (_radarPoolBuilt) { _buildRadarPool(); showFrame(currentFrame); }
+  if (_radarPoolBuilt) {
+    try { updateLoadStatus('Rebuilding radar…'); } catch(e){}
+    _buildRadarPool();
+    showFrame(currentFrame);
+  }
   if (_refStation)     { _loadSingleSiteRef(_refStation); }
   _rceUpdateLegend();
 }
@@ -5902,10 +5906,16 @@ async function loadNEXRAD() {
       // 1. Snapshot current key→layer mapping before touching radarFrames.
       const oldLayerMap = new Map(); // tileKey → layer
       const oldLoadedMap = new Map(); // tileKey → loaded bool
+      const oldCanadaMap = new Map(); // tileKey → canada layer
+      const oldCanadaLoadedMap = new Map();
       radarFrames.forEach((frame, i) => {
         if (_radarLayerPool[i]) {
           oldLayerMap.set(frame.tileKey, _radarLayerPool[i]);
           oldLoadedMap.set(frame.tileKey, _radarLayerLoaded[i]);
+        }
+        if (_canadaPoolBuilt && _canadaLayerPool[i]) {
+          oldCanadaMap.set(frame.tileKey, _canadaLayerPool[i]);
+          oldCanadaLoadedMap.set(frame.tileKey, _canadaLayerLoaded[i]);
         }
       });
 
@@ -5934,10 +5944,42 @@ async function loadNEXRAD() {
         }
       });
 
+      // 3b. Apply the same sliding-window remap to the Canada pool so its layers
+      // stay aligned with the new radarFrames timestamps. Without this, Canada
+      // layers go stale (TIME param frozen at old timestamp) after each refresh.
+      if (_canadaPoolBuilt) {
+        const reusedCanada = new Set();
+        _canadaLayerPool.length = 0;
+        _canadaLayerLoaded.length = 0;
+        for (let i = 0; i < radarFrames.length; i++) {
+          const key = radarFrames[i].tileKey;
+          const ex = oldCanadaMap.get(key);
+          if (ex) {
+            _canadaLayerPool[i] = ex;
+            _canadaLayerLoaded[i] = oldCanadaLoadedMap.get(key) || false;
+            reusedCanada.add(ex);
+          } else {
+            _canadaLayerPool[i] = null;
+            _canadaLayerLoaded[i] = false;
+          }
+        }
+        oldCanadaMap.forEach((layer) => {
+          if (!reusedCanada.has(layer)) {
+            try { map.removeLayer(layer); } catch(e) {}
+          }
+        });
+      }
+
       // 4. Create fresh layers only for slots with no existing layer (genuinely new timestamps).
       radarFrames.forEach((frame, i) => {
         if (!_radarLayerPool[i]) _ensureNexradLayer(i);
       });
+
+      // Recompute readiness counter after sliding-window remap (some loaded frames rolled off,
+      // some fresh slots are now empty). Without this, _radarFramesReady drifts over time.
+      _radarFramesReady = _radarLayerLoaded.reduce((a, b) => a + (b ? 1 : 0), 0);
+      _lastWindowS = -1; _lastWindowE = -1; // force window re-activation after remap
+      try { _refreshPlayButtonsEnabled(); } catch(e){}
 
       currentFrame = Math.min(currentFrame, radarFrames.length - 1);
       const tl = document.getElementById('timeline');
@@ -6014,6 +6056,7 @@ let   _radarPoolBuilt = false;
 // Per-frame loaded flags , true once at least one tile has fired 'tileload'
 const _radarLayerLoaded = [];
 let _radarFramesReady = 0; // counts frames with ≥1 tile loaded; gates lag-free animation
+let _showFrameTick = null;  // stale-interval guard for showFrame wait-loop on unloaded frames
 
 // IEM NEXRAD: pre-rendered tile cache loads in ~100ms/tile; WMS fallback on first error
 const IEM_TILE_BASE    = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
@@ -6031,6 +6074,8 @@ const _canadaLayerLoaded = [];
 function _buildRadarPool() {
   // If custom colors are active, skip tile cache (needs crossOrigin/canvas) and go straight to WMS
   _nexradCacheFailed = !!_customRadarColors;
+  // Cancel any stale wait-loop pointing at layers we're about to remove
+  if (_showFrameTick) { clearInterval(_showFrameTick); _showFrameTick = null; }
   _radarLayerPool.forEach(l => { try { if (l) map.removeLayer(l); } catch(e){} });
   _radarLayerPool.length = 0;
   _radarLayerLoaded.length = 0;
@@ -6043,6 +6088,7 @@ function _buildRadarPool() {
   }
   _radarPoolBuilt = true;
   _buildCanadaPool();
+  try { _refreshPlayButtonsEnabled(); } catch(e){}
 
   // Stagger background preload: current frame first, then others 80ms apart to avoid tile avalanche.
   if (_radarPoolBuilt && radarFrames.length) {
@@ -6107,6 +6153,7 @@ function _switchSlotToWms(i) {
       if (_radarFramesReady < radarFrames.length)
         updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
       else updateLoadStatus('');
+      try { _refreshPlayButtonsEnabled(); } catch(e){}
     }
     _remapTileColors(e.tile);
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
@@ -6142,6 +6189,7 @@ function _ensureNexradLayer(i) {
       if (_radarFramesReady < radarFrames.length)
         updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
       else updateLoadStatus('');
+      try { _refreshPlayButtonsEnabled(); } catch(e){}
     }
   });
   l.on('tileerror', () => {
@@ -6158,7 +6206,9 @@ function _ensureNexradLayer(i) {
 
 function _ensureCanadaLayer(i) {
   if (_canadaLayerPool[i]) return;
+  if (!activeLayers.nexrad) return; // don't preload Canada when radar is off
   const frame = radarFrames[i];
+  if (!frame) return;
   const iso = frame.iso || new Date(frame.time * 1000).toISOString().slice(0,19) + 'Z';
   const l = L.tileLayer.wms(CANADA_WMS, {
     layers: CANADA_LAYER, format: 'image/png', transparent: true,
@@ -6265,11 +6315,35 @@ function showFrame(idx) {
   if (activeLayers.nexrad && _radarPoolBuilt) {
     _activateWindow(idx);
 
-    _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
-    radarLayer = _radarLayerPool[idx];
+    // Cancel any prior wait loop (user seeked past unloaded frame before it loaded)
+    if (_showFrameTick) { clearInterval(_showFrameTick); _showFrameTick = null; }
 
-    if (_canadaPoolBuilt) {
-      _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
+    const applyOpacity = () => {
+      _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
+      radarLayer = _radarLayerPool[idx];
+      if (_canadaPoolBuilt) {
+        _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
+      }
+    };
+
+    // Always paint immediately so a tile that arrives later is visible. If the
+    // target frame has no tiles yet, also poll for load and re-apply once it
+    // arrives (max 1500ms). This eliminates the blank flash when the user
+    // seeks to an unloaded frame during preload.
+    applyOpacity();
+    if (!_radarLayerLoaded[idx]) {
+      const target = idx;
+      let waited = 0;
+      _showFrameTick = setInterval(() => {
+        waited += 50;
+        if (currentFrame !== target) {
+          clearInterval(_showFrameTick); _showFrameTick = null; return;
+        }
+        if (_radarLayerLoaded[target] || waited >= 1500) {
+          clearInterval(_showFrameTick); _showFrameTick = null;
+          applyOpacity();
+        }
+      }, 50);
     }
   }
 
@@ -9123,6 +9197,12 @@ function selectModelVar(v) {
 function setRadarOpacity(val) {
   radarOpacity = val / 100;
   document.getElementById('radar-opacity-val').textContent = val + '%';
+  // Update the currently visible radar layer (composite or single-site) plus Canada overlay
+  if (activeLayers.nexrad) {
+    if (_radarPoolBuilt && _radarLayerPool[currentFrame]) _radarLayerPool[currentFrame].setOpacity(radarOpacity);
+    if (_canadaPoolBuilt && _canadaLayerPool[currentFrame]) _canadaLayerPool[currentFrame].setOpacity(radarOpacity);
+  }
+  if (_refStation && _refSitePool && _refSitePool[currentFrame]) _refSitePool[currentFrame].setOpacity(radarOpacity);
   if (radarLayer) radarLayer.setOpacity(radarOpacity);
 }
 
@@ -13297,7 +13377,33 @@ function _stopRAF() {
   if (_rafPlayId) { cancelAnimationFrame(_rafPlayId); _rafPlayId = null; }
 }
 
+// Returns true when at least 2 frames are loaded — enough for animation to actually animate.
+// In composite mode we check radar frames; in single-site/vel/sat modes those have their own
+// ready state and we just allow play (their loaders handle the wait).
+function _animationReady() {
+  if (activeLayers.satellite && goesFrames.length) return true;
+  if (currentProduct === 'vel') return true;
+  if (currentProduct === 'ref' && _refStation) return true;
+  if (!radarFrames.length) return false;
+  // Need at least 2 frames so animation has somewhere to step
+  return _radarFramesReady >= Math.min(2, radarFrames.length);
+}
+
+function _refreshPlayButtonsEnabled() {
+  const ready = _animationReady();
+  const pb = document.getElementById('play-btn');
+  const pbb = document.getElementById('play-back-btn');
+  [pb, pbb].forEach(btn => {
+    if (!btn) return;
+    btn.disabled = !ready;
+    btn.style.opacity = ready ? '' : '0.4';
+    btn.style.cursor = ready ? '' : 'not-allowed';
+    btn.title = ready ? (btn === pb ? 'Play Forward' : 'Play Backwards') : 'Loading radar frames…';
+  });
+}
+
 function togglePlay() {
+  if (!_animationReady()) { _refreshPlayButtonsEnabled(); return; }
   if (playingBack) { playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
   playing = !playing;
   const btn = document.getElementById('play-btn');
@@ -13307,6 +13413,7 @@ function togglePlay() {
 }
 
 function togglePlayBack() {
+  if (!_animationReady()) { _refreshPlayButtonsEnabled(); return; }
   if (playing) { playing = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
   playingBack = !playingBack;
   const btn = document.getElementById('play-back-btn');
@@ -13827,7 +13934,7 @@ async function _loadSingleSiteRef(stationId) {
       const l = L.tileLayer.wms(wmsUrl, {
         layers: layerNm, format: 'image/png', transparent: true,
         version: '1.3.0', TIME: frame.iso,
-        opacity: 0, zIndex: 11, pane: 'radarPane',
+        opacity: 0, zIndex: 12, pane: 'radarPane',
         crossOrigin: 'anonymous', noWrap: true,
         keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
         attribution: `${stationId.toUpperCase()} SR_BREF © NOAA Level III`,
@@ -13857,7 +13964,7 @@ async function _loadSingleSiteRef(stationId) {
         format: 'image/png', transparent: true, version: '1.1.1',
         sector, prod: 'N0Q',
         ...(isLatest ? {} : { year: yr, month: mo, day: dy, time: hhmm }),
-        opacity: 0, zIndex: 11, pane: 'radarPane',
+        opacity: 0, zIndex: 12, pane: 'radarPane',
         crossOrigin: 'anonymous', noWrap: true,
         attribution: `${stationId.toUpperCase()} N0Q © NOAA via IEM`,
       });
