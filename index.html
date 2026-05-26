@@ -5681,15 +5681,25 @@ function initMap() {
   });
   let _zoomTimer = null;
   map.on('zoomstart', () => {
-    // Suspend all non-active radar tile layers during zoom to prevent tile avalanche
+    // Suspend non-current radar frames during zoom to prevent tile avalanche.
+    // Current frame is left alone so its tiles stay visible through the zoom transition.
     if (_radarPoolBuilt) {
-      _radarLayerPool.forEach((l, i) => { if (l && i !== currentFrame) l.options.updateWhenZooming = false; });
+      _radarLayerPool.forEach((l, i) => {
+        if (l) l.options.updateWhenZooming = (i === currentFrame);
+      });
     }
   });
   map.on('zoomend', () => {
     document.getElementById('sb-zoom').textContent = map.getZoom();
     _applyRadarPolyMask();
-    // Debounce pool rebuild 300ms after zoom ends to batch requests
+    // Re-enable updateWhenZooming on all layers (was suppressed during zoom)
+    if (_radarPoolBuilt) {
+      _radarLayerPool.forEach(l => { if (l) l.options.updateWhenZooming = false; });
+    }
+    // Re-assert current frame opacity immediately after zoom (tiles may have been
+    // re-requested; opacity state is preserved but call ensures nothing slipped to 0)
+    if (activeLayers.nexrad && _radarPoolBuilt) showFrame(currentFrame);
+    // Debounce pool window rebuild 300ms to batch any new-slot creation
     clearTimeout(_zoomTimer);
     _zoomTimer = setTimeout(() => {
       if (_radarPoolBuilt) {
@@ -6327,30 +6337,46 @@ function showFrame(idx) {
     // Cancel any prior wait loop (user seeked past unloaded frame before it loaded)
     if (_showFrameTick) { clearInterval(_showFrameTick); _showFrameTick = null; }
 
-    const applyOpacity = () => {
-      _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
-      radarLayer = _radarLayerPool[idx];
+    // Paint a specific display index (may differ from idx while target tiles load)
+    const applyOpacity = (di) => {
+      _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === di ? radarOpacity : 0); });
+      radarLayer = _radarLayerPool[di] || null;
       if (_canadaPoolBuilt) {
-        _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? radarOpacity : 0); });
+        _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === di ? radarOpacity : 0); });
       }
     };
 
-    // Always paint immediately so a tile that arrives later is visible. If the
-    // target frame has no tiles yet, also poll for load and re-apply once it
-    // arrives (max 1500ms). This eliminates the blank flash when the user
-    // seeks to an unloaded frame during preload.
-    applyOpacity();
-    if (!_radarLayerLoaded[idx]) {
+    // Find the nearest frame that actually has tiles loaded — use it as a
+    // placeholder so radar NEVER goes blank while the target frame fetches.
+    const findFallback = (target) => {
+      if (_radarLayerLoaded[target] && _radarLayerPool[target]) return target;
+      for (let d = 1; d < radarFrames.length; d++) {
+        const p = target - d;
+        if (p >= 0 && _radarLayerLoaded[p] && _radarLayerPool[p]) return p;
+        const n = target + d;
+        if (n < radarFrames.length && _radarLayerLoaded[n] && _radarLayerPool[n]) return n;
+      }
+      return target; // nothing loaded at all — show blank (only possible on very first load)
+    };
+
+    const displayIdx = findFallback(idx);
+    applyOpacity(displayIdx);
+
+    // If showing a fallback (or target not yet loaded), poll until the real frame arrives.
+    // No hard timeout — keep trying until tiles land or user seeks away.
+    // 30s safety cleanup for frames that permanently fail (network error / 404).
+    if (displayIdx !== idx || !_radarLayerLoaded[idx]) {
       const target = idx;
       let waited = 0;
       _showFrameTick = setInterval(() => {
         waited += 50;
-        if (currentFrame !== target) {
-          clearInterval(_showFrameTick); _showFrameTick = null; return;
-        }
-        if (_radarLayerLoaded[target] || waited >= 1500) {
+        if (currentFrame !== target) { clearInterval(_showFrameTick); _showFrameTick = null; return; }
+        if (_radarLayerLoaded[target] && _radarLayerPool[target]) {
           clearInterval(_showFrameTick); _showFrameTick = null;
-          applyOpacity();
+          applyOpacity(target);
+        } else if (waited >= 30000) {
+          clearInterval(_showFrameTick); _showFrameTick = null;
+          applyOpacity(target); // last resort after 30s
         }
       }, 50);
     }
