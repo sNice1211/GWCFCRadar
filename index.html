@@ -49,11 +49,6 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
-/* GPU compositing hints , keeps map tiles smooth during pan/zoom */
-#map { will-change: transform; }
-.leaflet-tile-container { will-change: transform; }
-.leaflet-map-pane       { will-change: transform; }
-
 /* Honour OS/browser reduced-motion preference (also helps PS5 & low-end devices) */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -5958,8 +5953,7 @@ async function loadNEXRAD() {
     radarFrames = newFrames;
     lastPastIdx = radarFrames.length - 1;
     const tl = document.getElementById('timeline');
-    tl.max = radarFrames.length - 1;
-    tl.value = lastPastIdx;
+    if (tl) { tl.max = radarFrames.length - 1; tl.value = lastPastIdx; }
     currentFrame = lastPastIdx;
     buildTimelineLabels();
     _updateTimelineGradient(lastPastIdx, radarFrames.length);
@@ -5975,7 +5969,7 @@ async function loadNEXRAD() {
 // Paint the slider track: grey for past, gold for future frames
 function _updateTimelineGradient(lastPastIdx, total) {
   const tl = document.getElementById('timeline');
-  if (total <= 1) return;
+  if (!tl || total <= 1) return;
   const pct = Math.round((lastPastIdx / (total - 1)) * 100);
   tl.style.background =
     `linear-gradient(to right,
@@ -5985,6 +5979,7 @@ function _updateTimelineGradient(lastPastIdx, total) {
 
 function buildTimelineLabels() {
   const wrap = document.getElementById('timeline-labels');
+  if (!wrap) return;
   if (activeLayers.satellite && goesFrames.length) {
     // Satellite mode: use goesFrames
     const n = goesFrames.length;
@@ -6226,13 +6221,16 @@ function _fmtHHMMshort(d) {
 let _elTimeline = null, _elAnimTime = null, _elFcstBadge = null;
 
 function updateFrameLabel(idx) {
+  if (!radarFrames[idx]) return;
   const d = new Date(radarFrames[idx].time * 1000);
   const ts = _fmtHHMM(d);
   if (!_elAnimTime) _elAnimTime = document.getElementById('anim-time');
   const isForecast = !!radarFrames[idx].forecast;
-  _elAnimTime.textContent = (isForecast ? 'FCST ' : '') + ts;
-  _elAnimTime.style.color  = isForecast ? '#ffe066' : '';
-  _elAnimTime.style.visibility = 'visible';
+  if (_elAnimTime) {
+    _elAnimTime.textContent = (isForecast ? 'FCST ' : '') + ts;
+    _elAnimTime.style.color  = isForecast ? '#ffe066' : '';
+    _elAnimTime.style.visibility = 'visible';
+  }
   if (!_elFcstBadge) {
     _elFcstBadge = document.getElementById('fcst-badge');
     if (!_elFcstBadge) {
@@ -6244,10 +6242,11 @@ function updateFrameLabel(idx) {
         'background:rgba(255,224,102,0.18);color:#ffe066;border:1px solid rgba(255,224,102,0.4);' +
         'letter-spacing:1px;flex-shrink:0;';
       _elFcstBadge.textContent = 'FCST';
-      document.getElementById('animbar').appendChild(_elFcstBadge);
+      const animbar = document.getElementById('animbar');
+      if (animbar) animbar.appendChild(_elFcstBadge);
     }
   }
-  _elFcstBadge.style.display = isForecast ? 'inline-block' : 'none';
+  if (_elFcstBadge) _elFcstBadge.style.display = isForecast ? 'inline-block' : 'none';
 }
 
 function showFrame(idx) {
@@ -6260,7 +6259,7 @@ function showFrame(idx) {
   idx = Math.max(0, Math.min(radarFrames.length - 1, idx));
   currentFrame = idx;
   if (!_elTimeline) _elTimeline = document.getElementById('timeline');
-  _elTimeline.value = idx;
+  if (_elTimeline) _elTimeline.value = idx;
 
   if (activeLayers.nexrad && _radarPoolBuilt) {
     _activateWindow(idx);
@@ -9665,7 +9664,7 @@ function toggleOverlayLauncher() {
   });
 }
 
-// ── OVERLAY BAR PILLS (Lightning, Cams, Radio, Forecasts) ──
+// ── OVERLAY BAR PILLS (Lightning, Radio, Forecasts) ──
 function toggleOverlayPill(id) {
   if (id === 'lightning') {
     toggleLayer('lightning');
@@ -10949,7 +10948,6 @@ const LOAD_FACTS = [
   "The <b>Search feature</b> lets you jump to any city or set of coordinates instantly , just type a name and the map flies to that location.",
   "NOAA <b>Hurricane Hunter aircraft</b> positions can be shown live on the map when they're flying a reconnaissance mission into a storm.",
   "The <b>EAS panel</b> displays live Emergency Alert System broadcasts , you can tap any message to hear the original audio.",
-  "Tap a <b>webcam icon</b> on the map to open a live feed from a nearby weather camera or traffic cam.",
   "The <b>lightning layer</b> shows real-time strike locations , toggle it on to watch electrical activity develop within a storm cluster.",
   "You can rotate the map with a <b>three-finger drag</b> on touch screens , a bearing compass appears and a reset button snaps you back to north-up.",
   "Alert popup cards let you tap <b>View Full Message</b> to expand the complete NWS hazard text right inside the popup without leaving the map.",
@@ -13561,8 +13559,7 @@ async function loadVelocityData() {
 
   velCurrentFrame = velFrames.length - 1;
   const tl = document.getElementById('timeline');
-  tl.max   = velFrames.length - 1;
-  tl.value = velCurrentFrame;
+  if (tl) { tl.max = velFrames.length - 1; tl.value = velCurrentFrame; }
   buildVelLabels();
 
   // Build the double-buffer pool now that we have frames
@@ -13589,7 +13586,8 @@ function showVelFrame(idx) {
   idx = Math.max(0, Math.min(velFrames.length - 1, idx));
   const prevIdx      = velCurrentFrame;
   velCurrentFrame    = idx;
-  document.getElementById('timeline').value = idx;
+  const _vfTl = document.getElementById('timeline');
+  if (_vfTl) _vfTl.value = idx;
 
   if (_velLayerPool.length) {
     // Double-buffer: swap opacity between slots
@@ -13631,8 +13629,8 @@ function showVelFrame(idx) {
 
   const d = new Date(velFrames[idx].time * 1000);
   const stationLabel = (_velStation || '').toUpperCase();
-  document.getElementById('anim-time').textContent =
-    `${_fmtHHMM(d)} · ${stationLabel} VEL`;
+  const _vfAt = document.getElementById('anim-time');
+  if (_vfAt) _vfAt.textContent = `${_fmtHHMM(d)} · ${stationLabel} VEL`;
 }
 
 // ── NEXRAD SITE MARKERS ──
@@ -13668,11 +13666,6 @@ function _buildNexradSiteMarkers() {
         _buildVelPool(s.id, velFrames);
         showVelFrame(velCurrentFrame);
         _refreshNexradSiteStyles();
-      } else if (currentProduct === 'cc') {
-        _ccStation = s.id.toLowerCase();
-        map.setView([s.lat, s.lon], Math.max(map.getZoom(), 6));
-        loadCCData();
-        _refreshNexradSiteStyles();
       } else {
         map.setView([s.lat, s.lon], Math.max(map.getZoom(), 7));
       }
@@ -13688,8 +13681,7 @@ function _refreshNexradSiteStyles() {
   Object.keys(_nexradSiteMarkers).forEach(id => {
     const labelEl = document.getElementById(`nxlbl-${id}`);
     const isActive = (currentProduct === 'vel' && id === _velStation) ||
-                     (currentProduct === 'ref' && id === _refStation) ||
-                     (currentProduct === 'cc'  && id.toLowerCase() === _ccStation);
+                     (currentProduct === 'ref' && id === _refStation);
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
   });
 }
@@ -13881,8 +13873,7 @@ async function _loadSingleSiteRef(stationId) {
 
   // Update timeline
   const tl = document.getElementById('timeline');
-  tl.max   = _refSiteFrames.length - 1;
-  tl.value = _refSiteFrames.length - 1;
+  if (tl) { tl.max = _refSiteFrames.length - 1; tl.value = _refSiteFrames.length - 1; }
   currentFrame = _refSiteFrames.length - 1;
 
   const wrap = document.getElementById('timeline-labels');
@@ -13918,7 +13909,8 @@ function _showSingleSiteRefFrame(idx) {
   idx = Math.max(0, Math.min(_refSiteFrames.length - 1, idx));
   const prevIdx = currentFrame;
   currentFrame  = idx;
-  document.getElementById('timeline').value = idx;
+  const _ssTl = document.getElementById('timeline');
+  if (_ssTl) _ssTl.value = idx;
 
   // Clear any previous wait interval to avoid stale callbacks
   if (_refSiteTick) { clearInterval(_refSiteTick); _refSiteTick = null; }
@@ -17120,21 +17112,7 @@ function selectProduct(p) {
     _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _velLayerPool = []; _velPoolLoaded = [];
     if (velocityLayer) { try { map.removeLayer(velocityLayer); } catch(e){} velocityLayer = null; }
-    // Clean up CC if active
-      loadVelocityData();
-  } else if (p === 'cc') {
-    if (playing)     { clearInterval(playTimer);    playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
-    if (playingBack) { clearInterval(playBackTimer); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
-    // Hide reflectivity composite + single-site
-    _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
-    radarLayer = null;
-    activeLayers.nexrad = false;
-    // Clean up velocity
-    _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
-    _velLayerPool = []; _velPoolLoaded = [];
-    if (velocityLayer) { try { map.removeLayer(velocityLayer); } catch(e){} velocityLayer = null; }
-    // Clean up any previous CC
-      loadCCData();
+    loadVelocityData();
   } else if (p === 'ref') {
     if (velocityLayer) { map.removeLayer(velocityLayer); velocityLayer = null; }
     _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
@@ -17473,8 +17451,7 @@ function selectProduct(p) {
     GWCFC Radar<br>
     Data: NOAA · NWS · SPC · NHC<br>
     ADS-B: OpenSky Network (free)<br>
-    Tiles: MapTiler · OpenStreetMap<br>
-    Webcams: State DOT 511 Networks
+    Tiles: MapTiler · OpenStreetMap
   </div>
 </div>
 
@@ -17826,7 +17803,7 @@ function lqmSetTZ(tz) {
     </div>
   </div>
 
-  <p>The four square buttons in the top corners switch you between major weather <em>modes</em>. Each mode loads a different set of layers in the sidebar. Your overlays (lightning, cams, etc.) stay active across modes.</p>
+  <p>The four square buttons in the top corners switch you between major weather <em>modes</em>. Each mode loads a different set of layers in the sidebar. Your overlays (lightning, radio, etc.) stay active across modes.</p>
 
   <div class="ui-diagram">
     <div class="ui-diagram-title">Tab Icons , top-left and top-right corners</div>
@@ -17854,7 +17831,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">🌩</div>
       <div class="fc-title">REGULAR</div>
-      <p class="fc-body">The everyday tab. Access Radar (Reflectivity/Velocity), GOES Satellite (IR/Visible/Water Vapor), NWS Alerts, Wind barbs, Temp, Waves, and Pressure. Overlay pills add Lightning, Webcams, Radio, Forecast Dots, and Hurricane Hunters on top. Best for day-to-day monitoring.</p>
+      <p class="fc-body">The everyday tab. Access Radar (Reflectivity/Velocity), GOES Satellite (IR/Visible/Water Vapor), NWS Alerts, Wind barbs, Temp, Waves, and Pressure. Overlay pills add Lightning, Radio, Forecast Dots, and Hurricane Hunters on top. Best for day-to-day monitoring.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌀</div>
@@ -18018,10 +17995,6 @@ function lqmSetTZ(tz) {
         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);">Lightning</div>
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
-        <div class="overlay-pill-demo">📷</div>
-        <div style="font-family:var(--mono);font-size:9px;color:var(--muted);">Cams</div>
-      </div>
-      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
         <div class="overlay-pill-demo">📻</div>
         <div style="font-family:var(--mono);font-size:9px;color:var(--muted);">Radio</div>
       </div>
@@ -18047,13 +18020,9 @@ function lqmSetTZ(tz) {
       <p class="fc-body">Plots live lightning strike locations as they occur. Each strike appears as a small bolt. Also toggle <strong>LTG 30</strong> in the sidebar to show the last 30-minute history with fading intensity.</p>
     </div>
     <div class="feature-card">
-      <div class="fc-icon">📷</div>
-      <div class="fc-title">WEBCAMS</div>
-      <p class="fc-body">Places camera icons at webcam locations. Click any camera icon to open a floating panel with a live feed. <strong>EarthCam</strong> provides YouTube-powered live streams from around the world (city skylines, beaches, landmarks). <strong>WSDOT</strong> provides Pacific Northwest DOT traffic cameras with live snapshots. The camera panel is <strong>draggable</strong> , grab the title bar to reposition it anywhere on screen.</p>
-    </div>
-    <div class="feature-card">
       <div class="fc-icon">📻</div>
       <div class="fc-title">RADIO STATIONS</div>
+      <p class="fc-body">Places NOAA Weather Radio transmitter icons on the map. Click any station to see its call sign, frequency, transmitter location, and tune in to the live audio stream.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌥️</div>
@@ -18310,11 +18279,6 @@ function lqmSetTZ(tz) {
       <div class="fc-icon">🌥️</div>
       <div class="fc-title">FORECAST DOTS</div>
       <p class="fc-body">Click multiple forecast dots along a storm's projected path to quickly compare conditions , temperature, humidity, wind , ahead of the storm versus behind it.</p>
-    </div>
-    <div class="feature-card">
-      <div class="fc-icon">📷</div>
-      <div class="fc-title">WEBCAMS DURING EVENTS</div>
-      <p class="fc-body">During a tornado warning, check webcams in the warned area for actual visual confirmation. Many cams update every 30–60 seconds and can show wall clouds, funnel clouds, or surface conditions.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌊</div>
@@ -18935,7 +18899,7 @@ const RADAR_CATALOG = [
   // Tools
   { icon:'📖', label:'Tutorial',         type:'TOOL',   action:()=>openTutorial(),          kw:['tutorial','help','guide','how to'] },
   { icon:'⚙️', label:'Settings',         type:'TOOL',   action:()=>lqmOpenSettings(),       kw:['settings','options','config','preferences'] },
-  { icon:'🔍', label:'Search Location',  type:'TOOL',   action:()=>{ document.getElementById('auth-input-cred') && document.getElementById('lqm-search-input').focus(); }, kw:['search','find','go to'] },
+  { icon:'🔍', label:'Search Location',  type:'TOOL',   action:()=>{ const inp = document.getElementById('lqm-search-input'); if (inp) inp.focus(); }, kw:['search','find','go to'] },
   // Layers (informational)
   { icon:'📡', label:'NEXRAD Radar',     type:'LAYER',  action:()=>switchTab('regular'),    kw:['nexrad','radar','precip','precipitation'] },
   { icon:'🛰',  label:'GOES Satellite',  type:'LAYER',  action:()=>switchTab('regular'),    kw:['satellite','goes','infrared','visible'] },
