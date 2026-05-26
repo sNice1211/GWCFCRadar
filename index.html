@@ -9242,7 +9242,10 @@ function setRadarOpacity(val) {
     if (_radarPoolBuilt && _radarLayerPool[currentFrame]) _radarLayerPool[currentFrame].setOpacity(radarOpacity);
     if (_canadaPoolBuilt && _canadaLayerPool[currentFrame]) _canadaLayerPool[currentFrame].setOpacity(radarOpacity);
   }
-  if (_refStation && _refSitePool && _refSitePool[currentFrame]) _refSitePool[currentFrame].setOpacity(radarOpacity);
+  if (_refStation && _refSitePool.length) {
+    // Re-apply opacity to whichever single-site frame is currently visible
+    _refSitePool.forEach((l, i) => { if (l && l.options.opacity > 0) l.setOpacity(radarOpacity); });
+  }
   // radarLayer === _radarLayerPool[currentFrame] in composite mode — already updated above
 }
 
@@ -13975,7 +13978,7 @@ async function _loadSingleSiteRef(stationId) {
         version: '1.3.0', TIME: frame.iso,
         opacity: 0, zIndex: 12, pane: 'radarPane',
         crossOrigin: 'anonymous', noWrap: true,
-        keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
+        keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
         attribution: `${stationId.toUpperCase()} SR_BREF © NOAA Level III`,
       });
       _refSiteLoaded[i] = false;
@@ -14005,6 +14008,7 @@ async function _loadSingleSiteRef(stationId) {
         ...(isLatest ? {} : { year: yr, month: mo, day: dy, time: hhmm }),
         opacity: 0, zIndex: 12, pane: 'radarPane',
         crossOrigin: 'anonymous', noWrap: true,
+        keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
         attribution: `${stationId.toUpperCase()} N0Q © NOAA via IEM`,
       });
       _refSiteLoaded[i] = false;
@@ -14054,26 +14058,43 @@ async function _loadSingleSiteRef(stationId) {
 function _showSingleSiteRefFrame(idx) {
   if (!_refSitePool.length || !_refSiteFrames.length) return;
   idx = Math.max(0, Math.min(_refSiteFrames.length - 1, idx));
-  const prevIdx = currentFrame;
-  currentFrame  = idx;
+  currentFrame = idx;
   const _ssTl = document.getElementById('timeline');
   if (_ssTl) _ssTl.value = idx;
 
-  // Clear any previous wait interval to avoid stale callbacks
   if (_refSiteTick) { clearInterval(_refSiteTick); _refSiteTick = null; }
 
-  if (_refSiteLoaded[idx]) {
-    if (_refSitePool[prevIdx] && prevIdx !== idx) _refSitePool[prevIdx].setOpacity(0);
-    _refSitePool[idx].setOpacity(radarOpacity);
-  } else {
+  // Show nearest loaded frame as placeholder — single-site never goes blank
+  const findFallback = (target) => {
+    if (_refSiteLoaded[target] && _refSitePool[target]) return target;
+    for (let d = 1; d < _refSiteFrames.length; d++) {
+      const p = target - d;
+      if (p >= 0 && _refSiteLoaded[p] && _refSitePool[p]) return p;
+      const n = target + d;
+      if (n < _refSiteFrames.length && _refSiteLoaded[n] && _refSitePool[n]) return n;
+    }
+    return target; // nothing loaded yet (initial load)
+  };
+
+  const applyOpacity = (di) => {
+    _refSitePool.forEach((l, i) => { if (l) l.setOpacity(i === di ? radarOpacity : 0); });
+  };
+
+  const displayIdx = findFallback(idx);
+  applyOpacity(displayIdx);
+
+  if (displayIdx !== idx || !_refSiteLoaded[idx]) {
     const target = idx;
     let waited = 0;
     _refSiteTick = setInterval(() => {
       waited += 50;
-      if (_refSiteLoaded[target] || waited >= 2000) {
+      if (currentFrame !== target) { clearInterval(_refSiteTick); _refSiteTick = null; return; }
+      if (_refSiteLoaded[target] && _refSitePool[target]) {
         clearInterval(_refSiteTick); _refSiteTick = null;
-        if (_refSitePool[prevIdx] && prevIdx !== target) _refSitePool[prevIdx].setOpacity(0);
-        if (_refSitePool[target]) _refSitePool[target].setOpacity(radarOpacity);
+        applyOpacity(target);
+      } else if (waited >= 30000) {
+        clearInterval(_refSiteTick); _refSiteTick = null;
+        applyOpacity(target);
       }
     }, 50);
   }
