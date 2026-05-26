@@ -5898,15 +5898,7 @@ async function _fetchRainViewerFrames() {
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    // Primary: RainViewer — 512px retina tiles, native zoom 0-15, fast global CDN
-    // Fallback: IEM L3 tile cache (zoom 0-9 only, but reliable and NOAA-sourced)
-    let newFrames;
-    try {
-      newFrames = await _fetchRainViewerFrames();
-    } catch(rvErr) {
-      console.warn('RainViewer unavailable, falling back to IEM tile cache:', rvErr);
-      newFrames = _generateL3Frames(12);
-    }
+    const newFrames = _generateL3Frames(12);
 
     // Periodic refresh — sliding-window layer reuse.
     // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
@@ -6135,37 +6127,11 @@ function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const frame = radarFrames[i];
 
-  if (frame._rv) {
-    // RainViewer: 512×512 retina tiles, native zoom 0–15, immutable per timestamp.
-    // zoomOffset:-1 required by Leaflet when tileSize=512 so tile coords stay correct.
-    // Color scheme 6 = NEXRAD Level III palette (green→yellow→red like NWS radar).
-    const l = L.tileLayer(
-      `https://tilecache.rainviewer.com${frame.tileKey}/512/{z}/{x}/{y}/6/1_1.png`, {
-      opacity: 0, zIndex: 10, pane: 'radarPane',
-      noWrap: true, tileSize: 512, zoomOffset: -1,
-      maxNativeZoom: 15,
-      keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
-      attribution: 'Radar: © RainViewer',
-    });
-    l.on('tileload', () => {
-      if (!_radarLayerLoaded[i]) {
-        _radarLayerLoaded[i] = true;
-        _radarFramesReady++;
-        if (_radarFramesReady < radarFrames.length)
-          updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
-        else updateLoadStatus('');
-      }
-    });
-    _radarLayerLoaded[i] = false;
-    l.addTo(map);
-    _radarLayerPool[i] = l;
-    if (activeLayers.nexrad && i === currentFrame) l.setOpacity(radarOpacity);
-    return;
-  }
-
-  // IEM tile cache fallback (when RainViewer unavailable)
   if (_nexradCacheFailed) { _switchSlotToWms(i); return; }
 
+  // IEM pre-rendered tile cache — pure NOAA NEXRAD L3 data, served by Iowa Mesonet.
+  // maxNativeZoom:9 — tile cache only exists to z9. Above that Leaflet upscales the
+  // z9 tiles; imageRendering:pixelated keeps them crisp (sharp blocks, not blurry).
   const l = L.tileLayer(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     noWrap: true, tileSize: 256,
@@ -6174,6 +6140,7 @@ function _ensureNexradLayer(i) {
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
+    e.tile.style.imageRendering = 'pixelated'; // crisp at any zoom — never blurry
     if (!_radarLayerLoaded[i]) {
       _radarLayerLoaded[i] = true;
       _radarFramesReady++;
@@ -6181,7 +6148,6 @@ function _ensureNexradLayer(i) {
         updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
       else updateLoadStatus('');
     }
-    e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
   });
   l.on('tileerror', () => {
     if (!_nexradCacheFailed) {
