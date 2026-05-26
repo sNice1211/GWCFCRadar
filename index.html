@@ -5448,13 +5448,21 @@ function _hexToRgb(hex) {
   return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
 }
 
+// Single reusable canvas for pixel remapping — avoids allocating one per tile
+let _remapCanvas = null, _remapCtx = null;
+
 // Remap tile pixels: match each pixel to nearest NWS color, swap to custom color
 function _remapTileColors(tile) {
   if (!_customRadarColors) return;
   const w = tile.naturalWidth || 256, h = tile.naturalHeight || 256;
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!_remapCanvas) {
+    _remapCanvas = document.createElement('canvas');
+    _remapCtx = _remapCanvas.getContext('2d', { willReadFrequently: true });
+  }
+  if (_remapCanvas.width !== w) _remapCanvas.width = w;
+  if (_remapCanvas.height !== h) _remapCanvas.height = h;
+  const canvas = _remapCanvas;
+  const ctx = _remapCtx;
   try { ctx.drawImage(tile, 0, 0); } catch(e) { return; }
   const imgData = ctx.getImageData(0, 0, w, h);
   const px = imgData.data;
@@ -6090,7 +6098,8 @@ function _buildRadarPool() {
   _buildCanadaPool();
   try { _refreshPlayButtonsEnabled(); } catch(e){}
 
-  // Stagger background preload: current frame first, then others 80ms apart to avoid tile avalanche.
+  // Preload: current frame first, then ripple outward so adjacent frames load next.
+  // Layer creation is cheap; browser throttles actual tile fetches naturally.
   if (_radarPoolBuilt && radarFrames.length) {
     _ensureNexradLayer(currentFrame);
     const order = [];
@@ -6182,7 +6191,7 @@ function _ensureNexradLayer(i) {
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
-    e.tile.style.imageRendering = 'pixelated'; // crisp at any zoom — never blurry
+    e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
     if (!_radarLayerLoaded[i]) {
       _radarLayerLoaded[i] = true;
       _radarFramesReady++;
@@ -9208,17 +9217,16 @@ function setRadarOpacity(val) {
     if (_canadaPoolBuilt && _canadaLayerPool[currentFrame]) _canadaLayerPool[currentFrame].setOpacity(radarOpacity);
   }
   if (_refStation && _refSitePool && _refSitePool[currentFrame]) _refSitePool[currentFrame].setOpacity(radarOpacity);
-  if (radarLayer) radarLayer.setOpacity(radarOpacity);
+  // radarLayer === _radarLayerPool[currentFrame] in composite mode — already updated above
 }
 
 // ── SMOOTH TOGGLE ──
 function toggleSmooth() {
   smoothEnabled = !smoothEnabled;
   document.getElementById('rm-smooth').classList.toggle('active', smoothEnabled);
-  if (radarLayer) {
-    const canvas = document.querySelector('.leaflet-tile-container canvas');
-    // Leaflet tiles use image-rendering
-    document.querySelectorAll('.leaflet-tile').forEach(t => {
+  const radarPane = map.getPane('radarPane');
+  if (radarPane) {
+    radarPane.querySelectorAll('.leaflet-tile').forEach(t => {
       t.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
     });
   }
@@ -9611,7 +9619,7 @@ function showGoesFrame(idx) {
 function _disableRadar() {
   activeLayers.nexrad = false;
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
-  if (radarLayer) { try { map.removeLayer(radarLayer); } catch(e){} radarLayer = null; }
+  radarLayer = null; // layers already hidden by setOpacity(0) above; keep on map so re-enable works
   // Clean up velocity if active
   if (currentProduct === 'vel' || _velLayerPool.length) {
     _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
