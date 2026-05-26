@@ -5509,7 +5509,12 @@ function _remapTileColors(tile) {
   const canvas = _remapCanvas;
   const ctx = _remapCtx;
   try { ctx.drawImage(tile, 0, 0); } catch(e) { return; }
-  const imgData = ctx.getImageData(0, 0, w, h);
+  let imgData;
+  try { imgData = ctx.getImageData(0, 0, w, h); } catch(e) {
+    // SecurityError: CORS-tainted canvas (common on iOS Safari) — reset and skip remap
+    _remapCanvas = null; _remapCtx = null;
+    return;
+  }
   const px = imgData.data;
   const n = NWS_SOURCE_COLORS.length;
   const targets = _customRadarColors.map(_hexToRgb);
@@ -5660,6 +5665,9 @@ function _abortSignal(ms) {
   }
 }
 
+// iOS detection — used to tune keepBuffer and avoid canvas CORS crashes
+const _isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
 // ── INIT MAP ──
 function initMap() {
   map = L.map('map', {
@@ -5682,7 +5690,7 @@ function initMap() {
   const mtAttr = '© <a href="https://www.maptiler.com/">MapTiler</a> © <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
   const osmAttr = '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
 
-  const _mtOpts = { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, keepBuffer: 4, updateWhenZooming: true };
+  const _mtOpts = { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, keepBuffer: _isIOS ? 2 : 4, updateWhenZooming: true };
   const cartoDark  = L.tileLayer(`https://api.maptiler.com/maps/dataviz-dark/{z}/{x}/{y}.webp?key=${MT_KEY}`, _mtOpts);
   const cartoLight = L.tileLayer(`https://api.maptiler.com/maps/dataviz/{z}/{x}/{y}.webp?key=${MT_KEY}`,        _mtOpts);
   const satellite  = L.tileLayer(`https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MT_KEY}`,          _mtOpts);
@@ -5691,7 +5699,7 @@ function initMap() {
   // Fallback: only switch to OSM after 8+ MapTiler tile errors (avoids triggering on transient
   // network blips). A hard domain-restriction failure will hit this threshold quickly.
   const _osmFallback = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    { attribution: osmAttr, maxZoom: 19, noWrap: true, keepBuffer: 4 });
+    { attribution: osmAttr, maxZoom: 19, noWrap: true, keepBuffer: _isIOS ? 2 : 4 });
   let _mtFailed = false, _mtErrors = 0;
   [cartoDark, cartoLight, satellite, topo].forEach(layer => {
     layer.on('tileerror', () => {
@@ -6207,7 +6215,7 @@ function _switchSlotToWms(i) {
     version: '1.1.1', TIME: frame.iso,
     opacity: 0, zIndex: 10, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 256,
-    keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: false, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
@@ -6242,7 +6250,7 @@ function _ensureNexradLayer(i) {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     noWrap: true, tileSize: 256,
     maxNativeZoom: 9,
-    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: false, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
@@ -6279,7 +6287,7 @@ function _ensureCanadaLayer(i) {
     version: '1.1.1', TIME: iso,
     opacity: 0, zIndex: 11, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
-    keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: false, updateWhenZooming: false,
     detectRetina: false,
     attribution: 'Canada Radar © ECCC via Iowa Mesonet',
   });
@@ -11183,8 +11191,11 @@ function dismissLoading() {
 
 // ── STARTUP ──
 async function init() {
-  // Safety net: always dismiss after this long no matter what
-  const safetyTimer = setTimeout(dismissLoading, 12000);
+  const _initStart = Date.now();
+  const LOAD_MAX_MS = 50000;
+
+  // Safety net: always dismiss after 50s no matter what
+  const safetyTimer = setTimeout(dismissLoading, LOAD_MAX_MS);
 
   try {
     initMap();
@@ -11195,12 +11206,26 @@ async function init() {
   }
 
   updateLoadStatus('Loading radar + alerts…');
-  // Run radar init and alerts in parallel , saves ~1.5s on startup
+  // Let both run to completion — radar frames + tile layers start loading in parallel
   await Promise.allSettled([
-    Promise.race([loadNEXRAD(),      new Promise(r => setTimeout(r, 1000))]),
-    Promise.race([_doLoadAlerts(true), new Promise(r => setTimeout(r, 600))]),
+    loadNEXRAD().catch(e => console.warn('Radar init:', e)),
+    _doLoadAlerts(true).catch(e => console.warn('Alerts init:', e)),
   ]);
   _syncNexradSites();
+
+  // Wait for radar tiles to preload up to the 50s safety window
+  if (radarFrames.length > 0 && _radarPoolBuilt) {
+    await new Promise(resolve => {
+      const poll = () => {
+        if (_radarFramesReady >= radarFrames.length) { resolve(); return; }
+        const elapsed = Date.now() - _initStart;
+        if (elapsed >= LOAD_MAX_MS - 500) { resolve(); return; }
+        updateLoadStatus(`Preloading radar ${_radarFramesReady}/${radarFrames.length}…`);
+        setTimeout(poll, 150);
+      };
+      poll();
+    });
+  }
 
   clearTimeout(safetyTimer);
   updateLoadStatus('Ready.');
@@ -14601,21 +14626,64 @@ async function loadNWRStations() {
       return null;
     };
 
-    const [txRes, gwesRes, wxrRes, wusaData] = await Promise.all([
-      fetch('https://transmitters.weatherradio.org',     { signal: _abortSignal(20000) }).catch(() => null),
-      fetch('https://icestats.weatherradio.org',         { signal: _abortSignal(15000) }).catch(() => null),
-      fetch('https://wxradio.org/status-json.xsl',      { signal: _abortSignal(15000) }).catch(() => null),
+    // Fetch transmitter coords — direct first, then CORS proxies
+    const _fetchTx = async () => {
+      const url = 'https://transmitters.weatherradio.org';
+      const attempts = [
+        url,
+        'https://corsproxy.io/?' + encodeURIComponent(url),
+        'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+        'https://thingproxy.freeboard.io/fetch/' + url,
+      ];
+      for (const p of attempts) {
+        try {
+          const r = await fetch(p, { signal: _abortSignal(10000) });
+          if (!r.ok) continue;
+          const text = await r.text();
+          if (!text || text.trimStart().startsWith('<')) continue;
+          const d = JSON.parse(text);
+          if (d?.transmitters && Object.keys(d.transmitters).length > 0) {
+            console.log('[NWR] tx loaded via', p === url ? 'direct' : p.split('?')[0]);
+            return d.transmitters;
+          }
+        } catch(_) {}
+      }
+      console.warn('[NWR] transmitters: all attempts failed');
+      return {};
+    };
+
+    // Fetch Icecast stream list — direct first, then CORS proxies
+    const _fetchIce = async (url) => {
+      const attempts = [
+        url,
+        'https://corsproxy.io/?' + encodeURIComponent(url),
+        'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+        'https://thingproxy.freeboard.io/fetch/' + url,
+      ];
+      for (const p of attempts) {
+        try {
+          const r = await fetch(p, { signal: _abortSignal(10000) });
+          if (!r.ok) continue;
+          const text = await r.text();
+          if (!text || text.trimStart().startsWith('<')) continue;
+          const d = JSON.parse(text);
+          if (d?.icestats?.source) return d;
+        } catch(_) {}
+      }
+      return null;
+    };
+
+    const [txRaw, gwesData, wxrData, wusaData] = await Promise.all([
+      _fetchTx(),
+      _fetchIce('https://icestats.weatherradio.org'),
+      _fetchIce('https://wxradio.org/status-json.xsl'),
       _fetchWusa(),
     ]);
 
     const _iceArr = d => Array.isArray(d?.icestats?.source) ? d.icestats.source
                        : d?.icestats?.source ? [d.icestats.source] : [];
 
-    const txs = {};
-    if (txRes?.ok) {
-      const td = await txRes.json().catch(() => null);
-      if (td) Object.assign(txs, td.transmitters || {});
-    }
+    const txs = txRaw || {};
 
     // GWES mounts: /CALLSIGN or /CALLSIGN-alt1
     const _gwesCallsign = url => url.split('/').pop().replace(/-[Aa][Ll][Tt]\d*$/, '');
@@ -14629,24 +14697,18 @@ async function loadNWRStations() {
     };
 
     const gwesMap = new Map();
-    if (gwesRes?.ok) {
-      const gd = await gwesRes.json().catch(() => null);
-      _iceArr(gd).forEach(s => {
-        if (!s.listenurl) return;
-        const call = _gwesCallsign(s.listenurl);
-        if (!gwesMap.has(call)) gwesMap.set(call, { ...s, callsign: call });
-      });
-    }
+    _iceArr(gwesData).forEach(s => {
+      if (!s.listenurl) return;
+      const call = _gwesCallsign(s.listenurl);
+      if (!gwesMap.has(call)) gwesMap.set(call, { ...s, callsign: call });
+    });
 
     const wxrMap = new Map();
-    if (wxrRes?.ok) {
-      const wd = await wxrRes.json().catch(() => null);
-      _iceArr(wd).forEach(s => {
-        if (!s.listenurl) return;
-        const call = _wxrCallsign(s.listenurl);
-        if (!wxrMap.has(call)) wxrMap.set(call, { ...s, callsign: call });
-      });
-    }
+    _iceArr(wxrData).forEach(s => {
+      if (!s.listenurl) return;
+      const call = _wxrCallsign(s.listenurl);
+      if (!wxrMap.has(call)) wxrMap.set(call, { ...s, callsign: call });
+    });
 
     const wusaMap = new Map();
     _iceArr(wusaData).forEach(s => {
