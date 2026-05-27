@@ -5757,6 +5757,13 @@ function initMap() {
     // Re-assert current frame opacity immediately after zoom (tiles may have been
     // re-requested; opacity state is preserved but call ensures nothing slipped to 0)
     if (activeLayers.nexrad && _radarPoolBuilt) showFrame(currentFrame);
+    // Pre-warm tiles at the new zoom level AND the 3 levels below so the next
+    // zoom-out lands in cache instead of going to the wire. Only done for the
+    // current (visible) frame — background frames are warmed by the existing
+    // _buildRadarPool prefetch path.
+    if (radarFrames.length && radarFrames[currentFrame]) {
+      _prefetchRadarTiles(radarFrames[currentFrame].tileKey);
+    }
     // Debounce pool window rebuild 300ms to batch any new-slot creation
     clearTimeout(_zoomTimer);
     _zoomTimer = setTimeout(() => {
@@ -6256,24 +6263,25 @@ function _switchSlotToWms(i) {
   if (activeLayers.nexrad && i === currentFrame) l.setOpacity(radarOpacity);
 }
 
-// Pre-warm the browser HTTP cache + service-worker cache for all viewport tiles
-// of a given radar tileKey at the current zoom. Called before Leaflet creates
-// the layer so Leaflet's img requests are served from cache instead of the wire.
-function _prefetchRadarTiles(tileKey) {
+// Pre-warm browser HTTP cache + SW cache for tiles at a specific zoom level.
+// Uses map center + viewport size to compute the tile range that would be visible
+// at zoom z (different from current zoom when pre-warming for zoom-out/in).
+function _prefetchRadarTilesAtZoom(tileKey, z) {
   if (!map) return;
   try {
-    const z  = Math.min(map.getZoom(), 9); // IEM tile cache max native zoom
-    const b  = map.getBounds();
-    const n  = 1 << z;
-    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-    const tx = lng => clamp(Math.floor((lng + 180) / 360 * n), 0, n - 1);
-    const ty = lat => {
-      const r = lat * Math.PI / 180;
-      return clamp(Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n), 0, n - 1);
-    };
-    const x0 = tx(b.getWest()),  x1 = tx(b.getEast());
-    const y0 = Math.min(ty(b.getNorth()), ty(b.getSouth()));
-    const y1 = Math.max(ty(b.getNorth()), ty(b.getSouth()));
+    z = Math.min(Math.max(z, 2), 9); // IEM tile cache: z2–z9
+    const center  = map.getCenter();
+    const size    = map.getSize();
+    const crs     = map.options.crs;
+    const clamp   = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const nTiles  = 1 << z;
+    const centerPt = crs.latLngToPoint(center, z);
+    // 1 extra tile of padding per side so tiles are ready just before they're needed
+    const pad = 256;
+    const x0 = clamp(Math.floor((centerPt.x - size.x / 2 - pad) / 256), 0, nTiles - 1);
+    const x1 = clamp(Math.floor((centerPt.x + size.x / 2 + pad) / 256), 0, nTiles - 1);
+    const y0 = clamp(Math.floor((centerPt.y - size.y / 2 - pad) / 256), 0, nTiles - 1);
+    const y1 = clamp(Math.floor((centerPt.y + size.y / 2 + pad) / 256), 0, nTiles - 1);
     const base = `${IEM_TILE_BASE}${tileKey}/${z}/`;
     for (let x = x0; x <= x1; x++) {
       for (let y = y0; y <= y1; y++) {
@@ -6282,6 +6290,20 @@ function _prefetchRadarTiles(tileKey) {
       }
     }
   } catch(_) {}
+}
+
+// Pre-warm current zoom AND up to 3 zoom levels below so zoom-out transitions
+// hit the cache instead of the wire. Background zoom levels are staggered to
+// avoid competing with the current-zoom tiles.
+function _prefetchRadarTiles(tileKey) {
+  if (!map) return;
+  const curZ = Math.min(map.getZoom(), 9);
+  _prefetchRadarTilesAtZoom(tileKey, curZ);
+  // Stagger lower zoom levels 300 ms apart so they don't compete with current zoom
+  for (let dz = 1; dz <= 3; dz++) {
+    const z = curZ - dz;
+    if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z), dz * 300);
+  }
 }
 
 function _ensureNexradLayer(i) {
@@ -6302,12 +6324,11 @@ function _ensureNexradLayer(i) {
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
 
-  // Current frame = high priority (wins bandwidth), background frames = low
-  const _prio = (i === currentFrame) ? 'high' : 'low';
+  // Priority checked dynamically so seeked frames always get high priority
   const _origCT = l.createTile.bind(l);
   l.createTile = function(coords, done) {
     const tile = _origCT(coords, done);
-    tile.fetchPriority = _prio;
+    tile.fetchPriority = (i === currentFrame) ? 'high' : 'low';
     return tile;
   };
 
