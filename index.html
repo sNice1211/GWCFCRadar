@@ -6349,10 +6349,12 @@ function _ensureNexradLayer(i) {
     if (_radarFramesReady < radarFrames.length)
       updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
     else updateLoadStatus('');
-    // Reveal immediately if this is the frame being held at opacity-0 waiting for tiles
-    if (i === currentFrame && activeLayers.nexrad && _radarLayerPool[i]) {
-      _radarLayerPool[i].setOpacity(radarOpacity);
-      if (_canadaPoolBuilt && _canadaLayerPool[i]) _canadaLayerPool[i].setOpacity(radarOpacity);
+    // Reveal this frame and hide any fallback that was standing in for it.
+    // applyOpacity is local to showFrame so we inline the same logic here.
+    if (i === currentFrame && activeLayers.nexrad) {
+      _radarLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
+      if (_canadaPoolBuilt) _canadaLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
+      radarLayer = _radarLayerPool[i] || null;
     }
     try { _refreshPlayButtonsEnabled(); } catch(e) {}
   };
