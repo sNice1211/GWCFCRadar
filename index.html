@@ -6129,7 +6129,7 @@ function buildTimelineLabels() {
 const _radarLayerPool = [];   // L.tileLayer.wms per frame index
 let   _radarPoolBuilt = false;
 
-// Per-frame loaded flags , true once at least one tile has fired 'tileload'
+// Per-frame loaded flags — true once ALL viewport tiles for that frame have settled
 const _radarLayerLoaded = [];
 let _radarFramesReady = 0; // counts frames with ≥1 tile loaded; gates lag-free animation
 let _showFrameTick = null;  // stale-interval guard for showFrame wait-loop on unloaded frames
@@ -6138,7 +6138,8 @@ let _showFrameTick = null;  // stale-interval guard for showFrame wait-loop on u
 const IEM_TILE_BASE    = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
 const IEM_NEXRAD_WMS   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
 const IEM_NEXRAD_LAYER = 'nexrad-n0q-wmst';
-let _nexradCacheFailed = false; // set true on first tile error; in-place switch to WMS
+let _nexradCacheFailed  = false; // set true when IEM appears globally unreliable; future slots use WMS
+let _nexradWmsSlotCount = 0;    // how many individual slots switched to WMS; gates global failure
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
 const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
@@ -6157,6 +6158,7 @@ function _buildRadarPool() {
   _radarLayerLoaded.length = 0;
   _radarPoolBuilt = false;
   _radarFramesReady = 0;
+  _nexradWmsSlotCount = 0;
   _lastWindowS = -1; _lastWindowE = -1;
   for (let i = 0; i < radarFrames.length; i++) {
     _radarLayerPool[i] = null;
@@ -6167,25 +6169,24 @@ function _buildRadarPool() {
   try { _refreshPlayButtonsEnabled(); } catch(e){}
 
   if (_radarPoolBuilt && radarFrames.length) {
-    // Kick off a pre-fetch of viewport tiles for the most-recent frame so they
-    // land in the browser HTTP cache + service-worker cache before Leaflet even
-    // creates its img elements — turns the first tile paint from a network round-
-    // trip into a cache hit.
-    _prefetchRadarTiles(radarFrames[currentFrame].tileKey);
+    // Pre-warm browser HTTP cache + SW cache for ALL frames before Leaflet creates
+    // img elements — new Image() starts fetches immediately so Leaflet tile requests
+    // become cache hits instead of fresh network round-trips.
+    radarFrames.forEach(frame => _prefetchRadarTiles(frame.tileKey));
 
-    // Current frame: immediate — gets all 6 browser connections to IEM uncontested
+    // Current frame: immediate — highest priority, uncontested bandwidth
     _ensureNexradLayer(currentFrame);
 
-    // Other frames: staggered 400 ms later so they don't compete for bandwidth
-    // while the visible frame is loading.
-    const order = [];
+    // Adjacent frames (±1, ±2): 150 ms later so current-frame tiles win the first burst
+    // Far frames (±3+): 400 ms later so they don't compete with near-frame loading
+    const near = [], far = [];
     for (let d = 1; d < radarFrames.length; d++) {
-      const prev = currentFrame - d; if (prev >= 0) order.push(prev);
-      const next = currentFrame + d; if (next < radarFrames.length) order.push(next);
+      const arr = d <= 2 ? near : far;
+      const prev = currentFrame - d; if (prev >= 0) arr.push(prev);
+      const next = currentFrame + d; if (next < radarFrames.length) arr.push(next);
     }
-    setTimeout(() => {
-      order.forEach(i => { if (_radarPoolBuilt) _ensureNexradLayer(i); });
-    }, 400);
+    setTimeout(() => { near.forEach(i => { if (_radarPoolBuilt) _ensureNexradLayer(i); }); }, 150);
+    setTimeout(() => { far.forEach(i  => { if (_radarPoolBuilt) _ensureNexradLayer(i); }); }, 400);
   }
 }
 
@@ -6231,17 +6232,23 @@ function _switchSlotToWms(i) {
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
-    if (!_radarLayerLoaded[i]) {
-      _radarLayerLoaded[i] = true;
-      _radarFramesReady++;
-      if (_radarFramesReady < radarFrames.length)
-        updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
-      else updateLoadStatus('');
-      try { _refreshPlayButtonsEnabled(); } catch(e){}
-    }
     _remapTileColors(e.tile);
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
   });
+  // Wait for ALL WMS tiles in viewport before marking ready (same anti-half-loading fix)
+  let _wmsReadyTimer = null;
+  const _markWmsReady = () => {
+    if (_wmsReadyTimer) { clearTimeout(_wmsReadyTimer); _wmsReadyTimer = null; }
+    if (_radarLayerLoaded[i]) return;
+    _radarLayerLoaded[i] = true;
+    _radarFramesReady++;
+    if (_radarFramesReady < radarFrames.length)
+      updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
+    else updateLoadStatus('');
+    try { _refreshPlayButtonsEnabled(); } catch(e) {}
+  };
+  l.on('load', _markWmsReady);
+  _wmsReadyTimer = setTimeout(_markWmsReady, 10000); // WMS is slower, allow 10s
   _radarLayerLoaded[i] = false;
   l.addTo(map);
   _radarLayerPool[i] = l;
@@ -6283,44 +6290,67 @@ function _ensureNexradLayer(i) {
 
   if (_nexradCacheFailed) { _switchSlotToWms(i); return; }
 
-  // IEM pre-rendered tile cache — pure NOAA NEXRAD L3 data, served by Iowa Mesonet.
-  // maxNativeZoom:9 — tile cache only exists to z9. Above that Leaflet upscales the
-  // z9 tiles; imageRendering:pixelated keeps them crisp (sharp blocks, not blurry).
+  // IEM pre-rendered tile cache — NOAA NEXRAD L3 data via Iowa Mesonet.
+  // maxNativeZoom:9 — above z9 Leaflet upscales; pixelated keeps edges crisp.
+  // keepBuffer:2 — enough to pre-load one tile width around the viewport without
+  // flooding the browser queue with hundreds of off-screen tiles per frame.
   const l = L.tileLayer(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     noWrap: true, tileSize: 256,
     maxNativeZoom: 9,
-    keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: false, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: false, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
-  // Boost browser fetch priority for the visible frame so it wins bandwidth
-  // over the background frames being preloaded simultaneously.
-  if (i === currentFrame) {
-    const _origCT = l.createTile.bind(l);
-    l.createTile = function(coords, done) {
-      const tile = _origCT(coords, done);
-      tile.fetchPriority = 'high';
-      return tile;
-    };
-  }
+
+  // Current frame = high priority (wins bandwidth), background frames = low
+  const _prio = (i === currentFrame) ? 'high' : 'low';
+  const _origCT = l.createTile.bind(l);
+  l.createTile = function(coords, done) {
+    const tile = _origCT(coords, done);
+    tile.fetchPriority = _prio;
+    return tile;
+  };
+
+  // Apply image rendering per tile as they arrive
   l.on('tileload', (e) => {
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
-    if (!_radarLayerLoaded[i]) {
-      _radarLayerLoaded[i] = true;
-      _radarFramesReady++;
-      if (_radarFramesReady < radarFrames.length)
-        updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
-      else updateLoadStatus('');
-      try { _refreshPlayButtonsEnabled(); } catch(e){}
-    }
   });
+
+  // Mark frame ready only when ALL viewport tiles have settled (loaded or errored).
+  // Using the layer 'load' event instead of the first 'tileload' prevents revealing
+  // a partially-painted frame with empty tile gaps.
+  let _readyTimer = null;
+  const _markFrameReady = () => {
+    if (_readyTimer) { clearTimeout(_readyTimer); _readyTimer = null; }
+    if (_radarLayerLoaded[i]) return;
+    _radarLayerLoaded[i] = true;
+    _radarFramesReady++;
+    if (_radarFramesReady < radarFrames.length)
+      updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
+    else updateLoadStatus('');
+    try { _refreshPlayButtonsEnabled(); } catch(e) {}
+  };
+
+  l.on('load', _markFrameReady);
+  // Safety: mark ready after 6 s so animation is never blocked by a stalled tile
+  _readyTimer = setTimeout(_markFrameReady, 6000);
+
+  // Per-slot error handling — only switch THIS slot to WMS after 3 errors.
+  // The old approach (switch all slots on the first error) caused a single 404
+  // to immediately replace all fast tile-cache layers with slow WMS.
+  let _slotErrCount = 0;
   l.on('tileerror', () => {
-    if (!_nexradCacheFailed) {
-      _nexradCacheFailed = true;
-      radarFrames.forEach((_, j) => _switchSlotToWms(j));
-      if (activeLayers.nexrad) showFrame(currentFrame);
+    _slotErrCount++;
+    if (_slotErrCount >= 3 && !_radarLayerLoaded[i]) {
+      if (_readyTimer) { clearTimeout(_readyTimer); _readyTimer = null; }
+      _nexradWmsSlotCount++;
+      // If 5+ slots have failed, IEM appears globally down — use WMS for all future slots
+      if (_nexradWmsSlotCount >= 5) _nexradCacheFailed = true;
+      _switchSlotToWms(i);
+      if (activeLayers.nexrad && i === currentFrame) showFrame(currentFrame);
     }
   });
+
   _radarLayerLoaded[i] = false;
   l.addTo(map);
   _radarLayerPool[i] = l;
