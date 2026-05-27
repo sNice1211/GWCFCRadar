@@ -6795,8 +6795,8 @@ async function _doLoadAlerts(forceRender) {
   updateLoadStatus('Intercepting severe weather alerts…');
   try {
     const [activeRes, pastRes] = await Promise.all([
-      fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert'),
-      fetch('https://api.weather.gov/alerts?status=actual&message_type=alert&severity=Extreme,Severe,Moderate&limit=100')
+      fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert', { signal: _abortSignal(15000) }),
+      fetch('https://api.weather.gov/alerts?status=actual&message_type=alert&severity=Extreme,Severe,Moderate&limit=100', { signal: _abortSignal(15000) })
     ]);
     const [activeData, pastData] = await Promise.all([activeRes.json(), pastRes.json()]);
     const activeFeatures = activeData.features || [];
@@ -11050,11 +11050,12 @@ function dismissLoading() {
 
 // ── STARTUP ──
 async function init() {
-  const _initStart = Date.now();
-  const LOAD_MAX_MS = 50000;
+  const _initStart   = Date.now();
+  const PRELOAD_MAX_MS  = 20000; // max time waiting for radar tile preload
+  const PRELOAD_STALE_MS = 8000; // bail if no new tile arrives within this window
+  const SAFETY_MS    = 25000;   // hard dismiss regardless
 
-  // Safety net: always dismiss after 50s no matter what
-  const safetyTimer = setTimeout(dismissLoading, LOAD_MAX_MS);
+  const safetyTimer = setTimeout(dismissLoading, SAFETY_MS);
 
   try {
     initMap();
@@ -11065,20 +11066,29 @@ async function init() {
   }
 
   updateLoadStatus('Loading radar + alerts…');
-  // Let both run to completion — radar frames + tile layers start loading in parallel
   await Promise.allSettled([
     loadNEXRAD().catch(e => console.warn('Radar init:', e)),
     _doLoadAlerts(true).catch(e => console.warn('Alerts init:', e)),
   ]);
   _syncNexradSites();
 
-  // Wait for radar tiles to preload up to the 50s safety window
+  // Wait for radar tiles to preload, but cap at PRELOAD_MAX_MS and bail early
+  // if no new tile has loaded for PRELOAD_STALE_MS (network stall / errors).
   if (radarFrames.length > 0 && _radarPoolBuilt) {
     await new Promise(resolve => {
+      let lastReady = _radarFramesReady;
+      let staleMs   = 0;
       const poll = () => {
         if (_radarFramesReady >= radarFrames.length) { resolve(); return; }
         const elapsed = Date.now() - _initStart;
-        if (elapsed >= LOAD_MAX_MS - 500) { resolve(); return; }
+        if (elapsed >= PRELOAD_MAX_MS) { resolve(); return; }
+        if (_radarFramesReady !== lastReady) {
+          lastReady = _radarFramesReady;
+          staleMs   = 0;
+        } else {
+          staleMs += 150;
+          if (staleMs >= PRELOAD_STALE_MS) { resolve(); return; }
+        }
         updateLoadStatus(`Preloading radar ${_radarFramesReady}/${radarFrames.length}…`);
         setTimeout(poll, 150);
       };
