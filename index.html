@@ -11050,10 +11050,8 @@ function dismissLoading() {
 
 // ── STARTUP ──
 async function init() {
-  const _initStart   = Date.now();
-  const PRELOAD_MAX_MS  = 20000; // max time waiting for radar tile preload
-  const PRELOAD_STALE_MS = 8000; // bail if no new tile arrives within this window
-  const SAFETY_MS    = 25000;   // hard dismiss regardless
+  const _initStart = Date.now();
+  const SAFETY_MS  = 10000; // absolute hard dismiss after 10 s
 
   const safetyTimer = setTimeout(dismissLoading, SAFETY_MS);
 
@@ -11065,31 +11063,22 @@ async function init() {
     console.warn('Map init error:', e);
   }
 
-  updateLoadStatus('Loading radar + alerts…');
-  await Promise.allSettled([
-    loadNEXRAD().catch(e => console.warn('Radar init:', e)),
-    _doLoadAlerts(true).catch(e => console.warn('Alerts init:', e)),
-  ]);
+  // loadNEXRAD is effectively synchronous (no awaits inside) — completes in < 100 ms.
+  // _doLoadAlerts runs in the background; we don't block the loading screen on it.
+  updateLoadStatus('Loading radar…');
+  try { loadNEXRAD(); } catch(e) { console.warn('Radar init:', e); }
   _syncNexradSites();
+  _doLoadAlerts(true).catch(e => console.warn('Alerts init:', e));
 
-  // Wait for radar tiles to preload, but cap at PRELOAD_MAX_MS and bail early
-  // if no new tile has loaded for PRELOAD_STALE_MS (network stall / errors).
+  // Wait until the current radar frame has at least one tile, or bail after 8 s with no progress.
   if (radarFrames.length > 0 && _radarPoolBuilt) {
     await new Promise(resolve => {
-      let lastReady = _radarFramesReady;
-      let staleMs   = 0;
+      let staleMs = 0;
       const poll = () => {
-        if (_radarFramesReady >= radarFrames.length) { resolve(); return; }
-        const elapsed = Date.now() - _initStart;
-        if (elapsed >= PRELOAD_MAX_MS) { resolve(); return; }
-        if (_radarFramesReady !== lastReady) {
-          lastReady = _radarFramesReady;
-          staleMs   = 0;
-        } else {
-          staleMs += 150;
-          if (staleMs >= PRELOAD_STALE_MS) { resolve(); return; }
-        }
-        updateLoadStatus(`Preloading radar ${_radarFramesReady}/${radarFrames.length}…`);
+        if (_radarFramesReady > 0) { resolve(); return; }
+        staleMs += 150;
+        if (staleMs >= 8000) { resolve(); return; }
+        updateLoadStatus(`Loading radar…`);
         setTimeout(poll, 150);
       };
       poll();
@@ -11101,13 +11090,11 @@ async function init() {
   dismissLoading();
   (window.requestIdleCallback || setTimeout)(initCityMarkers, { timeout: 500 });
 
-  // Sync overlay bar pill active states on startup
   ['lightning','radio','forecasts'].forEach(id => {
     const pill = document.getElementById('op-' + id);
     if (pill) pill.classList.toggle('active', !!activeLayers[id]);
   });
 
-  // Refresh alerts every 60s, radar every 5min
   setInterval(() => { try { loadAlerts(); } catch(e){} }, 60000);
   setInterval(() => { try { loadNEXRAD(); } catch(e){} }, 300000);
 }
