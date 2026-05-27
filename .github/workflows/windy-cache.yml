@@ -11,6 +11,8 @@ permissions:
 jobs:
   cache:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - uses: actions/checkout@v4
 
@@ -18,45 +20,43 @@ jobs:
         id: fetch
         run: |
           KEY="ttZyJ5dX6DjlG7EVDDvlh3PTKpKs1RsM"
-          # Continental US bounding box, 500 cameras
-          # Origin + Referer headers satisfy Windy's domain allowlist check
           STATUS=$(curl -s -o /tmp/windy_raw.json -w "%{http_code}" \
-            -H "Origin: https://ralphhtml.github.io" \
-            -H "Referer: https://ralphhtml.github.io/GWCFCRadar/" \
+            -H "Origin: https://gwcfc.net" \
+            -H "Referer: https://gwcfc.net/" \
             "https://api.windy.com/api/webcams/v3/webcams?key=${KEY}&bbox=24.0,-125.0,50.0,-66.0&limit=500&include=location,images,urls")
           echo "HTTP status: $STATUS"
+          echo "--- Response ---"
+          cat /tmp/windy_raw.json | head -c 800
           echo "status=$STATUS" >> $GITHUB_OUTPUT
-          cat /tmp/windy_raw.json | head -c 500
 
       - name: Validate and save
         if: steps.fetch.outputs.status == '200'
         run: |
           python3 - <<'EOF'
-          import json, sys
+          import json
           with open('/tmp/windy_raw.json') as f:
               d = json.load(f)
           cams = d.get('webcams', [])
-          print(f"Got {len(cams)} webcams, total={d.get('total','?')}")
-          # Strip heavy fields to keep file small
+          print(f"Got {len(cams)} webcams")
           slim = []
           for c in cams:
-              loc = c.get('location', {})
+              loc  = c.get('location', {})
               imgs = c.get('images', {}).get('current', {})
               slim.append({
-                  'id': c.get('webcamId') or c.get('id'),
-                  'title': c.get('title',''),
-                  'lat': loc.get('latitude'),
-                  'lon': loc.get('longitude'),
-                  'city': loc.get('city',''),
-                  'region': loc.get('region',''),
-                  'country': loc.get('country',''),
-                  'thumb': imgs.get('thumbnail','') or imgs.get('preview',''),
-                  'preview': imgs.get('preview',''),
-                  'detail': (c.get('urls') or {}).get('detail',''),
+                  'id':      c.get('webcamId') or c.get('id'),
+                  'title':   c.get('title', ''),
+                  'lat':     loc.get('latitude'),
+                  'lon':     loc.get('longitude'),
+                  'city':    loc.get('city', ''),
+                  'region':  loc.get('region', ''),
+                  'country': loc.get('country', ''),
+                  'thumb':   imgs.get('thumbnail', '') or imgs.get('preview', ''),
+                  'preview': imgs.get('preview', ''),
+                  'detail':  (c.get('urls') or {}).get('detail', ''),
               })
           out = {'webcams': slim, 'total': len(slim), 'cached_at': __import__('datetime').datetime.utcnow().isoformat()+'Z'}
           with open('windy-webcams.json', 'w') as f:
-              json.dump(out, f, separators=(',',':'))
+              json.dump(out, f, separators=(',', ':'))
           print(f"Wrote {len(slim)} webcams to windy-webcams.json")
           EOF
 
