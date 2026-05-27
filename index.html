@@ -4452,6 +4452,19 @@ footer {
 }
 .lqm-settings-btn:hover { background: rgba(220,0,0,0.18); border-color: rgba(220,0,0,0.7); }
 
+/* ── MY LOCATION DOT ── */
+.my-location-dot {
+  width: 14px; height: 14px; background: #1a8fff;
+  border: 2.5px solid #fff; border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(26,143,255,0.5);
+  animation: loc-pulse 2s ease-out infinite;
+}
+@keyframes loc-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(26,143,255,0.5); }
+  70%  { box-shadow: 0 0 0 10px rgba(26,143,255,0); }
+  100% { box-shadow: 0 0 0 0   rgba(26,143,255,0); }
+}
+
 /* ── CROSSHAIR ── */
 body.gwcfc-crosshair #map { cursor: crosshair !important; }
 body.gwcfc-crosshair #map::after {
@@ -11165,6 +11178,63 @@ function locateUser() {
       radius: 8, fillColor: '#1a8fff', color: '#fff', weight: 2, fillOpacity: 0.9
     }).addTo(map).bindPopup('Your location').openPopup();
   });
+}
+
+// ── LIVE LOCATION TRACKING ──
+let _locWatchId = null, _locMarker = null, _locCircle = null, _locFollow = false;
+
+function _startLocationTracking() {
+  if (!navigator.geolocation) {
+    const cb = document.getElementById('lqm-set-location');
+    if (cb) cb.checked = false;
+    return;
+  }
+  _locWatchId = navigator.geolocation.watchPosition(pos => {
+    const { latitude: lat, longitude: lng, accuracy: acc } = pos.coords;
+    const ll = [lat, lng];
+    if (!_locMarker) {
+      const icon = L.divIcon({
+        className: '', html: '<div class="my-location-dot"></div>',
+        iconSize: [14, 14], iconAnchor: [7, 7],
+      });
+      _locMarker = L.marker(ll, { icon, zIndexOffset: 2000 })
+        .bindPopup(`📍 Your location<br><span style="font-size:10px;color:#aaa">±${Math.round(acc)} m accuracy</span>`)
+        .addTo(map);
+      _locCircle = L.circle(ll, {
+        radius: acc, color: '#1a8fff', fillColor: '#1a8fff',
+        fillOpacity: 0.08, weight: 1, opacity: 0.25, interactive: false,
+      }).addTo(map);
+      const row = document.getElementById('lqm-follow-row');
+      if (row) row.style.display = '';
+      map.setView(ll, Math.max(map.getZoom(), 8));
+      try { localStorage.setItem('gwcfc_location', '1'); } catch(e) {}
+    } else {
+      _locMarker.setLatLng(ll);
+      _locMarker.setPopupContent(`📍 Your location<br><span style="font-size:10px;color:#aaa">±${Math.round(acc)} m accuracy</span>`);
+      _locCircle.setLatLng(ll);
+      _locCircle.setRadius(acc);
+    }
+    if (_locFollow) map.panTo(ll);
+  }, err => {
+    if (err.code === 1) { // PERMISSION_DENIED
+      _stopLocationTracking();
+      const cb = document.getElementById('lqm-set-location');
+      if (cb) cb.checked = false;
+      try { localStorage.removeItem('gwcfc_location'); } catch(e) {}
+    }
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+}
+
+function _stopLocationTracking() {
+  if (_locWatchId !== null) { navigator.geolocation.clearWatch(_locWatchId); _locWatchId = null; }
+  if (_locMarker) { try { map.removeLayer(_locMarker); } catch(e) {} _locMarker = null; }
+  if (_locCircle) { try { map.removeLayer(_locCircle); } catch(e) {} _locCircle = null; }
+  _locFollow = false;
+  const followCb = document.getElementById('lqm-set-follow');
+  if (followCb) followCb.checked = false;
+  const followRow = document.getElementById('lqm-follow-row');
+  if (followRow) followRow.style.display = 'none';
+  try { localStorage.removeItem('gwcfc_location'); } catch(e) {}
 }
 
 // ── FULLSCREEN ──
@@ -18122,6 +18192,24 @@ function selectProduct(p) {
       <div class="lqm-toggle-knob"></div>
     </label>
   </div>
+  <!-- ─── LOCATION ─── -->
+  <div class="lqm-settings-category">LOCATION</div>
+  <div class="lqm-settings-row">
+    <span class="lqm-settings-lbl">Track My Location</span>
+    <label class="lqm-toggle">
+      <input type="checkbox" id="lqm-set-location" onchange="lqmToggleSetting('location',this.checked)">
+      <div class="lqm-toggle-track"></div>
+      <div class="lqm-toggle-knob"></div>
+    </label>
+  </div>
+  <div class="lqm-settings-row" id="lqm-follow-row" style="display:none;">
+    <span class="lqm-settings-lbl">Follow Me</span>
+    <label class="lqm-toggle">
+      <input type="checkbox" id="lqm-set-follow" onchange="lqmToggleSetting('follow',this.checked)">
+      <div class="lqm-toggle-track"></div>
+      <div class="lqm-toggle-knob"></div>
+    </label>
+  </div>
   <!-- ─── ALERTS ─── -->
   <div class="lqm-settings-category">ALERTS</div>
   <div class="lqm-settings-row">
@@ -18375,6 +18463,12 @@ function lqmOpenSettings() {
   if (mtSel) mtSel.value = currentMapType;
   const tzSel = document.getElementById('lqm-set-tz');
   if (tzSel) tzSel.value = _appTZ;
+  const locCb = document.getElementById('lqm-set-location');
+  if (locCb) locCb.checked = (_locWatchId !== null);
+  const followRow = document.getElementById('lqm-follow-row');
+  if (followRow) followRow.style.display = _locMarker ? '' : 'none';
+  const followCb = document.getElementById('lqm-set-follow');
+  if (followCb) followCb.checked = _locFollow;
 }
 function lqmCloseSettings() {
   const el = document.getElementById('lqm-settings-overlay');
@@ -18397,6 +18491,11 @@ function lqmToggleSetting(key, val) {
     document.querySelectorAll('.nexrad-label').forEach(el => {
       el.style.display = val ? '' : 'none';
     });
+  } else if (key === 'location') {
+    if (val) _startLocationTracking(); else _stopLocationTracking();
+  } else if (key === 'follow') {
+    _locFollow = val;
+    if (val && _locMarker) map.panTo(_locMarker.getLatLng());
   }
 }
 function lqmSetTZ(tz) {
@@ -19900,6 +19999,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(e) {}
     // Add scale control by default
     if (!window._scaleCtrl && window.map) { window._scaleCtrl = L.control.scale({imperial:true,metric:true}).addTo(map); }
+    // Auto-resume location tracking if it was enabled last session
+    try {
+      if (localStorage.getItem('gwcfc_location') === '1') _startLocationTracking();
+    } catch(e) {}
   }, 1500);
 });
 
