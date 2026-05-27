@@ -6180,7 +6180,7 @@ function _buildRadarPool() {
     // Pre-warm browser HTTP cache + SW cache for ALL frames before Leaflet creates
     // img elements — new Image() starts fetches immediately so Leaflet tile requests
     // become cache hits instead of fresh network round-trips.
-    radarFrames.forEach(frame => _prefetchRadarTiles(frame.tileKey));
+    radarFrames.forEach((frame, i) => _prefetchRadarTiles(frame.tileKey, i === currentFrame));
 
     // Current frame: immediate — highest priority, uncontested bandwidth
     _ensureNexradLayer(currentFrame);
@@ -6267,18 +6267,18 @@ function _switchSlotToWms(i) {
 // Pre-warm browser HTTP cache + SW cache for tiles at a specific zoom level.
 // Uses map center + viewport size to compute the tile range that would be visible
 // at zoom z (different from current zoom when pre-warming for zoom-out/in).
-function _prefetchRadarTilesAtZoom(tileKey, z) {
+// priority: 'high' for the current frame's tiles, 'low' otherwise.
+function _prefetchRadarTilesAtZoom(tileKey, z, priority) {
   if (!map) return;
   try {
     z = Math.min(Math.max(z, 2), 9); // IEM tile cache: z2–z9
-    const center  = map.getCenter();
-    const size    = map.getSize();
-    const crs     = map.options.crs;
-    const clamp   = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-    const nTiles  = 1 << z;
+    const center   = map.getCenter();
+    const size     = map.getSize();
+    const crs      = map.options.crs;
+    const clamp    = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const nTiles   = 1 << z;
     const centerPt = crs.latLngToPoint(center, z);
-    // 1 extra tile of padding per side so tiles are ready just before they're needed
-    const pad = 256;
+    const pad = 256; // 1 extra tile of padding per side
     const x0 = clamp(Math.floor((centerPt.x - size.x / 2 - pad) / 256), 0, nTiles - 1);
     const x1 = clamp(Math.floor((centerPt.x + size.x / 2 + pad) / 256), 0, nTiles - 1);
     const y0 = clamp(Math.floor((centerPt.y - size.y / 2 - pad) / 256), 0, nTiles - 1);
@@ -6287,6 +6287,7 @@ function _prefetchRadarTilesAtZoom(tileKey, z) {
     for (let x = x0; x <= x1; x++) {
       for (let y = y0; y <= y1; y++) {
         const img = new Image();
+        if (priority) img.fetchPriority = priority;
         img.src = base + `${x}/${y}.png`;
       }
     }
@@ -6294,16 +6295,14 @@ function _prefetchRadarTilesAtZoom(tileKey, z) {
 }
 
 // Pre-warm current zoom AND up to 3 zoom levels below so zoom-out transitions
-// hit the cache instead of the wire. Background zoom levels are staggered to
-// avoid competing with the current-zoom tiles.
-function _prefetchRadarTiles(tileKey) {
+// hit the cache instead of the wire. isCurrentFrame=true → high-priority fetches.
+function _prefetchRadarTiles(tileKey, isCurrentFrame) {
   if (!map) return;
   const curZ = Math.min(map.getZoom(), 9);
-  _prefetchRadarTilesAtZoom(tileKey, curZ);
-  // Stagger lower zoom levels 300 ms apart so they don't compete with current zoom
+  _prefetchRadarTilesAtZoom(tileKey, curZ, isCurrentFrame ? 'high' : 'low');
   for (let dz = 1; dz <= 3; dz++) {
     const z = curZ - dz;
-    if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z), dz * 300);
+    if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z, 'low'), dz * 300);
   }
 }
 
@@ -6350,6 +6349,11 @@ function _ensureNexradLayer(i) {
     if (_radarFramesReady < radarFrames.length)
       updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
     else updateLoadStatus('');
+    // Reveal immediately if this is the frame being held at opacity-0 waiting for tiles
+    if (i === currentFrame && activeLayers.nexrad && _radarLayerPool[i]) {
+      _radarLayerPool[i].setOpacity(radarOpacity);
+      if (_canadaPoolBuilt && _canadaLayerPool[i]) _canadaLayerPool[i].setOpacity(radarOpacity);
+    }
     try { _refreshPlayButtonsEnabled(); } catch(e) {}
   };
 
@@ -6492,12 +6496,15 @@ function showFrame(idx) {
     // Cancel any prior wait loop (user seeked past unloaded frame before it loaded)
     if (_showFrameTick) { clearInterval(_showFrameTick); _showFrameTick = null; }
 
-    // Paint a specific display index (may differ from idx while target tiles load)
-    const applyOpacity = (di) => {
-      _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === di ? radarOpacity : 0); });
+    // Paint a specific display index. Only show at full opacity when all tiles are
+    // loaded — prevents the checkerboard "tiles loading one-by-one" appearance.
+    // force=true bypasses the check (used for 30s timeout fallback).
+    const applyOpacity = (di, force) => {
+      const op = (force || _radarLayerLoaded[di]) ? radarOpacity : 0;
+      _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === di ? op : 0); });
       radarLayer = _radarLayerPool[di] || null;
       if (_canadaPoolBuilt) {
-        _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === di ? radarOpacity : 0); });
+        _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === di ? op : 0); });
       }
     };
 
@@ -6531,7 +6538,7 @@ function showFrame(idx) {
           applyOpacity(target);
         } else if (waited >= 30000) {
           clearInterval(_showFrameTick); _showFrameTick = null;
-          applyOpacity(target); // last resort after 30s
+          applyOpacity(target, true); // force-reveal after 30s — show whatever tiles arrived
         }
       }, 50);
     }
@@ -9557,48 +9564,41 @@ function toggleSmooth() {
 // GOES satellite: 12 × 10-min frames, 60-s auto-refresh with cache-bust.
 // Pattern ported from wms_satellite_3.js: pending guard, hide-by-opacity, force-redraw on refresh.
 
-// Products — IEM WMS channel suffix (ch) + NASA GIBS layer name (gibsLayer) per product.
+// Products — IEM WMS channel suffix per product type.
 const GOES_PRODUCTS = [
-  { id: 'ir',  label: 'IR',          ch: 'ch13', gibsLayer: 'Himawari_AHI_Band13_Clean_Infrared'              },
-  { id: 'vis', label: 'Visible',     ch: 'ch02', gibsLayer: 'Himawari_AHI_Band3_Red_Visible_1km', note: 'Daytime only' },
-  { id: 'wv',  label: 'Water Vapor', ch: 'ch09', gibsLayer: 'Himawari_AHI_Band8_Upper_Level_Water_Vapor_2km'  },
+  { id: 'ir',  label: 'IR',          ch: 'ch13' },
+  { id: 'vis', label: 'Visible',     ch: 'ch02', note: 'Daytime only' },
+  { id: 'wv',  label: 'Water Vapor', ch: 'ch09' },
 ];
 
-// Shared WMS base URLs (also referenced inside _detectGoesConfig).
-const _GOES_E    = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
-const _GOES_W    = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
-const _GIBS_WMS  = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi';
+// Shared WMS base URLs.
+const _GOES_E = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
+const _GOES_W = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
 
-// Regions — WMS endpoint + layer prefix, or source:'gibs' for NASA GIBS (Himawari).
-// Layer name = prefix + '_' + ch  (IEM) or product.gibsLayer (GIBS).
+// Regions — IEM WMS endpoint + layer-name prefix.
+// Layer name = prefix + '_' + ch from the active product.
 const GOES_REGIONS = [
-  { id: 'auto',      label: 'Auto',          url: null,     prefix: null          },
-  { id: 'east',      label: 'East CONUS',    url: _GOES_E,  prefix: 'conus'       },
-  { id: 'west',      label: 'West CONUS',    url: _GOES_W,  prefix: 'conus'       },
-  { id: 'alaska',    label: 'Alaska',        url: _GOES_W,  prefix: 'alaska'      },
-  { id: 'hawaii',    label: 'Hawaii',        url: _GOES_W,  prefix: 'hawaii'      },
-  { id: 'caribbean', label: 'Caribbean',     url: _GOES_E,  prefix: 'puertorico'  },
-  { id: 'atlantic',  label: 'Atlantic',      url: _GOES_E,  prefix: 'fulldisk'    },
-  { id: 'efulldisk', label: 'E. Full Disk',  url: _GOES_E,  prefix: 'fulldisk'    },
-  { id: 'wfulldisk', label: 'W. Full Disk',  url: _GOES_W,  prefix: 'fulldisk'    },
-  { id: 'himawari',  label: 'Himawari',      source: 'gibs'                       },
+  { id: 'auto',      label: 'Auto',          url: null,    prefix: null         },
+  { id: 'east',      label: 'East CONUS',    url: _GOES_E, prefix: 'conus'      },
+  { id: 'west',      label: 'West CONUS',    url: _GOES_W, prefix: 'conus'      },
+  { id: 'alaska',    label: 'Alaska',        url: _GOES_W, prefix: 'alaska'     },
+  { id: 'hawaii',    label: 'Hawaii',        url: _GOES_W, prefix: 'hawaii'     },
+  { id: 'caribbean', label: 'Caribbean',     url: _GOES_E, prefix: 'puertorico' },
+  { id: 'efulldisk', label: 'E. Full Disk',  url: _GOES_E, prefix: 'fulldisk'   },
+  { id: 'wfulldisk', label: 'W. Full Disk',  url: _GOES_W, prefix: 'fulldisk'   },
 ];
 
 let _goesRegionId  = 'auto'; // 'auto' or a GOES_REGIONS id
 let _goesProductId = 'ir';   // a GOES_PRODUCTS id
 
-// Build { url, layer, source? } for the current product + region combination.
+// Build { url, layer } for the current product + region combination.
 function _detectGoesConfig() {
   const product = GOES_PRODUCTS.find(p => p.id === _goesProductId) || GOES_PRODUCTS[0];
   const ch = product.ch;
 
   // Manual region override
   const override = GOES_REGIONS.find(r => r.id === _goesRegionId && r.id !== 'auto');
-  if (override) {
-    if (override.source === 'gibs')
-      return { url: _GIBS_WMS, layer: product.gibsLayer || null, source: 'gibs' };
-    return { url: override.url, layer: `${override.prefix}_${ch}` };
-  }
+  if (override) return { url: override.url, layer: `${override.prefix}_${ch}` };
 
   // Auto-detect from map centre
   if (!map) return { url: _GOES_E, layer: `conus_${ch}` };
@@ -9636,23 +9636,17 @@ function _buildGoesFrames() {
 }
 
 // Build a fresh WMS layer using the auto-detected (or manually chosen) region.
-// Returns null if the selected product has no data for this region (e.g. Himawari WV unavailable).
 function _makeGoesLayer(timeStr, opacity) {
-  const config = _detectGoesConfig();
-  if (!config.layer) return null;  // Product not available for this region/source
-
-  const isGibs  = config.source === 'gibs';
-  const baseUrl = isGibs ? config.url : `${config.url}?_cb=${Date.now()}`;
-
-  return L.tileLayer.wms(baseUrl, {
-    layers:            config.layer,
+  const { url, layer } = _detectGoesConfig();
+  return L.tileLayer.wms(`${url}?_cb=${Date.now()}`, {
+    layers:            layer,
     styles:            '',
     format:            'image/png',
     transparent:       true,
-    version:           isGibs ? '1.3.0' : '1.1.1',
+    version:           '1.1.1',
     opacity:           opacity !== undefined ? opacity : 0.85,
     zIndex:            11,
-    attribution:       isGibs ? '© NASA GIBS · JAXA Himawari-9' : '© Iowa Mesonet · GOES',
+    attribution:       '© Iowa Mesonet · GOES',
     crossOrigin:       'anonymous',
     noWrap:            true,
     TIME:              timeStr,
@@ -9846,10 +9840,8 @@ function toggleSatelliteSub() {
     { id: 'alaska',    label: 'Alaska' },
     { id: 'hawaii',    label: 'Hawaii' },
     { id: 'caribbean', label: 'Caribbean' },
-    { id: 'atlantic',  label: 'Atlantic' },
     { id: 'efulldisk', label: 'E. Full Disk' },
     { id: 'wfulldisk', label: 'W. Full Disk' },
-    { id: 'himawari',  label: 'Himawari 🛰' },
   ].forEach(r => {
     const btn = document.createElement('div');
     btn.className = 'sat-region-btn' + (_goesRegionId === r.id ? ' active' : '');
