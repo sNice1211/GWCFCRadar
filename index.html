@@ -5436,7 +5436,7 @@ function rmActivate(id) {
 
 // ── GLOBALS ──
 let map, radarLayer = null, satelliteLayer = null;
-let goesLayer = null, currentGoesProduct = 'ir';
+let goesLayer = null;
 let alertsLayer = null, spcLayer = null, lightningMarkers = [];
 let radarFrames = [], currentFrame = 0, playing = false, playTimer = null;
 let animSpeed = 1.5, radarOpacity = 0.85;
@@ -8075,7 +8075,7 @@ function toggleLayer(id) {
   if (id === 'satellite') {
     if (activeLayers[id]) {
       _disableRadar();  // mutual exclusion
-      loadGoesLayer(currentGoesProduct);
+      loadGoesLayer();
       toggleSatelliteSub();
     } else {
       _disableSatellite();
@@ -9314,206 +9314,25 @@ function toggleSmooth() {
   }
 }
 
-// ── GOES SATELLITE (Iowa Mesonet WMS) ──
-// Satellite regions and products
-const GOES_REGIONS = {
-  global:    { label: 'Global',       icon: '🌐' },  // NOAA nowCOAST GMGSI , seamless worldwide
-  conus:     { label: 'CONUS',        icon: '🇺🇸' },
-  alaska:    { label: 'Alaska',       icon: '🏔' },
-  hawaii:    { label: 'Hawaii',       icon: '🌺' },
-  caribbean: { label: 'Caribbean',    icon: '🏝' },
-  samer:     { label: 'S. America',   icon: '🌎' },
-  atlantic:  { label: 'Atlantic',     icon: '🌀' },
-  epac:      { label: 'E. Pacific',   icon: '🌊' },
-  europe:    { label: 'Europe',       icon: '🌍' },  // GOES-East full disk (best available)
-  jpac:      { label: 'Japan/W. Pac', icon: '🗾' },  // NASA GIBS Himawari-8
-  australia: { label: 'Australia',    icon: '🌏' },  // NASA GIBS Himawari-8
-  fulldisk:  { label: 'Full Disk E',  icon: '🔆' },
-  fulldiskw: { label: 'Full Disk W',  icon: '🔅' },
-  mesoscale: { label: 'Mesoscale',    icon: '🔍' },
-};
+// ── GOES SATELLITE (CONUS IR — Iowa Mesonet WMS) ──
+// Simplified: GOES-West CONUS ch15 IR, 12 × 10-min frames, 60-s auto-refresh with cache-bust.
+// Pattern ported from wms_satellite_3.js: pending guard, hide-by-opacity, force-redraw on refresh.
 
-// Iowa Mesonet GOES WMS , new channel-numbered endpoint style
-// ch13 = Clean Longwave IR (10.3μm)   ch02 = Visible (0.64μm)   ch08 = Water Vapor (6.2μm)
-const _GE = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
-const _GW = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
-const _geo = (wms, sector, attr) => ({
-  ir:  { wms, layer: `${sector}_ch13`, attr },
-  vis: { wms, layer: `${sector}_ch02`, attr },
-  wv:  { wms, layer: `${sector}_ch08`, attr },
-});
-const GOES_WMS_BASE = {
-  // ── GOES-West sectors ──
-  conus:     _geo(_GW, 'conus',      '© Iowa Mesonet · GOES-W'),
-  alaska:    _geo(_GW, 'alaska',     '© Iowa Mesonet · GOES-W'),
-  hawaii:    _geo(_GW, 'hawaii',     '© Iowa Mesonet · GOES-W'),
-  epac:      _geo(_GW, 'epac',       '© Iowa Mesonet · GOES-W'),
-  fulldiskw: _geo(_GW, 'full_disk',  '© Iowa Mesonet · GOES-W'),
-  jpac:      _geo(_GW, 'full_disk',  '© Iowa Mesonet · GOES-W'),
-  australia: _geo(_GW, 'full_disk',  '© Iowa Mesonet · GOES-W'),
-  mesoscale: _geo(_GW, 'mesoscale1', '© Iowa Mesonet · GOES-W'),
-  // ── GOES-East sectors ──
-  atlantic:  _geo(_GE, 'atlantic',   '© Iowa Mesonet · GOES-E'),
-  caribbean: _geo(_GE, 'carib',      '© Iowa Mesonet · GOES-E'),
-  samer:     _geo(_GE, 'samer',      '© Iowa Mesonet · GOES-E'),
-  fulldisk:  _geo(_GE, 'full_disk',  '© Iowa Mesonet · GOES-E'),
-  global:    _geo(_GE, 'full_disk',  '© Iowa Mesonet · GOES-E'),
-  europe:    _geo(_GE, 'full_disk',  '© Iowa Mesonet · GOES-E'),
-};
+const SAT_WMS_URL   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
+const SAT_WMS_LAYER = 'conus_ch15';
 
-let _goesRegion = 'global'; // default to global
-
-// Build flat GOES_PRODUCTS from current region for backwards compat
-function _buildGoesProducts() {
-  const base = GOES_WMS_BASE[_goesRegion] || GOES_WMS_BASE.conus;
-  return {
-    ir:  { ...base.ir,  label: 'Infrared',    icon: '🌡', type: 'wms' },
-    vis: { ...base.vis, label: 'Visible',      icon: '☀️', type: 'wms' },
-    wv:  { ...base.wv,  label: 'Water Vapor',  icon: '💧', type: 'wms' },
-  };
-}
-let GOES_PRODUCTS = _buildGoesProducts();
-
-// ── RainViewer global satellite IR (Himawari/GOES/Meteosat composite) ──
-// Used for jpac + australia; GOES-W full disk shown immediately as fallback while this loads.
-function _isHimawariRegion(r) { return r === 'jpac' || r === 'australia'; }
-let _rvSatFrames      = null;  // null=not yet fetched, []=failed, [...]= frames
-let _rvFetching       = false; // prevents duplicate in-flight requests
-let _rvReadyCallbacks = [];    // callbacks waiting for frames
-
-function _fetchRvSatFrames(onReady) {
-  if (_rvSatFrames !== null) {
-    if (onReady && _rvSatFrames.length) onReady(_rvSatFrames);
-    return;
-  }
-  if (onReady) { _rvReadyCallbacks.push(onReady); }
-  if (_rvFetching) return;
-  _rvFetching = true;
-  fetch('https://api.rainviewer.com/public/weather-maps.json', { signal: _abortSignal(10000) })
-    .then(r => r.json())
-    .then(data => {
-      const raw = (data.satellite && data.satellite.infrared) || [];
-      const pad = n => String(n).padStart(2, '0');
-      _rvSatFrames = raw.map(f => {
-        const t = new Date(f.time * 1000);
-        const timeStr = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
-        return { time: t, timeStr, url: `${data.host}${f.path}/256/{z}/{x}/{y}/0/0_0.png` };
-      });
-      _rvFetching = false;
-      if (_rvSatFrames.length && _rvReadyCallbacks.length) {
-        _rvReadyCallbacks.forEach(cb => { try { cb(_rvSatFrames); } catch(e){} });
-        _rvReadyCallbacks = [];
-      }
-    })
-    .catch(() => { _rvSatFrames = []; _rvFetching = false; _rvReadyCallbacks = []; });
-}
-
-// GOES frame state
-let goesFrames = [];       // array of { time: Date, timeStr: string, url?: string }
+// GOES frame state (also read by timeline and animation code outside this section)
+let goesFrames       = [];  // { time: Date, timeStr: string }
 let goesCurrentFrame = 0;
 
-// All regions loaded simultaneously when satellite is active
-let _goesActiveLayers = [];
-let _goesActiveProduct = null;
-let _goesActiveRegion  = null;
-let _goesRefreshInterval = null;  // 60-second auto-refresh timer
+let _goesLayer           = null;  // active L.tileLayer.wms
+let _goesRefreshInterval = null;
+let _goesPending         = false; // pending guard — mirrors wms_satellite_3.js _showPending
 
-// Pre-warm the satellite WMS connection shortly after startup.
-// Creates an opacity-0 GOES-IR layer so tiles are cached before user presses Satellite.
-function _preloadSatBackground() {
-  setTimeout(() => {
-    if (activeLayers.satellite || _goesActiveLayers.length) return;
-    try {
-      const frames = _buildGoesFrames();
-      if (!frames.length) return;
-      const region = _detectGoesRegion();
-      const layer  = _buildGoesLayer('ir', region, frames[frames.length - 1].timeStr, 0);
-      _goesActiveLayers  = [layer];
-      _goesActiveProduct = 'ir';
-      _goesActiveRegion  = region;
-    } catch(e) {}
-  }, 600);
-}
-
-function _clearGoesActiveLayers() {
-  _goesActiveLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
-  _goesActiveLayers = [];
-  _goesActiveProduct = null;
-  _goesActiveRegion  = null;
-  goesLayer = null;
-}
-
-// Pick the best GOES/WMS region for the current map centre
-function _detectGoesRegion() {
-  const c = map.getCenter();
-  const lat = c.lat, lon = c.lng;
-  if (lat >= 24 && lat <= 50 && lon >= -126 && lon <= -65) return 'conus';
-  if (lat >= 52 && lat <= 72 && lon >= -172 && lon <= -128) return 'alaska';
-  if (lat >= 17 && lat <= 24 && lon >= -163 && lon <= -152) return 'hawaii';
-  if (lat >=  8 && lat <= 28 && lon >= -92  && lon <= -58)  return 'caribbean';
-  if (lat >=  0 && lat <= 35 && lon >= -140 && lon <= -80)  return 'epac';
-  if (lat >=  0 && lat <= 55 && lon >= -60  && lon <= -20)  return 'atlantic';
-  if (lat >= -60 && lat <= 15 && lon >= -90 && lon <= -30)  return 'samer';
-  if (lat >= -5 && lat <= 60 && lon >= -100 && lon <=   0)  return 'fulldisk';
-  if (lat >= -5 && lat <= 60 && lon >= -175 && lon <= -100) return 'fulldiskw';
-  // Outside GOES coverage
-  if (lat >= 25 && lat <= 80 && lon >= -20 && lon <= 60)   return 'europe';    // Europe + Middle East
-  if (lat >= -35 && lat <= 60 && lon >= 35 && lon <= 100)  return 'europe';    // Africa + Central Asia → GOES-E FD best option
-  if (lat >= 5  && lat <= 55 && lon >= 100 && lon <= 180)  return 'jpac';      // Japan/Korea/SE Asia (RainViewer)
-  if (lat >= -55 && lat <= 10 && lon >= 95 && lon <= 180)  return 'australia'; // Australia/SW Pacific (RainViewer)
-  if (lat >= -90 && lat <= 90 && lon >= 40 && lon <= 180)  return 'fulldiskw'; // Remaining east → GOES-W FD
-  return 'global'; // last resort: GOES-E full disk
-}
-
-// Region center coords for clickable map markers
-const GOES_REGION_CENTERS = {
-  conus:     { lat: 38,   lon: -96,   label: 'CONUS' },
-  alaska:    { lat: 64,   lon: -153,  label: 'Alaska' },
-  hawaii:    { lat: 20.5, lon: -157,  label: 'Hawaii' },
-  caribbean: { lat: 18,   lon: -74,   label: 'Caribbean' },
-  epac:      { lat: 15,   lon: -115,  label: 'E. Pacific' },
-  atlantic:  { lat: 28,   lon: -45,   label: 'Atlantic' },
-  samer:     { lat: -15,  lon: -55,   label: 'S. America' },
-  europe:    { lat: 48,   lon: 10,    label: 'Europe' },
-  jpac:      { lat: 30,   lon: 140,   label: 'Japan/W.Pac' },
-  australia: { lat: -25,  lon: 135,   label: 'Australia' },
-  fulldisk:  { lat: 10,   lon: -75,   label: 'Full Disk E' },
-  fulldiskw: { lat: 10,   lon: -135,  label: 'Full Disk W' },
-};
-
-let _satRegionMarkerLayer = null;
-
-function _showSatRegionMarkers() {
-  if (_satRegionMarkerLayer) return;
-  _satRegionMarkerLayer = L.layerGroup().addTo(map);
-  Object.entries(GOES_REGION_CENTERS).forEach(([key, r]) => {
-    const icon = L.divIcon({
-      className: '',
-      html: `<div class="sat-region-bubble">${r.label}</div>`,
-      iconAnchor: [0, 0],
-    });
-    const m = L.marker([r.lat, r.lon], { icon, interactive: true, zIndexOffset: 800 });
-    m.on('click', () => {
-      map.setView([r.lat, r.lon], Math.max(map.getZoom(), 4), { animate: true });
-      _setGoesRegion(key);
-    });
-    m.addTo(_satRegionMarkerLayer);
-  });
-}
-
-function _hideSatRegionMarkers() {
-  if (_satRegionMarkerLayer) {
-    try { map.removeLayer(_satRegionMarkerLayer); } catch(e) {}
-    _satRegionMarkerLayer = null;
-  }
-}
-
-// Build ~2 h of 10-min frames ending at the most recent even-10-min boundary
+// Build ~2 h of 10-min frames ending ~20 min ago (ensures tiles have propagated to Iowa Mesonet).
 function _buildGoesFrames() {
   const now = new Date();
   now.setUTCSeconds(0, 0);
-  // Start 20 min behind current time , ensures tiles have propagated to Iowa Mesonet servers.
-  // Build 12 frames × 10-min = 2 hours ending ~20 min ago.
   now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 10) * 10 - 20);
   const frames = [];
   for (let i = 11; i >= 0; i--) {
@@ -9525,122 +9344,78 @@ function _buildGoesFrames() {
   return frames;
 }
 
-function _buildGoesLayer(prodKey, regionKey, timeStr, initialOpacity) {
-  const base = GOES_WMS_BASE[regionKey] || GOES_WMS_BASE.conus;
-  const cfg  = base[prodKey] || base.ir;
-  const layer = L.tileLayer.wms(cfg.wms, {
-    layers: cfg.layer,
+// Build a fresh WMS layer. Appending _cb to the base URL busts the browser tile cache on rebuild,
+// mirroring the cachebust=${Date.now()} approach from wms_satellite_3.js setTiles() refresh.
+function _makeGoesLayer(timeStr, opacity) {
+  return L.tileLayer.wms(`${SAT_WMS_URL}?_cb=${Date.now()}`, {
+    layers: SAT_WMS_LAYER,
     styles: '',
     format: 'image/png',
     transparent: true,
     version: '1.1.1',
-    opacity: initialOpacity !== undefined ? initialOpacity : 0.85,
+    opacity: opacity !== undefined ? opacity : 0.85,
     zIndex: 11,
-    attribution: cfg.attr || '© Iowa Mesonet',
+    attribution: '© Iowa Mesonet · GOES-West CONUS IR',
     crossOrigin: 'anonymous',
     noWrap: true,
     TIME: timeStr,
-    keepBuffer: 4,
+    keepBuffer: _isIOS ? 1 : 2,
     updateWhenIdle: false,
     updateWhenZooming: false,
   }).addTo(map);
-  return layer;
 }
 
-function loadGoesLayer(product) {
-  if (_goesRefreshInterval) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; }
-  map.off('moveend', _onGoesMoveEnd);
-  currentGoesProduct = ['ir','vis','wv'].includes(product) ? product : 'ir';
-  // Keep preloaded layer if it already matches product + region (showGoesFrame will setParams on it).
-  const _preRegion = _goesRegion || _detectGoesRegion();
-  if (!(_goesActiveLayers.length && _goesActiveProduct === currentGoesProduct && _goesActiveRegion === _preRegion)) {
-    _clearGoesActiveLayers();
-  } else {
-    _goesActiveLayers[0].setOpacity(0.85); // reveal the preloaded layer immediately
-  }
+function _clearGoesLayer() {
+  if (_goesLayer) { try { map.removeLayer(_goesLayer); } catch(e) {} _goesLayer = null; }
+  goesLayer = null;
+}
 
-  // Always start with Iowa Mesonet frames (instant, no async needed).
-  // GOES-W full disk is used for jpac/australia as fallback while RainViewer loads.
-  goesFrames = _buildGoesFrames();
-  const tl = document.getElementById('timeline');
-  if (tl) { tl.max = goesFrames.length - 1; tl.value = goesFrames.length - 1; }
-  goesCurrentFrame = goesFrames.length - 1;
-  _updateTimelineGradient(goesFrames.length - 1, goesFrames.length);
-  showGoesFrame(goesCurrentFrame);
-  buildTimelineLabels();
-  _showSatRegionMarkers();
+// Pre-warm: build at opacity 0 so tiles are in the browser cache when user clicks Satellite.
+function _preloadSatBackground() {
+  setTimeout(() => {
+    if (activeLayers.satellite || _goesLayer) return;
+    try {
+      const frames = _buildGoesFrames();
+      if (!frames.length) return;
+      _goesLayer = _makeGoesLayer(frames[frames.length - 1].timeStr, 0);
+      goesLayer  = _goesLayer;
+    } catch(e) {}
+  }, 600);
+}
 
-  // Pre-fetch RainViewer in background. When ready, upgrade Himawari regions automatically.
-  _fetchRvSatFrames(frames => {
-    if (!activeLayers.satellite) return;
-    if (_isHimawariRegion(_goesRegion || _detectGoesRegion()) && currentGoesProduct === 'ir') {
-      goesFrames = frames;
+function loadGoesLayer() {
+  if (_goesPending) return;
+  _goesPending = true;
+  try {
+    if (_goesRefreshInterval) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; }
+
+    goesFrames       = _buildGoesFrames();
+    goesCurrentFrame = goesFrames.length - 1;
+
+    const tl = document.getElementById('timeline');
+    if (tl) { tl.max = goesFrames.length - 1; tl.value = goesCurrentFrame; }
+    _updateTimelineGradient(goesCurrentFrame, goesFrames.length);
+    buildTimelineLabels();
+
+    showGoesFrame(goesCurrentFrame);
+
+    // Auto-refresh every 60 s: destroy old layer + rebuild with new cachebust so stale tiles
+    // are never served — mirrors wms_satellite_3.js refreshInterval setTiles() pattern.
+    _goesRefreshInterval = setInterval(() => {
+      if (!activeLayers.satellite) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; return; }
+      _clearGoesLayer();
+      goesFrames       = _buildGoesFrames();
       goesCurrentFrame = goesFrames.length - 1;
-      const tl2 = document.getElementById('timeline');
-      if (tl2) { tl2.max = goesFrames.length - 1; tl2.value = goesCurrentFrame; }
+      const tlR = document.getElementById('timeline');
+      if (tlR) { tlR.max = goesFrames.length - 1; tlR.value = goesCurrentFrame; }
       _updateTimelineGradient(goesCurrentFrame, goesFrames.length);
       showGoesFrame(goesCurrentFrame);
       buildTimelineLabels();
-    }
-  });
+    }, 60000);
 
-  // Auto-refresh every 60 seconds — rebuilds frame timestamps and shows latest
-  _goesRefreshInterval = setInterval(() => {
-    if (!activeLayers.satellite) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; return; }
-    const isHimawari = _isHimawariRegion(_goesRegion || _detectGoesRegion());
-    if (isHimawari && currentGoesProduct === 'ir' && _rvSatFrames && _rvSatFrames.length) return; // RainViewer manages its own data
-    goesFrames = _buildGoesFrames();
-    goesCurrentFrame = goesFrames.length - 1;
-    const tlR = document.getElementById('timeline');
-    if (tlR) { tlR.max = goesFrames.length - 1; tlR.value = goesCurrentFrame; }
-    _updateTimelineGradient(goesCurrentFrame, goesFrames.length);
-    showGoesFrame(goesCurrentFrame);
-    buildTimelineLabels();
-  }, 60000);
-
-  map.on('moveend', _onGoesMoveEnd);
-}
-
-function _onGoesMoveEnd() {
-  // Only auto-switch regions after the user has explicitly chosen one
-  if (!activeLayers.satellite || !goesFrames.length || !_goesActiveRegion) return;
-  const newRegion = _detectGoesRegion();
-  if (newRegion === _goesActiveRegion) return;
-
-  if (_isHimawariRegion(newRegion) && currentGoesProduct === 'ir') {
-    if (_rvSatFrames && _rvSatFrames.length) {
-      // Already have RainViewer data , switch frames immediately
-      goesFrames = _rvSatFrames;
-      goesCurrentFrame = goesFrames.length - 1;
-      const tl = document.getElementById('timeline');
-      if (tl) { tl.max = goesFrames.length - 1; tl.value = goesCurrentFrame; }
-      buildTimelineLabels();
-    } else {
-      // Show GOES-W fallback immediately, upgrade when RainViewer arrives
-      goesFrames = _buildGoesFrames();
-      goesCurrentFrame = goesFrames.length - 1;
-      _fetchRvSatFrames(frames => {
-        if (activeLayers.satellite && _isHimawariRegion(_detectGoesRegion()) && currentGoesProduct === 'ir') {
-          goesFrames = frames;
-          goesCurrentFrame = goesFrames.length - 1;
-          const tl2 = document.getElementById('timeline');
-          if (tl2) { tl2.max = goesFrames.length - 1; tl2.value = goesCurrentFrame; }
-          _updateTimelineGradient(goesCurrentFrame, goesFrames.length);
-          showGoesFrame(goesCurrentFrame);
-          buildTimelineLabels();
-        }
-      });
-    }
-  } else if (_isHimawariRegion(_goesActiveRegion || '') && !_isHimawariRegion(newRegion)) {
-    // Leaving Himawari , restore Iowa Mesonet frames
-    goesFrames = _buildGoesFrames();
-    goesCurrentFrame = goesFrames.length - 1;
-    const tl = document.getElementById('timeline');
-    if (tl) { tl.max = goesFrames.length - 1; tl.value = goesCurrentFrame; }
-    buildTimelineLabels();
+  } finally {
+    _goesPending = false;
   }
-
-  showGoesFrame(goesCurrentFrame);
 }
 
 function showGoesFrame(idx) {
@@ -9650,46 +9425,22 @@ function showGoesFrame(idx) {
   const tlEl = document.getElementById('timeline');
   if (tlEl) tlEl.value = idx;
 
-  const frame   = goesFrames[idx];
-  const prodKey = ['ir','vis','wv'].includes(currentGoesProduct) ? currentGoesProduct : 'ir';
-  const region  = _goesRegion || _detectGoesRegion();
+  const frame = goesFrames[idx];
 
-  if (frame.url) {
-    // RainViewer global satellite tile frame (Himawari/GOES/Meteosat composite)
-    if (_goesActiveLayers.length && _goesActiveProduct === '__rv__' && _goesActiveRegion === region) {
-      _goesActiveLayers[0].setUrl(frame.url, false);
-    } else {
-      _clearGoesActiveLayers();
-      const layer = L.tileLayer(frame.url, {
-        opacity: 0.85, zIndex: 11, tileSize: 256, noWrap: false,
-        attribution: '© RainViewer · Global Satellite (Himawari/GOES/Meteosat)',
-        keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
-      }).addTo(map);
-      _goesActiveLayers = [layer];
-      _goesActiveProduct = '__rv__';
-      _goesActiveRegion  = region;
-      goesLayer = layer;
-    }
-  } else if (_goesActiveLayers.length && _goesActiveProduct === prodKey && _goesActiveRegion === region) {
-    // Same Iowa Mesonet WMS , just update TIME parameter in-place (fast, no layer rebuild)
-    _goesActiveLayers[0].setParams({ TIME: frame.timeStr }, false);
+  if (_goesLayer) {
+    // Reuse existing layer — update TIME in-place (fast path, no tile-cache invalidation needed
+    // since each TIME value is a different URL anyway)
+    _goesLayer.setParams({ TIME: frame.timeStr }, false);
+    if (activeLayers.satellite) _goesLayer.setOpacity(0.85);
   } else {
-    // New region or product , build a fresh WMS layer
-    _clearGoesActiveLayers();
-    const layer = _buildGoesLayer(prodKey, region, frame.timeStr);
-    layer.setOpacity(0.85); // explicit — guards against any future change to _buildGoesLayer's default
-    _goesActiveLayers = [layer];
-    _goesActiveProduct = prodKey;
-    _goesActiveRegion  = region;
-    goesLayer = layer;
+    // Build fresh layer (first show, or after 60-s cache-bust rebuild)
+    _goesLayer = _makeGoesLayer(frame.timeStr, activeLayers.satellite ? 0.85 : 0);
+    goesLayer  = _goesLayer;
   }
 
-  // Update animbar time display
-  const d = frame.time;
-  const pad = n => String(n).padStart(2, '0');
   const animTimeEl = document.getElementById('anim-time');
   if (animTimeEl) {
-    animTimeEl.textContent = _fmtHHMM(d);
+    animTimeEl.textContent = _fmtHHMM(frame.time);
     animTimeEl.style.color = '';
     animTimeEl.style.visibility = 'visible';
   }
@@ -9726,56 +9477,27 @@ function _disableRadar() {
 function _disableSatellite() {
   activeLayers.satellite = false;
   if (_goesRefreshInterval) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; }
-  map.off('moveend', _onGoesMoveEnd);
-  _clearGoesActiveLayers();
-  _hideSatRegionMarkers();
+  _clearGoesLayer();
   goesFrames = [];
   const el = document.getElementById('sub-satellite');
   if (el) el.classList.remove('active');
 }
 
-function _setGoesRegion(region) {
-  _goesRegion = region;
-  GOES_PRODUCTS = _buildGoesProducts();
-  document.querySelectorAll('.sat-region-btn').forEach(b => b.classList.toggle('active', b.dataset.region === region));
-  loadGoesLayer(currentGoesProduct);
-}
-
 function toggleSatelliteSub() {
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
-
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
   back.onclick = () => { renderSubBubbles('regular'); };
   wrap.appendChild(back);
-
-  // Product-only sub-bubbles
-  const products = {
-    ir:  { label: 'Infrared',    icon: '🌡' },
-    vis: { label: 'Visible',     icon: '☀️' },
-    wv:  { label: 'Water Vapor', icon: '💧' },
-  };
-  Object.entries(products).forEach(([key, cfg]) => {
-    const el = document.createElement('div');
-    el.className = 'sub-bubble' + (key === currentGoesProduct ? ' active' : '');
-    el.id = 'sub-goes-' + key;
-    el.innerHTML = `<span class="sb-icon">${cfg.icon}</span>${cfg.label}`;
-    el.onclick = () => {
-      wrap.querySelectorAll('.sub-bubble').forEach(b => { if (b !== back) b.classList.remove('active'); });
-      el.classList.add('active');
-      loadGoesLayer(key);
-    };
-    wrap.appendChild(el);
-  });
   wrap.style.display = 'flex';
 }
 
 // ── SUB BUBBLES ──
 const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
-  { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(currentGoesProduct); } toggleSatelliteSub(); } },
+  { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
   { id: 'alerts',    icon: '⚠', label: 'Alerts',     action: () => toggleAlertSub() },
   { id: 'wind',      icon: '💨', label: 'Wind',       action: () => toggleWindSub() },
   { id: 'temp',      icon: '🌡', label: 'Temp',       action: () => { toggleTempBarbs(); } },
