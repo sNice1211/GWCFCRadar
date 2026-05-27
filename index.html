@@ -9792,39 +9792,57 @@ function _setGoesRegion(id) {
 function toggleSatelliteSub() {
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
+  wrap.dataset.mode = 'satellite';
 
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { renderSubBubbles('regular'); };
+  back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('satellite'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
 
-  // Product row (IR / Visible / Water Vapor)
-  const pRow = document.createElement('div');
-  pRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;padding:4px 0 6px;border-bottom:1px solid rgba(255,255,255,0.08);margin-bottom:4px;width:100%;';
-  GOES_PRODUCTS.forEach(p => {
-    const btn = document.createElement('div');
-    btn.className = 'sat-region-btn' + (_goesProductId === p.id ? ' active' : '');
-    btn.dataset.productId = p.id;
-    btn.textContent = p.label;
-    if (p.note) btn.title = p.note;
-    btn.onclick = () => _setGoesProduct(p.id);
-    pRow.appendChild(btn);
+  // Product buttons — IR / Visible / Water Vapor
+  [
+    { id: 'ir',  icon: '🌡', label: 'IR' },
+    { id: 'vis', icon: '☀️', label: 'Visible' },
+    { id: 'wv',  icon: '💧', label: 'Water Vapor' },
+  ].forEach(p => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (_goesProductId === p.id ? ' active' : '');
+    el.dataset.productId = p.id;
+    el.innerHTML = `<span class="sb-icon">${p.icon}</span>${p.label}`;
+    el.onclick = () => {
+      wrap.querySelectorAll('[data-product-id]').forEach(b => b.classList.remove('active'));
+      el.classList.add('active');
+      _setGoesProduct(p.id);
+    };
+    wrap.appendChild(el);
   });
-  wrap.appendChild(pRow);
 
-  // Region row (Auto / East CONUS / West CONUS / …)
-  const rRow = document.createElement('div');
-  rRow.id = 'sat-region-row';
-  GOES_REGIONS.forEach(r => {
-    const btn = document.createElement('div');
-    btn.className = 'sat-region-btn' + (_goesRegionId === r.id ? ' active' : '');
-    btn.dataset.regionId = r.id;
-    btn.textContent = r.label;
-    btn.onclick = () => _setGoesRegion(r.id);
-    rRow.appendChild(btn);
+  // Separator
+  const sep = document.createElement('div');
+  sep.style.cssText = 'width:1px;height:28px;background:rgba(255,255,255,0.12);margin:0 2px;align-self:center;flex-shrink:0;';
+  wrap.appendChild(sep);
+
+  // Region buttons — Auto / East / West / Alaska / Hawaii / Full Disk
+  [
+    { id: 'auto',   icon: '🔍', label: 'Auto' },
+    { id: 'east',   icon: '🗺', label: 'East' },
+    { id: 'west',   icon: '🗺', label: 'West' },
+    { id: 'alaska', icon: '🏔', label: 'Alaska' },
+    { id: 'hawaii', icon: '🌺', label: 'Hawaii' },
+    { id: 'global', icon: '🌐', label: 'Full Disk' },
+  ].forEach(r => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (_goesRegionId === r.id ? ' active' : '');
+    el.dataset.regionId = r.id;
+    el.innerHTML = `<span class="sb-icon">${r.icon}</span>${r.label}`;
+    el.onclick = () => {
+      wrap.querySelectorAll('[data-region-id]').forEach(b => b.classList.remove('active'));
+      el.classList.add('active');
+      _setGoesRegion(r.id);
+    };
+    wrap.appendChild(el);
   });
-  wrap.appendChild(rRow);
 
   wrap.style.display = 'flex';
 }
