@@ -11079,19 +11079,32 @@ if (document.readyState === 'loading') {
 }
 
 // ── DISMISS LOADING ──
-const _loadStart = Date.now();
+const _loadStart       = Date.now();
+const _LOAD_MIN_MS     = 3000;   // minimum screen time so facts + tiles have a moment
+let   _dismissScheduled = false;
 
-function dismissLoading() {
+function _actuallyDismiss() {
   stopLoadFacts();
   const el = document.getElementById('loading');
   if (!el) return;
-  el.classList.add('hidden');
   el.style.opacity = '0';
   el.style.pointerEvents = 'none';
   setTimeout(() => {
     if (el.parentNode) el.parentNode.removeChild(el);
     else el.style.display = 'none';
   }, 500);
+}
+
+function dismissLoading() {
+  const elapsed = Date.now() - _loadStart;
+  if (elapsed < _LOAD_MIN_MS) {
+    if (!_dismissScheduled) {
+      _dismissScheduled = true;
+      setTimeout(_actuallyDismiss, _LOAD_MIN_MS - elapsed);
+    }
+    return;
+  }
+  _actuallyDismiss();
 }
 
 // Absolute failsafe: force-remove the loading screen after 8 s regardless of
