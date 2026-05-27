@@ -14008,7 +14008,7 @@ async function _nwrStartRecord(call, rawUrl, label) {
     const blob = new Blob(mp3chunks, { type: 'audio/mpeg' });
     const url  = URL.createObjectURL(blob);
     const dur  = Math.round((Date.now() - startMs) / 1000);
-    _nwrRecs.unshift({ id: Date.now(), call, label, blob, url, start: new Date(startMs), dur });
+    _nwrRecs.unshift({ id: Date.now(), call, label, blob, url, blobs: { mp3: blob }, start: new Date(startMs), dur });
     _nwrRecActive = null;
     _nwrRenderRecPanel();
     showToast(`✅ Saved ${_nwrFmtDur(dur)} MP3 — open Recordings panel`, 3000);
@@ -14032,12 +14032,126 @@ function _nwrDeleteRec(id) {
   _nwrRenderRecPanel();
 }
 
-function _nwrDownloadRec(id) {
+// ── NWR MULTI-FORMAT DOWNLOAD ─────────────────────────────────────────────
+
+// Lazy-load libflac.js for FLAC encoding (only fetched when user requests FLAC)
+let _flacJsLoading = null;
+function _loadFlacJs() {
+  if (window.Flac && Flac.isReady()) return Promise.resolve();
+  if (_flacJsLoading) return _flacJsLoading;
+  _flacJsLoading = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/libflac.js@5.3.2/dist/libflac.min.js';
+    s.onload = () => {
+      if (window.Flac && Flac.isReady()) { res(); return; }
+      const t = setInterval(() => { if (window.Flac && Flac.isReady()) { clearInterval(t); res(); } }, 100);
+      setTimeout(() => { clearInterval(t); rej(new Error('FLAC encoder timed out')); }, 12000);
+    };
+    s.onerror = () => rej(new Error('FLAC CDN failed'));
+    document.head.appendChild(s);
+  });
+  return _flacJsLoading;
+}
+
+// Re-encode an AudioBuffer to WebM/Opus/AAC via MediaRecorder (runs at real-time speed)
+function _nwrBufToMediaRec(audioBuf, preferMime) {
+  const candidates = [preferMime, 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
+  const mime = candidates.find(t => { try { return MediaRecorder.isTypeSupported(t); } catch(_) { return false; } });
+  if (!mime) return Promise.reject(new Error('Format not supported in this browser — try MP3 or FLAC'));
+  return new Promise((resolve, reject) => {
+    const ctx  = new AudioContext({ sampleRate: audioBuf.sampleRate });
+    const dest = ctx.createMediaStreamDestination();
+    let mr;
+    try { mr = new MediaRecorder(dest.stream, { mimeType: mime }); }
+    catch(e) { ctx.close(); reject(new Error('MediaRecorder: ' + e.message)); return; }
+    const chunks = [];
+    mr.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    mr.onstop    = () => { ctx.close(); resolve(new Blob(chunks, { type: mime })); };
+    mr.onerror   = () => { ctx.close(); reject(new Error('MediaRecorder encoding failed')); };
+    mr.start(250);
+    const src = ctx.createBufferSource();
+    src.buffer = audioBuf;
+    src.connect(dest);
+    src.onended = () => { try { mr.stop(); } catch(_) {} };
+    src.start();
+  });
+}
+
+// Encode an AudioBuffer to FLAC using libflac.js (offline — typically 10-50× faster than real-time)
+async function _nwrBufToFlac(audioBuf) {
+  await _loadFlacJs();
+  const numCh = Math.min(audioBuf.numberOfChannels, 2);
+  const sr    = audioBuf.sampleRate;
+  const bps   = 16;
+  const nSamp = audioBuf.length;
+  const out   = [];
+  const encoder = Flac.create_libflac_encoder(sr, numCh, bps, 5, false);
+  if (!encoder) throw new Error('Failed to create FLAC encoder');
+  const initSt = Flac.init_encoder_stream(encoder, (data) => { out.push(new Uint8Array(data)); }, null, null, null, 0);
+  if (initSt !== 0) { Flac.FLAC__stream_encoder_delete(encoder); throw new Error('FLAC init error (' + initSt + ')'); }
+  try {
+    const ch = Array.from({ length: numCh }, (_, c) => audioBuf.getChannelData(c));
+    const CHUNK = 8192;
+    for (let off = 0; off < nSamp; off += CHUNK) {
+      const len = Math.min(CHUNK, nSamp - off);
+      const buf = new Int32Array(len * numCh);
+      for (let i = 0; i < len; i++)
+        for (let c = 0; c < numCh; c++)
+          buf[i * numCh + c] = Math.round(ch[c][off + i] * 32767);
+      if (!Flac.FLAC__stream_encoder_process_interleaved(encoder, buf, len))
+        throw new Error('FLAC encode error at sample ' + off);
+    }
+    Flac.FLAC__stream_encoder_finish(encoder);
+  } finally {
+    Flac.FLAC__stream_encoder_delete(encoder);
+  }
+  return new Blob(out, { type: 'audio/flac' });
+}
+
+// Return (or encode and cache) a blob for the requested format
+async function _nwrGetBlob(rec, fmt) {
+  if (rec.blobs[fmt]) return rec.blobs[fmt];
+  // Decode the stored MP3 → AudioBuffer (browser's native decoder, very fast)
+  const decCtx = new AudioContext();
+  let audioBuf;
+  try {
+    audioBuf = await decCtx.decodeAudioData(await rec.blob.arrayBuffer());
+  } catch(e) {
+    decCtx.close();
+    throw new Error('Could not decode recording: ' + e.message);
+  }
+  decCtx.close();
+  let blob;
+  if      (fmt === 'webm') blob = await _nwrBufToMediaRec(audioBuf, 'audio/webm;codecs=opus');
+  else if (fmt === 'opus') blob = await _nwrBufToMediaRec(audioBuf, 'audio/ogg;codecs=opus');
+  else if (fmt === 'aac')  blob = await _nwrBufToMediaRec(audioBuf, 'audio/mp4;codecs=aac');
+  else if (fmt === 'flac') blob = await _nwrBufToFlac(audioBuf);
+  else                     blob = rec.blob; // mp3 fallback
+  rec.blobs[fmt] = blob;
+  return blob;
+}
+
+async function _nwrDownloadRec(id, fmt) {
   const rec = _nwrRecs.find(r => r.id === id);
   if (!rec) return;
-  const ts = rec.start.toISOString().replace(/[:.]/g,'-').slice(0,19);
-  const a  = document.createElement('a');
-  a.href = rec.url; a.download = `NWR_${rec.call.toUpperCase()}_${ts}.mp3`; a.click();
+  fmt = fmt || 'mp3';
+  const ext   = { mp3:'mp3', webm:'webm', opus:'opus', flac:'flac', aac:'aac' }[fmt] || 'mp3';
+  const ts    = rec.start.toISOString().replace(/[:.]/g,'-').slice(0,19);
+  const fname = `NWR_${rec.call.toUpperCase()}_${ts}.${ext}`;
+
+  const isRealtime = ['webm','opus','aac'].includes(fmt);
+  if (fmt !== 'mp3') {
+    const note = isRealtime ? ` (~${_nwrFmtDur(rec.dur)})` : '';
+    showToast(`⏳ Encoding ${fmt.toUpperCase()}…${note}`, Math.max(3500, rec.dur * 1000 + 1000));
+  }
+  let blob;
+  try { blob = await _nwrGetBlob(rec, fmt); }
+  catch(e) { showToast(`⚠ ${fmt.toUpperCase()} failed: ${e.message}`, 5000); return; }
+
+  const url = URL.createObjectURL(blob);
+  const a   = document.createElement('a');
+  a.href = url; a.download = fname; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 15000);
 }
 
 function _nwrRenderRecPanel() {
@@ -14072,8 +14186,10 @@ function _nwrRenderRecPanel() {
           <span style="font-family:var(--mono);font-size:13px;color:#ff9900;font-weight:bold">${rec.call.toUpperCase()}</span>
           <span style="font-family:var(--mono);font-size:11px;color:#888">${_nwrFmtDur(rec.dur)}</span>
           <span style="font-size:9px;color:#555;flex:1;font-family:var(--mono)">${timeStr} · ${dateStr}</span>
-          <button onclick="_nwrDownloadRec(${rec.id})" title="Save as MP3" style="background:#111;border:1px solid #333;color:#88aaff;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">⬇ MP3</button>
-          <button onclick="_nwrDeleteRec(${rec.id})" title="Delete" style="background:#111;border:1px solid #333;color:#ff6666;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">🗑</button>
+          <button onclick="_nwrDeleteRec(${rec.id})" title="Delete" style="background:#111;border:1px solid #333;color:#ff6666;border-radius:4px;padding:2px 7px;cursor:pointer;font-size:11px;margin-left:auto">🗑</button>
+        </div>
+        <div style="display:flex;gap:3px;flex-wrap:wrap;margin-bottom:5px">
+          ${['mp3','webm','opus','flac','aac'].map(f => `<button onclick="_nwrDownloadRec(${rec.id},'${f}')" style="background:#0d1a2d;border:1px solid #1e3a5f;color:#88aaff;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:10px;font-family:var(--mono);letter-spacing:.03em">⬇ ${f.toUpperCase()}</button>`).join('')}
         </div>
         <audio controls src="${rec.url}" style="width:100%;height:28px;display:block;accent-color:#ff6600"></audio>
       </div>`;
