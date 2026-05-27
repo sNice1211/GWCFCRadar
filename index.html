@@ -9556,43 +9556,48 @@ function toggleSmooth() {
 // GOES satellite: 12 × 10-min frames, 60-s auto-refresh with cache-bust.
 // Pattern ported from wms_satellite_3.js: pending guard, hide-by-opacity, force-redraw on refresh.
 
-// Region definitions — IEM WMS endpoint + layer for each geographic area.
-// null = auto-detect from map center (default).
-const GOES_REGIONS = [
-  { id: 'auto',   label: 'Auto',          url: null,         layer: null             },
-  { id: 'east',   label: 'East CONUS',    url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi', layer: 'conus_ch13' },
-  { id: 'west',   label: 'West CONUS',    url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi', layer: 'conus_ch13' },
-  { id: 'alaska', label: 'Alaska',        url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi', layer: 'alaska_ch13' },
-  { id: 'hawaii', label: 'Hawaii',        url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi', layer: 'hawaii_ch13' },
-  { id: 'global', label: 'Full Disk',     url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi', layer: 'fulldisk_ch13' },
+// Products — IEM WMS channel suffix per product type.
+const GOES_PRODUCTS = [
+  { id: 'ir',  label: 'IR',         ch: 'ch13' },
+  { id: 'vis', label: 'Visible',    ch: 'ch02', note: 'Daytime only' },
+  { id: 'wv',  label: 'Water Vapor',ch: 'ch09' },
 ];
 
-let _goesRegionId = 'auto'; // 'auto' or one of the IDs above
+// Regions — IEM WMS endpoint (url) + layer-name prefix (prefix).
+// Layer name = prefix + '_' + ch from the active product.
+const GOES_REGIONS = [
+  { id: 'auto',   label: 'Auto',        url: null,                                                                   prefix: null },
+  { id: 'east',   label: 'East CONUS',  url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi',         prefix: 'conus'    },
+  { id: 'west',   label: 'West CONUS',  url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi',         prefix: 'conus'    },
+  { id: 'alaska', label: 'Alaska',      url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi',         prefix: 'alaska'   },
+  { id: 'hawaii', label: 'Hawaii',      url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi',         prefix: 'hawaii'   },
+  { id: 'global', label: 'Full Disk',   url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi',         prefix: 'fulldisk' },
+];
 
-// Pick the best GOES WMS endpoint + layer for the current map viewport.
+let _goesRegionId  = 'auto'; // 'auto' or a GOES_REGIONS id
+let _goesProductId = 'ir';   // a GOES_PRODUCTS id
+
+// Build { url, layer } for the current product + region combination.
 function _detectGoesConfig() {
-  const override = GOES_REGIONS.find(r => r.id === _goesRegionId && r.id !== 'auto');
-  if (override) return { url: override.url, layer: override.layer };
+  const product = GOES_PRODUCTS.find(p => p.id === _goesProductId) || GOES_PRODUCTS[0];
+  const ch = product.ch;
 
-  if (!map) return { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi', layer: 'conus_ch13' };
+  // Manual region override
+  const override = GOES_REGIONS.find(r => r.id === _goesRegionId && r.id !== 'auto');
+  if (override) return { url: override.url, layer: `${override.prefix}_${ch}` };
+
+  // Auto-detect from map centre
+  const IEM_E = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
+  const IEM_W = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
+  if (!map) return { url: IEM_E, layer: `conus_${ch}` };
   const c   = map.getCenter();
   const lat = c.lat;
-  const lng = ((c.lng + 180) % 360 + 360) % 360 - 180; // normalise to -180..180
+  const lng = ((c.lng + 180) % 360 + 360) % 360 - 180; // normalise -180..180
 
-  // Alaska
-  if (lat > 50 && lng < -120 && lng > -170) {
-    return { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi', layer: 'alaska_ch13' };
-  }
-  // Hawaii
-  if (lat > 16 && lat < 28 && lng < -150 && lng > -165) {
-    return { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi', layer: 'hawaii_ch13' };
-  }
-  // Western CONUS (west of the -100° meridian)
-  if (lat >= 24 && lat <= 50 && lng <= -100 && lng >= -125) {
-    return { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi', layer: 'conus_ch13' };
-  }
-  // Default: GOES-East CONUS covers eastern US, Canada, Caribbean, Atlantic
-  return { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi', layer: 'conus_ch13' };
+  if (lat > 50 && lng < -120 && lng > -170)               return { url: IEM_W, layer: `alaska_${ch}` };
+  if (lat > 16 && lat < 28 && lng < -150 && lng > -165)   return { url: IEM_W, layer: `hawaii_${ch}` };
+  if (lat >= 24 && lat <= 50 && lng <= -100 && lng >= -125) return { url: IEM_W, layer: `conus_${ch}` };
+  return { url: IEM_E, layer: `conus_${ch}` };
 }
 
 // GOES frame state (also read by timeline and animation code outside this section)
@@ -9760,16 +9765,25 @@ function _disableSatellite() {
   if (el) el.classList.remove('active');
 }
 
+function _reloadGoesIfActive() {
+  if (!activeLayers.satellite) return;
+  _clearGoesLayer();
+  goesFrames       = _buildGoesFrames();
+  goesCurrentFrame = goesFrames.length - 1;
+  showGoesFrame(goesCurrentFrame);
+}
+
+function _setGoesProduct(id) {
+  _goesProductId = id;
+  _reloadGoesIfActive();
+  document.querySelectorAll('.sat-product-btn').forEach(el => {
+    el.classList.toggle('active', el.dataset.productId === id);
+  });
+}
+
 function _setGoesRegion(id) {
   _goesRegionId = id;
-  if (activeLayers.satellite) {
-    // Rebuild with new region
-    _clearGoesLayer();
-    goesFrames       = _buildGoesFrames();
-    goesCurrentFrame = goesFrames.length - 1;
-    showGoesFrame(goesCurrentFrame);
-  }
-  // Refresh button active states
+  _reloadGoesIfActive();
   document.querySelectorAll('.sat-region-btn').forEach(el => {
     el.classList.toggle('active', el.dataset.regionId === id);
   });
@@ -9785,18 +9799,32 @@ function toggleSatelliteSub() {
   back.onclick = () => { renderSubBubbles('regular'); };
   wrap.appendChild(back);
 
-  // Region row
-  const row = document.createElement('div');
-  row.id = 'sat-region-row';
+  // Product row (IR / Visible / Water Vapor)
+  const pRow = document.createElement('div');
+  pRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;padding:4px 0 6px;border-bottom:1px solid rgba(255,255,255,0.08);margin-bottom:4px;width:100%;';
+  GOES_PRODUCTS.forEach(p => {
+    const btn = document.createElement('div');
+    btn.className = 'sat-region-btn' + (_goesProductId === p.id ? ' active' : '');
+    btn.dataset.productId = p.id;
+    btn.textContent = p.label;
+    if (p.note) btn.title = p.note;
+    btn.onclick = () => _setGoesProduct(p.id);
+    pRow.appendChild(btn);
+  });
+  wrap.appendChild(pRow);
+
+  // Region row (Auto / East CONUS / West CONUS / …)
+  const rRow = document.createElement('div');
+  rRow.id = 'sat-region-row';
   GOES_REGIONS.forEach(r => {
     const btn = document.createElement('div');
     btn.className = 'sat-region-btn' + (_goesRegionId === r.id ? ' active' : '');
     btn.dataset.regionId = r.id;
     btn.textContent = r.label;
     btn.onclick = () => _setGoesRegion(r.id);
-    row.appendChild(btn);
+    rRow.appendChild(btn);
   });
-  wrap.appendChild(row);
+  wrap.appendChild(rRow);
 
   wrap.style.display = 'flex';
 }
