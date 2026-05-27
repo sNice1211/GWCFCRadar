@@ -9557,52 +9557,59 @@ function toggleSmooth() {
 // GOES satellite: 12 × 10-min frames, 60-s auto-refresh with cache-bust.
 // Pattern ported from wms_satellite_3.js: pending guard, hide-by-opacity, force-redraw on refresh.
 
-// Products — IEM WMS channel suffix per product type.
+// Products — IEM WMS channel suffix (ch) + NASA GIBS layer name (gibsLayer) per product.
 const GOES_PRODUCTS = [
-  { id: 'ir',  label: 'IR',         ch: 'ch13' },
-  { id: 'vis', label: 'Visible',    ch: 'ch02', note: 'Daytime only' },
-  { id: 'wv',  label: 'Water Vapor',ch: 'ch09' },
+  { id: 'ir',  label: 'IR',          ch: 'ch13', gibsLayer: 'Himawari_AHI_Band13_Clean_Infrared'              },
+  { id: 'vis', label: 'Visible',     ch: 'ch02', gibsLayer: 'Himawari_AHI_Band3_Red_Visible_1km', note: 'Daytime only' },
+  { id: 'wv',  label: 'Water Vapor', ch: 'ch09', gibsLayer: 'Himawari_AHI_Band8_Upper_Level_Water_Vapor_2km'  },
 ];
 
-// Regions — IEM WMS endpoint (url) + layer-name prefix (prefix).
-// Layer name = prefix + '_' + ch from the active product.
-// Mesoscale sectors are NWS-directed high-res scans — may be blank when inactive.
+// Shared WMS base URLs (also referenced inside _detectGoesConfig).
+const _GOES_E    = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
+const _GOES_W    = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
+const _GIBS_WMS  = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi';
+
+// Regions — WMS endpoint + layer prefix, or source:'gibs' for NASA GIBS (Himawari).
+// Layer name = prefix + '_' + ch  (IEM) or product.gibsLayer (GIBS).
 const GOES_REGIONS = [
-  { id: 'auto',   label: 'Auto',         url: null,                                                                   prefix: null          },
-  { id: 'east',   label: 'East CONUS',   url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi',         prefix: 'conus'       },
-  { id: 'west',   label: 'West CONUS',   url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi',         prefix: 'conus'       },
-  { id: 'alaska', label: 'Alaska',       url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi',         prefix: 'alaska'      },
-  { id: 'hawaii', label: 'Hawaii',       url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi',         prefix: 'hawaii'      },
-  { id: 'efulldisk', label: 'E. Full Disk', url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi',     prefix: 'fulldisk'    },
-  { id: 'wfulldisk', label: 'W. Full Disk', url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi',     prefix: 'fulldisk'    },
-  { id: 'meso1',  label: 'Meso-1',       url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi',         prefix: 'mesoscale1'  },
-  { id: 'meso2',  label: 'Meso-2',       url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi',         prefix: 'mesoscale2'  },
+  { id: 'auto',      label: 'Auto',          url: null,     prefix: null          },
+  { id: 'east',      label: 'East CONUS',    url: _GOES_E,  prefix: 'conus'       },
+  { id: 'west',      label: 'West CONUS',    url: _GOES_W,  prefix: 'conus'       },
+  { id: 'alaska',    label: 'Alaska',        url: _GOES_W,  prefix: 'alaska'      },
+  { id: 'hawaii',    label: 'Hawaii',        url: _GOES_W,  prefix: 'hawaii'      },
+  { id: 'caribbean', label: 'Caribbean',     url: _GOES_E,  prefix: 'puertorico'  },
+  { id: 'atlantic',  label: 'Atlantic',      url: _GOES_E,  prefix: 'fulldisk'    },
+  { id: 'efulldisk', label: 'E. Full Disk',  url: _GOES_E,  prefix: 'fulldisk'    },
+  { id: 'wfulldisk', label: 'W. Full Disk',  url: _GOES_W,  prefix: 'fulldisk'    },
+  { id: 'himawari',  label: 'Himawari',      source: 'gibs'                       },
 ];
 
 let _goesRegionId  = 'auto'; // 'auto' or a GOES_REGIONS id
 let _goesProductId = 'ir';   // a GOES_PRODUCTS id
 
-// Build { url, layer } for the current product + region combination.
+// Build { url, layer, source? } for the current product + region combination.
 function _detectGoesConfig() {
   const product = GOES_PRODUCTS.find(p => p.id === _goesProductId) || GOES_PRODUCTS[0];
   const ch = product.ch;
 
   // Manual region override
   const override = GOES_REGIONS.find(r => r.id === _goesRegionId && r.id !== 'auto');
-  if (override) return { url: override.url, layer: `${override.prefix}_${ch}` };
+  if (override) {
+    if (override.source === 'gibs')
+      return { url: _GIBS_WMS, layer: product.gibsLayer || null, source: 'gibs' };
+    return { url: override.url, layer: `${override.prefix}_${ch}` };
+  }
 
   // Auto-detect from map centre
-  const IEM_E = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
-  const IEM_W = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
-  if (!map) return { url: IEM_E, layer: `conus_${ch}` };
+  if (!map) return { url: _GOES_E, layer: `conus_${ch}` };
   const c   = map.getCenter();
   const lat = c.lat;
   const lng = ((c.lng + 180) % 360 + 360) % 360 - 180; // normalise -180..180
 
-  if (lat > 50 && lng < -120 && lng > -170)               return { url: IEM_W, layer: `alaska_${ch}` };
-  if (lat > 16 && lat < 28 && lng < -150 && lng > -165)   return { url: IEM_W, layer: `hawaii_${ch}` };
-  if (lat >= 24 && lat <= 50 && lng <= -100 && lng >= -125) return { url: IEM_W, layer: `conus_${ch}` };
-  return { url: IEM_E, layer: `conus_${ch}` };
+  if (lat > 50 && lng < -120 && lng > -170)                return { url: _GOES_W, layer: `alaska_${ch}` };
+  if (lat > 16 && lat < 28 && lng < -150 && lng > -165)    return { url: _GOES_W, layer: `hawaii_${ch}` };
+  if (lat >= 24 && lat <= 50 && lng <= -100 && lng >= -125) return { url: _GOES_W, layer: `conus_${ch}` };
+  return { url: _GOES_E, layer: `conus_${ch}` };
 }
 
 // GOES frame state (also read by timeline and animation code outside this section)
@@ -9629,22 +9636,28 @@ function _buildGoesFrames() {
 }
 
 // Build a fresh WMS layer using the auto-detected (or manually chosen) region.
+// Returns null if the selected product has no data for this region (e.g. Himawari WV unavailable).
 function _makeGoesLayer(timeStr, opacity) {
-  const { url, layer } = _detectGoesConfig();
-  return L.tileLayer.wms(`${url}?_cb=${Date.now()}`, {
-    layers: layer,
-    styles: '',
-    format: 'image/png',
-    transparent: true,
-    version: '1.1.1',
-    opacity: opacity !== undefined ? opacity : 0.85,
-    zIndex: 11,
-    attribution: '© Iowa Mesonet · GOES IR',
-    crossOrigin: 'anonymous',
-    noWrap: true,
-    TIME: timeStr,
-    keepBuffer: _isIOS ? 1 : 2,
-    updateWhenIdle: false,
+  const config = _detectGoesConfig();
+  if (!config.layer) return null;  // Product not available for this region/source
+
+  const isGibs  = config.source === 'gibs';
+  const baseUrl = isGibs ? config.url : `${config.url}?_cb=${Date.now()}`;
+
+  return L.tileLayer.wms(baseUrl, {
+    layers:            config.layer,
+    styles:            '',
+    format:            'image/png',
+    transparent:       true,
+    version:           isGibs ? '1.3.0' : '1.1.1',
+    opacity:           opacity !== undefined ? opacity : 0.85,
+    zIndex:            11,
+    attribution:       isGibs ? '© NASA GIBS · JAXA Himawari-9' : '© Iowa Mesonet · GOES',
+    crossOrigin:       'anonymous',
+    noWrap:            true,
+    TIME:              timeStr,
+    keepBuffer:        _isIOS ? 1 : 2,
+    updateWhenIdle:    false,
     updateWhenZooming: false,
   }).addTo(map);
 }
@@ -9832,10 +9845,11 @@ function toggleSatelliteSub() {
     { id: 'west',      label: 'West CONUS' },
     { id: 'alaska',    label: 'Alaska' },
     { id: 'hawaii',    label: 'Hawaii' },
+    { id: 'caribbean', label: 'Caribbean' },
+    { id: 'atlantic',  label: 'Atlantic' },
     { id: 'efulldisk', label: 'E. Full Disk' },
     { id: 'wfulldisk', label: 'W. Full Disk' },
-    { id: 'meso1',     label: 'Meso-1' },
-    { id: 'meso2',     label: 'Meso-2' },
+    { id: 'himawari',  label: 'Himawari 🛰' },
   ].forEach(r => {
     const btn = document.createElement('div');
     btn.className = 'sat-region-btn' + (_goesRegionId === r.id ? ' active' : '');

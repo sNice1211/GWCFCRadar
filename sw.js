@@ -1,25 +1,29 @@
 // GWCFCRadar Service Worker — radar tile cache for instant loads
-const CACHE = 'gwcfc-v6';
+const CACHE = 'gwcfc-v7';
 
 // IEM L3 tile cache — immutable per timestamp key
 const IEM_L3_RE = /\/cache\/tile\.py\/1\.0\.0\/nexrad-n0q-\d{12}\//;
 // RainViewer radar tiles — immutable per unix timestamp in path (/v2/radar/{ts}/)
 const RV_TILE_RE = /\/v2\/radar\/\d+\//;
+// NASA GIBS WMS tiles with explicit TIME — immutable per timestamp
+const GIBS_TIME_RE = /\/wms\/epsg3857\/best\/wms\.cgi.*[?&]TIME=/;
 
 const CACHE_HOSTS = new Set([
-  'api.maptiler.com',           // basemap tiles — static forever
-  'mesonet.agron.iastate.edu',  // IEM NEXRAD L3 tile cache + WMS fallback
-  'tilecache.rainviewer.com',   // RainViewer radar tiles
-  'api.rainviewer.com',         // RainViewer frame index JSON
-  'opengeo.ncep.noaa.gov',      // NOAA single-site REF WMS
+  'api.maptiler.com',             // basemap tiles — static forever
+  'mesonet.agron.iastate.edu',    // IEM NEXRAD L3 tile cache + WMS fallback
+  'tilecache.rainviewer.com',     // RainViewer radar tiles
+  'api.rainviewer.com',           // RainViewer frame index JSON
+  'opengeo.ncep.noaa.gov',        // NOAA single-site REF WMS
+  'gibs.earthdata.nasa.gov',      // NASA GIBS satellite tiles (Himawari via WMS)
 ]);
 
 const TTL_MS = {
-  'api.maptiler.com':          7 * 24 * 3600 * 1000,  // 7 days  — static tiles
-  'tilecache.rainviewer.com':  5 * 60 * 1000,          // default 5 min; overridden below for radar tiles
-  'api.rainviewer.com':        2 * 60 * 1000,          // 2 min   — frame index (check for new frames)
-  'mesonet.agron.iastate.edu': 2 * 3600 * 1000,        // 2 hr    — WMS fallback
-  'opengeo.ncep.noaa.gov':     2 * 3600 * 1000,        // 2 hr    — single-site REF
+  'api.maptiler.com':           7 * 24 * 3600 * 1000,  // 7 days  — static tiles
+  'tilecache.rainviewer.com':   5 * 60 * 1000,          // default 5 min; overridden below for radar tiles
+  'api.rainviewer.com':         2 * 60 * 1000,          // 2 min   — frame index (check for new frames)
+  'mesonet.agron.iastate.edu':  2 * 3600 * 1000,        // 2 hr    — WMS fallback
+  'opengeo.ncep.noaa.gov':      2 * 3600 * 1000,        // 2 hr    — single-site REF
+  'gibs.earthdata.nasa.gov':    2 * 3600 * 1000,        // 2 hr    — satellite WMS tiles
 };
 
 self.addEventListener('install', () => self.skipWaiting());
@@ -41,6 +45,8 @@ self.addEventListener('fetch', e => {
       ttl = 24 * 3600 * 1000; // IEM L3 radar tiles: immutable per timestamp → 24 hr
     } else if (url.hostname === 'tilecache.rainviewer.com' && RV_TILE_RE.test(url.pathname)) {
       ttl = 24 * 3600 * 1000; // RainViewer radar tiles: immutable per timestamp → 24 hr
+    } else if (url.hostname === 'gibs.earthdata.nasa.gov' && GIBS_TIME_RE.test(e.request.url)) {
+      ttl = 24 * 3600 * 1000; // GIBS satellite WMS with explicit TIME: immutable → 24 hr
     } else {
       ttl = TTL_MS[url.hostname] ?? 10 * 60 * 1000;
     }
