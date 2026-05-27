@@ -6166,19 +6166,26 @@ function _buildRadarPool() {
   _buildCanadaPool();
   try { _refreshPlayButtonsEnabled(); } catch(e){}
 
-  // Preload: current frame first, then ripple outward so adjacent frames load next.
-  // Layer creation is cheap; browser throttles actual tile fetches naturally.
   if (_radarPoolBuilt && radarFrames.length) {
+    // Kick off a pre-fetch of viewport tiles for the most-recent frame so they
+    // land in the browser HTTP cache + service-worker cache before Leaflet even
+    // creates its img elements — turns the first tile paint from a network round-
+    // trip into a cache hit.
+    _prefetchRadarTiles(radarFrames[currentFrame].tileKey);
+
+    // Current frame: immediate — gets all 6 browser connections to IEM uncontested
     _ensureNexradLayer(currentFrame);
+
+    // Other frames: staggered 400 ms later so they don't compete for bandwidth
+    // while the visible frame is loading.
     const order = [];
     for (let d = 1; d < radarFrames.length; d++) {
       const prev = currentFrame - d; if (prev >= 0) order.push(prev);
       const next = currentFrame + d; if (next < radarFrames.length) order.push(next);
     }
-    order.forEach((i) => {
-      if (_radarPoolBuilt) { _ensureNexradLayer(i); }
-      // Canada loaded lazily via _activateWindow on first showFrame call
-    });
+    setTimeout(() => {
+      order.forEach(i => { if (_radarPoolBuilt) _ensureNexradLayer(i); });
+    }, 400);
   }
 }
 
@@ -6242,6 +6249,34 @@ function _switchSlotToWms(i) {
   if (activeLayers.nexrad && i === currentFrame) l.setOpacity(radarOpacity);
 }
 
+// Pre-warm the browser HTTP cache + service-worker cache for all viewport tiles
+// of a given radar tileKey at the current zoom. Called before Leaflet creates
+// the layer so Leaflet's img requests are served from cache instead of the wire.
+function _prefetchRadarTiles(tileKey) {
+  if (!map) return;
+  try {
+    const z  = Math.min(map.getZoom(), 9); // IEM tile cache max native zoom
+    const b  = map.getBounds();
+    const n  = 1 << z;
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const tx = lng => clamp(Math.floor((lng + 180) / 360 * n), 0, n - 1);
+    const ty = lat => {
+      const r = lat * Math.PI / 180;
+      return clamp(Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n), 0, n - 1);
+    };
+    const x0 = tx(b.getWest()),  x1 = tx(b.getEast());
+    const y0 = Math.min(ty(b.getNorth()), ty(b.getSouth()));
+    const y1 = Math.max(ty(b.getNorth()), ty(b.getSouth()));
+    const base = `${IEM_TILE_BASE}${tileKey}/${z}/`;
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        const img = new Image();
+        img.src = base + `${x}/${y}.png`;
+      }
+    }
+  } catch(_) {}
+}
+
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const frame = radarFrames[i];
@@ -6258,6 +6293,16 @@ function _ensureNexradLayer(i) {
     keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: false, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
+  // Boost browser fetch priority for the visible frame so it wins bandwidth
+  // over the background frames being preloaded simultaneously.
+  if (i === currentFrame) {
+    const _origCT = l.createTile.bind(l);
+    l.createTile = function(coords, done) {
+      const tile = _origCT(coords, done);
+      tile.fetchPriority = 'high';
+      return tile;
+    };
+  }
   l.on('tileload', (e) => {
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
     if (!_radarLayerLoaded[i]) {
