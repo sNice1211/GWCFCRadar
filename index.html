@@ -7833,95 +7833,232 @@ async function loadTropical() {
 // ── LIGHTNING (Simulated live feed) ──
 // Note: Blitzortung requires WebSocket from their site.
 // We simulate live lightning with a visual effect and note real implementation.
-let lightningActive = false;
-let lightningInterval = null;  // kept for compat
-let _ltgSocket = null;
-let _ltgReconnectTimer = null;
-let _ltgRegion = 1; // Blitzortung server region (1=EU, 2=NA, 3=OC, 4=AS)
+// ── LIGHTNING LAYER (Saratoga/Blitzortung placefile) ──
+// Data + parsing logic ported from lightning.js.
+// Source: saratoga-weather.org Blitzortung placefile via cachefetch proxy.
+// Polled per RefreshSeconds in the placefile (default 5 min); strikes older
+// than 10 min are filtered out. Leaflet divIcon markers with age-based color.
 
-// ── REAL LIGHTNING via Blitzortung.org WebSocket ──
-// Blitzortung is a free community lightning detection network
-// Servers: ws1.blitzortung.org (EU), ws7.blitzortung.org (NA), ws8.blitzortung.org (OC/AS)
-function startLightningSimulation() {
-  if (_ltgSocket && _ltgSocket.readyState <= 1) return; // already open/connecting
-  _ltgConnectBlitzortung();
+const _LTG_SRC  = 'https://saratoga-weather.org/USA-blitzortung/placefile.txt';
+const _LTG_URL  = `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=60&url=${encodeURIComponent(_LTG_SRC)}`;
+const _LTG_MAX_AGE_MS  = 600000; // 10 min — DEFAULT_STRIKE_MAX_AGE_SECONDS from lightning.js
+const _LTG_RETRIES     = 3;
+const _LTG_RETRY_MS    = 500;
+const _LTG_TIMEOUT_MS  = 15000;
+
+// TZ_OFFSETS_MINUTES from lightning.js (converted to minutes for _ltgToUtc)
+const _LTG_TZ = { UTC:0,GMT:0,EDT:-240,EST:-300,CDT:-300,CST:-360,MDT:-360,MST:-420,PDT:-420,PST:-480 };
+
+let lightningActive   = false;
+let lightningInterval = null;  // compat stub
+let lightningFlash    = [];    // compat — toggle-off code references this
+let _ltgMarkers       = new Map(); // key → { marker, ts }
+let _ltgData          = null;
+let _ltgRefreshTimer  = null;
+let _ltgFadeTimer     = null;
+let _ltgFetching      = false;
+
+// ── Timestamp helpers (ported from lightning.js) ──
+
+function _ltgToUtc(year, mon, day, h, m, s, tz) {
+  const off = _LTG_TZ[tz];
+  if (!Number.isFinite(off)) return NaN;
+  return Date.UTC(year, mon, day, h, m, s) - off * 60000;
 }
 
-function _ltgConnectBlitzortung() {
-  // Try multiple servers , Blitzortung rotates them
-  const servers = [
-    'wss://ws1.blitzortung.org:8100/',
-    'wss://ws7.blitzortung.org:8100/',
-    'wss://ws8.blitzortung.org:8100/',
-    'wss://ws3.blitzortung.org:8100/',
-  ];
-  const url = servers[Math.floor(Math.random() * servers.length)];
+function _ltgDateParts(tsMs, tz) {
+  const off = _LTG_TZ[tz];
+  if (!Number.isFinite(off)) return null;
+  const d = new Date(tsMs + off * 60000);
+  return { year: d.getUTCFullYear(), mon: d.getUTCMonth(), day: d.getUTCDate(), tz };
+}
 
+function _ltgParseUpdated(line) {
+  const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  const m = line.match(/^Updated:\s*\w{3},\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*([A-Z]{2,5})\s*$/);
+  if (!m) return null;
+  const mon = MONTHS[m[2].toLowerCase().slice(0,3)];
+  if (mon === undefined) return null;
+  const ts = _ltgToUtc(+m[3], mon, +m[1], +m[4], +m[5], +m[6], m[7]);
+  if (!isFinite(ts)) return null;
+  return { year:+m[3], mon, day:+m[1], tz:m[7], ts };
+}
+
+function _ltgParseStrikeTime(label, ctx) {
+  if (!label) return null;
+  const m = label.match(/@\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)\s*([A-Z]{2,5})?\s*$/i);
+  if (!m) return null;
+  let h = +m[1] % 12;
+  if (m[4].toLowerCase() === 'pm') h += 12;
+  const tz   = (m[5] || ctx?.tz || '').toUpperCase();
+  const base = ctx || _ltgDateParts(Date.now(), tz);
+  if (!base) return null;
+  let ts = _ltgToUtc(base.year, base.mon, base.day, h, +m[2], +(m[3]||0), tz);
+  if (!isFinite(ts)) return null;
+  const ref = ctx?.ts ?? Date.now();
+  if (ts - ref > 6*3600000)         ts -= 86400000;
+  if (!ctx && ts - Date.now() < -18*3600000) ts += 86400000;
+  return ts;
+}
+
+// parsePlacefile — ported directly from lightning.js parsePlacefile()
+function _ltgParsePlacefile(text) {
+  if (!text || !text.trim()) return null;
+  const features = [], seen = new Set();
+  let refreshSecs = 300, ctx = null;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const isComment = line.startsWith(';');
+    const norm = isComment ? line.slice(1).trim() : line;
+    if (norm.startsWith('Updated:')) { const u = _ltgParseUpdated(norm); if (u) ctx = u; continue; }
+    if (isComment) continue;
+    if (line.startsWith('RefreshSeconds:')) {
+      const v = +line.split(':')[1]?.trim();
+      if (isFinite(v) && v > 0) refreshSecs = v;
+      continue;
+    }
+    if (!line.startsWith('Icon:')) continue;
+    const parts = line.slice(5).trim().split(',');
+    if (parts.length < 6) continue;
+    const lat = +parts[0], lon = +parts[1];
+    const label = parts.slice(5).join(',').trim();
+    const ts = _ltgParseStrikeTime(label, ctx) ?? ctx?.ts ?? Date.now();
+    if (!isFinite(lat) || !isFinite(lon) || !isFinite(ts)) continue;
+    const key = `${lat.toFixed(5)}|${lon.toFixed(5)}|${ts}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    features.push({ lat, lon, ts, label });
+  }
+  return { refreshSecs, features };
+}
+
+// ── Leaflet rendering ──
+
+function _ltgMakeIcon(ageMs) {
+  const fresh  = ageMs < 60000;
+  const recent = ageMs < 300000;
+  const color  = fresh  ? '#ffffff' : recent ? '#ffe066' : '#d9aaff';
+  const shadow = fresh  ? '0 0 6px #fff,0 0 14px #ffe066' : recent ? '0 0 5px #ffe066' : '0 0 4px #b07fe0';
+  const size   = fresh  ? '17px' : recent ? '15px' : '13px';
+  return L.divIcon({
+    className: '',
+    html: `<div style="font-size:${size};line-height:1;color:${color};text-shadow:${shadow};user-select:none;pointer-events:none">⚡</div>`,
+    iconSize: [18, 22], iconAnchor: [9, 22],
+  });
+}
+
+function _ltgRenderStrikes(features) {
+  const now = Date.now();
+  const keepKeys = new Set();
+  for (const f of features) {
+    const ageMs = now - f.ts;
+    if (ageMs < 0 || ageMs > _LTG_MAX_AGE_MS) continue;
+    if (!_ptInPolyUnion(f.lat, f.lon)) continue;
+    const key = `${f.lat.toFixed(5)}|${f.lon.toFixed(5)}|${f.ts}`;
+    keepKeys.add(key);
+    if (!_ltgMarkers.has(key)) {
+      const marker = L.marker([f.lat, f.lon], {
+        icon: _ltgMakeIcon(ageMs), zIndexOffset: 900, interactive: false,
+      }).addTo(map);
+      _ltgMarkers.set(key, { marker, ts: f.ts });
+      lightningFlash.push({ marker, time: f.ts }); // compat
+    }
+  }
+  // Remove expired / out-of-polygon markers
+  for (const [key, { marker }] of _ltgMarkers) {
+    if (!keepKeys.has(key)) {
+      try { map.removeLayer(marker); } catch(_) {}
+      lightningFlash = lightningFlash.filter(f => f.marker !== marker);
+      _ltgMarkers.delete(key);
+    }
+  }
+}
+
+// Re-skin existing markers every 30 s to reflect age without waiting for next fetch
+function _ltgStartFade() {
+  if (_ltgFadeTimer) return;
+  _ltgFadeTimer = setInterval(() => {
+    if (!activeLayers.lightning) { clearInterval(_ltgFadeTimer); _ltgFadeTimer = null; return; }
+    const now = Date.now();
+    for (const [key, { marker, ts }] of _ltgMarkers) {
+      const ageMs = now - ts;
+      if (ageMs > _LTG_MAX_AGE_MS) {
+        try { map.removeLayer(marker); } catch(_) {}
+        lightningFlash = lightningFlash.filter(f => f.marker !== marker);
+        _ltgMarkers.delete(key);
+      } else {
+        const el = marker.getElement();
+        const d  = el?.querySelector('div');
+        if (!d) continue;
+        const fresh  = ageMs < 60000, recent = ageMs < 300000;
+        d.style.color      = fresh ? '#ffffff' : recent ? '#ffe066' : '#d9aaff';
+        d.style.textShadow = fresh ? '0 0 6px #fff,0 0 14px #ffe066' : recent ? '0 0 5px #ffe066' : '0 0 4px #b07fe0';
+        d.style.fontSize   = fresh ? '17px' : recent ? '15px' : '13px';
+      }
+    }
+  }, 30000);
+}
+
+async function _ltgRefresh() {
+  if (!activeLayers.lightning || _ltgFetching) return;
+  _ltgFetching = true;
   try {
-    _ltgSocket = new WebSocket(url);
-  } catch(e) { _ltgScheduleReconnect(); return; }
-
-  _ltgSocket.onopen = () => {
-    // Send subscribe message , Blitzortung expects this JSON payload
-    _ltgSocket.send(JSON.stringify({ west: -180, east: 180, north: 90, south: -90 }));
-  };
-
-  _ltgSocket.onmessage = (evt) => {
+    let text = null;
+    let lastErr;
+    for (let i = 1; i <= _LTG_RETRIES; i++) {
+      try {
+        const r = await fetch(_LTG_URL, {
+          headers: { Accept: 'text/plain,text/html;q=0.9,*/*;q=0.8' },
+          signal: _abortSignal(_LTG_TIMEOUT_MS),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        text = await r.text();
+        break;
+      } catch(e) {
+        lastErr = e;
+        if (i < _LTG_RETRIES) await new Promise(r => setTimeout(r, _LTG_RETRY_MS * i));
+      }
+    }
     if (!activeLayers.lightning) return;
-    try {
-      const data = JSON.parse(evt.data);
-      // Blitzortung sends: { time, lat, lon, alt, ... }
-      // lat/lon are in nanoseconds × 1e-9 or direct degrees depending on version
-      let lat = data.lat, lon = data.lon;
-      // Some versions send as integers in 1e9 units
-      if (Math.abs(lat) > 1000) { lat = lat / 1e9; lon = lon / 1e9; }
-      if (!isFinite(lat) || !isFinite(lon)) return;
-      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return;
-      addLightningStrike(lat, lon, Date.now());
-    } catch(e) {}
-  };
-
-  _ltgSocket.onerror = () => { _ltgSocket = null; _ltgScheduleReconnect(); };
-  _ltgSocket.onclose = () => {
-    _ltgSocket = null;
-    if (activeLayers.lightning) _ltgScheduleReconnect();
-  };
+    if (text) {
+      const parsed = _ltgParsePlacefile(text);
+      if (parsed) {
+        _ltgData = parsed;
+        _ltgRenderStrikes(parsed.features);
+        const next = Math.max(30000, parsed.refreshSecs * 1000);
+        clearTimeout(_ltgRefreshTimer);
+        if (activeLayers.lightning) _ltgRefreshTimer = setTimeout(_ltgRefresh, next);
+        return;
+      }
+    }
+    console.warn('[Lightning] Fetch/parse failed:', lastErr);
+    if (activeLayers.lightning) _ltgRefreshTimer = setTimeout(_ltgRefresh, 60000);
+  } finally {
+    _ltgFetching = false;
+  }
 }
 
-function _ltgScheduleReconnect() {
-  clearTimeout(_ltgReconnectTimer);
-  _ltgReconnectTimer = setTimeout(_ltgConnectBlitzortung, 5000);
+function startLightningSimulation() {
+  if (_ltgRefreshTimer) return;
+  _ltgStartFade();
+  _ltgRefresh();
 }
 
 function _ltgStop() {
-  clearTimeout(_ltgReconnectTimer);
-  if (_ltgSocket) { try { _ltgSocket.close(); } catch(e){} _ltgSocket = null; }
+  clearTimeout(_ltgRefreshTimer); _ltgRefreshTimer = null;
+  clearInterval(_ltgFadeTimer);   _ltgFadeTimer = null;
+  _ltgFetching = false;
+  for (const { marker } of _ltgMarkers.values()) {
+    try { map.removeLayer(marker); } catch(_) {}
+  }
+  _ltgMarkers.clear();
+  lightningFlash = [];
 }
 
-function addLightningStrike(lat, lon, time) {
-  if (!_ptInPolyUnion(lat, lon)) return;
-  const age = Date.now() - time;
-  const isFresh = age < 5000;
-  const iconHtml = `<div style="
-    font-size: 16px; line-height: 1;
-    color: ${isFresh ? '#ffffff' : '#d9aaff'};
-    text-shadow: ${isFresh ? '0 0 6px #fff, 0 0 12px #ffe066' : '0 0 4px #b07fe0'};
-    user-select: none; pointer-events: none;
-  ">⚡</div>`;
-  const marker = L.marker([lat, lon], {
-    icon: L.divIcon({ className: '', html: iconHtml, iconSize: [16,20], iconAnchor: [8,20] }),
-    zIndexOffset: 900, interactive: false
-  }).addTo(map);
-  lightningFlash.push({ marker, time });
-  setTimeout(() => {
-    const el = marker.getElement();
-    if (el) { const d = el.querySelector('div'); if (d) { d.style.color='#d9aaff'; d.style.fontSize='13px'; } }
-  }, 5000);
-  setTimeout(() => {
-    map.removeLayer(marker);
-    lightningFlash = lightningFlash.filter(f => f.marker !== marker);
-  }, 30000);
-}
+// Stubs kept so existing toggle-off code doesn't break
+let _ltgSocket = null;
+let _ltgReconnectTimer = null;
 
 // ── WINDY MODEL EMBED ──
 function showModelEmbed(model) {
