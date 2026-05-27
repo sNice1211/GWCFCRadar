@@ -14190,7 +14190,11 @@ function _loadFlacJs() {
   return _flacJsLoading;
 }
 
-// Re-encode an AudioBuffer to WebM/Opus/AAC via MediaRecorder (runs at real-time speed)
+let _nwrLastTruncated = false;
+
+// Re-encode an AudioBuffer to WebM/Opus/AAC via MediaRecorder.
+// Hard cap at 10 s: if the recording is longer, encoding stops at 10 s and
+// _nwrLastTruncated is set so the caller can warn the user.
 function _nwrBufToMediaRec(audioBuf, preferMime) {
   const candidates = [preferMime, 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'];
   const mime = candidates.find(t => { try { return MediaRecorder.isTypeSupported(t); } catch(_) { return false; } });
@@ -14198,19 +14202,23 @@ function _nwrBufToMediaRec(audioBuf, preferMime) {
   return new Promise((resolve, reject) => {
     const ctx  = new AudioContext({ sampleRate: audioBuf.sampleRate });
     const dest = ctx.createMediaStreamDestination();
-    let mr;
+    let mr, bufSrc, cutTimer;
     try { mr = new MediaRecorder(dest.stream, { mimeType: mime }); }
     catch(e) { ctx.close(); reject(new Error('MediaRecorder: ' + e.message)); return; }
     const chunks = [];
+    let cut = false;
     mr.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-    mr.onstop    = () => { ctx.close(); resolve(new Blob(chunks, { type: mime })); };
-    mr.onerror   = () => { ctx.close(); reject(new Error('MediaRecorder encoding failed')); };
+    mr.onstop    = () => { clearTimeout(cutTimer); _nwrLastTruncated = cut; ctx.close(); resolve(new Blob(chunks, { type: mime })); };
+    mr.onerror   = () => { clearTimeout(cutTimer); ctx.close(); reject(new Error('MediaRecorder encoding failed')); };
     mr.start(250);
-    const src = ctx.createBufferSource();
-    src.buffer = audioBuf;
-    src.connect(dest);
-    src.onended = () => { try { mr.stop(); } catch(_) {} };
-    src.start();
+    bufSrc = ctx.createBufferSource();
+    bufSrc.buffer = audioBuf;
+    bufSrc.connect(dest);
+    bufSrc.onended = () => { try { mr.stop(); } catch(_) {} };
+    bufSrc.start();
+    cutTimer = setTimeout(() => {
+      if (mr.state !== 'inactive') { cut = true; try { bufSrc.stop(); mr.stop(); } catch(_) {} }
+    }, 10000);
   });
 }
 
@@ -14277,13 +14285,17 @@ async function _nwrDownloadRec(id, fmt) {
   const fname = `NWR_${rec.call.toUpperCase()}_${ts}.${ext}`;
 
   const isRealtime = ['webm','opus','aac'].includes(fmt);
+  _nwrLastTruncated = false;
   if (fmt !== 'mp3') {
-    const note = isRealtime ? ` (~${_nwrFmtDur(rec.dur)})` : '';
-    showToast(`⏳ Encoding ${fmt.toUpperCase()}…${note}`, Math.max(3500, rec.dur * 1000 + 1000));
+    const encSecs = isRealtime ? Math.min(rec.dur, 10) : rec.dur;
+    const note = isRealtime ? ` (~${_nwrFmtDur(encSecs)})` : '';
+    showToast(`⏳ Encoding ${fmt.toUpperCase()}…${note}`, Math.max(3500, encSecs * 1000 + 1000));
   }
   let blob;
   try { blob = await _nwrGetBlob(rec, fmt); }
   catch(e) { showToast(`⚠ ${fmt.toUpperCase()} failed: ${e.message}`, 5000); return; }
+
+  if (_nwrLastTruncated) showToast(`⚠ ${fmt.toUpperCase()} contains first 10s only — use MP3 or FLAC for the full recording`, 6000);
 
   const url = URL.createObjectURL(blob);
   const a   = document.createElement('a');
