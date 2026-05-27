@@ -11028,25 +11028,32 @@ if (document.readyState === 'loading') {
   startLoadFacts();
 }
 
-// ── DISMISS LOADING (always called) ──
-// 1.5 facts minimum: rotation interval (3800ms) × 1.5 = 5700ms
-const LOAD_MIN_MS = 5700;
+// ── DISMISS LOADING ──
 const _loadStart = Date.now();
-let _dismissPending = false;
+
 function dismissLoading() {
-  if (_dismissPending) return;
-  const elapsed = Date.now() - _loadStart;
-  if (elapsed < LOAD_MIN_MS) {
-    _dismissPending = true;
-    setTimeout(() => { _dismissPending = false; dismissLoading(); }, LOAD_MIN_MS - elapsed);
-    return;
-  }
   stopLoadFacts();
   const el = document.getElementById('loading');
   if (!el) return;
   el.classList.add('hidden');
-  setTimeout(() => { if (el.parentNode) el.parentNode.removeChild(el); }, 600);
+  el.style.opacity = '0';
+  el.style.pointerEvents = 'none';
+  setTimeout(() => {
+    if (el.parentNode) el.parentNode.removeChild(el);
+    else el.style.display = 'none';
+  }, 500);
 }
+
+// Absolute failsafe: force-remove the loading screen after 8 s regardless of
+// whether init() runs or completes — catches CDN failures, JS errors, etc.
+setTimeout(function() {
+  var el = document.getElementById('loading');
+  if (!el) return;
+  el.style.transition = 'none';
+  el.style.opacity = '0';
+  el.style.display = 'none';
+  if (el.parentNode) el.parentNode.removeChild(el);
+}, 8000);
 
 // ── STARTUP ──
 async function init() {
