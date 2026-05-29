@@ -7289,41 +7289,51 @@ async function loadSPCOutlook(dayNum, hazard) {
   if (!dayNum) dayNum = _spcDay;
   if (!hazard) hazard = _spcHazard;
   const haz = (dayNum === 3) ? 'cat' : hazard;
-  const url = `https://www.spc.noaa.gov/products/outlook/day${dayNum}otlk_${haz}.nolyr.geojson`;
+  const spcUrl = `https://www.spc.noaa.gov/products/outlook/day${dayNum}otlk_${haz}.nolyr.geojson`;
   updateLoadStatus(`Loading SPC Day ${dayNum} ${haz.toUpperCase()} outlook…`);
   try {
     let data;
+    // 1. Direct (works if SPC sends CORS headers)
     try {
-      const r = await fetchWithTimeout(url, 5000);
+      const r = await fetchWithTimeout(spcUrl, 5000);
       if (r.ok) data = await r.json();
     } catch(e) {}
+    // 2. corsproxy.io — returns raw JSON directly, no wrapper (pattern from outlooks.js)
     if (!data) {
-      const txt = await proxiedFetch(url, 10000);
-      data = JSON.parse(txt);
+      try {
+        const r = await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(spcUrl)}`, 8000);
+        if (r.ok) data = await r.json();
+      } catch(e) {}
+    }
+    // 3. allorigins fallback
+    if (!data) {
+      try {
+        const txt = await proxiedFetch(spcUrl, 10000);
+        data = JSON.parse(txt);
+      } catch(e) {}
     }
     if (spcOutlookLayer) { map.removeLayer(spcOutlookLayer); spcOutlookLayer = null; }
-    if (!data || !data.features || !data.features.length) {
-      updateLoadStatus('No SPC outlook data available.');
+    if (!data || !Array.isArray(data.features) || !data.features.length) {
+      updateLoadStatus('No SPC outlook data currently.');
       const leg = document.getElementById('spc-legend');
       if (leg) leg.style.display = 'none';
       return;
     }
+    // SPC GeoJSON includes fill/stroke/LABEL on each feature (per outlooks.js)
     spcOutlookLayer = L.geoJSON(data, {
       style: f => {
-        const dn = (f.properties.DN || '').toUpperCase();
-        const color = haz === 'cat'
-          ? (SPC_COLORS[dn] || '#888888')
-          : (SPC_PROB_COLORS[String(f.properties.DN)] || SPC_COLORS[dn] || '#888888');
-        return { color: '#333', weight: 0.5, fillColor: color, fillOpacity: 0.35 };
+        const fill = f.properties.fill || SPC_COLORS[(f.properties.DN || '').toUpperCase()] || '#888';
+        const stroke = f.properties.stroke || fill;
+        return { color: stroke, weight: 1.5, fillColor: fill, fillOpacity: 0.35 };
       },
       onEachFeature: (f, layer) => {
-        const dn = f.properties.DN || 'Unknown';
-        const label = haz === 'cat' ? `Risk: ${dn}` : `Prob: ${(parseFloat(dn)*100||dn)}%`;
+        const label = f.properties.LABEL || f.properties.LABEL2 || f.properties.DN || 'Unknown';
         layer.bindPopup(`<div class="alert-popup"><b>SPC Day ${dayNum} ${haz.toUpperCase()}</b><br>${label}</div>`);
       }
     }).addTo(map);
     const leg = document.getElementById('spc-legend');
     if (leg) leg.style.display = 'block';
+    updateLoadStatus('');
   } catch (e) {
     console.warn('SPC error:', e);
     updateLoadStatus('SPC outlook load failed.');
