@@ -86,6 +86,7 @@ setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.tra
 #severe-model-panel, #s3-panel, #tropical-model-panel,
 #gwcfc-auth-modal, #track-toolbar, #draw-toolbar,
 .leaflet-popup-content-wrapper { contain: layout style; }
+.sa-sym { background: none !important; border: none !important; }
 
 body {
   background: var(--bg);
@@ -20366,6 +20367,7 @@ function _makeDraggable(el, handle) {
 // ── SURFACE ANALYSIS (WPC Fronts) ──────────────────────────────────────────
 let _surfaceLayer = null;
 let _surfaceOn = true;
+let _surfaceLoading = false;
 const SA_URL = 'https://forecast.weather.gov/product.php?site=CRH&product=COD&issuedby=SUS';
 
 function _parseSurfaceText(text) {
@@ -20417,6 +20419,7 @@ function _sampleFrontLine(coords, spacingDeg) {
     const a=coords[i], b=coords[i+1];
     const cosLat=Math.cos(a[0]*Math.PI/180);
     const seg=Math.sqrt((b[0]-a[0])**2+((b[1]-a[1])*cosLat)**2);
+    if(seg===0)continue;
     const bearing=_frontBearing(a,b);
     while(acc+seg>=nxt){
       const t=(nxt-acc)/seg;
@@ -20429,19 +20432,26 @@ function _sampleFrontLine(coords, spacingDeg) {
 }
 
 function _triSVG(rot, color) {
-  return `<svg width="18" height="18" viewBox="-9 -9 18 18" xmlns="http://www.w3.org/2000/svg" style="transform:rotate(${rot}deg)"><polygon points="0,-7 -4,2 4,2" fill="${color}"/></svg>`;
+  return `<svg width="18" height="18" viewBox="-9 -9 18 18" xmlns="http://www.w3.org/2000/svg" style="transform:rotate(${rot}deg);display:block"><polygon points="0,-7 -4,2 4,2" fill="${color}"/></svg>`;
 }
 function _semicSVG(rot, color) {
-  return `<svg width="18" height="18" viewBox="-9 -9 18 18" xmlns="http://www.w3.org/2000/svg" style="transform:rotate(${rot}deg)"><path d="M-5,0 A5,5 0 0,1 5,0 Z" fill="${color}"/></svg>`;
+  return `<svg width="18" height="18" viewBox="-9 -9 18 18" xmlns="http://www.w3.org/2000/svg" style="transform:rotate(${rot}deg);display:block"><path d="M-5,0 A5,5 0 0,1 5,0 Z" fill="${color}"/></svg>`;
 }
 
 async function loadSurfaceAnalysis() {
+  if(_surfaceLoading)return;
+  _surfaceLoading=true;
   updateLoadStatus('Loading surface fronts…');
-  let text = null;
+  let text=null;
   try{const r=await fetchWithTimeout(SA_URL,6000);if(r.ok)text=await r.text();}catch(e){}
   if(!text){try{const r=await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(SA_URL)}`,8000);if(r.ok)text=await r.text();}catch(e){}}
   if(!text){try{text=await proxiedFetch(SA_URL,10000);}catch(e){}}
-  if(!text){updateLoadStatus('Surface analysis unavailable.');return;}
+
+  _surfaceLoading=false;
+
+  if(!_surfaceOn){updateLoadStatus('');return;}
+
+  if(!text){updateLoadStatus('Surface analysis unavailable.');setTimeout(()=>updateLoadStatus(''),3000);return;}
 
   let prod=null;
   if(!text.includes('<')&&/(HIGHS|LOWS|COLD|WARM)/.test(text)){prod=text;}
@@ -20449,17 +20459,16 @@ async function loadSurfaceAnalysis() {
     try{const d=new DOMParser().parseFromString(text,'text/html');const pre=d.querySelector('pre');if(pre)prod=pre.textContent.trim();}catch(e){}
     if(!prod){const m=text.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);if(m)prod=m[1].trim();}
   }
-  if(!prod){updateLoadStatus('Could not parse surface analysis.');return;}
+  if(!prod){updateLoadStatus('Could not parse surface analysis.');setTimeout(()=>updateLoadStatus(''),3000);return;}
 
   const{lines,centers}=_parseSurfaceText(prod);
-  if(_surfaceLayer){map.removeLayer(_surfaceLayer);_surfaceLayer=null;}
   const layers=[];
 
   for(const line of lines){
     if(line.coords.length<2)continue;
     const ll=line.coords;
     const mkr=(lat,lng,html)=>L.marker([lat,lng],{
-      icon:L.divIcon({className:'',html,iconSize:[18,18],iconAnchor:[9,9]}),
+      icon:L.divIcon({className:'sa-sym',html,iconSize:[18,18],iconAnchor:[9,9]}),
       interactive:false,keyboard:false
     });
 
@@ -20498,18 +20507,23 @@ async function loadSurfaceAnalysis() {
     const letter=c.type==='HIGH'?'H':'L';
     layers.push(L.marker([c.lat,c.lng],{
       icon:L.divIcon({
-        className:'',
+        className:'sa-sym',
         html:`<div style="font-family:Arial,sans-serif;font-weight:900;font-size:20px;line-height:1;color:${col};text-shadow:-1px -1px 0 #fff,1px -1px 0 #fff,-1px 1px 0 #fff,1px 1px 0 #fff;text-align:center">${letter}<br><span style="font-size:9px;font-weight:600;color:#222;text-shadow:none">${c.pressure}</span></div>`,
         iconSize:[28,28],iconAnchor:[14,14]
       })
     }));
   }
 
+  // Second check after all awaits — user may have toggled off during the slow fetch
+  if(!_surfaceOn){updateLoadStatus('');return;}
+
+  if(_surfaceLayer){map.removeLayer(_surfaceLayer);_surfaceLayer=null;}
   _surfaceLayer=L.layerGroup(layers).addTo(map);
   updateLoadStatus('');
 }
 
 function clearSurfaceAnalysis(){
+  _surfaceLoading=false;
   if(_surfaceLayer){map.removeLayer(_surfaceLayer);_surfaceLayer=null;}
 }
 
