@@ -4549,6 +4549,41 @@ footer {
   100% { box-shadow: 0 0 0 0   rgba(26,143,255,0); }
 }
 
+/* ── GPS INFO HUD ── */
+#gps-hud {
+  position: fixed;
+  bottom: 140px;
+  right: 10px;
+  z-index: 1050;
+  background: rgba(10,14,20,0.88);
+  border: 1px solid rgba(26,143,255,0.45);
+  border-radius: 10px;
+  padding: 8px 12px 6px;
+  min-width: 140px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgba(255,255,255,0.85);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  line-height: 1.5;
+}
+.gps-hud-title {
+  font-size: 8px;
+  letter-spacing: 2px;
+  color: #1a8fff;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.gps-hud-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 1px 0;
+}
+.gps-hud-icon { color: #1a8fff; width: 10px; flex-shrink: 0; }
+.gps-hud-val  { color: rgba(255,255,255,0.9); }
+@media (max-width:480px) { #gps-hud { right: 6px; bottom: 120px; } }
+
 /* ── CROSSHAIR ── */
 body.gwcfc-crosshair #map { cursor: crosshair !important; }
 body.gwcfc-crosshair #map::after {
@@ -5445,6 +5480,11 @@ body.gwcfc-crosshair #map::after {
   <button id="ttb-close-track" onclick="deactivateTool()" title="Exit Track Maker">✕</button>
 </div>
 
+
+<!-- GPS HUD OVERLAY -->
+<div id="gps-hud" style="display:none;">
+  <div class="gps-hud-title">&#x25CF;&nbsp;GPS</div>
+</div>
 
 <!-- POLY TOOLBAR -->
 <div id="radius-toolbar">
@@ -11466,6 +11506,46 @@ function locateUser() {
 
 // ── LIVE LOCATION TRACKING ──
 let _locWatchId = null, _locMarker = null, _locCircle = null, _locFollow = false;
+let _gpsHudOn = false, _lastGpsPos = null;
+let _gpsBreadcrumbOn = false, _gpsBreadcrumbPts = [], _gpsBreadcrumbLine = null;
+
+function _bearingToCardinal(deg) {
+  const d = ['N','NE','E','SE','S','SW','W','NW'];
+  return d[Math.round(deg / 45) % 8];
+}
+
+function _updateGpsHud(pos) {
+  _lastGpsPos = pos;
+  // Breadcrumb trail
+  if (_gpsBreadcrumbOn) {
+    const ll = [pos.coords.latitude, pos.coords.longitude];
+    _gpsBreadcrumbPts.push(ll);
+    if (!_gpsBreadcrumbLine) {
+      _gpsBreadcrumbLine = L.polyline([ll], { color:'#1a8fff', weight:2, opacity:0.55, interactive:false }).addTo(map);
+    } else {
+      _gpsBreadcrumbLine.addLatLng(ll);
+    }
+  }
+  if (!_gpsHudOn) return;
+  const hud = document.getElementById('gps-hud');
+  if (!hud) return;
+  const lat = pos.coords.latitude, lng = pos.coords.longitude;
+  const acc = Math.round(pos.coords.accuracy);
+  const latStr = Math.abs(lat).toFixed(5) + '° ' + (lat >= 0 ? 'N' : 'S');
+  const lngStr = Math.abs(lng).toFixed(5) + '° ' + (lng >= 0 ? 'E' : 'W');
+  let extra = '';
+  if (pos.coords.speed != null && pos.coords.speed > 0.5) {
+    const mph = (pos.coords.speed * 2.23694).toFixed(1);
+    const dir = pos.coords.heading != null ? ' ' + _bearingToCardinal(pos.coords.heading) : '';
+    extra += `<div class="gps-hud-row"><span class="gps-hud-icon">&#x2192;</span><span class="gps-hud-val">${mph} mph${dir}</span></div>`;
+  }
+  hud.innerHTML =
+    `<div class="gps-hud-title">&#x25CF;&nbsp;GPS</div>`+
+    `<div class="gps-hud-row"><span class="gps-hud-icon">&#x25C9;</span><span class="gps-hud-val">${latStr}</span></div>`+
+    `<div class="gps-hud-row"><span class="gps-hud-icon">&#x25C9;</span><span class="gps-hud-val">${lngStr}</span></div>`+
+    `<div class="gps-hud-row"><span class="gps-hud-icon">&#x29BF;</span><span class="gps-hud-val">&#xB1;${acc}&nbsp;m</span></div>`+
+    extra;
+}
 
 function _startLocationTracking() {
   if (_locWatchId !== null) return;
@@ -11491,6 +11571,7 @@ function _startLocationTracking() {
       }).addTo(map);
       const row = document.getElementById('lqm-follow-row');
       if (row) row.style.display = '';
+      ['lqm-hud-row','lqm-breadcrumb-row'].forEach(id => { const r=document.getElementById(id); if(r) r.style.display=''; });
       map.setView(ll, Math.max(map.getZoom(), 8));
       try { localStorage.setItem('gwcfc_location', '1'); } catch(e) {}
     } else {
@@ -11500,6 +11581,7 @@ function _startLocationTracking() {
       _locCircle.setRadius(acc);
     }
     if (_locFollow) map.panTo(ll);
+    _updateGpsHud(pos);
   }, err => {
     _stopLocationTracking();
     const cb = document.getElementById('lqm-set-location');
@@ -11517,11 +11599,22 @@ function _stopLocationTracking() {
   if (_locWatchId !== null) { navigator.geolocation.clearWatch(_locWatchId); _locWatchId = null; }
   if (_locMarker) { try { map.removeLayer(_locMarker); } catch(e) {} _locMarker = null; }
   if (_locCircle) { try { map.removeLayer(_locCircle); } catch(e) {} _locCircle = null; }
+  // GPS HUD
+  _gpsHudOn = false; _lastGpsPos = null;
+  const hud = document.getElementById('gps-hud');
+  if (hud) hud.style.display = 'none';
+  const hudCb = document.getElementById('lqm-set-gpshud');
+  if (hudCb) hudCb.checked = false;
+  // Breadcrumb
+  _gpsBreadcrumbOn = false;
+  if (_gpsBreadcrumbLine) { try { map.removeLayer(_gpsBreadcrumbLine); } catch(e){} _gpsBreadcrumbLine = null; }
+  _gpsBreadcrumbPts = [];
+  const bcCb = document.getElementById('lqm-set-breadcrumb');
+  if (bcCb) bcCb.checked = false;
   _locFollow = false;
   const followCb = document.getElementById('lqm-set-follow');
   if (followCb) followCb.checked = false;
-  const followRow = document.getElementById('lqm-follow-row');
-  if (followRow) followRow.style.display = 'none';
+  ['lqm-follow-row','lqm-hud-row','lqm-breadcrumb-row'].forEach(id => { const r=document.getElementById(id); if(r) r.style.display='none'; });
   try { localStorage.removeItem('gwcfc_location'); } catch(e) {}
 }
 
@@ -18774,6 +18867,22 @@ function selectProduct(p) {
       <div class="lqm-toggle-knob"></div>
     </label>
   </div>
+  <div class="lqm-settings-row" id="lqm-hud-row" style="display:none;">
+    <span class="lqm-settings-lbl">GPS Info HUD</span>
+    <label class="lqm-toggle">
+      <input type="checkbox" id="lqm-set-gpshud" onchange="lqmToggleSetting('gpshud',this.checked)">
+      <div class="lqm-toggle-track"></div>
+      <div class="lqm-toggle-knob"></div>
+    </label>
+  </div>
+  <div class="lqm-settings-row" id="lqm-breadcrumb-row" style="display:none;">
+    <span class="lqm-settings-lbl">Breadcrumb Trail</span>
+    <label class="lqm-toggle">
+      <input type="checkbox" id="lqm-set-breadcrumb" onchange="lqmToggleSetting('breadcrumb',this.checked)">
+      <div class="lqm-toggle-track"></div>
+      <div class="lqm-toggle-knob"></div>
+    </label>
+  </div>
   <!-- ─── ALERTS ─── -->
   <div class="lqm-settings-category">ALERTS</div>
   <div class="lqm-settings-row">
@@ -19033,6 +19142,14 @@ function lqmOpenSettings() {
   if (followRow) followRow.style.display = _locMarker ? '' : 'none';
   const followCb = document.getElementById('lqm-set-follow');
   if (followCb) followCb.checked = _locFollow;
+  const hudRow = document.getElementById('lqm-hud-row');
+  if (hudRow) hudRow.style.display = _locMarker ? '' : 'none';
+  const hudCb = document.getElementById('lqm-set-gpshud');
+  if (hudCb) hudCb.checked = _gpsHudOn;
+  const bcRow = document.getElementById('lqm-breadcrumb-row');
+  if (bcRow) bcRow.style.display = _locMarker ? '' : 'none';
+  const bcCb = document.getElementById('lqm-set-breadcrumb');
+  if (bcCb) bcCb.checked = _gpsBreadcrumbOn;
 }
 function lqmCloseSettings() {
   const el = document.getElementById('lqm-settings-overlay');
@@ -19060,6 +19177,17 @@ function lqmToggleSetting(key, val) {
   } else if (key === 'follow') {
     _locFollow = val;
     if (val && _locMarker) map.panTo(_locMarker.getLatLng());
+  } else if (key === 'gpshud') {
+    _gpsHudOn = val;
+    const hud = document.getElementById('gps-hud');
+    if (hud) hud.style.display = val ? '' : 'none';
+    if (val && _lastGpsPos) _updateGpsHud(_lastGpsPos);
+  } else if (key === 'breadcrumb') {
+    _gpsBreadcrumbOn = val;
+    if (!val) {
+      if (_gpsBreadcrumbLine) { try { map.removeLayer(_gpsBreadcrumbLine); } catch(e){} _gpsBreadcrumbLine = null; }
+      _gpsBreadcrumbPts = [];
+    }
   }
 }
 function lqmSetTZ(tz) {
