@@ -5681,7 +5681,6 @@ body.gwcfc-crosshair #map::after {
       <div id="nwr-rec-header">
         <span style="font-size:15px;line-height:1">🔴</span>
         <span id="nwr-rec-title">ALERT RECORDINGS</span>
-        <button id="nwr-auto-rec-btn" onclick="_nwrToggleAutoRec(!_nwrAutoRecEnabled)" title="Auto-record on tornado/severe warnings" style="background:#1a0000;border:1px solid #550000;color:#ff6666;border-radius:5px;padding:2px 8px;cursor:pointer;font-family:var(--mono);font-size:9px;letter-spacing:1px">AUTO</button>
         <button id="nwr-rec-close" onclick="_nwrCloseRecPanel()">✕</button>
       </div>
       <div id="nwr-rec-body"></div>
@@ -7207,7 +7206,6 @@ async function _doLoadAlerts(forceRender) {
       renderAlerts(activeFeatures);
       renderPastAlerts(pastFeatures);
     }
-    _nwrCheckAutoRec(activeFeatures);
     if (activeFeatures.length > 0) document.getElementById('alerts-dot').classList.add('has-data');
   } catch (e) {
     console.warn('Alerts error:', e);
@@ -15124,12 +15122,10 @@ async function _nwrStartRecord(call, rawUrl, label) {
     const blob = new Blob(mp3chunks, { type: 'audio/mpeg' });
     const url  = URL.createObjectURL(blob);
     const dur  = Math.round((Date.now() - startMs) / 1000);
-    const recEntry = { id: Date.now(), call, label, blob, url, blobs: { mp3: blob }, start: new Date(startMs), dur };
-    _nwrRecs.unshift(recEntry);
+    _nwrRecs.unshift({ id: Date.now(), call, label, blob, url, blobs: { mp3: blob }, start: new Date(startMs), dur });
     _nwrRecActive = null;
     _nwrRenderRecPanel();
-    showToast(`✅ Saved ${_nwrFmtDur(dur)} MP3 — archiving…`, 2000);
-    _nwrSaveToArchive(recEntry).then(() => { recEntry.archived = true; _nwrRenderRecPanel(); showToast('💾 Archived', 1500); }).catch(() => {});
+    showToast(`✅ Saved ${_nwrFmtDur(dur)} MP3 — open Recordings panel`, 3000);
   };
 
   audio.play().catch(() => {});
@@ -15147,292 +15143,7 @@ function _nwrStopRecord() {
 function _nwrDeleteRec(id) {
   const i = _nwrRecs.findIndex(r => r.id === id);
   if (i !== -1) { URL.revokeObjectURL(_nwrRecs[i].url); _nwrRecs.splice(i, 1); }
-  _nwrDeleteFromArchive(id);
   _nwrRenderRecPanel();
-}
-
-// ── NWR ARCHIVE (IndexedDB — persists across page loads) ─────────────────
-let _nwrDB = null;
-
-async function _nwrOpenDB() {
-  if (_nwrDB) return _nwrDB;
-  return new Promise((res, rej) => {
-    const req = indexedDB.open('gwcfc-nwr', 1);
-    req.onupgradeneeded = e => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains('recordings')) {
-        const s = db.createObjectStore('recordings', { keyPath: 'id' });
-        s.createIndex('start', 'start');
-      }
-    };
-    req.onsuccess = e => { _nwrDB = e.target.result; res(_nwrDB); };
-    req.onerror   = e => rej(e.target.error);
-  });
-}
-
-async function _nwrSaveToArchive(rec) {
-  try {
-    const db = await _nwrOpenDB();
-    const tx = db.transaction('recordings', 'readwrite');
-    tx.objectStore('recordings').put({
-      id: rec.id, call: rec.call, label: rec.label,
-      blob: rec.blob, start: rec.start.toISOString(), dur: rec.dur,
-    });
-  } catch(e) { console.warn('[NWR archive] save failed:', e); }
-}
-
-async function _nwrDeleteFromArchive(id) {
-  try {
-    const db = await _nwrOpenDB();
-    const tx = db.transaction('recordings', 'readwrite');
-    tx.objectStore('recordings').delete(id);
-  } catch(e) { console.warn('[NWR archive] delete failed:', e); }
-}
-
-async function _nwrLoadArchive() {
-  try {
-    const db = await _nwrOpenDB();
-    const tx  = db.transaction('recordings', 'readonly');
-    const req = tx.objectStore('recordings').index('start').getAll();
-    req.onsuccess = e => {
-      const rows = (e.target.result || []).slice().reverse();
-      let added = 0;
-      rows.forEach(r => {
-        if (_nwrRecs.find(x => x.id === r.id)) return;
-        const url = URL.createObjectURL(r.blob);
-        _nwrRecs.push({ id: r.id, call: r.call, label: r.label, blob: r.blob,
-          blobs: { mp3: r.blob }, url, start: new Date(r.start), dur: r.dur, archived: true });
-        added++;
-      });
-      _nwrRecs.sort((a, b) => b.id - a.id);
-      if (added) _nwrRenderRecPanel();
-    };
-  } catch(e) { console.warn('[NWR archive] load failed:', e); }
-}
-
-async function _nwrClearArchive() {
-  _nwrRecs.forEach(r => { try { URL.revokeObjectURL(r.url); } catch(_){} });
-  _nwrRecs.length = 0;
-  try {
-    const db = await _nwrOpenDB();
-    const tx = db.transaction('recordings', 'readwrite');
-    tx.objectStore('recordings').clear();
-  } catch(e) { console.warn('[NWR archive] clear failed:', e); }
-  _nwrRenderRecPanel();
-  showToast('🗑 Archive cleared', 2000);
-}
-
-function _nwrFmtBytes(b) {
-  if (b < 1024) return b + ' B';
-  if (b < 1048576) return (b/1024).toFixed(0) + ' KB';
-  return (b/1048576).toFixed(1) + ' MB';
-}
-
-// ── NWR AUTO-RECORD ───────────────────────────────────────────────────────
-let _nwrAutoRecEnabled = false;
-let _nwrAutoRecDurMin  = 5;
-let _nwrStationCache   = [];      // {call, lat, lon, stream} populated by loadNWRStations
-const _seenAlertIds    = new Set();
-let _nwrAutoRecTimer   = null;
-
-const _NWR_ALL_EVENTS = [
-  'Tornado Warning','Tornado Emergency','Severe Thunderstorm Warning',
-  'Flash Flood Emergency','Flash Flood Warning','Winter Storm Warning',
-  'Ice Storm Warning','Blizzard Warning','Hurricane Warning',
-  'Tropical Storm Warning','Dust Storm Warning','Extreme Wind Warning',
-];
-let _nwrAutoRecEvents = new Set(['Tornado Warning','Tornado Emergency','Severe Thunderstorm Warning','Flash Flood Emergency']);
-
-function _nwrToggleAutoEvent(ev, on) {
-  if (on) _nwrAutoRecEvents.add(ev); else _nwrAutoRecEvents.delete(ev);
-  try { localStorage.setItem('nwr_autorec_events', JSON.stringify([..._nwrAutoRecEvents])); } catch(e) {}
-  _nwrRenderRecPanel();
-}
-
-function _nwrToggleAutoRec(val) {
-  _nwrAutoRecEnabled = val;
-  try { localStorage.setItem('nwr_autorec', val ? '1' : '0'); } catch(e) {}
-  _nwrRenderRecPanel();
-  if (val) {
-    if (!_nwrStationCache.length && !_nwrLoaded) {
-      loadNWRStations().catch(() => {});
-    }
-    showToast('🔴 Auto-record ARMED — watching for warnings…', 3000);
-  } else {
-    _nwrStopAudioDetect();
-    _nwrAudioDetectEnabled = false;
-    showToast('Auto-record disarmed', 1500);
-  }
-}
-
-function _nwrSetAutoRecDur(min) {
-  _nwrAutoRecDurMin = parseInt(min, 10) || 5;
-  try { localStorage.setItem('nwr_autorec_dur', String(_nwrAutoRecDurMin)); } catch(e) {}
-}
-
-function _nwrCheckAutoRec(features) {
-  if (!_nwrAutoRecEnabled) return;
-  if (!_nwrStationCache.length) return;
-
-  for (const f of features) {
-    const p   = f.properties || {};
-    const fid = p.id || p['@id'] || f.id;
-    if (!fid || _seenAlertIds.has(fid)) continue;
-    _seenAlertIds.add(fid);
-
-    const ev = p.event || '';
-    if (!_nwrAutoRecEvents.has(ev)) continue;
-
-    // Get alert polygon centroid
-    let cLat, cLng;
-    try {
-      const coords = f.geometry?.type === 'Polygon'       ? f.geometry.coordinates[0]
-                   : f.geometry?.type === 'MultiPolygon'  ? f.geometry.coordinates[0][0] : null;
-      if (coords) {
-        cLat = coords.reduce((s,c) => s+c[1], 0) / coords.length;
-        cLng = coords.reduce((s,c) => s+c[0], 0) / coords.length;
-      }
-    } catch(e) {}
-    if (cLat == null) continue;
-
-    // Nearest NWR station (simple Euclidean — fine at these scales)
-    let best = null, bestD = Infinity;
-    for (const st of _nwrStationCache) {
-      const d = Math.hypot(st.lat - cLat, st.lon - cLng);
-      if (d < bestD) { bestD = d; best = st; }
-    }
-    if (!best) continue;
-
-    // Skip if already recording (don't stack recordings)
-    if (_nwrRecActive) continue;
-
-    showToast(`🔴 Auto-recording ${best.call.toUpperCase()} · ${ev}`, 4000);
-    _nwrStartRecord(best.call, best.stream, `AUTO · ${ev}`);
-
-    // Auto-stop after configured duration
-    clearTimeout(_nwrAutoRecTimer);
-    _nwrAutoRecTimer = setTimeout(() => {
-      if (_nwrRecActive) {
-        _nwrStopRecord();
-        showToast(`⏹ Auto-record saved (${_nwrAutoRecDurMin} min)`, 2500);
-      }
-    }, _nwrAutoRecDurMin * 60 * 1000);
-
-    break; // one auto-recording per alert poll cycle
-  }
-}
-
-// ── NWR AUDIO DETECTION (1050 Hz attention signal + SAME tones) ───────────
-// NWR broadcasts a 1050 Hz pure tone for 8-25 s before every voice alert.
-// SAME digital header uses mark=2083 Hz / space=1562 Hz tones.
-// We silently stream the nearest station and watch for those frequencies.
-let _nwrAudioDetectEnabled = false;
-let _nwrAudioMonitor = null; // {call, status, audio, ctx, analyser, _stop}
-
-function _nwrToggleAudioDetect(val) {
-  _nwrAudioDetectEnabled = val;
-  try { localStorage.setItem('nwr_audiodetect', val ? '1' : '0'); } catch(e) {}
-  if (val) _nwrStartAudioDetect(); else _nwrStopAudioDetect();
-  _nwrRenderRecPanel();
-}
-
-function _nwrStartAudioDetect() {
-  _nwrStopAudioDetect();
-  if (!_nwrStationCache.length) {
-    if (!_nwrLoaded) loadNWRStations().then(() => _nwrStartAudioDetect()).catch(() => {});
-    return;
-  }
-  const center = map.getCenter();
-  let best = null, bestD = Infinity;
-  for (const st of _nwrStationCache) {
-    const d = Math.hypot(st.lat - center.lat, st.lon - center.lng);
-    if (d < bestD) { bestD = d; best = st; }
-  }
-  if (!best) return;
-  _nwrAudioMonitor = { call: best.call, status: 'connecting', audio: null, ctx: null, _stop: null };
-  _nwrRenderRecPanel();
-  _nwrConnectAudioMonitor(best);
-}
-
-async function _nwrConnectAudioMonitor(st) {
-  const audio = new Audio();
-  audio.crossOrigin = 'anonymous';
-  audio.src = st.stream;
-  audio.volume = 0;
-  let ctx;
-  try {
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const source = ctx.createMediaElementSource(audio);
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 8192;
-    source.connect(analyser);
-
-    await new Promise((res, rej) => {
-      const onOk = () => { audio.removeEventListener('canplay', onOk); audio.removeEventListener('error', onErr); res(); };
-      const onErr = () => { audio.removeEventListener('canplay', onOk); audio.removeEventListener('error', onErr); rej(new Error('stream error')); };
-      audio.addEventListener('canplay', onOk);
-      audio.addEventListener('error', onErr);
-      audio.load();
-      setTimeout(() => rej(new Error('timeout')), 12000);
-    });
-
-    await ctx.resume();
-    audio.play().catch(() => {});
-
-    if (_nwrAudioMonitor) {
-      _nwrAudioMonitor.audio    = audio;
-      _nwrAudioMonitor.ctx      = ctx;
-      _nwrAudioMonitor.analyser = analyser;
-      _nwrAudioMonitor.status   = 'listening';
-    }
-    _nwrRenderRecPanel();
-
-    const bufLen   = analyser.frequencyBinCount;
-    const data     = new Uint8Array(bufLen);
-    const sr       = ctx.sampleRate;
-    const attnBin  = Math.round(1050 * bufLen * 2 / sr); // 1050 Hz attention signal
-    const sameMark = Math.round(2083 * bufLen * 2 / sr); // SAME mark tone
-    const sameSpace= Math.round(1562 * bufLen * 2 / sr); // SAME space tone
-
-    let hitCount = 0;
-    const THRESHOLD = 150; // out of 255
-    const REQUIRED  = 5;   // 5 × 600 ms = 3 s sustained before trigger
-
-    const interval = setInterval(() => {
-      if (!_nwrAudioDetectEnabled || !_nwrAudioMonitor) { clearInterval(interval); return; }
-      analyser.getByteFrequencyData(data);
-      const energy = Math.max(data[attnBin], data[sameMark], data[sameSpace]);
-      if (energy > THRESHOLD) {
-        hitCount++;
-        if (hitCount === REQUIRED && !_nwrRecActive) {
-          showToast(`🔊 Alert tone on ${st.call.toUpperCase()} — auto-recording`, 4000);
-          _nwrStartRecord(st.call, st.stream, `🔊 AUDIO · ${st.call.toUpperCase()}`);
-          clearTimeout(_nwrAutoRecTimer);
-          _nwrAutoRecTimer = setTimeout(() => {
-            if (_nwrRecActive) { _nwrStopRecord(); showToast(`⏹ Audio-detect saved (${_nwrAutoRecDurMin} min)`, 2500); }
-          }, _nwrAutoRecDurMin * 60 * 1000);
-        }
-      } else {
-        if (hitCount > 0) hitCount--;
-      }
-    }, 600);
-
-    if (_nwrAudioMonitor) _nwrAudioMonitor._stop = () => clearInterval(interval);
-
-  } catch(e) {
-    if (ctx) try { ctx.close(); } catch(e2) {}
-    try { audio.pause(); } catch(e2) {}
-    if (_nwrAudioMonitor) { _nwrAudioMonitor.status = 'blocked'; _nwrAudioMonitor.audio = null; _nwrAudioMonitor.ctx = null; }
-    _nwrRenderRecPanel();
-  }
-}
-
-function _nwrStopAudioDetect() {
-  if (!_nwrAudioMonitor) return;
-  if (_nwrAudioMonitor._stop)  try { _nwrAudioMonitor._stop();          } catch(e) {}
-  if (_nwrAudioMonitor.audio)  try { _nwrAudioMonitor.audio.pause();    } catch(e) {}
-  if (_nwrAudioMonitor.ctx)    try { _nwrAudioMonitor.ctx.close();      } catch(e) {}
-  _nwrAudioMonitor = null;
 }
 
 // ── NWR MULTI-FORMAT DOWNLOAD ─────────────────────────────────────────────
@@ -15587,70 +15298,18 @@ function _nwrRenderRecPanel() {
     </div>`;
   }
 
-  // Audio detect status helpers (computed before template literal)
-  const _adStat = !_nwrAudioMonitor ? '' :
-    _nwrAudioMonitor.status === 'listening'  ? `<span style="font-size:8px;color:#44ff88;margin-left:auto">● LIVE · ${_nwrAudioMonitor.call.toUpperCase()}</span>` :
-    _nwrAudioMonitor.status === 'connecting' ? `<span style="font-size:8px;color:#ff9900;margin-left:auto">⌛ Connecting…</span>` :
-                                               `<span style="font-size:8px;color:#ff4444;margin-left:auto">✗ Blocked</span>`;
-  const _adNote = _nwrAudioDetectEnabled && _nwrAudioMonitor ?
-    (_nwrAudioMonitor.status === 'listening'  ? `<div style="font-size:8px;color:#555;margin-top:2px">Watching for 1050 Hz alert tone &amp; SAME header</div>` :
-     _nwrAudioMonitor.status === 'blocked'    ? `<div style="font-size:8px;color:#553300;margin-top:2px">Stream blocked by CORS — browser can't analyze this stream's audio</div>` : '') : '';
-
-  // Auto-record status bar
-  const autoBtn = document.getElementById('nwr-auto-rec-btn');
-  if (autoBtn) {
-    autoBtn.style.background  = _nwrAutoRecEnabled ? 'rgba(200,0,0,0.35)' : '#1a0000';
-    autoBtn.style.borderColor = _nwrAutoRecEnabled ? '#ff4444' : '#550000';
-    autoBtn.style.color       = _nwrAutoRecEnabled ? '#ffaaaa' : '#ff6666';
-    autoBtn.textContent       = _nwrAutoRecEnabled ? '🔴 AUTO' : 'AUTO';
-  }
-  if (_nwrAutoRecEnabled) {
-    html += `<div style="padding:6px 12px;background:rgba(200,0,0,0.1);border-bottom:1px solid rgba(255,60,60,0.2);display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:9px">
-      <span style="color:#ff4444;animation:nwr-blink 1.5s infinite">⚡ ARMED</span>
-      <span style="color:#888">Stop after</span>
-      <select onchange="_nwrSetAutoRecDur(this.value)" style="background:#111;border:1px solid #333;color:#ff9900;border-radius:4px;padding:1px 4px;font-size:9px;font-family:var(--mono)">
-        ${[2,3,5,10,15].map(m=>`<option value="${m}" ${m===_nwrAutoRecDurMin?'selected':''}>${m} min</option>`).join('')}
-      </select>
-      <span style="color:#555;flex:1;text-align:right">${_nwrStationCache.length} stations</span>
-    </div>
-    <div style="padding:5px 12px 7px;border-bottom:1px solid rgba(255,60,60,0.15);font-family:var(--mono)">
-      <div style="font-size:8px;color:#666;letter-spacing:1px;margin-bottom:4px">TRIGGER ON</div>
-      ${_NWR_ALL_EVENTS.map(e => `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer">
-        <input type="checkbox" ${_nwrAutoRecEvents.has(e)?'checked':''} onchange="_nwrToggleAutoEvent('${e.replace(/'/g,"\\'")}',this.checked)" style="accent-color:#ff4444;width:11px;height:11px;cursor:pointer">
-        <span style="font-size:9px;color:${_nwrAutoRecEvents.has(e)?'#ffaaaa':'#666'}">${e}</span>
-      </label>`).join('')}
-    </div>
-    <div style="padding:6px 12px 7px;border-bottom:1px solid rgba(255,60,60,0.15);font-family:var(--mono)">
-      <div style="font-size:8px;color:#666;letter-spacing:1px;margin-bottom:5px">AUDIO DETECTION</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" ${_nwrAudioDetectEnabled?'checked':''} onchange="_nwrToggleAudioDetect(this.checked)" style="accent-color:#1a8fff;width:11px;height:11px;cursor:pointer">
-          <span style="font-size:9px;color:#aaa">🎤 Listen for alert tones</span>
-        </label>
-        ${_adStat}
-      </div>
-      ${_adNote}
-    </div>`;
-  }
-
   if (_nwrRecs.length === 0 && !_nwrRecActive) {
     html += `<div style="padding:24px 16px;text-align:center;color:#555;font-size:11px;font-family:var(--mono);line-height:1.7">
       No recordings yet.<br>Click <span style="color:#ff6666">🔴 Rec</span> in any<br>station popup to start.
     </div>`;
   } else if (_nwrRecs.length > 0) {
-    const totalBytes = _nwrRecs.reduce((s,r) => s+(r.blob?r.blob.size:0), 0);
-    const archivedCount = _nwrRecs.filter(r => r.archived).length;
-    html += `<div style="padding:7px 12px 5px;font-size:9px;color:#666;letter-spacing:1.2px;font-family:var(--mono);border-bottom:1px solid rgba(255,255,255,0.05);display:flex;align-items:center;gap:8px">
-      <span>💾 ${archivedCount}/${_nwrRecs.length} archived · ${_nwrFmtBytes(totalBytes)}</span>
-      <button onclick="_nwrClearArchive()" style="margin-left:auto;background:#200;border:1px solid #500;color:#ff6666;border-radius:4px;padding:1px 8px;cursor:pointer;font-size:9px;font-family:var(--mono)">Clear all</button>
-    </div>`;
+    html += `<div style="padding:7px 12px 3px;font-size:9px;color:#666;letter-spacing:1.5px;font-family:var(--mono);border-bottom:1px solid rgba(255,255,255,0.05)">SAVED · ${_nwrRecs.length}</div>`;
     _nwrRecs.forEach(rec => {
       const timeStr = rec.start.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
       const dateStr = rec.start.toLocaleDateString([],{month:'short',day:'numeric'});
       html += `<div style="padding:9px 12px;border-bottom:1px solid rgba(255,255,255,0.05)">
         <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
           <span style="font-family:var(--mono);font-size:13px;color:#ff9900;font-weight:bold">${rec.call.toUpperCase()}</span>
-          ${rec.archived ? '<span title="Saved to archive" style="font-size:11px">💾</span>' : '<span title="Not yet archived" style="font-size:11px;opacity:0.3">💾</span>'}
           <span style="font-family:var(--mono);font-size:11px;color:#888">${_nwrFmtDur(rec.dur)}</span>
           <span style="font-size:9px;color:#555;flex:1;font-family:var(--mono)">${timeStr} · ${dateStr}</span>
           <button onclick="_nwrDeleteRec(${rec.id})" title="Delete" style="background:#111;border:1px solid #333;color:#ff6666;border-radius:4px;padding:2px 7px;cursor:pointer;font-size:11px;margin-left:auto">🗑</button>
@@ -16064,9 +15723,6 @@ async function loadNWRStations() {
       });
 
       marker.addTo(_nwrLayer);
-      // Cache for auto-record (prefer GWES, fall back to WXR/WXUSA)
-      const _arSrc = (gwesStream || wxrStream || wusaStream);
-      if (_arSrc?.listenurl) _nwrStationCache.push({ call, lat, lon, stream: _arSrc.listenurl });
       plotted++;
     });
 
@@ -21247,19 +20903,6 @@ document.addEventListener('DOMContentLoaded', () => {
   _makeDraggable(document.getElementById('models-panel'), document.getElementById('models-drag'));
   _makeDraggable(document.getElementById('dist-toolbar'),        document.getElementById('dist-drag-handle'));
   _makeDraggable(document.getElementById('s3-panel'),            document.getElementById('s3-drag'));
-  // Restore NWR recordings from archive on page load
-  _nwrLoadArchive();
-  // Restore auto-record preference
-  try {
-    if (localStorage.getItem('nwr_autorec') === '1') {
-      _nwrAutoRecEnabled = true;
-      const dur = parseInt(localStorage.getItem('nwr_autorec_dur') || '5', 10);
-      _nwrAutoRecDurMin = isNaN(dur) ? 5 : dur;
-      try { const evts = localStorage.getItem('nwr_autorec_events'); if (evts) _nwrAutoRecEvents = new Set(JSON.parse(evts)); } catch(e2) {}
-      if (localStorage.getItem('nwr_audiodetect') === '1') { _nwrAudioDetectEnabled = true; }
-      if (!_nwrLoaded) loadNWRStations().catch(() => {});
-    }
-  } catch(e) {}
 });
 
 // ── PLAYSTATION / GAMEPAD CONTROLLER SUPPORT ──────────────────────
