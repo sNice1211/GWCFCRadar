@@ -15234,7 +15234,19 @@ let _nwrStationCache   = [];      // {call, lat, lon, stream} populated by loadN
 const _seenAlertIds    = new Set();
 let _nwrAutoRecTimer   = null;
 
-const _NWR_AUTO_EVENTS = ['Tornado Warning','Tornado Emergency','Severe Thunderstorm Warning','Flash Flood Emergency'];
+const _NWR_ALL_EVENTS = [
+  'Tornado Warning','Tornado Emergency','Severe Thunderstorm Warning',
+  'Flash Flood Emergency','Flash Flood Warning','Winter Storm Warning',
+  'Ice Storm Warning','Blizzard Warning','Hurricane Warning',
+  'Tropical Storm Warning','Dust Storm Warning','Extreme Wind Warning',
+];
+let _nwrAutoRecEvents = new Set(['Tornado Warning','Tornado Emergency','Severe Thunderstorm Warning','Flash Flood Emergency']);
+
+function _nwrToggleAutoEvent(ev, on) {
+  if (on) _nwrAutoRecEvents.add(ev); else _nwrAutoRecEvents.delete(ev);
+  try { localStorage.setItem('nwr_autorec_events', JSON.stringify([..._nwrAutoRecEvents])); } catch(e) {}
+  _nwrRenderRecPanel();
+}
 
 function _nwrToggleAutoRec(val) {
   _nwrAutoRecEnabled = val;
@@ -15266,7 +15278,7 @@ function _nwrCheckAutoRec(features) {
     _seenAlertIds.add(fid);
 
     const ev = p.event || '';
-    if (!_NWR_AUTO_EVENTS.some(e => ev.includes(e.split(' ')[0]) && ev.includes(e.split(' ').pop()))) continue;
+    if (!_nwrAutoRecEvents.has(ev)) continue;
 
     // Get alert polygon centroid
     let cLat, cLng;
@@ -15475,6 +15487,13 @@ function _nwrRenderRecPanel() {
         ${[2,3,5,10,15].map(m=>`<option value="${m}" ${m===_nwrAutoRecDurMin?'selected':''}>${m} min</option>`).join('')}
       </select>
       <span style="color:#555;flex:1;text-align:right">${_nwrStationCache.length} stations</span>
+    </div>
+    <div style="padding:5px 12px 7px;border-bottom:1px solid rgba(255,60,60,0.15);font-family:var(--mono)">
+      <div style="font-size:8px;color:#666;letter-spacing:1px;margin-bottom:4px">TRIGGER ON</div>
+      ${_NWR_ALL_EVENTS.map(e => `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer">
+        <input type="checkbox" ${_nwrAutoRecEvents.has(e)?'checked':''} onchange="_nwrToggleAutoEvent('${e.replace(/'/g,"\\'")}',this.checked)" style="accent-color:#ff4444;width:11px;height:11px;cursor:pointer">
+        <span style="font-size:9px;color:${_nwrAutoRecEvents.has(e)?'#ffaaaa':'#666'}">${e}</span>
+      </label>`).join('')}
     </div>`;
   }
 
@@ -21100,6 +21119,7 @@ document.addEventListener('DOMContentLoaded', () => {
       _nwrAutoRecEnabled = true;
       const dur = parseInt(localStorage.getItem('nwr_autorec_dur') || '5', 10);
       _nwrAutoRecDurMin = isNaN(dur) ? 5 : dur;
+      try { const evts = localStorage.getItem('nwr_autorec_events'); if (evts) _nwrAutoRecEvents = new Set(JSON.parse(evts)); } catch(e2) {}
       if (!_nwrLoaded) loadNWRStations().catch(() => {});
     }
   } catch(e) {}
