@@ -5681,6 +5681,7 @@ body.gwcfc-crosshair #map::after {
       <div id="nwr-rec-header">
         <span style="font-size:15px;line-height:1">🔴</span>
         <span id="nwr-rec-title">ALERT RECORDINGS</span>
+        <button id="nwr-auto-rec-btn" onclick="_nwrToggleAutoRec(!_nwrAutoRecEnabled)" title="Auto-record on tornado/severe warnings" style="background:#1a0000;border:1px solid #550000;color:#ff6666;border-radius:5px;padding:2px 8px;cursor:pointer;font-family:var(--mono);font-size:9px;letter-spacing:1px">AUTO</button>
         <button id="nwr-rec-close" onclick="_nwrCloseRecPanel()">✕</button>
       </div>
       <div id="nwr-rec-body"></div>
@@ -7206,6 +7207,7 @@ async function _doLoadAlerts(forceRender) {
       renderAlerts(activeFeatures);
       renderPastAlerts(pastFeatures);
     }
+    _nwrCheckAutoRec(activeFeatures);
     if (activeFeatures.length > 0) document.getElementById('alerts-dot').classList.add('has-data');
   } catch (e) {
     console.warn('Alerts error:', e);
@@ -15226,6 +15228,86 @@ function _nwrFmtBytes(b) {
   return (b/1048576).toFixed(1) + ' MB';
 }
 
+// ── NWR AUTO-RECORD ───────────────────────────────────────────────────────
+let _nwrAutoRecEnabled = false;
+let _nwrAutoRecDurMin  = 5;
+let _nwrStationCache   = [];      // {call, lat, lon, stream} populated by loadNWRStations
+const _seenAlertIds    = new Set();
+let _nwrAutoRecTimer   = null;
+
+const _NWR_AUTO_EVENTS = ['Tornado Warning','Tornado Emergency','Severe Thunderstorm Warning','Flash Flood Emergency'];
+
+function _nwrToggleAutoRec(val) {
+  _nwrAutoRecEnabled = val;
+  try { localStorage.setItem('nwr_autorec', val ? '1' : '0'); } catch(e) {}
+  _nwrRenderRecPanel();
+  if (val) {
+    if (!_nwrStationCache.length && !_nwrLoaded) {
+      loadNWRStations().catch(() => {});
+    }
+    showToast('🔴 Auto-record ARMED — watching for warnings…', 3000);
+  } else {
+    showToast('Auto-record disarmed', 1500);
+  }
+}
+
+function _nwrSetAutoRecDur(min) {
+  _nwrAutoRecDurMin = parseInt(min, 10) || 5;
+  try { localStorage.setItem('nwr_autorec_dur', String(_nwrAutoRecDurMin)); } catch(e) {}
+}
+
+function _nwrCheckAutoRec(features) {
+  if (!_nwrAutoRecEnabled) return;
+  if (!_nwrStationCache.length) return;
+
+  for (const f of features) {
+    const p   = f.properties || {};
+    const fid = p.id || p['@id'] || f.id;
+    if (!fid || _seenAlertIds.has(fid)) continue;
+    _seenAlertIds.add(fid);
+
+    const ev = p.event || '';
+    if (!_NWR_AUTO_EVENTS.some(e => ev.includes(e.split(' ')[0]) && ev.includes(e.split(' ').pop()))) continue;
+
+    // Get alert polygon centroid
+    let cLat, cLng;
+    try {
+      const coords = f.geometry?.type === 'Polygon'       ? f.geometry.coordinates[0]
+                   : f.geometry?.type === 'MultiPolygon'  ? f.geometry.coordinates[0][0] : null;
+      if (coords) {
+        cLat = coords.reduce((s,c) => s+c[1], 0) / coords.length;
+        cLng = coords.reduce((s,c) => s+c[0], 0) / coords.length;
+      }
+    } catch(e) {}
+    if (cLat == null) continue;
+
+    // Nearest NWR station (simple Euclidean — fine at these scales)
+    let best = null, bestD = Infinity;
+    for (const st of _nwrStationCache) {
+      const d = Math.hypot(st.lat - cLat, st.lon - cLng);
+      if (d < bestD) { bestD = d; best = st; }
+    }
+    if (!best) continue;
+
+    // Skip if already recording (don't stack recordings)
+    if (_nwrRecActive) continue;
+
+    showToast(`🔴 Auto-recording ${best.call.toUpperCase()} · ${ev}`, 4000);
+    _nwrStartRecord(best.call, best.stream, `AUTO · ${ev}`);
+
+    // Auto-stop after configured duration
+    clearTimeout(_nwrAutoRecTimer);
+    _nwrAutoRecTimer = setTimeout(() => {
+      if (_nwrRecActive) {
+        _nwrStopRecord();
+        showToast(`⏹ Auto-record saved (${_nwrAutoRecDurMin} min)`, 2500);
+      }
+    }, _nwrAutoRecDurMin * 60 * 1000);
+
+    break; // one auto-recording per alert poll cycle
+  }
+}
+
 // ── NWR MULTI-FORMAT DOWNLOAD ─────────────────────────────────────────────
 
 // Lazy-load libflac.js for FLAC encoding (only fetched when user requests FLAC)
@@ -15375,6 +15457,25 @@ function _nwrRenderRecPanel() {
         <button onclick="_nwrStopRecord()" style="margin-left:auto;background:#500;border:1px solid #c00;color:#fff;border-radius:5px;padding:4px 11px;cursor:pointer;font-family:inherit;font-size:11px;flex-shrink:0">⏹ Stop</button>
       </div>
       <div style="font-size:9px;color:#666;margin-top:3px;font-family:var(--mono)">${_nwrRecActive.label || ''}</div>
+    </div>`;
+  }
+
+  // Auto-record status bar
+  const autoBtn = document.getElementById('nwr-auto-rec-btn');
+  if (autoBtn) {
+    autoBtn.style.background  = _nwrAutoRecEnabled ? 'rgba(200,0,0,0.35)' : '#1a0000';
+    autoBtn.style.borderColor = _nwrAutoRecEnabled ? '#ff4444' : '#550000';
+    autoBtn.style.color       = _nwrAutoRecEnabled ? '#ffaaaa' : '#ff6666';
+    autoBtn.textContent       = _nwrAutoRecEnabled ? '🔴 AUTO' : 'AUTO';
+  }
+  if (_nwrAutoRecEnabled) {
+    html += `<div style="padding:6px 12px;background:rgba(200,0,0,0.1);border-bottom:1px solid rgba(255,60,60,0.2);display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:9px">
+      <span style="color:#ff4444;animation:nwr-blink 1.5s infinite">⚡ ARMED</span>
+      <span style="color:#888">Stop after</span>
+      <select onchange="_nwrSetAutoRecDur(this.value)" style="background:#111;border:1px solid #333;color:#ff9900;border-radius:4px;padding:1px 4px;font-size:9px;font-family:var(--mono)">
+        ${[2,3,5,10,15].map(m=>`<option value="${m}" ${m===_nwrAutoRecDurMin?'selected':''}>${m} min</option>`).join('')}
+      </select>
+      <span style="color:#555;flex:1;text-align:right">${_nwrStationCache.length} stations</span>
     </div>`;
   }
 
@@ -15809,6 +15910,9 @@ async function loadNWRStations() {
       });
 
       marker.addTo(_nwrLayer);
+      // Cache for auto-record (prefer GWES, fall back to WXR/WXUSA)
+      const _arSrc = (gwesStream || wxrStream || wusaStream);
+      if (_arSrc?.listenurl) _nwrStationCache.push({ call, lat, lon, stream: _arSrc.listenurl });
       plotted++;
     });
 
@@ -20991,6 +21095,15 @@ document.addEventListener('DOMContentLoaded', () => {
   _makeDraggable(document.getElementById('s3-panel'),            document.getElementById('s3-drag'));
   // Restore NWR recordings from archive on page load
   _nwrLoadArchive();
+  // Restore auto-record preference
+  try {
+    if (localStorage.getItem('nwr_autorec') === '1') {
+      _nwrAutoRecEnabled = true;
+      const dur = parseInt(localStorage.getItem('nwr_autorec_dur') || '5', 10);
+      _nwrAutoRecDurMin = isNaN(dur) ? 5 : dur;
+      if (!_nwrLoaded) loadNWRStations().catch(() => {});
+    }
+  } catch(e) {}
 });
 
 // ── PLAYSTATION / GAMEPAD CONTROLLER SUPPORT ──────────────────────
