@@ -11081,18 +11081,6 @@ function _ttStep(d) {
   _ttLoad();
 }
 
-function _ttTogglePlay() {
-  _ttPlaying = !_ttPlaying;
-  const btn = document.getElementById('tt-play');
-  if (btn) {
-    btn.textContent = _ttPlaying ? '⏸ Pause' : '▶ Play';
-    btn.classList.toggle('playing', _ttPlaying);
-  }
-  if (_ttPlayTimer) { clearInterval(_ttPlayTimer); _ttPlayTimer = null; }
-  if (_ttPlaying) {
-    _ttPlayTimer = setInterval(() => _ttStep(1), 750);
-  }
-}
 
 function _ttStopPlay() {
   if (_ttPlayTimer) { clearInterval(_ttPlayTimer); _ttPlayTimer = null; }
@@ -11344,37 +11332,6 @@ function showToast(msg, durationMs) {
 
 // Play through forecast frames; if none available, show a clear message.
 let _fcstPlayTimer = null;
-function toggleFutureRadar() {
-  const firstFcst = radarFrames.findIndex(f => f.forecast);
-  if (firstFcst === -1) {
-    showToast('⚠ No forecast frames available right now', 4000);
-    return;
-  }
-
-  // Stop any running forecast auto-play
-  if (_fcstPlayTimer) { clearInterval(_fcstPlayTimer); _fcstPlayTimer = null; }
-
-  if (radarFrames[currentFrame] && radarFrames[currentFrame].forecast) {
-    // Already in forecast , jump back to latest observed frame
-    showFrame(lastPastIdx);
-    return;
-  }
-
-  // Jump to first forecast frame and auto-play through them once
-  showFrame(firstFcst);
-  let fcstIdx = firstFcst;
-  const fcstEnd = radarFrames.length - 1;
-  showToast(`▶ Playing ${fcstEnd - firstFcst + 1} forecast frames`, 2500);
-  _fcstPlayTimer = setInterval(() => {
-    fcstIdx++;
-    if (fcstIdx > fcstEnd) {
-      clearInterval(_fcstPlayTimer);
-      _fcstPlayTimer = null;
-      return;
-    }
-    showFrame(fcstIdx);
-  }, 600);
-}
 
 const RADAR_SUB_BUBBLES = [
   { id:'reflectivity', icon:'🌧', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
@@ -11457,17 +11414,6 @@ const TAB_SECTIONS = {
 let _tabsUnlocked = false;
 let _tabLockPending = null;
 
-function _tabLockShow(tab) {
-  _tabLockPending = tab;
-  const ov = document.getElementById('tab-lock-overlay');
-  const inp = document.getElementById('tab-lock-input');
-  const err = document.getElementById('tab-lock-err');
-  if (!ov) return;
-  err.textContent = '';
-  inp.value = '';
-  ov.classList.add('open');
-  setTimeout(() => inp.focus(), 80);
-}
 
 function _tabLockSubmit() {
   const inp = document.getElementById('tab-lock-input');
@@ -11687,14 +11633,6 @@ function toggleFullscreen() {
   else document.exitFullscreen();
 }
 
-// ── CLOCK ──
-function updateClock() {
-  const now = new Date();
-  const h = now.getUTCHours().toString().padStart(2,'0');
-  const m = now.getUTCMinutes().toString().padStart(2,'0');
-  const s = now.getUTCSeconds().toString().padStart(2,'0');
-  document.getElementById('utc-time').textContent = `${h}:${m}:${s}`;
-}
 
 // ── LOAD STATUS ──
 function updateLoadStatus(msg) {
@@ -12337,15 +12275,6 @@ async function _fnv3FetchCSV(url) {
   }
 }
 
-function _fnv3SetRun(stamp) { _fnv3CurrentRun = stamp; _fnv3FetchCSV(_fnv3CsvUrl(stamp)); }
-function _fnv3SetStorm(stormId) {
-  _fnv3CurrentStorm = stormId;
-  if (_fnv3Data) { _fnv3PlotTracks(_fnv3Data, stormId); _fnv3RenderStormInfo(_fnv3Data, stormId); }
-}
-function _fnv3LoadUrl() {
-  const inp = document.getElementById('fnv3-url-input');
-  if (inp && inp.value.trim()) _fnv3FetchCSV(inp.value.trim());
-}
 
 // ── UNIFIED MODELS PANEL ──────────────────────────────────────────────────────
 let _modelsType = 'severe';
@@ -12492,22 +12421,6 @@ function _modelsNHCToggle() {
 }
 // ── END UNIFIED MODELS PANEL ─────────────────────────────────────────────────
 
-function openFNV3Panel() {
-  const panel = document.getElementById('fnv3-panel'); if (!panel) return;
-  if (_fnv3Open) { closeFNV3Panel(); return; }
-  _fnv3Open = true; panel.style.display = 'flex';
-
-  // Default to Spaghetti tab; use storms collected by loadTropical()
-  _fnv3SwitchTab('spaghetti');
-  if (_tropActiveStorms.length) {
-    _atcfPopulateStorms(_tropActiveStorms);
-  } else {
-    const stormSel = document.getElementById('atcf-storm-sel');
-    const st = document.getElementById('atcf-status');
-    if (stormSel) stormSel.innerHTML = '<option value="">No active storms , check back during season</option>';
-    if (st) st.textContent = 'No active storms detected.';
-  }
-}
 
 function closeFNV3Panel() {
   _fnv3Open = false;
@@ -12581,28 +12494,6 @@ function deactivateTool() {
   if (_trackPreview) { map.removeLayer(_trackPreview); _trackPreview = null; }
 }
 
-// #9 , Erase last polygon dot (remove the most recently added polygon vertex marker)
-function eraseLastPolyDot() {
-  if (!_polyMarkers.length) {
-    // Also try removing from allToolLayers if polyMarkers is empty
-    if (_allToolLayers.length) {
-      const last = _allToolLayers.pop();
-      if (last) map.removeLayer(last);
-    }
-    return;
-  }
-  const last = _polyMarkers.pop();
-  if (last) map.removeLayer(last);
-  // Remove from _allToolLayers too
-  const idx = _allToolLayers.indexOf(last);
-  if (idx !== -1) _allToolLayers.splice(idx, 1);
-  // Remove last poly point if in active polygon tool
-  if (_polyPts.length > 0) _polyPts.pop();
-  // Rebuild preview polygon if active
-  if (activeTool === 'polygon' && _polyPts.length >= 3 && _polyPreview) {
-    _polyPreview.setLatLngs(_polyPts);
-  }
-}
 
 // #10 , Clear all drawings (all tool layers: draws, polygons, distance lines, track lines)
 function clearAllDrawings() {
@@ -16161,7 +16052,6 @@ function closeS3Panel() {
   _s3CurrentStation = null;
 }
 
-function refreshS3Panel() {}
 
 const CITIES = [
   // ── USA: Northeast ──
@@ -18590,16 +18480,6 @@ function makeCityMarker(city, temp) {
     .on('click', () => openForecastModal(city));
 }
 
-function _updateCityMarker(idx, temp) {
-  if (!cityMarkersLayer) return;
-  const city = CITIES[idx];
-  const old  = _cityMarkerRefs[idx];
-  if (old && cityMarkersLayer.hasLayer(old)) cityMarkersLayer.removeLayer(old);
-  if (!_ptInPolyUnion(city.lat, city.lon)) { _cityMarkerRefs[idx] = null; return; }
-  const m = makeCityMarker(city, temp);
-  m.addTo(cityMarkersLayer);
-  _cityMarkerRefs[idx] = m;
-}
 
 function initCityMarkers() {
   if (cityMarkersLayer) { try { map.removeLayer(cityMarkersLayer); } catch(e){} }
@@ -18848,80 +18728,6 @@ function toggleAskPanel() {
   tab.classList.toggle('open', !isOpen);
 }
 
-async function sendAskQuestion() {
-  const input = document.getElementById('ask-input');
-  const msgs  = document.getElementById('ask-messages');
-  const q = input.value.trim();
-  if (!q) return;
-  input.value = '';
-
-  // user bubble
-  const userEl = document.createElement('div');
-  userEl.className = 'ask-msg user';
-  userEl.textContent = q;
-  msgs.appendChild(userEl);
-
-  // thinking bubble
-  const botEl = document.createElement('div');
-  botEl.className = 'ask-msg bot thinking';
-  botEl.textContent = 'Thinking…';
-  msgs.appendChild(botEl);
-  msgs.scrollTop = msgs.scrollHeight;
-
-  try {
-    // Use open-meteo geocoding + weather for location questions,
-    // otherwise answer from built-in knowledge
-    const lowerQ = q.toLowerCase();
-    const cityMatch = lowerQ.match(/weather\s+(?:in|at|for)\s+([a-z\s,]+?)(?:\?|$)/i)
-      || lowerQ.match(/(?:forecast|temperature|rain|snow|wind|humid)\s+(?:in|at|for)\s+([a-z\s,]+?)(?:\?|$)/i)
-      || lowerQ.match(/^(?:what(?:'s| is) the weather (?:like )?in|how(?:'s| is) the weather in)\s+([a-z\s,]+?)(?:\?|$)/i);
-
-    if (cityMatch) {
-      const cityName = cityMatch[1].trim();
-      // geocode
-      const geoRes = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityName)}&count=1&language=en&format=json`);
-      const geoData = await geoRes.json();
-      if (!geoData.results || !geoData.results.length) throw new Error('City not found');
-      const loc = geoData.results[0];
-      const wxRes = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&current=temperature_2m,weather_code,wind_speed_10m,relative_humidity_2m,precipitation_probability&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=1&timezone=auto`);
-      const wxData = await wxRes.json();
-      const cw = wxData.current;
-      if (cw) { cw.weathercode = cw.weather_code ?? cw.weathercode; cw.windspeed = cw.wind_speed_10m ?? cw.windspeed; cw.temperature = cw.temperature_2m ?? cw.temperature; }
-      const humid  = cw?.relative_humidity_2m ?? wxData.hourly?.relativehumidity_2m?.[0] ?? '?';
-      const precip = cw?.precipitation_probability ?? wxData.hourly?.precipitation_probability?.[0] ?? '?';
-      const desc = WMO_CODES[cw.weathercode] || 'Unknown';
-      const icon = WMO_ICONS[cw.weathercode] || '🌡️';
-      botEl.className = 'ask-msg bot';
-      botEl.innerHTML = `<b>${icon} ${loc.name}, ${loc.country_code?.toUpperCase()}</b><br>
-        ${desc}<br>
-        🌡 ${Math.round(cw.temperature)}°F / ${Math.round((cw.temperature-32)*5/9)}°C &nbsp; 💨 ${Math.round(cw.windspeed)} mph<br>
-        💧 Humidity ~${humid}% &nbsp; 🌧 Precip chance ~${precip}%`;
-    } else {
-      // General weather knowledge fallback
-      const answers = {
-        tornado:    'Tornadoes form from supercell thunderstorms when wind shear creates rotation. The US averages ~1,200 tornadoes/year, mostly in Tornado Alley.',
-        hurricane:  'Hurricanes are tropical cyclones with sustained winds ≥ 74 mph (119 km/h). They form over warm ocean water (≥26°C) and are categorized 1–5 on the Saffir-Simpson scale.',
-        lightning:  'Lightning is an electrostatic discharge in thunderstorms. The average bolt carries ~300 million volts. The US sees ~25 million cloud-to-ground lightning strikes/year.',
-        rain:       'Rain forms when water droplets in clouds combine and grow heavy enough to fall. Rainfall is measured in mm or inches of depth.',
-        snow:       'Snow forms when temperatures are at or below 0°C throughout the atmosphere. It takes roughly 10 inches of snow to equal 1 inch of rain.',
-        wind:       'Wind is caused by pressure differences in the atmosphere. Surface winds are measured at 10m height. The Beaufort scale rates wind from 0 (calm) to 12 (hurricane).',
-        humidity:   'Relative humidity (RH) measures moisture in air as a % of maximum possible. 100% RH means the air is saturated. Dew point is the temperature at which dew forms.',
-        forecast:   'Weather forecasts use numerical models (GFS, ECMWF) that simulate the atmosphere. Short-range forecasts (1–3 days) are highly accurate; 7-day forecasts are moderately reliable.',
-        radar:      'Weather radar (NEXRAD) sends microwave pulses that bounce off precipitation. Reflectivity shows rainfall intensity; velocity shows wind speed toward/away from radar.',
-        cloud:      'Clouds form when moist air rises and cools to its dew point. Types include cumulus (puffy), stratus (layered), cirrus (high, icy), and cumulonimbus (thunderstorms).',
-      };
-      const key = Object.keys(answers).find(k => lowerQ.includes(k));
-      botEl.className = 'ask-msg bot';
-      botEl.textContent = key
-        ? answers[key]
-        : `I can answer weather questions! Try asking about the weather in a city (e.g. "weather in Tokyo"), or topics like hurricanes, tornadoes, lightning, snow, radar, or forecasts.`;
-    }
-  } catch(e) {
-    botEl.className = 'ask-msg bot';
-    botEl.textContent = `Sorry, I couldn't get that information. Try asking about a specific city or a general weather topic.`;
-  }
-  msgs.scrollTop = msgs.scrollHeight;
-}
 
 // ── PRODUCTS ──
 function selectProduct(p) {
