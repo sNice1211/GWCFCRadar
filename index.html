@@ -5903,11 +5903,6 @@ function openRadarColorEditor() {
 function closeRadarColorEditor() {
   document.getElementById('radar-color-editor')?.classList.remove('open');
 }
-function _toggleRadarPalette(e) {
-  e && e.stopPropagation();
-  openRadarColorEditor();
-}
-
 function _rceBuildSwatches() {
   const wrap = document.getElementById('rce-swatches');
   if (!wrap) return;
@@ -6953,14 +6948,6 @@ async function loadEASRecent(page) {
   }
 }
 
-function formatEASTime(epochSec) {
-  if (!epochSec) return '';
-  try {
-    const d = new Date(epochSec * 1000);
-    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
-  } catch(e) { return ''; }
-}
-
 function formatEASDate(epochSec) {
   if (!epochSec) return '';
   try {
@@ -7245,20 +7232,6 @@ async function _doLoadAlerts(forceRender) {
   }
 }
 
-
-function formatAlertArea(areaDesc) {
-  if (!areaDesc) return '';
-  const parts = areaDesc.split(';').map(s => s.trim()).filter(Boolean);
-  if (!parts.length) return '';
-  const lastPart = parts[parts.length - 1];
-  const stateMatch = lastPart.match(/\b([A-Z]{2})\s*$/);
-  const state = stateMatch ? stateMatch[1] : '';
-  const cleanParts = parts.map(p => p.replace(/\s+[A-Z]{2}\s*$/, '').trim());
-  if (cleanParts.length === 1) return state ? cleanParts[0]+', '+state : cleanParts[0];
-  if (cleanParts.length <= 3) return state ? cleanParts.join(', ')+', '+state : cleanParts.join(', ');
-  const shown = cleanParts.slice(0,2).join(', ');
-  return state ? shown+' +'+(cleanParts.length-2)+' more, '+state : shown+' +'+(cleanParts.length-2)+' more';
-}
 
 function _apFmtTime(iso) {
   if (!iso) return '—';
@@ -7758,33 +7731,6 @@ async function proxiedFetch(rawUrl, ms = 7000) {
   return j.contents || '';
 }
 
-// ── Parse NHC ATCF format ──
-// ATCF is a fixed-column text format used by the National Hurricane Center.
-// Each line represents one forecast point for one model.
-// Example line:
-//   AL, 05, 2026080612, 03, AVNO,  24, 235N, 0745W, 65, 994, TS, ...
-//   basin  num  date    technum  model  tau  lat    lon   wind pres type
-// lat "235N" means 23.5°N (divide by 10). "0745W" means 74.5°W.
-function parseATCF(text) {
-  const pts = [];
-  for (const line of text.split('\n')) {
-    if (!line.trim() || line.startsWith('#')) continue;
-    const p = line.split(',').map(s => s.trim());
-    if (p.length < 8) continue;
-    const latStr = p[6], lonStr = p[7];
-    if (!latStr || !lonStr) continue;
-    const latDir = latStr.slice(-1).toUpperCase();
-    const lonDir = lonStr.slice(-1).toUpperCase();
-    let lat = parseFloat(latStr) / 10;
-    let lon = parseFloat(lonStr) / 10;
-    if (latDir === 'S') lat = -lat;
-    if (lonDir === 'W') lon = -lon;
-    if (isNaN(lat) || isNaN(lon)) continue;
-    pts.push([lat, lon]);
-  }
-  return pts;
-}
-
 // ── Parse Google Cyclone Lab CSV ──
 // Google publishes cyclone forecast CSVs with these key columns:
 //   init_time, track_id, sample, valid_time, lead_time, lat, lon, ...
@@ -8149,26 +8095,6 @@ function parseJTWCActiveStorms(text) {
     storms.push({ id, name, lat, lon, winds, pres: '?', basin: basinName, cls });
   }
   return storms;
-}
-
-// ── Parse JTWC .tcw warning track format ─────────────────────────────────
-// The .tcw file has forecast track lines like:
-//   T000 143N 1465E 135 R064 065 NE QD ...
-//   T012 152N 1459E 130 ...
-//   T024 160N 1455E 120 ...
-// T=tau (hours), lat in tenths (143N = 14.3°N), lon in tenths (1465E = 146.5°E), wind in kt
-function parseJTWCTrack(text) {
-  const pts = [];
-  for (const line of text.split('\n')) {
-    const m = line.match(/^T(\d{3})\s+(\d{3,4})([NS])\s+(\d{3,5})([EW])\s+(\d+)/);
-    if (!m) continue;
-    let lat = parseInt(m[2]) / 10;
-    let lon = parseInt(m[4]) / 10;
-    if (m[3] === 'S') lat = -lat;
-    if (m[5] === 'W') lon = -lon;
-    if (!isNaN(lat) && !isNaN(lon)) pts.push([lat, lon]);
-  }
-  return pts;
 }
 
 async function loadTropical() {
@@ -8555,12 +8481,6 @@ function _ltgStop() {
 // Stubs kept so existing toggle-off code doesn't break
 let _ltgSocket = null;
 let _ltgReconnectTimer = null;
-
-// ── WINDY MODEL EMBED ──
-function showModelEmbed(model) {
-  // Models shown via Open-Meteo tiles + Windy embed approach
-  updateModelInfo(model);
-}
 
 function updateModelInfo(model) {
   const info = {
@@ -9255,10 +9175,6 @@ function toggleTempBarbs() {
   }
 }
 
-// Stub , kept so nothing breaks if referenced
-function toggleTempMap() {}
-function loadTempBarbs() { return _loadMetarTemp(); }
-
 // ── WIND LAYER STATE ──
 let windRegularBarbActive     = false;
 let windRegularParticleActive = false;
@@ -9421,76 +9337,6 @@ async function _onDataClick(e) {
 //       NDBC latest_obs (ocean buoys, via public CORS proxy, fail-soft).
 // Click any barb for station details.
 
-function windSpeedColor(kph) {
-  if (kph < 15)  return '#00cfff';  // calm – cyan
-  if (kph < 30)  return '#00ff99';  // light – green
-  if (kph < 50)  return '#ffe033';  // moderate – yellow
-  if (kph < 75)  return '#ff8800';  // strong – orange
-  return '#ff2222';                  // gale+ – red
-}
-function gustSpeedColor(kph) {
-  if (kph < 30) return '#ffaa00';
-  if (kph < 55) return '#ff6600';
-  return '#ff2200';
-}
-
-// Draw a standard meteorological wind barb in SVG.
-// speedKt = knots, dirFromDeg = direction FROM (standard meteorological)
-// Returns an SVG string (viewBox 0 0 40 40, origin at station = 20,20).
-// Barb always points "into" the station from the wind direction.
-function makeWindBarbSVG(speedKt, dirFromDeg, color, isGust) {
-  // The shaft is drawn upward from the station; rotation handles direction.
-  // Speed is rounded to the nearest 5 kt for classic barb discretization.
-  const kt = Math.max(0, Math.round(speedKt / 5) * 5);
-  // Calm circle for < 3 kt
-  if (kt < 3) {
-    return `<svg width="36" height="36" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;">
-      <circle cx="20" cy="20" r="4" stroke="${color}" stroke-width="1.5" fill="none"/>
-    </svg>`;
-  }
-  // Shaft: from station (20,20) pointing in the direction the wind is coming from.
-  // We draw upward (toward y=-10 from station) then rotate.
-  const shaftLen = 18;
-  let remaining = kt;
-  const parts = [];
-  // Start placing barbs from the tip (far end) and walk back toward the station.
-  // Positions measured along the shaft starting from the tip.
-  let pos = 0;              // distance from tip along shaft
-  const BARB_STEP  = 4;     // spacing between barbs
-  const BARB_LEN   = 8;     // length of full barb
-  const HALF_LEN   = 4;     // half barb
-  const FLAG_W     = 6;     // flag triangle width (along shaft)
-
-  while (remaining >= 50) {
-    // Pennant (triangle flag)
-    parts.push(`<polygon points="20,${-10 + pos} 20,${-10 + pos + FLAG_W} ${20 + BARB_LEN},${-10 + pos}" fill="${color}" stroke="${color}" stroke-width="1"/>`);
-    pos += FLAG_W + 1;
-    remaining -= 50;
-  }
-  while (remaining >= 10) {
-    parts.push(`<line x1="20" y1="${-10 + pos}" x2="${20 + BARB_LEN}" y2="${-10 + pos - 3}" stroke="${color}" stroke-width="1.8" stroke-linecap="round"/>`);
-    pos += BARB_STEP;
-    remaining -= 10;
-  }
-  if (remaining >= 5) {
-    // A lone 5-kt half barb should never be at the tip per convention , offset inward slightly.
-    const p = kt < 10 ? pos + BARB_STEP : pos;
-    parts.push(`<line x1="20" y1="${-10 + p}" x2="${20 + HALF_LEN}" y2="${-10 + p - 1.5}" stroke="${color}" stroke-width="1.8" stroke-linecap="round"/>`);
-  }
-
-  const rot = dirFromDeg; // shaft points toward direction wind is FROM
-  const ring = isGust
-    ? `<circle cx="20" cy="20" r="2.2" fill="${color}" stroke="#000" stroke-width="0.5"/>`
-    : `<circle cx="20" cy="20" r="1.8" fill="${color}"/>`;
-  return `<svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" style="overflow:visible;">
-    <g transform="rotate(${rot} 20 20)">
-      <line x1="20" y1="20" x2="20" y2="${20 - shaftLen}" stroke="${color}" stroke-width="1.8" stroke-linecap="round"/>
-      ${parts.join('')}
-    </g>
-    ${ring}
-  </svg>`;
-}
-
 // ── WIND DOT+ARROW MARKER (matches wave style) ──
 function _windColor(kph) {
   if (kph < 10)  return [100, 180, 255];
@@ -9650,18 +9496,6 @@ function _windCanvasClick(e, mode) {
 
 let _windBarbReqId = 0, _gustBarbReqId = 0;
 
-function _wxGridToBarbs(pts) {
-  return pts.map(p => ({
-    ...p,
-    obs: {
-      speedKph: p.cur?.wind_speed_10m ?? null,
-      gustKph:  p.cur?.wind_gusts_10m  ?? null,
-      dirDeg:   p.cur?.wind_direction_10m ?? null,
-      tempC: null, pressurePa: null, time: new Date().toISOString()
-    }
-  }));
-}
-
 async function loadWindBarbs() {
   if (!windBarbActive) return;
   _initWindCanvas('regular');
@@ -9796,22 +9630,6 @@ function toggleTempSub() {}
 let sstBarbActive = false, sstMapActive = false;
 let _sstBarbLayer = null, _sstMapLayer = null;
 
-function toggleSSTBarbs() {
-  sstBarbActive = !sstBarbActive;
-  if (sstBarbActive) _loadSSTBarbLayer();
-  else if (_sstBarbLayer) { map.removeLayer(_sstBarbLayer); _sstBarbLayer = null; }
-  const el = document.getElementById('sub-temp-sea-barb');
-  if (el) el.classList.toggle('active', sstBarbActive);
-}
-
-function toggleSSTMap() {
-  sstMapActive = !sstMapActive;
-  if (sstMapActive) _loadSSTMapLayer();
-  else if (_sstMapLayer) { map.removeLayer(_sstMapLayer); _sstMapLayer = null; }
-  const el = document.getElementById('sub-temp-sea-map');
-  if (el) el.classList.toggle('active', sstMapActive);
-}
-
 async function _loadSSTBarbLayer() {
   if (_sstBarbLayer) { map.removeLayer(_sstBarbLayer); _sstBarbLayer = null; }
   _sstBarbLayer = L.layerGroup().addTo(map);
@@ -9899,40 +9717,6 @@ function setMapType(type) {
   });
   const mtSel = document.getElementById('lqm-set-maptype');
   if (mtSel) mtSel.value = type;
-}
-
-// ── PRODUCTS ──
-// ── MODELS ──
-function selectModel(m) {
-  currentModel = m;
-  document.querySelectorAll('.model-option').forEach(el => {
-    el.classList.toggle('selected', el.textContent.trim().toLowerCase().startsWith(m));
-  });
-  updateModelInfo(m);
-}
-
-function selectModelVar(v) {
-  currentModelVar = v;
-  document.querySelectorAll('[id^="mvar-"]').forEach(el => el.classList.remove('selected'));
-  const el = document.getElementById(`mvar-${v}`);
-  if (el) el.classList.add('selected');
-  document.getElementById('mi-var').textContent = v.charAt(0).toUpperCase() + v.slice(1);
-}
-
-// ── RADAR OPACITY ──
-function setRadarOpacity(val) {
-  radarOpacity = val / 100;
-  document.getElementById('radar-opacity-val').textContent = val + '%';
-  // Update the currently visible radar layer (composite or single-site) plus Canada overlay
-  if (activeLayers.nexrad) {
-    if (_radarPoolBuilt && _radarLayerPool[currentFrame]) _radarLayerPool[currentFrame].setOpacity(radarOpacity);
-    if (_canadaPoolBuilt && _canadaLayerPool[currentFrame]) _canadaLayerPool[currentFrame].setOpacity(radarOpacity);
-  }
-  if (_refStation && _refSitePool.length) {
-    // Re-apply opacity to whichever single-site frame is currently visible
-    _refSitePool.forEach((l, i) => { if (l && l.options.opacity > 0) l.setOpacity(radarOpacity); });
-  }
-  // radarLayer === _radarLayerPool[currentFrame] in composite mode — already updated above
 }
 
 // ── SMOOTH TOGGLE ──
@@ -10358,27 +10142,6 @@ function toggleOverlayPill(id) {
 // ── STORM REPORTS , direct toggle, all types at once ──
 let _reportsActive = false;
 
-function toggleReportsSub() {
-  _reportsActive = !_reportsActive;
-  const pill = document.getElementById('op-reports');
-  if (pill) pill.classList.toggle('active', _reportsActive);
-
-  if (_reportsActive) {
-    _rptTorActive = _rptHailActive = _rptWindActive = true;
-    if (!_reportsLoaded) {
-      _reportsLoaded = true;
-      loadStormReports();
-    } else {
-      _syncReportLayers();
-    }
-  } else {
-    ['tor','hail','wind'].forEach(t => {
-      if (stormReportLayers[t] && map.hasLayer(stormReportLayers[t]))
-        map.removeLayer(stormReportLayers[t]);
-    });
-  }
-}
-
 function _syncReportLayers() {
   ['tor','hail','wind'].forEach(t => {
     if (!stormReportLayers[t]) return;
@@ -10412,44 +10175,6 @@ function _loadPrecipType(type) {
 
 function _removePrecipType(type) {
   if (_precipLayers[type]) { map.removeLayer(_precipLayers[type]); delete _precipLayers[type]; }
-}
-
-function togglePrecipSub() {
-  const wrap = document.getElementById('sub-bubbles');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-  wrap.dataset.mode = 'precip';
-
-  const back = document.createElement('div');
-  back.className = 'sub-bubble';
-  back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { wrap.dataset.mode = ''; renderSubBubbles('regular'); };
-  wrap.appendChild(back);
-
-  const PRECIP_TYPES = [
-    { id: 'rain',   icon: '🌧', label: 'Rain' },
-    { id: 'snow',   icon: '❄️', label: 'Snow' },
-    { id: 'hail',   icon: '🧊', label: 'Hail' },
-    { id: 'sleet',  icon: '🌨', label: 'Sleet' },
-    { id: 'tstorm', icon: '⛈', label: 'T-Storms' },
-    { id: 'tsnow',  icon: '🌨', label: 'T-Snow' }
-  ];
-
-  PRECIP_TYPES.forEach(p => {
-    const el = document.createElement('div');
-    el.className = 'sub-bubble' + (_precipActive[p.id] ? ' active' : '');
-    el.id = 'sub-precip-' + p.id;
-    el.innerHTML = `<span class="sb-icon">${p.icon}</span>${p.label}`;
-    el.onclick = () => {
-      _precipActive[p.id] = !_precipActive[p.id];
-      el.classList.toggle('active', _precipActive[p.id]);
-      if (_precipActive[p.id]) _loadPrecipType(p.id);
-      else _removePrecipType(p.id);
-    };
-    wrap.appendChild(el);
-  });
-
-  wrap.style.display = 'flex';
 }
 
 // ── WAVES SUB-MENU ──
@@ -10671,150 +10396,11 @@ function _isoInterp(v0, v1, level) {
   return (level - v0) / (v1 - v0);
 }
 
-// Marching squares , returns array of line segments [{a:[lat,lng], b:[lat,lng]}]
-function _marchingSquares(grid, lats, lngs, level) {
-  const rows = grid.length, cols = grid[0].length;
-  const segs = [];
-  for (let r = 0; r < rows - 1; r++) {
-    for (let c = 0; c < cols - 1; c++) {
-      const v00 = grid[r][c], v01 = grid[r][c+1];
-      const v10 = grid[r+1][c], v11 = grid[r+1][c+1];
-      const la0 = lats[r], la1 = lats[r+1];
-      const lo0 = lngs[c], lo1 = lngs[c+1];
-
-      // Classify corners (1=above level)
-      const b00 = v00 >= level ? 1 : 0;
-      const b01 = v01 >= level ? 1 : 0;
-      const b10 = v10 >= level ? 1 : 0;
-      const b11 = v11 >= level ? 1 : 0;
-      const idx = b00*8 + b01*4 + b11*2 + b10*1;
-      if (idx === 0 || idx === 15) continue;
-
-      // Edge midpoints (interpolated)
-      const tTop    = _isoInterp(v00, v01, level);
-      const tBot    = _isoInterp(v10, v11, level);
-      const tLeft   = _isoInterp(v00, v10, level);
-      const tRight  = _isoInterp(v01, v11, level);
-
-      const pTop   = [la0,          lo0 + tTop   * (lo1 - lo0)];
-      const pBot   = [la1,          lo0 + tBot   * (lo1 - lo0)];
-      const pLeft  = [la0 + tLeft  * (la1 - la0), lo0];
-      const pRight = [la0 + tRight * (la1 - la0), lo1];
-
-      // Lookup table for marching squares cases
-      const lines = {
-        1:  [[pLeft,  pBot]],
-        2:  [[pBot,   pRight]],
-        3:  [[pLeft,  pRight]],
-        4:  [[pTop,   pRight]],
-        5:  [[pLeft,  pTop],  [pBot, pRight]],
-        6:  [[pTop,   pBot]],
-        7:  [[pLeft,  pTop]],
-        8:  [[pLeft,  pTop]],
-        9:  [[pTop,   pBot]],
-        10: [[pLeft,  pBot],  [pTop, pRight]],
-        11: [[pTop,   pRight]],
-        12: [[pLeft,  pRight]],
-        13: [[pBot,   pRight]],
-        14: [[pLeft,  pBot]],
-      };
-      (lines[idx] || []).forEach(([a, b]) => segs.push({ a, b }));
-    }
-  }
-  return segs;
-}
-
-// Chain segments into polylines (greedy nearest-endpoint joining)
-function _chainSegments(segs) {
-  if (!segs.length) return [];
-  const used = new Uint8Array(segs.length);
-  const chains = [];
-  const EPS = 0.001;
-  function dist2(a, b) { return (a[0]-b[0])**2 + (a[1]-b[1])**2; }
-
-  for (let i = 0; i < segs.length; i++) {
-    if (used[i]) continue;
-    used[i] = 1;
-    const chain = [segs[i].a, segs[i].b];
-    let changed = true;
-    while (changed) {
-      changed = false;
-      const head = chain[0], tail = chain[chain.length - 1];
-      for (let j = 0; j < segs.length; j++) {
-        if (used[j]) continue;
-        const { a, b } = segs[j];
-        if (dist2(tail, a) < EPS) { chain.push(b); used[j] = 1; changed = true; break; }
-        if (dist2(tail, b) < EPS) { chain.push(a); used[j] = 1; changed = true; break; }
-        if (dist2(head, a) < EPS) { chain.unshift(b); used[j] = 1; changed = true; break; }
-        if (dist2(head, b) < EPS) { chain.unshift(a); used[j] = 1; changed = true; break; }
-      }
-    }
-    chains.push(chain);
-  }
-  return chains;
-}
-
 // ── SHARED WEATHER GRID ─────────────────────────────────────────────────────
 // One 10×10 Open-Meteo fetch powers BOTH pressure isolines AND wind barbs.
 // Cache key = map center rounded to 8°. TTL = 30 minutes.
 let _wxGrid = { pts: [], lats: [], lngs: [], time: 0, clat: 999, clon: 999 };
 let _wxGridFetching = null; // in-flight promise dedup
-
-async function _loadWxGrid() {
-  const c = map.getCenter();
-  const clat = Math.round(c.lat / 8) * 8;
-  const clon = Math.round(c.lng / 8) * 8;
-
-  // Return cache if still fresh for same general area
-  if (_wxGrid.pts.length && Date.now() - _wxGrid.time < 1800000 &&
-      _wxGrid.clat === clat && _wxGrid.clon === clon) {
-    return _wxGrid;
-  }
-
-  // Dedup concurrent callers , first one fetches, rest await the same promise
-  if (_wxGridFetching) return _wxGridFetching;
-
-  _wxGridFetching = (async () => {
-    try {
-      const bounds = map.getBounds();
-      const S = bounds.getSouth() - 1, N = bounds.getNorth() + 1;
-      const W = bounds.getWest()  - 1, E = bounds.getEast()  + 1;
-      const ROWS = 10, COLS = 10;
-
-      const lats = [], lngs = [];
-      for (let r = 0; r < ROWS; r++) lats.push(+(S + (N-S)*r/(ROWS-1)).toFixed(3));
-      for (let g = 0; g < COLS; g++) lngs.push(+(W + (E-W)*g/(COLS-1)).toFixed(3));
-
-      const aLat = [], aLng = [];
-      for (let r = 0; r < ROWS; r++)
-        for (let g = 0; g < COLS; g++) { aLat.push(lats[r]); aLng.push(lngs[g]); }
-
-      const fields = 'surface_pressure,temperature_2m,apparent_temperature,relative_humidity_2m,' +
-                     'wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation_probability,' +
-                     'dew_point_2m,visibility';
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${aLat.join(',')}&longitude=${aLng.join(',')}&current=${fields}&wind_speed_unit=kmh&temperature_unit=fahrenheit`;
-      const res = await fetch(url, { signal: _abortSignal(15000) });
-      if (res.status === 429) throw new Error('rate-limited-429');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      if (json?.error) throw new Error(json.reason ?? 'api-error');
-      const arr = Array.isArray(json) ? json : [json];
-
-      const pts = aLat.map((lat, i) => ({
-        id: `W${i}`, name: '', lat, lon: aLng[i], kind: 'land',
-        cur: arr[i]?.current ?? {}
-      }));
-
-      _wxGrid = { pts, lats, lngs, ROWS, COLS, time: Date.now(), clat, clon };
-      return _wxGrid;
-    } finally {
-      _wxGridFetching = null;
-    }
-  })();
-
-  return _wxGridFetching;
-}
-
 
 function toggleTropicalModelPanel() {
   const panel = document.getElementById('tropical-model-panel');
@@ -10829,17 +10415,6 @@ function toggleTropicalModelPanel() {
   } else {
     if (typeof _ttStopPlay === 'function') _ttStopPlay();
   }
-}
-
-function toggleSevereModelPanel() {
-  const panel = document.getElementById('severe-model-panel');
-  if (!panel) return;
-  const isVisible = panel.style.display === 'block';
-  panel.style.display = isVisible ? 'none' : 'block';
-  activeBubbles['models'] = !isVisible;
-  const btn = document.getElementById('sub-models');
-  if (btn) btn.classList.toggle('active', !isVisible);
-  if (!isVisible) _sevInit();
 }
 
 // ── TROPICAL MODEL VIEWER (Tropical Tidbits-style) ──
@@ -11050,23 +10625,6 @@ function _ttLoad() {
     probe.src = candidate.url;
   }
   tryNext();
-}
-
-function _ttSetModel(v) {
-  _ttModel = v;
-  const params = _ttGetParams();
-  if (!params.find(p => p.id === _ttParam)) _ttParam = params[0].id;
-  const cfg = TT_MODELS[_ttModel];
-  if (cfg && _ttFrame > cfg.maxFrame) _ttFrame = 1;
-  _ttPopulateDropdowns(true);
-  _ttLoad();
-}
-function _ttSetRegion(v) { _ttRegion = v; _ttLoad(); }
-function _ttSetParam(v)  { _ttParam = v;  _ttLoad(); }
-function _ttSetRun(v)    { _ttRun = v;    _ttLoad(); }
-function _ttSetFrame(v)  {
-  _ttFrame = parseInt(v) || 1;
-  _ttLoad();
 }
 
 function _ttStep(d) {
