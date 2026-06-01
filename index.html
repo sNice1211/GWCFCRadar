@@ -15406,11 +15406,13 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
 
 async function loadNWRStations() {
   if (_nwrLoaded) {
-    if (_nwrLayer && !map.hasLayer(_nwrLayer)) _nwrLayer.addTo(map);
+    // Only show on map if the radio layer is actually toggled on
+    if (activeLayers.radio && _nwrLayer && !map.hasLayer(_nwrLayer)) _nwrLayer.addTo(map);
     return;
   }
   if (_nwrLoading) return;
   _nwrLoading = true;
+  _nwrStationCache = []; // reset before rebuild to avoid duplicates on poly-filter reload
   showToast('📡 Loading NWR live streams…', 1500);
   try {
     // radio.weatherusa.net is HTTP-only and CORS-restricted; try multiple proxies
@@ -15548,7 +15550,8 @@ async function loadNWRStations() {
     const txLookup = {};
     Object.entries(txs).forEach(([k, v]) => { txLookup[k.toUpperCase()] = v; });
 
-    _nwrLayer = L.layerGroup().addTo(map);
+    _nwrLayer = L.layerGroup();
+    if (activeLayers.radio) _nwrLayer.addTo(map);
     let plotted = 0, wxusaNew = 0;
 
     const allCalls = new Set([...gwesMap.keys(), ...wxrMap.keys(), ...wusaMap.keys()]);
