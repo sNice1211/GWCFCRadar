@@ -14783,7 +14783,8 @@ function _nwrToggleAutoRec(val) {
 }
 
 function _nwrSetAutoRecDur(min) {
-  _nwrAutoRecDurMin = parseInt(min, 10) || 5;
+  const v = parseInt(min, 10);
+  _nwrAutoRecDurMin = (!isNaN(v) && v >= 1) ? Math.min(v, 120) : 5;
   try { localStorage.setItem('nwr_autorec_dur', String(_nwrAutoRecDurMin)); } catch(e) {}
 }
 
@@ -15104,15 +15105,6 @@ function _nwrRenderRecPanel() {
     </div>`;
   }
 
-  // Audio detect status helpers (computed before template literal)
-  const _adStat = !_nwrAudioMonitor ? '' :
-    _nwrAudioMonitor.status === 'listening'  ? `<span style="font-size:8px;color:#44ff88;margin-left:auto">● LIVE · ${_nwrAudioMonitor.call.toUpperCase()}</span>` :
-    _nwrAudioMonitor.status === 'connecting' ? `<span style="font-size:8px;color:#ff9900;margin-left:auto">⌛ Connecting…</span>` :
-                                               `<span style="font-size:8px;color:#ff4444;margin-left:auto">✗ Blocked</span>`;
-  const _adNote = _nwrAudioDetectEnabled && _nwrAudioMonitor ?
-    (_nwrAudioMonitor.status === 'listening'  ? `<div style="font-size:8px;color:#555;margin-top:2px">Watching for 1050 Hz alert tone &amp; SAME header</div>` :
-     _nwrAudioMonitor.status === 'blocked'    ? `<div style="font-size:8px;color:#553300;margin-top:2px">Stream blocked by CORS — browser can't analyze this stream's audio</div>` : '') : '';
-
   // Auto-record status bar
   const autoBtn = document.getElementById('nwr-auto-rec-btn');
   if (autoBtn) {
@@ -15125,28 +15117,11 @@ function _nwrRenderRecPanel() {
     html += `<div style="padding:6px 12px;background:rgba(200,0,0,0.1);border-bottom:1px solid rgba(255,60,60,0.2);display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:9px">
       <span style="color:#ff4444;animation:nwr-blink 1.5s infinite">⚡ ARMED</span>
       <span style="color:#888">Stop after</span>
-      <select onchange="_nwrSetAutoRecDur(this.value)" style="background:#111;border:1px solid #333;color:#ff9900;border-radius:4px;padding:1px 4px;font-size:9px;font-family:var(--mono)">
-        ${[2,3,5,10,15].map(m=>`<option value="${m}" ${m===_nwrAutoRecDurMin?'selected':''}>${m} min</option>`).join('')}
-      </select>
+      <input type="number" min="1" max="120" value="${_nwrAutoRecDurMin}"
+        onchange="_nwrSetAutoRecDur(this.value)"
+        style="width:44px;background:#111;border:1px solid #333;color:#ff9900;border-radius:4px;padding:1px 5px;font-size:9px;font-family:var(--mono);text-align:center">
+      <span style="color:#888">min</span>
       <span style="color:#555;flex:1;text-align:right">${_nwrStationCache.length} stations</span>
-    </div>
-    <div style="padding:5px 12px 7px;border-bottom:1px solid rgba(255,60,60,0.15);font-family:var(--mono)">
-      <div style="font-size:8px;color:#666;letter-spacing:1px;margin-bottom:4px">TRIGGER ON</div>
-      ${_NWR_ALL_EVENTS.map(e => `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer">
-        <input type="checkbox" ${_nwrAutoRecEvents.has(e)?'checked':''} onchange="_nwrToggleAutoEvent('${e.replace(/'/g,"\\'")}',this.checked)" style="accent-color:#ff4444;width:11px;height:11px;cursor:pointer">
-        <span style="font-size:9px;color:${_nwrAutoRecEvents.has(e)?'#ffaaaa':'#666'}">${e}</span>
-      </label>`).join('')}
-    </div>
-    <div style="padding:6px 12px 7px;border-bottom:1px solid rgba(255,60,60,0.15);font-family:var(--mono)">
-      <div style="font-size:8px;color:#666;letter-spacing:1px;margin-bottom:5px">AUDIO DETECTION</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="checkbox" ${_nwrAudioDetectEnabled?'checked':''} onchange="_nwrToggleAudioDetect(this.checked)" style="accent-color:#1a8fff;width:11px;height:11px;cursor:pointer">
-          <span style="font-size:9px;color:#aaa">🎤 Listen for alert tones</span>
-        </label>
-        ${_adStat}
-      </div>
-      ${_adNote}
     </div>`;
   }
 
