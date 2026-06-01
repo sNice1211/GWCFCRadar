@@ -1359,6 +1359,12 @@ body {
 .ap-desc { font-family: var(--mono); font-size: 8.5px; color: rgba(255,255,255,0.48); line-height: 1.65; margin-top: 4px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
 .ap-more-btn { width: 100%; margin-top: 9px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.42); font-family: var(--display); font-size: 8px; letter-spacing: 1px; padding: 5px 10px; border-radius: 5px; cursor: pointer; transition: background 0.15s; }
 .ap-more-btn:hover { background: rgba(255,255,255,0.11); color: rgba(255,255,255,0.8); }
+.ap-timeline { padding: 10px 14px 12px; border-top: 1px solid rgba(255,255,255,0.07); }
+.ap-timeline-track { position: relative; height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px; margin-bottom: 8px; }
+.ap-timeline-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 2px; }
+.ap-timeline-dot { position: absolute; top: 50%; transform: translate(-50%,-50%); width: 13px; height: 13px; border-radius: 50%; border: 2px solid rgba(10,14,20,0.8); }
+.ap-timeline-labels { display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: rgba(255,255,255,0.4); font-family: var(--mono); }
+.ap-timeline-status { font-weight: bold; font-size: 11px; }
 .leaflet-popup-content-wrapper { background: transparent !important; border: none !important; box-shadow: none !important; padding: 0 !important; }
 .leaflet-popup-content { margin: 0 !important; }
 .leaflet-popup-tip { background: var(--surface) !important; }
@@ -7236,6 +7242,10 @@ function _apFmtTime(iso) {
     return d.toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit', timeZoneName:'short' });
   } catch(e) { return iso; }
 }
+function _apFmtTimeShort(iso) {
+  if (!iso) return '—';
+  try { return new Date(iso).toLocaleString('en-US', { hour:'numeric', minute:'2-digit' }); } catch(e) { return '—'; }
+}
 function _apToggleDesc(uid) {
   const desc = document.getElementById('ap-desc-' + uid);
   const btn  = document.getElementById('ap-btn-'  + uid);
@@ -7263,6 +7273,18 @@ function _buildAlertPopupHTML(p, color) {
   const issued  = _apFmtTime(p.onset || p.sent);
   const expires = _apFmtTime(p.expires);
   const sender  = (p.senderName || 'NWS').replace('National Weather Service ', 'NWS ');
+  // Timeline
+  const now      = Date.now();
+  const startMs  = new Date(p.onset || p.sent || 0).getTime();
+  const endMs    = new Date(p.expires || 0).getTime();
+  const hasTimes = startMs > 0 && endMs > startMs;
+  const pct      = hasTimes ? Math.min(100, Math.max(0, (now - startMs) / (endMs - startMs) * 100)) : 0;
+  const isActive = hasTimes && now >= startMs && now < endMs;
+  const isExpired= hasTimes && now >= endMs;
+  const tlStatus = isExpired ? 'Expired' : isActive ? 'Active' : 'Pending';
+  const tlColor  = isExpired ? '#666' : color;
+  const tlStart  = _apFmtTimeShort(p.onset || p.sent);
+  const tlEnd    = _apFmtTimeShort(p.expires);
   const sevLine = [p.severity, p.urgency].filter(Boolean).join(' · ') || '—';
   const colorBg  = color + '18';
   const colorBdr = color + '50';
@@ -7294,7 +7316,19 @@ function _buildAlertPopupHTML(p, color) {
         </div>
         <button class="ap-more-btn" id="ap-btn-${uid}" onclick="_apToggleDesc('${uid}')">View Full Message ▼</button>
       ` : ''}
-    </div>`;
+    </div>
+    ${hasTimes ? `
+    <div class="ap-timeline">
+      <div class="ap-timeline-track">
+        <div class="ap-timeline-fill" style="width:${pct}%;background:${tlColor}"></div>
+        <div class="ap-timeline-dot" style="left:${pct}%;background:${tlColor};box-shadow:0 0 8px ${tlColor}88"></div>
+      </div>
+      <div class="ap-timeline-labels">
+        <span>${tlStart}</span>
+        <span class="ap-timeline-status" style="color:${tlColor}">${tlStatus}</span>
+        <span>${tlEnd}</span>
+      </div>
+    </div>` : ''}`;
 }
 let alertsLayerVisible = true;  // always on
 
