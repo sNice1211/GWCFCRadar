@@ -5180,7 +5180,7 @@ body.gwcfc-crosshair #map::after {
       <div style="font-size:9px;color:rgba(255,255,255,0.3);letter-spacing:1.5px;margin-bottom:8px;">DATA SOURCES</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:18px;">
         <div><span style="color:#1a8fff">NOAA / NWS</span><br><span style="font-size:9px;color:rgba(255,255,255,0.3)">Alerts &amp; warnings</span></div>
-        <div><span style="color:#1a8fff">RainViewer</span><br><span style="font-size:9px;color:rgba(255,255,255,0.3)">Radar imagery</span></div>
+        <div><span style="color:#1a8fff">Iowa Mesonet (IEM)</span><br><span style="font-size:9px;color:rgba(255,255,255,0.3)">Radar tile cache</span></div>
         <div><span style="color:#1a8fff">GOES / NESDIS</span><br><span style="font-size:9px;color:rgba(255,255,255,0.3)">Satellite imagery</span></div>
         <div><span style="color:#1a8fff">SPC</span><br><span style="font-size:9px;color:rgba(255,255,255,0.3)">Storm outlooks</span></div>
         <div><span style="color:#1a8fff">NHC</span><br><span style="font-size:9px;color:rgba(255,255,255,0.3)">Hurricane forecasts</span></div>
@@ -6254,8 +6254,6 @@ function _initGraticule() {
 }
 
 // ── NOAA NEXRAD RADAR (Iowa Mesonet IEM tile cache — NOAA L3 N0Q) ──
-// Primary: IEM JSON API for timestamps + IEM pre-rendered PNG tile cache
-// Fallback: RainViewer global composite
 let lastPastIdx = 0;
 
 // ── IEM NOAA L3 N0Q composite frame fetch ──
@@ -6278,29 +6276,6 @@ function _generateL3Frames(count) {
   return frames;
 }
 
-// ── RainViewer radar frame fetch (fallback) ──
-async function _fetchRainViewerFrames() {
-  const CACHE_KEY = 'gwcfc_rv_radar_frames';
-  const CACHE_TTL = 2 * 60 * 1000;
-  try {
-    const cached = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
-    if (cached && (Date.now() - cached.ts) < CACHE_TTL) return cached.frames;
-  } catch(e) {}
-  const res = await fetch('https://api.rainviewer.com/public/weather-maps.json', { signal: _abortSignal(10000) });
-  const data = await res.json();
-  const past = (data.radar && data.radar.past) || [];
-  if (!past.length) throw new Error('RainViewer returned no radar frames');
-  const frames = past.map(f => ({
-    time: f.time,
-    tileKey: f.path,   // unique immutable key, used by sliding-window refresh
-    path: f.path,
-    iso: new Date(f.time * 1000).toISOString().slice(0, 16) + ':00Z',
-    forecast: false,
-    _rv: true,
-  }));
-  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), frames })); } catch(e) {}
-  return frames;
-}
 
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
@@ -11372,7 +11347,7 @@ let _fcstPlayTimer = null;
 function toggleFutureRadar() {
   const firstFcst = radarFrames.findIndex(f => f.forecast);
   if (firstFcst === -1) {
-    showToast('⚠ No forecast frames , RainViewer nowcast unavailable right now', 4000);
+    showToast('⚠ No forecast frames available right now', 4000);
     return;
   }
 
