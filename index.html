@@ -5324,15 +5324,15 @@ body.gwcfc-crosshair #map::after {
           <button class="fnv3-tab active" id="fnv3-tab-spaghetti" onclick="_fnv3SwitchTab('spaghetti')">🍝 Spaghetti</button>
           <button class="fnv3-tab" id="fnv3-tab-runmodels" onclick="_fnv3SwitchTab('runmodels')">🗺 Run Models</button>
         </div>
-        <!-- ATCF spaghetti section -->
+        <!-- Tropical tracks section — wire a new source into loadTropicalModels() -->
         <div id="fnv3-atcf-body">
           <div id="fnv3-atcf-controls">
             <div>
               <div class="fnv3-label">Storm</div>
-              <select id="atcf-storm-sel" class="fnv3-select" onchange="_atcfSetStorm(this.value)"></select>
+              <select id="atcf-storm-sel" class="fnv3-select"></select>
             </div>
           </div>
-          <div id="atcf-status">Loading storms…</div>
+          <div id="atcf-status">No source configured.</div>
           <div id="atcf-legend"></div>
         </div>
         <!-- Run Models imagery section -->
@@ -7710,61 +7710,13 @@ const TROP_TYPE_STYLE = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SPAGHETTI MODEL SYSTEM
-//
-// HOW IT WORKS (plain English):
-//
-//  1. We define a list of models (SPAG_MODELS) , each has a name, color, and
-//     line style. These are the forecast tracks we want to draw on the map.
-//
-//  2. When the user clicks "Models" in tropical mode, loadSpaghettiForStorm()
-//     runs. It tries THREE sources in order:
-//
-//     a) Google Cyclone Lab , fetches a CSV file from Google's public bucket.
-//        The CSV has one row per forecast hour, with lat/lon columns.
-//        We only use rows where "sample = -1" (that's the deterministic/mean
-//        track, not the ensemble members).
-//
-//     b) NHC ATCF individual model files , the National Hurricane Center
-//        publishes text files for each model in a format called ATCF.
-//        Each line is one forecast point. lat/lon are in tenths of degrees
-//        (e.g. "135N" = 13.5°N).
-//
-//     c) NHC spaghetti GeoJSON fallback , if the individual files aren't
-//        available (common when a storm is new or off-season), NHC publishes
-//        a single GeoJSON file with ALL model tracks bundled together.
-//        We use this as a catch-all.
-//
-//  3. For every track we successfully load, we:
-//     - Draw a colored polyline on the map
-//     - Place a small label tag at the END of the line (like a nametag)
-//     - Add it to the panel legend
-//
-//  4. A CORS proxy (allorigins.win) is used for NHC FTP requests because
-//     browsers block direct cross-origin requests to other domains. Think of
-//     it like a middleman that fetches the file on our behalf.
+// TROPICAL TRACK DRAWING UTILITIES
+// drawTrackWithTag() draws a colored line + label on the map.
+// makeTropMarker() places a storm icon at the current position.
+// Wire a data source into loadTropicalModels() to use these.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Model list , each entry defines how to style one forecast model's track
-const SPAG_MODELS = [
-  // key    = short code used in NHC ATCF filenames
-  // color  = hex color for the line and label tag
-  // width  = line thickness in pixels
-  // dash   = CSS dash pattern ('' = solid, '6 3' = long dash, '3 3' = dotted)
-  // label  = display name shown on map tag and in legend
-  { key: 'ofcl',  color: '#ffffff', width: 3,   dash: '',    label: 'NHC'      },
-  { key: 'avno',  color: '#00ff88', width: 2,   dash: '',    label: 'GFS'      },
-  { key: 'avni',  color: '#00cc66', width: 1.5, dash: '5 3', label: 'GEFS'     },
-  { key: 'euro',  color: '#4499ff', width: 2,   dash: '',    label: 'ECMWF'    },
-  { key: 'egrr',  color: '#2266cc', width: 1.5, dash: '5 3', label: 'EPS'      },
-  { key: 'ukmet', color: '#ff44ff', width: 1.5, dash: '',    label: 'UKMET'    },
-  { key: 'ngps',  color: '#ff8844', width: 1.5, dash: '',    label: 'NAVGEM'   },
-  { key: 'hwrf',  color: '#ffff00', width: 1.5, dash: '',    label: 'HWRF'     },
-  { key: 'hmon',  color: '#dddd00', width: 1.5, dash: '5 3', label: 'HMON'     },
-  { key: 'ctcx',  color: '#ff6600', width: 2,   dash: '',    label: 'COTC'     },
-  { key: 'tvcn',  color: '#cc88ff', width: 2,   dash: '',    label: 'CONX'     },
-  { key: 'google',color: '#00ffff', width: 2.5, dash: '7 3', label: 'Google AI'},
-];
+// TROPICAL_MODELS — populated by the new data source
 
 // ── Utility: fetch with a timeout ──
 // Why: browsers will hang forever on a dead URL. AbortController lets us
@@ -7792,29 +7744,6 @@ async function proxiedFetch(rawUrl, ms = 7000) {
   return j.contents || '';
 }
 
-// ── Parse Google Cyclone Lab CSV ──
-// Google publishes cyclone forecast CSVs with these key columns:
-//   init_time, track_id, sample, valid_time, lead_time, lat, lon, ...
-// "sample = -1" is the deterministic (mean) forecast track.
-// Ensemble members have sample >= 0 , we skip those to avoid clutter.
-function parseGoogleCycloneCsv(text) {
-  const lines = text.split('\n').filter(l => l.trim() && !l.startsWith('#'));
-  if (lines.length < 2) return [];
-  const header = lines[0].split(',').map(s => s.trim());
-  const iLat    = header.indexOf('lat');
-  const iLon    = header.indexOf('lon');
-  const iSample = header.indexOf('sample');
-  if (iLat === -1 || iLon === -1) return [];
-  const pts = [];
-  for (let i = 1; i < lines.length; i++) {
-    const p = lines[i].split(',');
-    if (iSample !== -1 && p[iSample] && p[iSample].trim() !== '-1') continue;
-    const lat = parseFloat(p[iLat]);
-    const lon = parseFloat(p[iLon]);
-    if (!isNaN(lat) && !isNaN(lon)) pts.push([lat, lon]);
-  }
-  return pts;
-}
 
 // ── Draw a line on the map + attach a name tag at the endpoint ──
 // The tag is a small Leaflet divIcon marker placed at the last point.
@@ -7850,221 +7779,16 @@ function drawTrackWithTag(pts, model, layerList) {
   layerList.push(tag);
 }
 
-// ── Main spaghetti loader ──
-async function loadSpaghettiForStorm(stormId, stormLat, stormLon, source = 'nhc') {
-  const spagLayers  = [];
-  const modelResults = [];
-
-  const year       = new Date().getUTCFullYear();
-  const stormLower = stormId.toLowerCase();
-
-  // ATCF filename prefix depends on source agency:
-  //   NHC storms: "AL052026" → prefix "al052026"   (basin+num+year, all together)
-  //   JTWC storms: "04W"     → prefix "wp042026"   (basin spelled out + num + year)
-  let atcfPrefix;
-  if (source === 'jtwc') {
-    // JTWC ID is like "04W", "03B", "91S"
-    const num   = stormLower.slice(0, 2);   // "04"
-    const basin = stormLower.slice(2);      // "w"
-    const basinMap = { w:'wp', b:'io', a:'io', s:'sh', e:'ep', c:'cp' };
-    atcfPrefix = (basinMap[basin] || 'wp') + num + year;  // "wp042026"
-  } else {
-    // NHC ID like "AL052026" → "al052026"
-    atcfPrefix = stormLower.slice(0, 2) + stormLower.slice(2, 4) + year;
-  }
-
-  // ── Step 1: Google Cyclone Lab ─────────────────────────────────────────────
-  // Google publishes AI-generated tropical cyclone forecasts as CSVs.
-  // URL pattern: weathernext-public bucket, named by storm ID + init time.
-  // We try two URL patterns since the exact naming varies.
-  const gModel = SPAG_MODELS.find(m => m.key === 'google');
-  try {
-    const gcUrls = [
-      `https://storage.googleapis.com/weathernext-public/cyclone-tracks/${stormId}/latest_paired.csv`,
-      `https://storage.googleapis.com/weathernext-public/cyclone-tracks/${stormId.toUpperCase()}/latest_paired.csv`,
-      `https://storage.googleapis.com/gfs-tropical/cyclone-forecasts/${stormId.toUpperCase()}/latest.csv`,
-    ];
-    let gcPts = [];
-    for (const url of gcUrls) {
-      try {
-        // Google's GCS bucket has CORS headers, so we can fetch directly
-        const r = await fetchWithTimeout(url, 6000);
-        if (r.ok) {
-          gcPts = parseGoogleCycloneCsv(await r.text());
-          if (gcPts.length >= 2) break;
-        }
-      } catch(e) {}
-      // If direct fetch fails, try through proxy
-      try {
-        const text = await proxiedFetch(url, 6000);
-        if (text) {
-          gcPts = parseGoogleCycloneCsv(text);
-          if (gcPts.length >= 2) break;
-        }
-      } catch(e) {}
-    }
-    if (gcPts.length >= 2) {
-      // Prepend the storm's current position as the track start
-      const allPts = [[stormLat, stormLon], ...gcPts];
-      drawTrackWithTag(allPts, gModel, spagLayers);
-      modelResults.push({ ...gModel, status: 'ok' });
-    } else {
-      modelResults.push({ ...gModel, status: 'unavailable' });
-    }
-  } catch(e) {
-    modelResults.push({ ...gModel, status: 'unavailable' });
-  }
-
-  // ── Step 2: NHC ATCF individual model files ────────────────────────────────
-  // NHC publishes one file per model, named like:
-  //   https://ftp.nhc.noaa.gov/atcf/aid_public/al052026.dat
-  // This single file contains ALL models' data interleaved, filtered by TECH column.
-  // We fetch the combined file once, then split by model tech code.
-  let atcfByModel = {}; // { 'AVNO': [[lat,lon],...], 'EURO': [...], ... }
-  let nhcSpagLoaded = false;
-
-  try {
-    // NHC  aid_public:  ftp.nhc.noaa.gov/atcf/aid_public/al052026.dat
-    // JTWC aid_public:  www.metoc.navy.mil/jtwc/products/atcf/wp042026.dat
-    const atcfUrl = source === 'jtwc'
-      ? `https://www.metoc.navy.mil/jtwc/products/atcf/${atcfPrefix}.dat`
-      : `https://ftp.nhc.noaa.gov/atcf/aid_public/${atcfPrefix}.dat`;
-
-    let atcfText = '';
-    try {
-      const r = await fetchWithTimeout(atcfUrl, 7000);
-      if (r.ok) atcfText = await r.text();
-    } catch(e) {}
-    if (!atcfText) {
-      atcfText = await proxiedFetch(atcfUrl, 8000).catch(() => '');
-    }
-
-    if (atcfText && atcfText.length > 50) {
-      // The combined ATCF file has all models. Split by TECH (column index 4).
-      // We group points by their model tech code.
-      for (const line of atcfText.split('\n')) {
-        if (!line.trim() || line.startsWith('#')) continue;
-        const p = line.split(',').map(s => s.trim());
-        if (p.length < 8) continue;
-        const tech = p[4];    // e.g. "AVNO", "EURO", "OFCL"
-        const latStr = p[6], lonStr = p[7];
-        if (!tech || !latStr || !lonStr) continue;
-        const latDir = latStr.slice(-1).toUpperCase();
-        const lonDir = lonStr.slice(-1).toUpperCase();
-        let lat = parseFloat(latStr) / 10;
-        let lon = parseFloat(lonStr) / 10;
-        if (latDir === 'S') lat = -lat;
-        if (lonDir === 'W') lon = -lon;
-        if (isNaN(lat) || isNaN(lon)) continue;
-        if (!atcfByModel[tech]) atcfByModel[tech] = [];
-        atcfByModel[tech].push([lat, lon]);
-      }
-    }
-  } catch(e) {}
-
-  // Now draw each known model from the ATCF data
-  for (const model of SPAG_MODELS) {
-    if (model.key === 'google') continue; // already handled
-    const techKey = model.key.toUpperCase();
-    const pts = atcfByModel[techKey];
-    if (pts && pts.length >= 2) {
-      const allPts = [[stormLat, stormLon], ...pts];
-      drawTrackWithTag(allPts, model, spagLayers);
-      modelResults.push({ ...model, status: 'ok' });
-      nhcSpagLoaded = true;
-    } else {
-      modelResults.push({ ...model, status: 'unavailable' });
-    }
-  }
-
-  // ── Step 3: NHC Spaghetti GeoJSON fallback ────────────────────────────────
-  // If we got zero ATCF tracks, try NHC's pre-rendered spaghetti GeoJSON.
-  // This is one file with all model tracks bundled, published by NHC for
-  // each active storm. It may not have individual model names , just lines.
-  if (!nhcSpagLoaded) {
-    try {
-      const spagUrl = `https://www.nhc.noaa.gov/storm_graphics/api/${stormId}_earliest_reasonable_trak_NHC_spag.json`;
-      let spagText = '';
-      try {
-        const r = await fetchWithTimeout(spagUrl, 7000);
-        if (r.ok) spagText = await r.text();
-      } catch(e) {}
-      if (!spagText) spagText = await proxiedFetch(spagUrl, 8000).catch(() => '');
-
-      if (spagText) {
-        const d = JSON.parse(spagText);
-        const features = d.features || [];
-        // Cycle through a color palette for each track line
-        const palette = [
-          '#ff8844','#44ff88','#ff44cc','#ffee44','#44aaff',
-          '#ff6644','#cc88ff','#88ffee','#ffaa44','#aa88ff','#ff4488'
-        ];
-        features.forEach((f, fi) => {
-          const coords = f.geometry?.coordinates;
-          if (!coords || coords.length < 2) return;
-          // GeoJSON coordinates are [lon, lat] , swap to [lat, lon] for Leaflet
-          const fPts = coords.map(c => [c[1], c[0]]);
-          const name = f.properties?.MODEL || f.properties?.model || `M${fi+1}`;
-          const col  = palette[fi % palette.length];
-          drawTrackWithTag(fPts, { color: col, width: 1.4, dash: '4 3', label: name }, spagLayers);
-          // Replace the matching "unavailable" entry with "ok"
-          const existing = modelResults.find(m => m.label === name || m.key === name.toLowerCase());
-          if (existing) existing.status = 'ok';
-          else modelResults.push({ key: name, color: col, width: 1.4, dash: '4 3', label: name, status: 'ok' });
-        });
-      }
-    } catch(e) {}
-  }
-
-  return { spagLayers, modelResults };
+// ── TROPICAL TRACK LOADER ──────────────────────────────────────────────────
+// Replace this stub with a call to your data source.
+// Expected to return an array of { pts: [[lat,lon],...], model: {color,width,dash,label} }
+// and call drawTrackWithTag() for each track.
+async function loadTropicalModels(storm, layerList) {
+  const el = document.getElementById('atcf-status');
+  if (el) el.textContent = 'No track source configured.';
 }
 
-// ── Build the panel HTML block for one storm ──────────────────────────────
-// Called after spaghetti models are loaded. Produces the colored legend
-// rows shown in the Models panel for each loaded model.
-function buildStormPanelHTML(storm, modelResults) {
-  const okModels = modelResults.filter(m => m.status === 'ok');
-  const failedModels = modelResults.filter(m => m.status === 'unavailable');
 
-  // Each row: a colored swatch (solid or dashed) + model name
-  const rows = okModels.map(m => {
-    // Dashed models get a border-top trick instead of background fill
-    const sw = m.dash
-      ? `width:22px;height:0;border-top:2px dashed ${m.color};margin-top:5px;flex-shrink:0;`
-      : `width:22px;height:3px;background:${m.color};border-radius:2px;flex-shrink:0;`;
-    return `<div class="trop-model-row">
-      <div style="${sw}"></div>
-      <span style="color:${m.color};font-weight:700;">${m.label}</span>
-    </div>`;
-  }).join('');
-
-  const offlineTxt = failedModels.length
-    ? `<div class="trop-offline">Not available: ${failedModels.map(m=>m.label).join(' · ')}</div>`
-    : '';
-
-  return `
-    <div class="trop-storm-block">
-      <div class="trop-storm-name" style="color:${storm.style.color}">
-        ${storm.style.label} ${storm.name}
-      </div>
-      <div class="trop-storm-meta">
-        ${storm.style.name} · ${storm.basin}<br>
-        💨 <b style="color:#d4e8ff">${storm.winds} kt</b>
-        &nbsp;·&nbsp;
-        🌡 <b style="color:#d4e8ff">${storm.pres} mb</b><br>
-        📍 ${storm.lat.toFixed(1)}°${storm.lat>=0?'N':'S'},
-           ${Math.abs(storm.lon).toFixed(1)}°${storm.lon<0?'W':'E'}
-      </div>
-      <div style="font-size:9px;color:#00cfff;letter-spacing:1.5px;
-                  margin:6px 0 4px;font-family:'IBM Plex Mono',monospace;">
-        SPAGHETTI MODELS
-      </div>
-      <div class="trop-model-legend">
-        ${rows || '<div style="color:#555;font-size:9px;padding:4px 0;">Model data not yet issued for this storm.</div>'}
-      </div>
-      ${offlineTxt}
-    </div>`;
-}
 
 // ── Place a storm position marker on the map ──────────────────────────────
 function makeTropMarker(storm) {
@@ -8097,220 +7821,22 @@ function makeTropMarker(storm) {
     `);
 }
 
-// ── Parse storms from JTWC's active storm text file ──────────────────────
-// JTWC (Joint Typhoon Warning Center) covers Western Pacific (WP),
-// Indian Ocean (IO), and Southern Hemisphere (SH) , everything NHC doesn't.
-// They publish a plain text file listing active storms like:
-//   WTPQ21 PGTW 131200
-//   TROPICAL STORM 04W (SINLAKU) ... 13.1N 147.4E ... 85 KT ... 945 MB
-// We parse this to extract name, position, winds, pressure, and basin.
-// ── Parse JTWC significant weather advisory bulletin ─────────────────────
-// Real bulletin format (multi-line , position wraps to next line):
-//
-//   (1) AT 13APR26 0000Z, SUPER TYPHOON 04W (SINLAKU) WAS LOCATED NEAR
-//   12.2N 148.9E, APPROXIMATELY 262 NM EAST-SOUTHEAST OF NAVSTA GUAM, AND
-//   HAD TRACKED NORTHWESTWARD AT 08 KNOTS OVER THE PAST SIX HOURS. MAXIMUM
-//   SUSTAINED SURFACE WINDS WERE ESTIMATED AT 155 KNOTS GUSTING TO 190
-//
-// Strategy: join all lines into one big string, then regex over it.
-function parseJTWCActiveStorms(text) {
-  const storms = [];
-  if (!text || text.length < 20) return storms;
 
-  // Flatten the whole bulletin , remove line breaks so wrapped text joins up
-  const flat = text.replace(/\r?\n/g, ' ').toUpperCase();
 
-  // Match each storm entry. Pattern looks for type + ID + name + position block.
-  // Example flat segment:
-  //   "SUPER TYPHOON 04W (SINLAKU) WAS LOCATED NEAR 12.2N 148.9E ... 155 KNOTS"
-  const stormPattern = /\b(SUPER TYPHOON|TYPHOON|TROPICAL STORM|TROPICAL DEPRESSION|SUBTROPICAL STORM)\s+(\d{2}[WECSBA])\s+\(([A-Z]+)\)[^.]*?(\d{1,3}\.?\d*)\s*([NS])\s+(\d{1,3}\.?\d*)\s*([EW])[^.]*?(\d{2,3})\s*KNOTS?/g;
-
-  let m;
-  while ((m = stormPattern.exec(flat)) !== null) {
-    const typStr  = m[1];
-    const id      = m[2];               // "04W"
-    const name    = m[3];               // "SINLAKU"
-    let   lat     = parseFloat(m[4]);
-    const latDir  = m[5];               // "N" or "S"
-    let   lon     = parseFloat(m[6]);
-    const lonDir  = m[7];               // "E" or "W"
-    const winds   = parseInt(m[8]);
-
-    if (latDir === 'S') lat = -lat;
-    if (lonDir === 'W') lon = -lon;
-    if (isNaN(lat) || isNaN(lon)) continue;
-
-    const basinCode = id.slice(-1);
-    const basinName = {
-      W:'W. Pacific', E:'E. Pacific', C:'C. Pacific',
-      B:'Bay of Bengal', A:'Arabian Sea', S:'S. Hemisphere'
-    }[basinCode] || 'W. Pacific';
-
-    const cls = typStr.includes('SUPER') ? 'ST'
-              : typStr.includes('TYPHOON') ? 'TY'
-              : typStr.includes('STORM')   ? 'TS' : 'TD';
-
-    // Avoid duplicates (same ID)
-    if (storms.find(s => s.id === id)) continue;
-
-    storms.push({ id, name, lat, lon, winds, pres: '?', basin: basinName, cls });
-  }
-  return storms;
-}
-
+// ── TROPICAL OVERLAY LOADER ─────────────────────────────────────────────────
+// Clears existing layers and calls loadTropicalModels() for each active storm.
+// Wire a new data source into loadTropicalModels() above.
 async function loadTropical() {
-  // ── What this function does (plain English) ──────────────────────────────
-  // Two agencies cover all global tropical storms:
-  //   • NHC  , Atlantic (AL) + Eastern/Central Pacific (EP, CP) , covers USA, Caribbean, Mexico
-  //   • JTWC , Western Pacific (WP) + Indian Ocean (IO, SH)     , covers Guam, Philippines, Japan, Australia
-  //
-  // We fetch BOTH sources so storms like Sinlaku (WP042026, near Guam)
-  // show up alongside Atlantic hurricanes. Then for each storm we:
-  //   1. Place a marker on the map
-  //   2. Load the official cone + track line
-  //   3. Load spaghetti model tracks
-  //   4. Build the panel legend
-  // ─────────────────────────────────────────────────────────────────────────
-
-  const panelBody = document.getElementById('trop-panel-body');
-  // NOTE: The tropical-model-panel is now a Tropical Tidbits-style viewer with no
-  // storm list panel; we keep this loader running for map markers/tracks but skip
-  // panel writes if the element is absent.
-  const writePanel = (html) => { if (panelBody) panelBody.innerHTML = html; };
-  writePanel('<div class="trop-no-storms">🔄 Loading global tropical data…</div>');
-
-  tropicalLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  tropicalLayers.forEach(l => { try { map.removeLayer(l); } catch(e) {} });
   tropicalLayers = [];
-  _tropActiveStorms = [];
-  if (nhcLayer) { try { map.removeLayer(nhcLayer); } catch(e){} nhcLayer = null; }
+  if (nhcLayer) { try { map.removeLayer(nhcLayer); } catch(e) {} nhcLayer = null; }
 
-  const stormMarkers = [];
-  let panelHTML = '';
-  let totalStorms = 0;
-
-  // ── Source 1: NHC (Atlantic + E. Pacific) ────────────────────────────────
-  try {
-    const nhcUrl = 'https://www.nhc.noaa.gov/CurrentStorms.json';
-    let stormData = null;
-    try { const r = await fetchWithTimeout(nhcUrl, 7000); if (r.ok) stormData = await r.json(); } catch(e) {}
-    if (!stormData) {
-      const txt = await proxiedFetch(nhcUrl, 8000).catch(() => '');
-      if (txt) stormData = JSON.parse(txt);
-    }
-    for (const raw of (stormData?.activeStorms || [])) {
-      const lat = raw.latlon?.[0] ?? raw.lat ?? null;
-      const lon = raw.latlon?.[1] ?? raw.lon ?? null;
-      if (lat === null || lon === null) continue;
-      const storm = {
-        id:    raw.id || '',
-        name:  raw.name || raw.id || 'Unknown',
-        lat, lon,
-        winds: raw.intensity ?? raw.maxWinds ?? '?',
-        pres:  raw.pressure ?? raw.minPressure ?? '?',
-        basin: raw.basin || 'Atlantic',
-        cls:   (raw.classification || raw.type || 'TS').toUpperCase(),
-        source: 'nhc',
-      };
-      storm.style = TROP_TYPE_STYLE[storm.cls] || TROP_TYPE_STYLE['TS'];
-      _tropActiveStorms.push({ id: storm.id, name: storm.name, basin: 'nhc' });
-      stormMarkers.push(makeTropMarker(storm));
-
-      // NHC cone + track (only NHC storms have these GeoJSON files)
-      for (const [suffix, styleOpts] of [
-        ['_5day_cone_no_line_and_wind.json', { fillOpacity: 0.10, weight: 1 }],
-        ['_5day_line.json',                  { color: '#ffffff', weight: 2.5, dashArray: '6 4', fillOpacity: 0 }]
-      ]) {
-        try {
-          const url = `https://www.nhc.noaa.gov/storm_graphics/api/${storm.id}${suffix}`;
-          let txt = '';
-          try { const r = await fetchWithTimeout(url, 5000); if (r.ok) txt = await r.text(); } catch(e) {}
-          if (!txt) txt = await proxiedFetch(url, 6000).catch(() => '');
-          if (txt) {
-            tropicalLayers.push(L.geoJSON(JSON.parse(txt), {
-              style: { color: storm.style.color, fillColor: storm.style.color, opacity: 0.9, ...styleOpts }
-            }).addTo(map));
-          }
-        } catch(e) {}
-      }
-
-      writePanel(`<div class="trop-no-storms">🔄 Loading models for ${storm.name}…</div>`);
-      const { spagLayers, modelResults } = await loadSpaghettiForStorm(storm.id, storm.lat, storm.lon, 'nhc');
-      tropicalLayers.push(...spagLayers);
-      panelHTML += buildStormPanelHTML(storm, modelResults);
-      totalStorms++;
-    }
-  } catch(e) { console.warn('[NHC] error:', e); }
-
-  // ── Source 2: JTWC (W. Pacific incl. Guam, Indian Ocean, S. Hemisphere) ──
-  // JTWC publishes a plain-text bulletin listing all active Western Pacific
-  // and Indian Ocean storms. URL: metoc.navy.mil/jtwc/products/abpwweb.txt
-  // Basin codes: W=WPac, B=Bay of Bengal, A=Arabian Sea, S=S.Hemisphere
-  try {
-    const jtwcUrls = [
-      'https://www.metoc.navy.mil/jtwc/products/abpwweb.txt',  // all basins combined
-      'https://www.metoc.navy.mil/jtwc/products/abpw.txt',     // alternate
-    ];
-    let jtwcText = '';
-    for (const url of jtwcUrls) {
-      try { const txt = await proxiedFetch(url, 8000); if (txt && txt.length > 50) { jtwcText = txt; break; } } catch(e) {}
-    }
-
-    const jtwcStorms = parseJTWCActiveStorms(jtwcText);
-
-    for (const storm of jtwcStorms) {
-      storm.source = 'jtwc';
-      storm.style  = TROP_TYPE_STYLE[storm.cls] || TROP_TYPE_STYLE['TS'];
-      _tropActiveStorms.push({ id: storm.id, name: storm.name, basin: 'jtwc' });
-      stormMarkers.push(makeTropMarker(storm));
-
-      // JTWC track from their ATCF best-track / forecast files
-      // Format: https://www.metoc.navy.mil/jtwc/products/wp0426.tcw (warning text)
-      // or ATCF: https://www.metoc.navy.mil/jtwc/products/atcf/wp042026.dat
-      const jtwcTrackUrl = `https://www.metoc.navy.mil/jtwc/products/atcf/${storm.id.toLowerCase()}${new Date().getUTCFullYear()}.dat`;
-      try {
-        let trackTxt = await proxiedFetch(jtwcTrackUrl, 7000).catch(() => '');
-        if (trackTxt && trackTxt.length > 50) {
-          // Group OFCL (official) points and draw the track
-          const ofclPts = [];
-          for (const line of trackTxt.split('\n')) {
-            const p = line.split(',').map(s => s.trim());
-            if (p.length < 8 || p[4] !== 'OFCL') continue;
-            const latS = p[6], lonS = p[7];
-            let la = parseFloat(latS) / 10, lo = parseFloat(lonS) / 10;
-            if (latS.slice(-1) === 'S') la = -la;
-            if (lonS.slice(-1) === 'W') lo = -lo;
-            if (!isNaN(la) && !isNaN(lo)) ofclPts.push([la, lo]);
-          }
-          if (ofclPts.length >= 2) {
-            tropicalLayers.push(L.polyline([[storm.lat, storm.lon], ...ofclPts], {
-              color: '#ffffff', weight: 2.5, dashArray: '6 4', opacity: 0.9
-            }).addTo(map));
-          }
-        }
-      } catch(e) {}
-
-      writePanel(`<div class="trop-no-storms">🔄 Loading models for ${storm.name}…</div>`);
-      const { spagLayers, modelResults } = await loadSpaghettiForStorm(storm.id, storm.lat, storm.lon, 'jtwc');
-      tropicalLayers.push(...spagLayers);
-      panelHTML += buildStormPanelHTML(storm, modelResults);
-      totalStorms++;
-    }
-  } catch(e) { console.warn('[JTWC] error:', e); }
-
-  // ── Done ──────────────────────────────────────────────────────────────────
-  nhcLayer = L.layerGroup(stormMarkers).addTo(map);
-  tropicalLayers.push(nhcLayer);
-
-  if (totalStorms === 0) {
-    writePanel(`
-      <div class="trop-no-storms">🌤 No active tropical systems worldwide</div>
-      <div class="trop-offline" style="margin-top:6px;text-align:center;line-height:1.6;">
-        Sources: NHC (Atlantic/E.Pacific) · JTWC (W.Pacific/Indian Ocean)<br>
-        Check back during storm season.
-      </div>`);
-  } else {
-    writePanel(panelHTML);
-  }
+  const statusEl = document.getElementById('atcf-status');
+  if (statusEl) statusEl.textContent = 'No source configured.';
+  const legendEl = document.getElementById('atcf-legend');
+  if (legendEl) legendEl.innerHTML = '';
+  const sel = document.getElementById('atcf-storm-sel');
+  if (sel) sel.innerHTML = '';
 }
 
 // ── LIGHTNING (Simulated live feed) ──
@@ -11425,38 +10951,14 @@ async function init() {
 
 
 
-// ── ATCF SPAGHETTI MODELS ──────────────────────────────────────────────────
-// Data source: NOAA NHC aid_public a-deck files (same data as Tropical Tidbits)
-// URL: https://ftp.nhc.noaa.gov/atcf/aid_public/{basin}{cy}{year}.dat
-
-const ATCF_BASE = 'https://ftp.nhc.noaa.gov/atcf/aid_public/';
-
-// Model display config: tech code → { label, color, dash, weight, zOrder }
-const ATCF_MODELS = {
-  OFCL: { label: 'Official (NHC/JTWC)', color: '#ffffff', dash: false, weight: 3, z: 10 },
-  GFS:  { label: 'GFS',                 color: '#4dabf7', dash: true,  weight: 1.5, z: 5 },
-  AVNO: { label: 'GFS (legacy)',        color: '#4dabf7', dash: true,  weight: 1.5, z: 5 },
-  HWRF: { label: 'HWRF',               color: '#69db7c', dash: true,  weight: 1.5, z: 5 },
-  HMON: { label: 'HMON',               color: '#a9e34b', dash: true,  weight: 1.5, z: 4 },
-  HFSA: { label: 'HAFS-A',             color: '#ff8c42', dash: true,  weight: 1.5, z: 6 },
-  HFSB: { label: 'HAFS-B',             color: '#ff6bce', dash: true,  weight: 1.5, z: 6 },
-  EMX:  { label: 'ECMWF',              color: '#ff6b6b', dash: true,  weight: 1.5, z: 7 },
-  UKX:  { label: 'UK Met Office',      color: '#f783ac', dash: true,  weight: 1.5, z: 6 },
-  CMC:  { label: 'CMC (Canada)',       color: '#38d9a9', dash: true,  weight: 1.5, z: 5 },
-  NVGM: { label: 'NAVGEM (Navy)',      color: '#748ffc', dash: true,  weight: 1.5, z: 4 },
-  IVCN: { label: 'Interp. Consensus',  color: '#ffd43b', dash: false, weight: 2.5, z: 8 },
-  TABS: { label: 'TVCA Consensus',     color: '#ffe066', dash: false, weight: 2,   z: 7 },
-  DSHP: { label: 'Decay-SHIFOR',       color: '#adb5bd', dash: true,  weight: 1.2, z: 2 },
-  SHIP: { label: 'SHIFOR',             color: '#868e96', dash: true,  weight: 1.2, z: 2 },
-};
-
-let _atcfLayers = [];
-let _atcfCurrentStorm = null;
-let _atcfStorms = [];   // [{ id:'AL062024', name:'HELENE', basin:'al', cy:'06', year:'2024' }]
-let _atcfCurrentTab = 'spaghetti';
+// ── TROPICAL TRACK LAYERS ───────────────────────────────────────────────────
+let _tropTrackLayers = [];
+function _clearTropTrackLayers() {
+  _tropTrackLayers.forEach(l => { try { map.removeLayer(l); } catch(e) {} });
+  _tropTrackLayers = [];
+}
 
 function _fnv3SwitchTab(tab) {
-  _atcfCurrentTab = tab;
   const atcfBody      = document.getElementById('fnv3-atcf-body');
   const runmodelsBody = document.getElementById('fnv3-runmodels-body');
   document.querySelectorAll('.fnv3-tab').forEach(t =>
@@ -11464,204 +10966,12 @@ function _fnv3SwitchTab(tab) {
   if (atcfBody)      atcfBody.style.display      = tab === 'spaghetti' ? 'block' : 'none';
   if (runmodelsBody) runmodelsBody.style.display  = tab === 'runmodels' ? 'block' : 'none';
   if (tab === 'spaghetti') {
-    // Load ATCF
-    _atcfClearLayers();
-    if (_atcfCurrentStorm) _atcfLoad(_atcfCurrentStorm);
-    // Load FNV3 if there's a current run
-    if (_fnv3CurrentRun) _fnv3FetchCSV(_fnv3CsvUrl(_fnv3CurrentRun));
-    else {
-      const stamps = _fnv3RunStamps();
-      if (stamps.length) {
-        _fnv3CurrentRun = stamps[0].stamp;
-        _fnv3FetchCSV(_fnv3CsvUrl(_fnv3CurrentRun));
-      }
-    }
+    _clearTropTrackLayers();
   } else {
-    _atcfClearLayers();
-    _fnv3ClearLayers();
-    if (tab === 'runmodels') {
-      _magInit();
-    }
+    _clearTropTrackLayers();
+    if (tab === 'runmodels') _magInit();
   }
 }
-
-function _atcfClearLayers() {
-  _atcfLayers.forEach(l => { try { if(l) map.removeLayer(l); } catch(e){} });
-  _atcfLayers = [];
-}
-
-// Parse an ATCF lat like "285N" → 28.5, "900S" → -90.0
-function _atcfParseLat(s) {
-  s = s.trim();
-  const dir = s.slice(-1);
-  const v = parseInt(s.slice(0, -1)) / 10;
-  return dir === 'S' ? -v : v;
-}
-// Parse an ATCF lon like "805W" → -80.5, "1378E" → 137.8
-function _atcfParseLon(s) {
-  s = s.trim();
-  const dir = s.slice(-1);
-  const v = parseInt(s.slice(0, -1)) / 10;
-  return dir === 'W' ? -v : v;
-}
-
-function _atcfParseFile(text) {
-  // Returns { [tech]: { [initTime]: [{lat, lon, tau, vmax, mslp}] } }
-  const result = {};
-  for (const raw of text.split('\n')) {
-    const f = raw.split(',').map(s => s.trim());
-    if (f.length < 9) continue;
-    // f[4] = TECH, f[3]=TECHNUM, f[5]=TAU, f[6]=lat, f[7]=lon, f[8]=vmax, f[9]=mslp
-    const tech = f[4].toUpperCase();
-    const init = f[2];
-    const tau  = parseInt(f[5]);
-    const latS = f[6], lonS = f[7];
-    if (!latS || !lonS || !/[NS]$/.test(latS) || !/[EW]$/.test(lonS)) continue;
-    const lat = _atcfParseLat(latS);
-    const lon = _atcfParseLon(lonS);
-    if (isNaN(lat) || isNaN(lon) || isNaN(tau)) continue;
-    const vmax = parseInt(f[8]) || 0;
-    const mslp = parseInt(f[9]) || 0;
-    if (!result[tech]) result[tech] = {};
-    if (!result[tech][init]) result[tech][init] = [];
-    result[tech][init].push({ lat, lon, tau, vmax, mslp });
-  }
-  return result;
-}
-
-// Get the most recent init time that has at least 2 points
-function _atcfLatestInit(techData) {
-  const inits = Object.keys(techData).sort().reverse();
-  for (const init of inits) {
-    if (techData[init].length >= 2) return init;
-  }
-  return inits[0] || null;
-}
-
-function _atcfPlot(parsed, stormId) {
-  _atcfClearLayers();
-  const legend = document.getElementById('atcf-legend');
-  if (legend) legend.innerHTML = '';
-  const plotted = [];
-
-  // Sort: OFCL last (drawn on top), then by z order
-  const techOrder = Object.keys(parsed).sort((a, b) => {
-    const za = (ATCF_MODELS[a] || {}).z || 3;
-    const zb = (ATCF_MODELS[b] || {}).z || 3;
-    return za - zb;
-  });
-
-  for (const tech of techOrder) {
-    const cfg = ATCF_MODELS[tech];
-    if (!cfg) continue;  // skip unknown models
-    const initTime = _atcfLatestInit(parsed[tech]);
-    if (!initTime) continue;
-    const pts = parsed[tech][initTime]
-      .sort((a, b) => a.tau - b.tau)
-      .map(p => [p.lat, p.lon]);
-    if (pts.length < 2) continue;
-
-    const line = L.polyline(pts, {
-      color: cfg.color,
-      weight: cfg.weight,
-      opacity: cfg.dash ? 0.65 : 0.92,
-      dashArray: cfg.dash ? '5,4' : null,
-    }).addTo(map);
-    _atcfLayers.push(line);
-    plotted.push({ tech, cfg, pts });
-
-    // Tip for OFCL track
-    if (tech === 'OFCL' && parsed[tech][initTime]) {
-      parsed[tech][initTime].sort((a,b)=>a.tau-b.tau).forEach(p => {
-        const tip = `<b>Official</b><br>+${p.tau}h<br>${p.vmax} kt / ${p.mslp} mb`;
-        const cm = L.circleMarker([p.lat, p.lon], {
-          radius: 3.5, color: cfg.color, fillColor: _fnv3WindColor(p.vmax), fillOpacity: 0.9, weight: 1.5
-        }).bindTooltip(tip, { sticky: true, opacity: 0.9 }).addTo(map);
-        _atcfLayers.push(cm);
-      });
-    }
-  }
-
-  // Build legend
-  if (legend && plotted.length) {
-    for (const { tech, cfg } of plotted.slice().reverse()) {
-      const row = document.createElement('div');
-      row.className = 'atcf-legend-row';
-      const sw = document.createElement('div');
-      sw.className = cfg.dash ? 'atcf-swatch dashed' : 'atcf-swatch';
-      if (cfg.dash) sw.style.borderTopColor = cfg.color;
-      else sw.style.background = cfg.color;
-      const lbl = document.createElement('span');
-      lbl.textContent = `${tech} , ${cfg.label}`;
-      row.appendChild(sw); row.appendChild(lbl);
-      legend.appendChild(row);
-    }
-  }
-
-  // Fit to OFCL track if present, else first track
-  const ofclPts = plotted.find(p => p.tech === 'OFCL')?.pts || plotted[0]?.pts;
-  if (ofclPts && ofclPts.length > 1) {
-    try { map.fitBounds(L.latLngBounds(ofclPts).pad(0.4), { maxZoom: 6 }); } catch(e) {}
-  }
-}
-
-async function _atcfLoad(stormId) {
-  const status = document.getElementById('atcf-status');
-  const legend = document.getElementById('atcf-legend');
-  if (status) status.textContent = `Fetching ${stormId}…`;
-  if (legend) legend.innerHTML = '';
-  _atcfClearLayers();
-
-  const fileId = stormId.toLowerCase();
-  const basin2 = fileId.substring(0, 2); // al, ep, wp, io, sh
-  // JTWC basins use their own ATCF server; NHC covers al + ep + cp
-  const isJTWC = ['wp','io','sh','ag','an','bb','cp','la'].includes(basin2);
-  const url = isJTWC
-    ? `https://www.metoc.navy.mil/jtwc/products/atcf/${fileId}.dat`
-    : `${ATCF_BASE}${fileId}.dat`;
-
-  try {
-    const text = await proxiedFetch(url, 15000);
-    if (!text || !text.trim()) throw new Error('Empty file , storm may have no model data yet');
-    const parsed = _atcfParseFile(text);
-    const techCount = Object.keys(parsed).length;
-    if (!techCount) throw new Error('No model data found in file');
-    _atcfPlot(parsed, stormId);
-    if (status) status.textContent = `✓ ${techCount} models loaded`;
-  } catch(e) {
-    if (status) status.textContent = `⚠ ${e.message}`;
-    console.warn('[ATCF] fetch failed:', url, e);
-  }
-}
-
-function _atcfSetStorm(stormId) {
-  _atcfCurrentStorm = stormId;
-  _atcfLoad(stormId);
-}
-
-// Populate storm selector from the storms already loaded by loadTropical()
-function _atcfPopulateStorms(storms) {
-  // storms: array of { id, name, basin, ... }
-  _atcfStorms = storms;
-  const sel = document.getElementById('atcf-storm-sel');
-  if (!sel) return;
-  sel.innerHTML = '';
-  if (!storms.length) {
-    sel.innerHTML = '<option>No active storms</option>';
-    const st = document.getElementById('atcf-status');
-    if (st) st.textContent = 'No active storms found.';
-    return;
-  }
-  storms.forEach(s => {
-    const opt = document.createElement('option');
-    opt.value = s.id; opt.textContent = `${s.id} ${s.name || ''}`.trim();
-    sel.appendChild(opt);
-  });
-  _atcfCurrentStorm = storms[0].id;
-  sel.value = _atcfCurrentStorm;
-  _atcfLoad(_atcfCurrentStorm);
-}
-// ── END ATCF ────────────────────────────────────────────────────────────────
 
 // ── RUN MODELS ────────────────────────────────────────────────────────────────
 
@@ -11775,128 +11085,6 @@ function _magInit() {
 }
 // ── END RUN MODELS ────────────────────────────────────────────────────────────
 
-// ── FNV3 TROPICAL ENSEMBLE MODELS ──────────────────────────────────────────
-const FNV3_BASE = 'https://storage.googleapis.com/weathernext-public/fnv3/';
-const FNV3_ENS_COLORS = [
-  '#ff6b6b','#ffa94d','#ffe066','#69db7c','#4dabf7','#cc5de8',
-  '#f783ac','#a9e34b','#38d9a9','#748ffc','#ff8787','#ffec99',
-];
-let _fnv3Open = false, _fnv3Data = null, _fnv3Layers = [];
-let _fnv3CurrentStorm = null, _fnv3CurrentRun = null, _fnv3RefreshTimer = null;
-
-function _fnv3RunStamps() {
-  const stamps = []; const now = new Date();
-  for (let i = 0; i < 8; i++) {
-    const t = new Date(now);
-    t.setUTCHours(Math.floor(t.getUTCHours() / 6) * 6 - i * 6, 0, 0, 0);
-    const Y = t.getUTCFullYear(), M = pad(t.getUTCMonth()+1), D = pad(t.getUTCDate()), H = pad(t.getUTCHours());
-    stamps.push({ stamp: `${Y}_${M}_${D}T${H}`, label: `${M}/${D} ${H}z` });
-  }
-  return stamps;
-}
-function _fnv3CsvUrl(stamp) { return `${FNV3_BASE}FNV3_${stamp}_00_paired.csv`; }
-
-function _fnv3ParseCSV(text) {
-  const lines = text.split('\n').filter(l => !l.startsWith('#') && l.trim());
-  if (!lines.length) return [];
-  const header = lines[0].split(',');
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const vals = lines[i].split(',');
-    if (vals.length < 7) continue;
-    const row = {};
-    header.forEach((h, j) => { row[h.trim()] = vals[j] ? vals[j].trim() : ''; });
-    row.lat = parseFloat(row.lat); row.lon = parseFloat(row.lon);
-    row.sample = parseInt(row.sample);
-    row.max_wind = parseFloat(row.maximum_sustained_wind_speed_knots) || 0;
-    row.min_pres = parseFloat(row.minimum_sea_level_pressure_hpa) || 0;
-    if (isNaN(row.lat) || isNaN(row.lon)) continue;
-    rows.push(row);
-  }
-  return rows;
-}
-
-function _fnv3ClearLayers() {
-  _fnv3Layers.forEach(l => { try { if(l) map.removeLayer(l); } catch(e){} });
-  _fnv3Layers = [];
-}
-
-function _fnv3WindColor(kt) {
-  if (kt >= 137) return '#ff00ff'; if (kt >= 113) return '#ff4500';
-  if (kt >= 96)  return '#ff8c00'; if (kt >= 83)  return '#ffd700';
-  if (kt >= 64)  return '#ff6347'; if (kt >= 50)  return '#ffff00';
-  if (kt >= 34)  return '#00ffff'; return '#7ec8e3';
-}
-
-function _fnv3PlotTracks(rows, stormId) {
-  _fnv3ClearLayers();
-  if (!rows || !rows.length) return;
-  const stormRows = stormId ? rows.filter(r => r.track_id === stormId) : rows;
-  const bySample = {};
-  stormRows.forEach(r => { if (!bySample[r.sample]) bySample[r.sample] = []; bySample[r.sample].push(r); });
-  Object.values(bySample).forEach(arr => arr.sort((a,b) => a.valid_time < b.valid_time ? -1 : 1));
-  const samples = Object.keys(bySample).map(Number).sort((a,b) => a - b);
-  samples.forEach((s, idx) => {
-    const pts = bySample[s].map(r => [r.lat, r.lon]);
-    if (pts.length < 2) return;
-    const isDet = s === -1;
-    const color = isDet ? '#ffffff' : FNV3_ENS_COLORS[idx % FNV3_ENS_COLORS.length];
-    const line = L.polyline(pts, { color, weight: isDet?3:1.2, opacity: isDet?0.92:0.55, dashArray: isDet?null:'4,3' }).addTo(map);
-    _fnv3Layers.push(line);
-    if (isDet) {
-      bySample[s].forEach(r => {
-        const t = r.valid_time.replace(' ','T').substring(0,16)+'Z';
-        const tip = `<b>${r.track_id}</b><br>${t}<br>Wind: ${Math.round(r.max_wind)} kt<br>Pres: ${Math.round(r.min_pres)} hPa`;
-        const cm = L.circleMarker([r.lat, r.lon], { radius:3.5, color:'#fff', fillColor:_fnv3WindColor(r.max_wind), fillOpacity:0.9, weight:1.5 }).bindTooltip(tip,{sticky:true,opacity:0.92}).addTo(map);
-        _fnv3Layers.push(cm);
-      });
-    }
-  });
-  const detPts = bySample[-1] ? bySample[-1].map(r=>[r.lat,r.lon]) : null;
-  if (detPts && detPts.length > 1) { try { map.fitBounds(L.latLngBounds(detPts).pad(0.3),{maxZoom:6}); } catch(e){} }
-}
-
-function _fnv3RenderStormInfo(rows, stormId) {
-  const el = document.getElementById('fnv3-storm-info'); if (!el) return;
-  const sr = (stormId ? rows.filter(r=>r.track_id===stormId) : rows).filter(r=>r.sample===-1).sort((a,b)=>a.valid_time<b.valid_time?-1:1);
-  if (!sr.length) { el.innerHTML=''; return; }
-  let html = '<table style="width:100%;border-collapse:collapse;font-size:10px"><tr><th style="text-align:left;color:rgba(160,190,220,0.55);padding:2px 0">Time</th><th style="color:rgba(160,190,220,0.55)">kt</th><th style="color:rgba(160,190,220,0.55)">hPa</th></tr>';
-  sr.forEach(r => {
-    const t = r.valid_time.replace(' ','T').substring(5,16).replace('T',' ');
-    html += `<tr><td style="color:#cde;padding:1px 0">${t}</td><td style="color:${_fnv3WindColor(r.max_wind)};text-align:center">${Math.round(r.max_wind)}</td><td style="color:#9bd;text-align:center">${Math.round(r.min_pres)}</td></tr>`;
-  });
-  el.innerHTML = html + '</table>';
-}
-
-function _fnv3PopulateStormSel(rows) {
-  const sel = document.getElementById('fnv3-storm-sel'); if (!sel) return;
-  const storms = [...new Set(rows.map(r=>r.track_id))].sort();
-  sel.innerHTML = '';
-  if (!storms.length) { sel.innerHTML='<option>No storms</option>'; return; }
-  storms.forEach(s => { const opt=document.createElement('option'); opt.value=s; opt.textContent=s; sel.appendChild(opt); });
-  _fnv3CurrentStorm = storms[0]; sel.value = _fnv3CurrentStorm;
-}
-
-async function _fnv3FetchCSV(url) {
-  const status = document.getElementById('fnv3-status');
-  if (status) status.textContent = 'Fetching…';
-  try {
-    const text = await proxiedFetch(url, 20000);
-    if (!text || !text.trim()) throw new Error('No ensemble data for this run');
-    const rows = _fnv3ParseCSV(text);
-    if (!rows.length) throw new Error('No valid rows in ensemble data');
-    _fnv3Data = rows;
-    _fnv3PopulateStormSel(rows);
-    _fnv3PlotTracks(rows, _fnv3CurrentStorm);
-    _fnv3RenderStormInfo(rows, _fnv3CurrentStorm);
-    if (status) status.textContent = `✓ ${rows.length} points loaded`;
-  } catch(e) {
-    if (status) status.textContent = `⚠ ${e.message}`;
-    console.warn('[FNV3] fetch failed:', e);
-  }
-}
-
-
 // ── UNIFIED MODELS PANEL ──────────────────────────────────────────────────────
 let _modelsType = 'severe';
 let _spcOutlookOn = false;
@@ -11919,8 +11107,7 @@ function closeModelsPanel() {
   const btn = document.getElementById('sub-models');
   if (btn) btn.classList.remove('active');
   if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
-  _fnv3ClearLayers && _fnv3ClearLayers();
-  _atcfClearLayers && _atcfClearLayers();
+  _clearTropTrackLayers();
 }
 
 function toggleModelsPanel() {
@@ -11944,14 +11131,6 @@ function _modelsSetType(type) {
     _sevInit();
   } else {
     _fnv3SwitchTab('spaghetti');
-    if (_tropActiveStorms && _tropActiveStorms.length) {
-      _atcfPopulateStorms(_tropActiveStorms);
-    } else {
-      const stormSel = document.getElementById('atcf-storm-sel');
-      const st = document.getElementById('atcf-status');
-      if (stormSel) stormSel.innerHTML = '<option value="">No active storms — check back during season</option>';
-      if (st) st.textContent = 'No active storms detected.';
-    }
   }
 }
 
@@ -12044,11 +11223,8 @@ function _modelsNHCToggle() {
 
 
 function closeFNV3Panel() {
-  _fnv3Open = false;
   const panel = document.getElementById('fnv3-panel'); if (panel) panel.style.display = 'none';
-  _fnv3ClearLayers();
-  _atcfClearLayers();
-  if (_fnv3RefreshTimer) { clearInterval(_fnv3RefreshTimer); _fnv3RefreshTimer = null; }
+  _clearTropTrackLayers();
   const magImg = document.getElementById('mag-img');
   if (magImg) magImg.src = '';
 }
