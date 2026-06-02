@@ -6420,16 +6420,50 @@ function buildTimelineLabels() {
     wrap.innerHTML = html;
   } else {
     if (!radarFrames.length) return;
-    const n = radarFrames.length;
-    const step = Math.max(1, Math.floor(n / 5));
+    const start = _firstValidFrame || 0;
+    const end   = radarFrames.length - 1;
+    const count = end - start + 1;
+    const step  = Math.max(1, Math.floor(count / 5));
     let html = '';
-    for (let i = 0; i < n; i += step) {
+    for (let i = start; i <= end; i += step) {
       const d = new Date(radarFrames[i].time * 1000);
-      const label = _fmtHHMMshort(d);
-      html += `<span>${label}</span>`;
+      html += `<span>${_fmtHHMMshort(d)}</span>`;
     }
     wrap.innerHTML = html;
   }
+}
+
+// Trim the timeline slider to only cover frames that actually got tile data.
+// Called once when all frames have settled (every _markFrameReady fires).
+let _timelineFinalized = false;
+function _finalizeTimelineRange() {
+  if (_timelineFinalized) return;
+  _timelineFinalized = true;
+
+  // Find the oldest frame index that received real tiles
+  let first = 0;
+  for (let i = 0; i < radarFrames.length; i++) {
+    if (_radarFrameHasTiles[i]) { first = i; break; }
+    // If none found yet, keep searching — default stays 0
+  }
+  // Also find from the end in case newest frames failed somehow
+  let last = radarFrames.length - 1;
+  for (let i = radarFrames.length - 1; i >= 0; i--) {
+    if (_radarFrameHasTiles[i]) { last = i; break; }
+  }
+
+  if (first === 0 && last === radarFrames.length - 1) return; // full range is valid
+
+  _firstValidFrame = first;
+  const tl = document.getElementById('timeline');
+  if (tl) {
+    tl.min = first;
+    tl.max = last;
+    if (currentFrame < first) { currentFrame = last; tl.value = last; showFrame(last); }
+    else if (currentFrame > last) { currentFrame = last; tl.value = last; showFrame(last); }
+  }
+  buildTimelineLabels();
+  _updateTimelineGradient(Math.min(currentFrame, last), last - first + 1);
 }
 
 // ── DOUBLE-BUFFER RADAR (no-flash frame system) ──
@@ -6442,6 +6476,11 @@ let   _radarPoolBuilt = false;
 const _radarLayerLoaded = [];
 let _radarFramesReady = 0; // counts frames with ≥1 tile loaded; gates lag-free animation
 let _showFrameTick = null;  // stale-interval guard for showFrame wait-loop on unloaded frames
+
+// Tracks which frames got real tile data (vs only the 6-s safety-timeout mark).
+// Used by _finalizeTimelineRange to trim the slider to playable times only.
+const _radarFrameHasTiles = [];
+let _firstValidFrame = 0;  // oldest frame index with confirmed tile data
 
 // IEM NEXRAD: pre-rendered tile cache loads in ~100ms/tile; WMS fallback on first error
 const IEM_TILE_BASE    = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
@@ -6465,13 +6504,17 @@ function _buildRadarPool() {
   _radarLayerPool.forEach(l => { try { if (l) map.removeLayer(l); } catch(e){} });
   _radarLayerPool.length = 0;
   _radarLayerLoaded.length = 0;
+  _radarFrameHasTiles.length = 0;
   _radarPoolBuilt = false;
   _radarFramesReady = 0;
   _nexradWmsSlotCount = 0;
   _lastWindowS = -1; _lastWindowE = -1;
+  _timelineFinalized = false;
+  _firstValidFrame = 0;
   for (let i = 0; i < radarFrames.length; i++) {
     _radarLayerPool[i] = null;
     _radarLayerLoaded[i] = false;
+    _radarFrameHasTiles[i] = false;
   }
   _radarPoolBuilt = true;
   _buildCanadaPool();
@@ -6556,12 +6599,13 @@ function _switchSlotToWms(i) {
   let _wmsReadyTimer = null;
   const _markWmsReady = () => {
     if (_wmsReadyTimer) { clearTimeout(_wmsReadyTimer); _wmsReadyTimer = null; }
+    _radarFrameHasTiles[i] = true;
     if (_radarLayerLoaded[i]) return;
     _radarLayerLoaded[i] = true;
     _radarFramesReady++;
     if (_radarFramesReady < radarFrames.length)
       updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
-    else updateLoadStatus('');
+    else { updateLoadStatus(''); _finalizeTimelineRange(); }
     // Proactively reveal this frame if it's current — same logic as _markFrameReady.
     // Without this the polling loop in showFrame can take up to 50ms to notice.
     if (i === currentFrame && activeLayers.nexrad) {
@@ -6656,14 +6700,15 @@ function _ensureNexradLayer(i) {
   // Using the layer 'load' event instead of the first 'tileload' prevents revealing
   // a partially-painted frame with empty tile gaps.
   let _readyTimer = null;
-  const _markFrameReady = () => {
+  const _markFrameReady = (hasTiles) => {
     if (_readyTimer) { clearTimeout(_readyTimer); _readyTimer = null; }
+    if (hasTiles) _radarFrameHasTiles[i] = true;
     if (_radarLayerLoaded[i]) return;
     _radarLayerLoaded[i] = true;
     _radarFramesReady++;
     if (_radarFramesReady < radarFrames.length)
       updateLoadStatus(`Radar ${_radarFramesReady}/${radarFrames.length}…`);
-    else updateLoadStatus('');
+    else { updateLoadStatus(''); _finalizeTimelineRange(); }
     // Reveal this frame and hide any fallback that was standing in for it.
     // applyOpacity is local to showFrame so we inline the same logic here.
     if (i === currentFrame && activeLayers.nexrad) {
@@ -6674,9 +6719,9 @@ function _ensureNexradLayer(i) {
     try { _refreshPlayButtonsEnabled(); } catch(e) {}
   };
 
-  l.on('load', _markFrameReady);
+  l.on('load', () => _markFrameReady(true));
   // Safety: mark ready after 6 s so animation is never blocked by a stalled tile
-  _readyTimer = setTimeout(_markFrameReady, 6000);
+  _readyTimer = setTimeout(() => _markFrameReady(false), 6000);
 
   // Per-slot error handling — only switch THIS slot to WMS after 3 errors.
   // The old approach (switch all slots on the first error) caused a single 404
@@ -13832,9 +13877,14 @@ function _rafTick(ts) {
       currentFrame = (currentFrame + dir + _refSiteFrames.length) % _refSiteFrames.length;
       _showSingleSiteRefFrame(currentFrame);
     } else {
-      // Advance by one frame — showFrame's fallback shows nearest loaded tile
-      // so the radar never goes blank even if this frame hasn't finished loading yet.
-      currentFrame = (currentFrame + dir + radarFrames.length) % radarFrames.length;
+      // Advance by one frame — showFrame's fallback shows nearest loaded tile.
+      // Wrap respects _firstValidFrame so unplayable old frames are skipped entirely.
+      const n = radarFrames.length;
+      const last = n - 1;
+      let next = currentFrame + dir;
+      if (next > last) next = _firstValidFrame;
+      else if (next < _firstValidFrame) next = last;
+      currentFrame = next;
       showFrame(currentFrame);
     }
   }
