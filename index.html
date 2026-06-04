@@ -11231,12 +11231,13 @@ async function loadNHC5dayOutlook() {
   const trackColor = t => ({ TD:'#27beff', TS:'#2a7fff', HU:'#ff2121', MH:'#9900ff' })[t] || '#888888';
 
   // Fire all five MapServer requests in parallel
-  const [invests, cones, tracks, fcastPts, pastTracks] = await Promise.all([
+  const [invests, cones, tracks, fcastPts, pastTracks, pastPts] = await Promise.all([
     _fetchNHCLayer(3),   // invest areas (7-day risk)
     _fetchNHCLayer(7),   // forecast cones
     _fetchNHCLayer(6),   // forecast tracks
     _fetchNHCLayer(5),   // forecast points (current storm positions)
     _fetchNHCLayer(11),  // past tracks
+    _fetchNHCLayer(10),  // past observation points
   ]);
 
   // ── Invest areas (replaces KML 5-day outlook polygons) ──────────────────
@@ -11260,7 +11261,7 @@ async function loadNHC5dayOutlook() {
   // ── Forecast cones ───────────────────────────────────────────────────────
   if (cones?.features?.length) {
     const l = L.geoJSON(cones, {
-      style: () => ({ color: '#555', weight: 1.5, fillColor: '#444', fillOpacity: 0.35 }),
+      style: () => ({ color: '#cc1100', weight: 1.8, fillColor: '#dd1500', fillOpacity: 0.28 }),
       onEachFeature: (f, layer) => {
         const n = f.properties?.stormname || '';
         layer.bindPopup(`<div class="alert-popup"><b>NHC Forecast Cone${n ? ': ' + n : ''}</b></div>`);
@@ -11323,6 +11324,44 @@ async function loadNHC5dayOutlook() {
     }).addTo(map);
     _nhcExtraLayers.push(l);
     tropicalLayers.push(l);
+  }
+
+  // ── Past observation icons (smaller, faded TTB icons) ───────────────────
+  if (pastPts?.features?.length) {
+    const typeName = { HU:'Hurricane', TY:'Typhoon', ST:'Super Typhoon', TS:'Tropical Storm',
+      TD:'Tropical Depression', SS:'Subtropical Storm', SD:'Subtropical Depression',
+      EX:'Extratropical', LO:'Remnant Low', DB:'Disturbance', WV:'Tropical Wave' };
+    pastPts.features.forEach(f => {
+      const p = f.properties || {};
+      const coords = f.geometry?.coordinates;
+      if (!coords) return;
+      const lon = coords[0], lat = coords[1];
+      const typeKey = (p.stormtype || p.STORMTYPE || 'TD').toUpperCase();
+      const kt  = parseInt(p.intensity || p.INTENSITY || p.maxwind || 0) || 0;
+      const cat = _nhcTypeToTtbCat(typeKey, kt);
+      const ic  = TTB_ICONS[cat] || TTB_ICONS.td;
+      const sz = 22, half = 11;
+      const icon = L.divIcon({
+        className: '',
+        iconAnchor: [half, half],
+        html: `<div style="width:${sz}px;height:${sz}px;opacity:0.6;"><img src="data:image/png;base64,${ic.b64}" style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 3px ${ic.color});"/></div>`
+      });
+      const name  = p.stormname || p.STORMNAME || 'Storm';
+      const winds = p.intensity || p.INTENSITY || p.maxwind || '—';
+      const pres  = p.mslp     || p.MSLP      || p.pressure || '—';
+      const dtg   = p.dtg      || p.DTG       || '';
+      const m = L.marker([lat, lon], { icon, zIndexOffset: 900 })
+        .bindPopup(`<div style="font-family:'Comfortaa',sans-serif;min-width:170px;padding:4px 0;">
+          <div style="font-size:15px;font-weight:700;color:${ic.color};margin-bottom:3px;">🕐 ${name}</div>
+          <div style="font-size:10px;color:#aaa;margin-bottom:6px;">${typeName[typeKey] || typeKey}${dtg ? ' · ' + dtg : ''} <i>(past)</i></div>
+          <div style="font-size:12px;line-height:1.8;">
+            💨 <b>${winds} kt</b> &nbsp; 🌡 <b>${pres} mb</b><br>
+            📍 ${lat.toFixed(1)}°${lat>=0?'N':'S'}, ${Math.abs(lon).toFixed(1)}°${lon<0?'W':'E'}
+          </div>
+        </div>`).addTo(map);
+      _nhcExtraLayers.push(m);
+      tropicalLayers.push(m);
+    });
   }
 }
 
