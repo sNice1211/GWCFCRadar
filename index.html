@@ -5053,6 +5053,57 @@ body.gwcfc-crosshair #map::after {
 #tab-lock-go    { background: rgb(133,0,0) !important; color: #fff !important;
   border-color: var(--accent) !important; font-weight: 700; }
 @keyframes lockShake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
+
+/* ── CLEAN MODE (5-tap toggle) ───────────────────────────────────────────── */
+body.clean-mode #tabs-left,
+body.clean-mode #tabs-right,
+body.clean-mode #topbar,
+body.clean-mode #sidebar,
+body.clean-mode #animbar,
+body.clean-mode #right-menu,
+body.clean-mode #sub-bubbles,
+body.clean-mode #float-search-btn,
+body.clean-mode #overlay-launcher,
+body.clean-mode #overlay-toggle-btn,
+body.clean-mode #statusbar,
+body.clean-mode #map-compass,
+body.clean-mode #map-reset-bearing,
+body.clean-mode .draw-toolbar,
+body.clean-mode #track-toolbar,
+body.clean-mode #radius-toolbar,
+body.clean-mode #dist-toolbar,
+body.clean-mode #poly-toolbar {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+/* Transition in + out for all toggled elements */
+#tabs-left, #tabs-right, #topbar, #sidebar, #animbar,
+#right-menu, #sub-bubbles, #float-search-btn,
+#overlay-launcher, #overlay-toggle-btn, #statusbar,
+#map-compass, #map-reset-bearing,
+.draw-toolbar, #track-toolbar, #radius-toolbar, #dist-toolbar, #poly-toolbar {
+  transition: opacity 0.35s ease;
+}
+/* Tiny restore hint visible only in clean mode */
+#clean-hint {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.45);
+  color: rgba(255,255,255,0.28);
+  font-family: var(--sans);
+  font-size: 8px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  border-radius: 20px;
+  z-index: 8000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+body.clean-mode #clean-hint { opacity: 1; }
 </style>
 
 <div id="tab-lock-overlay">
@@ -20413,5 +20464,41 @@ document.addEventListener('DOMContentLoaded', () => {
     <line x1="16.5" y1="16.5" x2="22" y2="22"/>
   </svg>
 </button>
+
+<!-- Clean mode restore hint -->
+<div id="clean-hint">tap ×5 to restore</div>
+
+<script>
+// ── 5-TAP CLEAN MODE TOGGLE ────────────────────────────────────────────────
+// Tap anywhere 5 times within 1.5 s to hide/show all UI chrome.
+(function () {
+  let count = 0, timer = null;
+
+  function onTap(e) {
+    // Ignore taps that land on interactive UI elements — only count bare-map taps
+    const tag = (e.target || e.srcElement).closest(
+      '#tabs-left,#tabs-right,#topbar,#sidebar,#animbar,' +
+      '#right-menu,#sub-bubbles,#float-search-btn,' +
+      '#overlay-launcher,#overlay-toggle-btn,#statusbar,' +
+      '.leaflet-control,input,button,select,textarea'
+    );
+    if (tag) return;
+
+    count++;
+    clearTimeout(timer);
+    timer = setTimeout(() => { count = 0; }, 1500);
+
+    if (count >= 5) {
+      count = 0;
+      clearTimeout(timer);
+      document.body.classList.toggle('clean-mode');
+    }
+  }
+
+  // Use touchend on touch devices (no 300ms delay), click on desktop
+  const isTouchDevice = ('ontouchstart' in window);
+  document.addEventListener(isTouchDevice ? 'touchend' : 'click', onTap, { passive: true });
+})();
+</script>
 </body>
 </html>
