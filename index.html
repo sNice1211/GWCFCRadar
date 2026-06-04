@@ -6140,7 +6140,7 @@ function initMap() {
     // current (visible) frame — background frames are warmed by the existing
     // _buildRadarPool prefetch path.
     if (radarFrames.length && radarFrames[currentFrame]) {
-      _prefetchRadarTiles(radarFrames[currentFrame].tileKey);
+      _prefetchRadarTiles(radarFrames[currentFrame].tileKey, true);
     }
     // Debounce pool window rebuild 300ms to batch any new-slot creation
     clearTimeout(_zoomTimer);
@@ -6688,7 +6688,8 @@ function _prefetchRadarTilesAtZoom(tileKey, z, priority) {
     const clamp    = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const nTiles   = 1 << z;
     const centerPt = crs.latLngToPoint(center, z);
-    const pad = 256; // 1 extra tile of padding per side
+    // High-priority (current frame): 1 tile padding; background: no padding
+    const pad = priority === 'high' ? 256 : 0;
     const x0 = clamp(Math.floor((centerPt.x - size.x / 2 - pad) / 256), 0, nTiles - 1);
     const x1 = clamp(Math.floor((centerPt.x + size.x / 2 + pad) / 256), 0, nTiles - 1);
     const y0 = clamp(Math.floor((centerPt.y - size.y / 2 - pad) / 256), 0, nTiles - 1);
@@ -6704,17 +6705,22 @@ function _prefetchRadarTilesAtZoom(tileKey, z, priority) {
   } catch(_) {}
 }
 
-// Pre-warm current zoom AND up to 3 zoom levels below so zoom-out transitions
-// hit the cache instead of the wire. isCurrentFrame=true → high-priority fetches.
+// Pre-warm current zoom only for background frames; current frame also warms
+// 3 zoom levels below so zoom-out transitions hit cache. isCurrentFrame=true → high-priority.
 function _prefetchRadarTiles(tileKey, isCurrentFrame) {
   if (!map) return;
   const curZ = Math.min(map.getZoom(), 9);
   _prefetchRadarTilesAtZoom(tileKey, curZ, isCurrentFrame ? 'high' : 'low');
-  for (let dz = 1; dz <= 3; dz++) {
-    const z = curZ - dz;
-    if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z, 'low'), dz * 300);
+  // Only pre-warm lower zooms for the visible frame — doing it for all frames
+  // multiplies request count by 4x and caused ~9000 tile fetches on load.
+  if (isCurrentFrame) {
+    for (let dz = 1; dz <= 3; dz++) {
+      const z = curZ - dz;
+      if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z, 'low'), dz * 300);
+    }
   }
 }
+
 
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
