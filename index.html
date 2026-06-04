@@ -7813,7 +7813,8 @@ function makeTropMarker(storm) {
         </div>
         <div style="font-size:10px;color:#aaa;margin-bottom:6px;">${s.name} · ${storm.basin}</div>
         <div style="font-size:12px;line-height:1.8;">
-          💨 <b>${storm.winds} kt</b> &nbsp; 🌡 <b>${storm.pres} mb</b><br>
+          💨 <b>${storm.winds} kt</b>${storm.winds && storm.winds!=='—'?` <span style="color:#888;font-size:9px">(${Math.round((parseInt(storm.winds)||0)*1.15078)} mph)</span>`:''} &nbsp;
+          🌡 <b>${(parseInt(storm.pres)<9990&&storm.pres)?storm.pres+' mb':'—'}</b><br>
           📍 ${storm.lat.toFixed(1)}°${storm.lat>=0?'N':'S'},
              ${Math.abs(storm.lon).toFixed(1)}°${storm.lon<0?'W':'E'}
         </div>
@@ -11270,11 +11271,83 @@ async function loadNHC5dayOutlook() {
     tropicalLayers.push(l);
   }
 
+  // ── Shared popup helpers ─────────────────────────────────────────────────
+  const _TN = { HU:'Hurricane', TY:'Typhoon', ST:'Super Typhoon', TS:'Tropical Storm',
+    TD:'Tropical Depression', SS:'Subtropical Storm', SD:'Subtropical Depression',
+    EX:'Extratropical', LO:'Remnant Low', DB:'Disturbance', WV:'Tropical Wave' };
+
+  // Filter ATCF missing-value sentinel (9999 / 9998) from pressure fields
+  function _nhcPres(p) {
+    for (const k of ['mslp','MSLP','pressure','PRESSURE','minSLPmb']) {
+      const v = parseInt(p[k]);
+      if (v > 0 && v < 9990) return v + ' mb';
+    }
+    return null;
+  }
+
+  // Format DTG "YYYYMMDDHH" → "Jun 4 · 12:00 UTC"
+  function _nhcDtg(dtg) {
+    if (!dtg || dtg.length < 10) return dtg || null;
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const mo = parseInt(dtg.slice(4,6)) - 1;
+    const d  = parseInt(dtg.slice(6,8));
+    const h  = dtg.slice(8,10);
+    return `${months[mo] || dtg.slice(4,6)} ${d} · ${h}:00 UTC`;
+  }
+
+  // Compass direction from degrees
+  function _nhcCompass(deg) {
+    const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    return dirs[Math.round((parseInt(deg)||0) / 22.5) % 16];
+  }
+
+  // Saffir-Simpson category badge HTML
+  function _nhcCatBadge(kt) {
+    const k = parseInt(kt)||0;
+    if (k>=137) return '<span style="color:#ff00cc;font-weight:700">Cat 5</span>';
+    if (k>=113) return '<span style="color:#ff2200;font-weight:700">Cat 4</span>';
+    if (k>= 96) return '<span style="color:#ff9900;font-weight:700">Cat 3</span>';
+    if (k>= 83) return '<span style="color:#ffdd00;font-weight:700">Cat 2</span>';
+    if (k>= 64) return '<span style="color:#ffff55;font-weight:700">Cat 1</span>';
+    return '';
+  }
+
+  // Full popup HTML for a storm position
+  function _nhcPopup(d) {
+    const kt   = parseInt(d.winds) || 0;
+    const mph  = kt ? Math.round(kt * 1.15078) : 0;
+    const pres = d.pres;
+    const cat  = _nhcCatBadge(kt);
+    const p    = d.rawProps || {};
+    const spd  = parseInt(p.movespd || p.MOVESPD || p.movspd  || p.MOVSPD  || 0);
+    const dir  = p.movedir || p.MOVEDIR || p.movdir || p.MOVDIR;
+    const mov  = (spd || dir != null) ? `${_nhcCompass(dir)} at ${spd || '?'} kt` : null;
+    const dtg  = _nhcDtg(p.dtg || p.DTG || p.validtime || p.VALIDTIME || '');
+    const fhr  = parseInt(p.fcsthour || p.FCSTHOUR || p.tau || p.TAU);
+    const fhrTxt = (!isNaN(fhr) && fhr >= 0) ? `+${fhr}h` : '';
+    const latHemi = d.lat >= 0 ? 'N' : 'S';
+    const lonHemi = d.lon < 0  ? 'W' : 'E';
+
+    return `<div style="font-family:'Comfortaa',sans-serif;min-width:240px;padding:4px 0 2px;">
+      <div style="font-size:15px;font-weight:700;color:${d.color};margin-bottom:3px;">
+        ${d.emoji || '🌀'} ${d.name}
+        ${fhrTxt ? `<span style="font-size:10px;color:#666;font-weight:400;margin-left:5px">${fhrTxt}</span>` : ''}
+      </div>
+      <div style="font-size:10px;color:#888;margin-bottom:9px;">
+        ${d.typeLbl}${d.basin ? ' · ' + d.basin.toUpperCase() : ''}${cat ? ' · ' + cat : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:3px 14px;font-size:11px;line-height:1.9;">
+        <div>💨 <b>${kt || d.winds} kt</b>${mph ? ` <span style="color:#888;font-size:9px">${mph} mph</span>` : ''}</div>
+        <div>🌡 <b>${pres || '<span style="color:#666">N/A</span>'}</b></div>
+        <div style="grid-column:1/-1">📍 ${Math.abs(d.lat).toFixed(1)}°${latHemi}, ${Math.abs(d.lon).toFixed(1)}°${lonHemi}</div>
+        ${mov  ? `<div style="grid-column:1/-1">🧭 <b>${mov}</b></div>` : ''}
+        ${dtg  ? `<div style="grid-column:1/-1;margin-top:4px;padding-top:4px;border-top:1px solid #222;color:#555;font-size:9px;">${d.isPast ? '🕐 Obs:' : '🗓 Valid:'} ${dtg}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
   // ── Forecast track + storm position icons from forecast points ────────────
   if (fcastPts?.features?.length) {
-    const TYPE_NAMES = { HU:'Hurricane', TY:'Typhoon', ST:'Super Typhoon', TS:'Tropical Storm',
-      TD:'Tropical Depression', SS:'Subtropical Storm', SD:'Subtropical Depression',
-      EX:'Extratropical', LO:'Remnant Low', DB:'Disturbance', WV:'Tropical Wave' };
     const stormPaths = {}, markerQueue = [];
 
     fcastPts.features.forEach(f => {
@@ -11290,11 +11363,13 @@ async function loadNHC5dayOutlook() {
       const key  = name + '_' + (p.basin || p.BASIN || '');
       if (!stormPaths[key]) stormPaths[key] = [];
       stormPaths[key].push({ lat, lon, ic });
-      markerQueue.push({ lat, lon, cat, ic,
-        name, winds: p.intensity || p.INTENSITY || p.maxwind || '—',
-        pres: p.mslp || p.MSLP || p.pressure || '—',
+      markerQueue.push({ lat, lon, cat, ic, name, rawProps: p,
+        color: ic.color, emoji: '🌀',
+        winds: kt || '—',
+        pres:  _nhcPres(p),
         basin: p.basin || p.BASIN || '',
-        typeLbl: TYPE_NAMES[typeKey] || typeKey
+        typeLbl: _TN[typeKey] || typeKey,
+        isPast: false
       });
     });
 
@@ -11314,14 +11389,7 @@ async function loadNHC5dayOutlook() {
     markerQueue.forEach(d => {
       const icon = _ttbMakeIcon(d.cat, false);
       const m = L.marker([d.lat, d.lon], { icon, zIndexOffset: 950 })
-        .bindPopup(`<div style="font-family:'Comfortaa',sans-serif;min-width:170px;padding:4px 0;">
-          <div style="font-size:15px;font-weight:700;color:${d.ic.color};margin-bottom:3px;">🌀 ${d.name}</div>
-          <div style="font-size:10px;color:#aaa;margin-bottom:6px;">${d.typeLbl}${d.basin ? ' · ' + d.basin : ''}</div>
-          <div style="font-size:12px;line-height:1.8;">
-            💨 <b>${d.winds} kt</b> &nbsp; 🌡 <b>${d.pres} mb</b><br>
-            📍 ${d.lat.toFixed(1)}°${d.lat>=0?'N':'S'}, ${Math.abs(d.lon).toFixed(1)}°${d.lon<0?'W':'E'}
-          </div>
-        </div>`).addTo(map);
+        .bindPopup(_nhcPopup(d), { maxWidth: 280 }).addTo(map);
       _nhcExtraLayers.push(m);
       tropicalLayers.push(m);
     });
@@ -11356,19 +11424,17 @@ async function loadNHC5dayOutlook() {
         iconAnchor: [half, half],
         html: `<div style="width:${sz}px;height:${sz}px;opacity:0.6;"><img src="data:image/png;base64,${ic.b64}" style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 3px ${ic.color});"/></div>`
       });
-      const name  = p.stormname || p.STORMNAME || 'Storm';
-      const winds = p.intensity || p.INTENSITY || p.maxwind || '—';
-      const pres  = p.mslp     || p.MSLP      || p.pressure || '—';
-      const dtg   = p.dtg      || p.DTG       || '';
       const m = L.marker([lat, lon], { icon, zIndexOffset: 900 })
-        .bindPopup(`<div style="font-family:'Comfortaa',sans-serif;min-width:170px;padding:4px 0;">
-          <div style="font-size:15px;font-weight:700;color:${ic.color};margin-bottom:3px;">🕐 ${name}</div>
-          <div style="font-size:10px;color:#aaa;margin-bottom:6px;">${typeName[typeKey] || typeKey}${dtg ? ' · ' + dtg : ''} <i>(past)</i></div>
-          <div style="font-size:12px;line-height:1.8;">
-            💨 <b>${winds} kt</b> &nbsp; 🌡 <b>${pres} mb</b><br>
-            📍 ${lat.toFixed(1)}°${lat>=0?'N':'S'}, ${Math.abs(lon).toFixed(1)}°${lon<0?'W':'E'}
-          </div>
-        </div>`).addTo(map);
+        .bindPopup(_nhcPopup({
+          lat, lon, color: ic.color, emoji: '🕐',
+          name:    p.stormname || p.STORMNAME || 'Storm',
+          winds:   kt || '—',
+          pres:    _nhcPres(p),
+          basin:   p.basin || p.BASIN || '',
+          typeLbl: _TN[typeKey] || typeKey,
+          rawProps: p,
+          isPast: true
+        }), { maxWidth: 280 }).addTo(map);
       _nhcExtraLayers.push(m);
       tropicalLayers.push(m);
     });
