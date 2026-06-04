@@ -9822,7 +9822,7 @@ async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
     // Because the coordinates are always the same regardless of where the map
     // is panned, markers stay in one place — new ones scroll into view, old
     // ones scroll out, but nothing jumps.
-    const step = zoom <= 4 ? 2.5 : zoom <= 6 ? 2.0 : zoom <= 8 ? 1.5 : 1.0;
+    const step = zoom <= 4 ? 2.5 : zoom <= 6 ? 2.0 : zoom <= 8 ? 1.25 : zoom <= 10 ? 0.75 : 0.5;
 
     const latMin = Math.floor(Math.max(-70, bounds.getSouth()) / step) * step;
     const latMax = Math.ceil (Math.min( 70, bounds.getNorth()) / step) * step;
@@ -9915,11 +9915,16 @@ async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
       m.addTo(group);
     });
 
-    // Atomic swap: add the new layer BEFORE removing the old one so there's
-    // never a blank moment — old markers stay visible until new ones are ready.
-    group.addTo(map);
-    if (existingLayer) { map.removeLayer(existingLayer); }
-    onLoad(group);
+    // Only swap if the new group has at least one marker.
+    // If every point came back as land (marine API returns null), don't blank
+    // out the screen — keep the previous layer and wait for the next reload.
+    if (group.getLayers().length > 0) {
+      group.addTo(map);
+      if (existingLayer) { map.removeLayer(existingLayer); }
+      onLoad(group);
+    } else {
+      onLoad(existingLayer);
+    }
   } catch(e) {
     console.warn('Waves render error:', e);
     onLoad(existingLayer); // keep old layer on error rather than going blank
@@ -11182,59 +11187,90 @@ function _modelsSPCToggle() {
 }
 
 let nhc5dayLayer = null;
+let _nhcExtraLayers = []; // cones, tracks, past tracks added by loadNHC5dayOutlook
 
-function _parseNHCKML(kmlText) {
-  const parser = new DOMParser();
-  const kml = parser.parseFromString(kmlText, 'text/xml');
-  const features = [];
-  for (const pm of Array.from(kml.getElementsByTagName('Placemark'))) {
-    const desc = (pm.querySelector('description')?.textContent || '') +
-                 (pm.querySelector('name')?.textContent || '');
-    let chance = 'Low', color = '#ffff00';
-    if (/medium|4\d%|5\d%|6\d%/i.test(desc))  { chance = 'Medium'; color = '#ffa500'; }
-    if (/high|7\d%|8\d%|9\d%|100%/i.test(desc)) { chance = 'High';   color = '#ff4444'; }
-    const styleColor = pm.querySelector('PolyStyle color')?.textContent || '';
-    if (styleColor.length === 8) {
-      const r = parseInt(styleColor.slice(6,8),16), g = parseInt(styleColor.slice(4,6),16);
-      if (r > 180 && g > 180) { chance = 'Low'; color = '#ffff00'; }
-      else if (r > 180 && g > 80) { chance = 'Medium'; color = '#ffa500'; }
-      else if (r > 180 && g < 80) { chance = 'High'; color = '#ff4444'; }
-    }
-    for (const poly of Array.from(pm.getElementsByTagName('Polygon'))) {
-      const raw = poly.querySelector('coordinates')?.textContent?.trim() || '';
-      const coords = raw.split(/\s+/).map(c => {
-        const p = c.split(',');
-        return [parseFloat(p[0]), parseFloat(p[1])];
-      }).filter(c => !isNaN(c[0]) && !isNaN(c[1]));
-      if (coords.length < 3) continue;
-      features.push({ type:'Feature', geometry:{ type:'Polygon', coordinates:[coords] },
-        properties:{ chance, color } });
-    }
-  }
-  return features;
+// Fetch one layer from NOAA's tropical MapServer via the cachefetch proxy.
+// Layer IDs come from tropics.js: 3=invests, 6=forecast tracks, 7=cones,
+// 10=past points, 11=past tracks.
+async function _fetchNHCLayer(layerNum) {
+  const noaaUrl = `https://mapservices.weather.noaa.gov/tropical/rest/services/tropical/NHC_tropical_weather_summary/MapServer/${layerNum}/query?where=1%3D1&outFields=*&f=geojson`;
+  const url = `https://cachefetch.sparkradar.app/cache?format=json&maxAge=900&url=${encodeURIComponent(noaaUrl)}`;
+  try {
+    const r = await fetchWithTimeout(url, 10000);
+    if (r.ok) return await r.json();
+  } catch(e) {}
+  return null;
 }
 
 async function loadNHC5dayOutlook() {
-  const urls = [
-    'https://www.nhc.noaa.gov/xgtwo/two_atl_5d0.kml',
-    'https://www.nhc.noaa.gov/xgtwo/two_ep_5d0.kml'
-  ];
+  // Clear any previous layers owned by this function
   if (nhc5dayLayer) { try { map.removeLayer(nhc5dayLayer); } catch(e){} nhc5dayLayer = null; }
-  const allFeatures = [];
-  for (const url of urls) {
-    let txt = '';
-    try { const r = await fetchWithTimeout(url, 5000); if (r.ok) txt = await r.text(); } catch(e) {}
-    if (!txt) txt = await proxiedFetch(url, 10000).catch(() => '');
-    if (txt && txt.length > 100) allFeatures.push(..._parseNHCKML(txt));
+  _nhcExtraLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _nhcExtraLayers = [];
+
+  const riskColor = r => r === 'High' ? '#ff2121' : r === 'Medium' ? '#ff8800' : '#ffcc00';
+  const trackColor = t => ({ TD:'#27beff', TS:'#2a7fff', HU:'#ff2121', MH:'#9900ff' })[t] || '#888888';
+
+  // Fire all four MapServer requests in parallel
+  const [invests, cones, tracks, pastTracks] = await Promise.all([
+    _fetchNHCLayer(3),   // invest areas (7-day risk)
+    _fetchNHCLayer(7),   // forecast cones
+    _fetchNHCLayer(6),   // forecast tracks
+    _fetchNHCLayer(11),  // past tracks
+  ]);
+
+  // ── Invest areas (replaces KML 5-day outlook polygons) ──────────────────
+  if (invests?.features?.length) {
+    nhc5dayLayer = L.geoJSON(invests, {
+      style: f => {
+        const c = riskColor(f.properties?.risk7day);
+        return { color: c, weight: 2, fillColor: c, fillOpacity: 0.28 };
+      },
+      onEachFeature: (f, l) => {
+        const risk = f.properties?.risk7day || 'Low';
+        const name = f.properties?.investname || '';
+        l.bindPopup(`<div class="alert-popup"><b>${name ? name + ' — ' : ''}NHC Invest Area</b><br>7-Day Dev. Chance: <b style="color:${riskColor(risk)}">${risk}</b></div>`);
+      }
+    }).addTo(map);
+    tropicalLayers.push(nhc5dayLayer);
+  } else {
+    updateLoadStatus('No tropical disturbances currently.');
   }
-  if (!allFeatures.length) { updateLoadStatus('No tropical disturbances currently.'); return; }
-  nhc5dayLayer = L.geoJSON({ type:'FeatureCollection', features:allFeatures }, {
-    style: f => ({ color: f.properties.color, weight: 1.5, fillColor: f.properties.color, fillOpacity: 0.28 }),
-    onEachFeature: (f, layer) => {
-      layer.bindPopup(`<div class="alert-popup"><b>NHC 5-Day Outlook</b><br>Development Chance: <b>${f.properties.chance}</b></div>`);
-    }
-  }).addTo(map);
-  tropicalLayers.push(nhc5dayLayer);
+
+  // ── Forecast cones ───────────────────────────────────────────────────────
+  if (cones?.features?.length) {
+    const l = L.geoJSON(cones, {
+      style: () => ({ color: '#555', weight: 1.5, fillColor: '#444', fillOpacity: 0.35 }),
+      onEachFeature: (f, layer) => {
+        const n = f.properties?.stormname || '';
+        layer.bindPopup(`<div class="alert-popup"><b>NHC Forecast Cone${n ? ': ' + n : ''}</b></div>`);
+      }
+    }).addTo(map);
+    _nhcExtraLayers.push(l);
+    tropicalLayers.push(l);
+  }
+
+  // ── Forecast tracks ──────────────────────────────────────────────────────
+  if (tracks?.features?.length) {
+    const l = L.geoJSON(tracks, {
+      style: f => ({ color: trackColor(f.properties?.stormtype), weight: 2.5, opacity: 0.9 }),
+      onEachFeature: (f, layer) => {
+        const p = f.properties || {};
+        layer.bindPopup(`<div class="alert-popup"><b>${p.stormname || 'Storm'}</b><br>Type: ${p.stormtype || '—'}</div>`);
+      }
+    }).addTo(map);
+    _nhcExtraLayers.push(l);
+    tropicalLayers.push(l);
+  }
+
+  // ── Past tracks (semi-transparent) ──────────────────────────────────────
+  if (pastTracks?.features?.length) {
+    const l = L.geoJSON(pastTracks, {
+      style: f => ({ color: trackColor(f.properties?.stormtype), weight: 1.5, opacity: 0.35 }),
+    }).addTo(map);
+    _nhcExtraLayers.push(l);
+    tropicalLayers.push(l);
+  }
 }
 
 function _modelsNHCToggle() {
@@ -11247,6 +11283,7 @@ function _modelsNHCToggle() {
   } else {
     tropicalLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     tropicalLayers = [];
+    _nhcExtraLayers = [];
     nhcLayer = null;
     nhc5dayLayer = null;
   }
