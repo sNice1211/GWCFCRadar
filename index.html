@@ -11451,34 +11451,39 @@ async function loadNHC5dayOutlook() {
   // ── Past observation icons (smaller, faded TTB icons) ───────────────────
   if (pastPts?.features?.length) {
     pastPts.features.forEach(f => {
-      const p = f.properties || {};
-      const coords = f.geometry?.coordinates;
-      if (!coords) return;
-      const lon = coords[0], lat = coords[1];
-      const typeKey = (p.stormtype || p.STORMTYPE || 'TD').toUpperCase();
-      const kt  = parseInt(p.intensity || p.INTENSITY || p.maxwind || 0) || 0;
-      const cat = _nhcTypeToTtbCat(typeKey, kt);
-      const ic  = TTB_ICONS[cat] || TTB_ICONS.td;
-      const sz = 22, half = 11;
-      const icon = L.divIcon({
-        className: '',
-        iconAnchor: [half, half],
-        html: `<div style="width:${sz}px;height:${sz}px;opacity:0.6;"><img src="data:image/png;base64,${ic.b64}" style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 3px ${ic.color});"/></div>`
-      });
-      const m = L.marker([lat, lon], { icon, zIndexOffset: 900 })
-        .bindPopup(_nhcPopup({
-          lat, lon, color: ic.color, emoji: '🕐',
-          name:    p.stormname || p.STORMNAME || 'Storm',
-          winds:   kt || '—',
-          pres:    _nhcPres(p),
-          basin:   p.basin || p.BASIN || '',
-          typeLbl: _NHC_TN[typeKey] || typeKey,
-          rawProps: p,
-          isPast: true
-        }), { maxWidth: 280 }).addTo(map);
-      _nhcExtraLayers.push(m);
-      tropicalLayers.push(m);
+      try {
+        const p = f.properties || {};
+        const coords = f.geometry?.coordinates;
+        if (!coords || coords.length < 2) return;
+        const lon = coords[0], lat = coords[1];
+        if (!isFinite(lat) || !isFinite(lon)) return;
+        const typeKey = (p.stormtype || p.STORMTYPE || p.type || p.TYPE || 'TD').toUpperCase();
+        const kt  = parseInt(p.intensity || p.INTENSITY || p.maxwind || p.MAXWIND || 0) || 0;
+        const cat = _nhcTypeToTtbCat(typeKey, kt);
+        const ic  = TTB_ICONS[cat] || TTB_ICONS.td;
+        const sz = 22, half = 11;
+        const icon = L.divIcon({
+          className: '',
+          iconAnchor: [half, half],
+          html: `<div style="width:${sz}px;height:${sz}px;opacity:0.6;"><img src="data:image/png;base64,${ic.b64}" style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 3px ${ic.color});"/></div>`
+        });
+        const m = L.marker([lat, lon], { icon, zIndexOffset: 900 })
+          .bindPopup(_nhcPopup({
+            lat, lon, color: ic.color, emoji: '🕐',
+            name:    p.stormname || p.STORMNAME || p.name || p.NAME || 'Storm',
+            winds:   kt || '—',
+            pres:    _nhcPres(p),
+            basin:   p.basin || p.BASIN || '',
+            typeLbl: _NHC_TN[typeKey] || typeKey,
+            rawProps: p,
+            isPast: true
+          }), { maxWidth: 280 }).addTo(map);
+        _nhcExtraLayers.push(m);
+        tropicalLayers.push(m);
+      } catch(e) { console.warn('NHC past obs icon error:', e, f); }
     });
+  } else {
+    console.info('NHC layer 10 (past obs):', pastPts?.features?.length ?? 'null/empty', 'features');
   }
 }
 
@@ -20009,7 +20014,8 @@ function _makeDraggable(el, handle) {
 let _surfaceLayer = null;
 let _surfaceOn = true;
 let _surfaceLoading = false;
-const SA_URL = 'https://forecast.weather.gov/product.php?site=CRH&product=COD&issuedby=SUS';
+const SA_URL = 'https://forecast.weather.gov/product.php?site=NWS&product=CODSUS';
+const SA_URL_FALLBACK = 'https://forecast.weather.gov/product.php?site=NWS&product=COD&issuedby=SUS';
 
 function _parseSurfaceText(text) {
   const FRONT_TYPES = new Set(['STNRY','TROF','COLD','WARM','OCFNT']);
@@ -20084,8 +20090,12 @@ async function loadSurfaceAnalysis() {
   _surfaceLoading=true;
   updateLoadStatus('Loading surface fronts…');
   let text=null;
-  try{const r=await fetchWithTimeout(SA_URL,6000);if(r.ok)text=await r.text();}catch(e){}
-  if(!text){try{const r=await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(SA_URL)}`,8000);if(r.ok)text=await r.text();}catch(e){}}
+  // 1. cachefetch proxy (handles CORS reliably, same as NHC data)
+  const _saProxy = u => `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=3600&url=${encodeURIComponent(u)}`;
+  try{const r=await fetchWithTimeout(_saProxy(SA_URL),8000);if(r.ok)text=await r.text();}catch(e){}
+  // 2. fallback URL via cachefetch
+  if(!text){try{const r=await fetchWithTimeout(_saProxy(SA_URL_FALLBACK),8000);if(r.ok)text=await r.text();}catch(e){}}
+  // 3. allorigins.win
   if(!text){try{text=await proxiedFetch(SA_URL,10000);}catch(e){}}
 
   _surfaceLoading=false;
