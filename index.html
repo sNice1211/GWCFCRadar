@@ -11442,43 +11442,57 @@ async function loadNHC5dayOutlook() {
     tropicalLayers.push(l);
   }
 
-  // ── Past observation icons (smaller, faded TTB icons) ───────────────────
-  if (pastPts?.features?.length) {
-    pastPts.features.forEach(f => {
-      try {
-        const p = f.properties || {};
-        const coords = f.geometry?.coordinates;
-        if (!coords || coords.length < 2) return;
-        const lon = coords[0], lat = coords[1];
-        if (!isFinite(lat) || !isFinite(lon)) return;
-        const typeKey = (p.stormtype || p.STORMTYPE || p.type || p.TYPE || 'TD').toUpperCase();
-        const kt  = parseInt(p.intensity || p.INTENSITY || p.maxwind || p.MAXWIND || 0) || 0;
-        const cat = _nhcTypeToTtbCat(typeKey, kt);
-        const ic  = TTB_ICONS[cat] || TTB_ICONS.td;
-        const sz = 22, half = 11;
-        const icon = L.divIcon({
-          className: '',
-          iconAnchor: [half, half],
-          html: `<div style="width:${sz}px;height:${sz}px;opacity:0.6;"><img src="data:image/png;base64,${ic.b64}" style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 3px ${ic.color});"/></div>`
+  // ── Past observation icons ──────────────────────────────────────────────────
+  // Prefer layer 10 point features. If that's empty (NHC often doesn't populate
+  // it for new storms), fall back to extracting vertices from the layer 11 lines —
+  // those coordinates ARE the historical observation positions.
+  let _pastObsPts = pastPts?.features?.length ? pastPts.features : [];
+  if (!_pastObsPts.length && pastTracks?.features?.length) {
+    pastTracks.features.forEach(lf => {
+      const p = lf.properties || {};
+      const geom = lf.geometry;
+      if (!geom) return;
+      const rings = geom.type === 'MultiLineString' ? geom.coordinates : [geom.coordinates || []];
+      rings.forEach(ring => {
+        (ring || []).forEach(c => {
+          _pastObsPts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: p });
         });
-        const m = L.marker([lat, lon], { icon, zIndexOffset: 900 })
-          .bindPopup(_nhcPopup({
-            lat, lon, color: ic.color, emoji: '🕐',
-            name:    p.stormname || p.STORMNAME || p.name || p.NAME || 'Storm',
-            winds:   kt || '—',
-            pres:    _nhcPres(p),
-            basin:   p.basin || p.BASIN || '',
-            typeLbl: _NHC_TN[typeKey] || typeKey,
-            rawProps: p,
-            isPast: true
-          }), { maxWidth: 280 }).addTo(map);
-        _nhcExtraLayers.push(m);
-        tropicalLayers.push(m);
-      } catch(e) { console.warn('NHC past obs icon error:', e, f); }
+      });
     });
-  } else {
-    console.info('NHC layer 10 (past obs):', pastPts?.features?.length ?? 'null/empty', 'features');
   }
+
+  _pastObsPts.forEach(f => {
+    try {
+      const p = f.properties || {};
+      const coords = f.geometry?.coordinates;
+      if (!coords || coords.length < 2) return;
+      const lon = coords[0], lat = coords[1];
+      if (!isFinite(lat) || !isFinite(lon)) return;
+      const typeKey = (p.stormtype || p.STORMTYPE || p.type || p.TYPE || 'TD').toUpperCase();
+      const kt  = parseInt(p.intensity || p.INTENSITY || p.maxwind || p.MAXWIND || 0) || 0;
+      const cat = _nhcTypeToTtbCat(typeKey, kt);
+      const ic  = TTB_ICONS[cat] || TTB_ICONS.td;
+      const sz = 22, half = 11;
+      const icon = L.divIcon({
+        className: '',
+        iconAnchor: [half, half],
+        html: `<div style="width:${sz}px;height:${sz}px;opacity:0.55;"><img src="data:image/png;base64,${ic.b64}" style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 2px ${ic.color});"/></div>`
+      });
+      const m = L.marker([lat, lon], { icon, zIndexOffset: 900 })
+        .bindPopup(_nhcPopup({
+          lat, lon, color: ic.color, emoji: '🕐',
+          name:    p.stormname || p.STORMNAME || p.name || p.NAME || 'Storm',
+          winds:   kt || '—',
+          pres:    _nhcPres(p),
+          basin:   p.basin || p.BASIN || '',
+          typeLbl: _NHC_TN[typeKey] || typeKey,
+          rawProps: p,
+          isPast: true
+        }), { maxWidth: 280 }).addTo(map);
+      _nhcExtraLayers.push(m);
+      tropicalLayers.push(m);
+    } catch(e) { console.warn('NHC past obs icon error:', e, f); }
+  });
 }
 
 function _modelsNHCToggle() {
