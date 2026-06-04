@@ -9801,32 +9801,56 @@ function _waveColor(h) {
   return stops[stops.length-1][1];
 }
 
+let _tideRenderGen = 0, _surgeRenderGen = 0;
+
 async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
-  if (existingLayer) { map.removeLayer(existingLayer); }
+  // Bump generation so any older in-flight render knows to bail out
+  const isSurge = fieldKey !== 'tide';
+  const gen     = isSurge ? ++_surgeRenderGen : ++_tideRenderGen;
+  const stale   = () => (isSurge ? _surgeRenderGen : _tideRenderGen) !== gen;
+
+  // Create the new layer group up front but DON'T add it to the map yet.
+  // We only swap old→new after all data arrives, so old markers stay visible
+  // the entire time the fetch is running.
   const group = L.layerGroup();
 
   try {
     const bounds = map.getBounds();
-    const latMin = Math.max(-70, bounds.getSouth());
-    const latMax = Math.min( 70, bounds.getNorth());
-    const lngMin = bounds.getWest();
-    const lngMax = bounds.getEast();
-    const zoom = map.getZoom();
-    // Dense grid: more dots at higher zoom for better coverage
-    const GRID = zoom <= 4 ? 10 : zoom <= 6 ? 13 : zoom <= 8 ? 15 : 18;
-    const BATCH = 100; // max per API call
+    const zoom   = map.getZoom();
+
+    // Fixed geographic grid: each point's lat/lng is a multiple of `step`.
+    // Because the coordinates are always the same regardless of where the map
+    // is panned, markers stay in one place — new ones scroll into view, old
+    // ones scroll out, but nothing jumps.
+    const step = zoom <= 4 ? 2.5 : zoom <= 6 ? 2.0 : zoom <= 8 ? 1.5 : 1.0;
+
+    const latMin = Math.floor(Math.max(-70, bounds.getSouth()) / step) * step;
+    const latMax = Math.ceil (Math.min( 70, bounds.getNorth()) / step) * step;
+    const lngMin = Math.floor(bounds.getWest()  / step) * step;
+    const lngMax = Math.ceil (bounds.getEast()  / step) * step;
+
+    // Integer row/col counts avoid floating-point drift when adding step repeatedly
+    const latSteps = Math.round((latMax - latMin) / step);
+    const lngSteps = Math.round((lngMax - lngMin) / step);
 
     const pts = [];
-    for (let r = 0; r < GRID; r++)
-      for (let c = 0; c < GRID; c++)
-        pts.push({ lat: latMin + (latMax-latMin)*(r/(GRID-1)),
-                   lng: lngMin + (lngMax-lngMin)*(c/(GRID-1)) });
+    outer: for (let r = 0; r <= latSteps; r++) {
+      for (let c = 0; c <= lngSteps; c++) {
+        pts.push({
+          lat: Math.round((latMin + r * step) * 1e4) / 1e4,
+          lng: Math.round((lngMin + c * step) * 1e4) / 1e4,
+        });
+        if (pts.length >= 600) break outer; // cap to avoid excessive API calls
+      }
+    }
 
-    // Fetch in batches to stay within URL limits
+    const BATCH     = 100;
     const allFields = 'wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,sea_surface_temperature';
-    const results = new Array(pts.length).fill(null);
+    const results   = new Array(pts.length).fill(null);
+
     for (let start = 0; start < pts.length; start += BATCH) {
-      const chunk = pts.slice(start, start + BATCH);
+      if (stale()) return; // newer render started — discard this one
+      const chunk  = pts.slice(start, start + BATCH);
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}&current=${allFields}&length_unit=imperial&temperature_unit=fahrenheit`;
@@ -9839,8 +9863,10 @@ async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
       } catch(e) { /* skip batch on error */ }
     }
 
-    const hField = fieldKey === 'tide' ? 'wave_height'      : 'swell_wave_height';
-    const label  = fieldKey === 'tide' ? 'Wave'             : 'Swell';
+    if (stale()) return;
+
+    const hField = fieldKey === 'tide' ? 'wave_height'  : 'swell_wave_height';
+    const label  = fieldKey === 'tide' ? 'Wave'         : 'Swell';
     const dirs16 = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
     const compass = deg => deg != null ? dirs16[Math.round(deg/22.5)%16] + ' (' + Math.round(deg) + '°)' : '—';
     const fmt = (v, u, dp=1) => v != null ? v.toFixed(dp) + ' ' + u : '—';
@@ -9848,12 +9874,11 @@ async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
     pts.forEach((pt, i) => {
       const d = results[i]?.current || {};
       const h = d[hField];
-      if (h == null) return; // land , marine API returns null for land points
+      if (h == null) return; // land — marine API returns null for land points
       const [rv,gv,bv] = _waveColor(h);
       const col = `rgb(${rv},${gv},${bv})`;
 
-      // Dot size scales slightly with wave height, capped
-      const dotR = Math.round(10 + Math.min(h / 25, 1) * 6); // 10–16px radius
+      const dotR = Math.round(10 + Math.min(h / 25, 1) * 6);
       const dotD = dotR * 2;
       const ft   = h < 10 ? h.toFixed(1) : Math.round(h) + '';
       const fSz  = dotR >= 13 ? 9 : 8;
@@ -9889,9 +9914,16 @@ async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
       </div>`, { className: 'data-popup', maxWidth: 240 });
       m.addTo(group);
     });
+
+    // Atomic swap: add the new layer BEFORE removing the old one so there's
+    // never a blank moment — old markers stay visible until new ones are ready.
     group.addTo(map);
+    if (existingLayer) { map.removeLayer(existingLayer); }
     onLoad(group);
-  } catch(e) { console.warn('Waves render error:', e); }
+  } catch(e) {
+    console.warn('Waves render error:', e);
+    onLoad(existingLayer); // keep old layer on error rather than going blank
+  }
 }
 
 let _tideMoveHandler = null, _surgeMoveHandler = null;
