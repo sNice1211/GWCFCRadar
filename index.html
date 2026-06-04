@@ -11257,25 +11257,15 @@ async function loadNHC5dayOutlook() {
     updateLoadStatus('No tropical disturbances currently.');
   }
 
-  // ── Forecast cones (TWC style: red fill + black diagonal hatching) ────────
+  // ── Forecast cones (semi-transparent fill; forecast track shows future positions inside) ──
   if (cones?.features?.length) {
     const l = L.geoJSON(cones, {
-      style: () => ({ color: '#000000', weight: 2.5, fillOpacity: 1 }),
+      style: () => ({ color: '#000000', weight: 2.5, fillColor: '#dd1500', fillOpacity: 0.2 }),
       onEachFeature: (f, layer) => {
         const n = f.properties?.stormname || '';
         layer.bindPopup(`<div class="alert-popup"><b>NHC Forecast Cone${n ? ': ' + n : ''}</b></div>`);
       }
     }).addTo(map);
-    // Inject SVG hatch pattern (red fill + black diagonal lines) and apply to cone paths
-    const mapSvg = map.getPanes().overlayPane.querySelector('svg');
-    if (mapSvg) {
-      if (!mapSvg.querySelector('#nhc-cone-hatch')) {
-        let defs = mapSvg.querySelector('defs');
-        if (!defs) { defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs'); mapSvg.insertBefore(defs, mapSvg.firstChild); }
-        defs.insertAdjacentHTML('beforeend', `<pattern id="nhc-cone-hatch" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="rotate(-45)"><rect width="10" height="10" fill="#dd1500" fill-opacity="0.28"/><line x1="0" y1="0" x2="0" y2="10" stroke="rgba(0,0,0,0.45)" stroke-width="1.5"/></pattern>`);
-      }
-      l.eachLayer(sub => { if (sub._path) sub._path.setAttribute('fill', 'url(#nhc-cone-hatch)'); });
-    }
     _nhcExtraLayers.push(l);
     tropicalLayers.push(l);
   }
