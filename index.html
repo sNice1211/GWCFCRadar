@@ -6306,34 +6306,35 @@ function _initGraticule() {
   redraw();
 }
 
-// ── NOAA NEXRAD RADAR (Iowa Mesonet IEM tile cache — NOAA L3 N0Q) ──
+// ── RADAR (RainViewer global composite) ──
 let lastPastIdx = 0;
 
-// ── IEM NOAA L3 N0Q composite frame fetch ──
-// IEM NEXRAD composites run every 5 min at predictable times — compute timestamps directly.
-// No API call needed; tiles exist at mesonet.agron.iastate.edu/cache/tile.py/.../nexrad-n0q-{key}/...
-function _generateL3Frames(count) {
-  count = count || 12;
-  const interval = 5 * 60 * 1000;
-  const lag = 10 * 60 * 1000; // IEM tiles lag ~10 min behind real-time
-  const latest = Math.floor((Date.now() - lag) / interval) * interval;
-  const pad = n => String(n).padStart(2, '0');
-  const frames = [];
-  for (let i = count - 1; i >= 0; i--) {
-    const t = latest - i * interval;
-    const d = new Date(t);
-    const key = `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`;
-    const iso = d.toISOString().slice(0,16) + ':00Z';
-    frames.push({ time: Math.floor(t / 1000), tileKey: key, iso, forecast: false });
-  }
-  return frames;
+// RainViewer public API — returns up to 12 past frames (every 5 min)
+// Tile URL: {host}{path}/256/{z}/{x}/{y}/{color}/{smooth}_{snow}.png
+// Color 6 = NEXRAD Level III palette (closest to traditional US radar)
+const RV_API   = 'https://api.rainviewer.com/public/weather-maps.json';
+const RV_COLOR = 6;
+
+async function _loadRainViewerFrames() {
+  const r = await fetchWithTimeout(RV_API, 8000);
+  if (!r.ok) throw new Error('RainViewer API ' + r.status);
+  const data = await r.json();
+  const host = data.host || 'https://tilecache.rainviewer.com';
+  const past = data.radar?.past || [];
+  return past.map(f => ({
+    time:    f.time,
+    tileKey: String(f.time),
+    tileUrl: `${host}${f.path}/256/{z}/{x}/{y}/${RV_COLOR}/1_0.png`,
+    iso:     new Date(f.time * 1000).toISOString().slice(0, 16) + ':00Z',
+    forecast: false
+  }));
 }
 
 
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const newFrames = _generateL3Frames(36);
+    const newFrames = await _loadRainViewerFrames();
 
     // Periodic refresh — sliding-window layer reuse.
     // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
@@ -6572,19 +6573,6 @@ function _buildRadarPool() {
   try { _refreshPlayButtonsEnabled(); } catch(e){}
 
   if (_radarPoolBuilt && radarFrames.length) {
-    // Pre-warm browser HTTP cache. Stagger old frames so they don't compete with
-    // the current frame: newest 12 are immediate, older ones load in two waves.
-    radarFrames.forEach((frame, i) => {
-      const age = radarFrames.length - 1 - i; // 0 = newest frame
-      if (age < 12) {
-        _prefetchRadarTiles(frame.tileKey, i === currentFrame);
-      } else if (age < 24) {
-        setTimeout(() => _prefetchRadarTiles(frame.tileKey, false), 1200);
-      } else {
-        setTimeout(() => _prefetchRadarTiles(frame.tileKey, false), 2400);
-      }
-    });
-
     // Current frame: immediate — highest priority, uncontested bandwidth
     _ensureNexradLayer(currentFrame);
 
