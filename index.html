@@ -6140,7 +6140,7 @@ function initMap() {
     // current (visible) frame — background frames are warmed by the existing
     // _buildRadarPool prefetch path.
     if (radarFrames.length && radarFrames[currentFrame]) {
-      _prefetchRadarTiles(radarFrames[currentFrame].tileKey);
+      _prefetchRadarTiles(radarFrames[currentFrame].tileKey, true);
     }
     // Debounce pool window rebuild 300ms to batch any new-slot creation
     clearTimeout(_zoomTimer);
@@ -6306,34 +6306,35 @@ function _initGraticule() {
   redraw();
 }
 
-// ── NOAA NEXRAD RADAR (Iowa Mesonet IEM tile cache — NOAA L3 N0Q) ──
+// ── RADAR (RainViewer global composite) ──
 let lastPastIdx = 0;
 
-// ── IEM NOAA L3 N0Q composite frame fetch ──
-// IEM NEXRAD composites run every 5 min at predictable times — compute timestamps directly.
-// No API call needed; tiles exist at mesonet.agron.iastate.edu/cache/tile.py/.../nexrad-n0q-{key}/...
-function _generateL3Frames(count) {
-  count = count || 12;
-  const interval = 5 * 60 * 1000;
-  const lag = 10 * 60 * 1000; // IEM tiles lag ~10 min behind real-time
-  const latest = Math.floor((Date.now() - lag) / interval) * interval;
-  const pad = n => String(n).padStart(2, '0');
-  const frames = [];
-  for (let i = count - 1; i >= 0; i--) {
-    const t = latest - i * interval;
-    const d = new Date(t);
-    const key = `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`;
-    const iso = d.toISOString().slice(0,16) + ':00Z';
-    frames.push({ time: Math.floor(t / 1000), tileKey: key, iso, forecast: false });
-  }
-  return frames;
+// RainViewer public API — returns up to 12 past frames (every 5 min)
+// Tile URL: {host}{path}/256/{z}/{x}/{y}/{color}/{smooth}_{snow}.png
+// Color 6 = NEXRAD Level III palette (closest to traditional US radar)
+const RV_API   = 'https://api.rainviewer.com/public/weather-maps.json';
+const RV_COLOR = 6;
+
+async function _loadRainViewerFrames() {
+  const r = await fetchWithTimeout(RV_API, 8000);
+  if (!r.ok) throw new Error('RainViewer API ' + r.status);
+  const data = await r.json();
+  const host = data.host || 'https://tilecache.rainviewer.com';
+  const past = data.radar?.past || [];
+  return past.map(f => ({
+    time:    f.time,
+    tileKey: String(f.time),
+    tileUrl: `${host}${f.path}/256/{z}/{x}/{y}/${RV_COLOR}/1_0.png`,
+    iso:     new Date(f.time * 1000).toISOString().slice(0, 16) + ':00Z',
+    forecast: false
+  }));
 }
 
 
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const newFrames = _generateL3Frames(36);
+    const newFrames = await _loadRainViewerFrames();
 
     // Periodic refresh — sliding-window layer reuse.
     // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
@@ -6572,19 +6573,6 @@ function _buildRadarPool() {
   try { _refreshPlayButtonsEnabled(); } catch(e){}
 
   if (_radarPoolBuilt && radarFrames.length) {
-    // Pre-warm browser HTTP cache. Stagger old frames so they don't compete with
-    // the current frame: newest 12 are immediate, older ones load in two waves.
-    radarFrames.forEach((frame, i) => {
-      const age = radarFrames.length - 1 - i; // 0 = newest frame
-      if (age < 12) {
-        _prefetchRadarTiles(frame.tileKey, i === currentFrame);
-      } else if (age < 24) {
-        setTimeout(() => _prefetchRadarTiles(frame.tileKey, false), 1200);
-      } else {
-        setTimeout(() => _prefetchRadarTiles(frame.tileKey, false), 2400);
-      }
-    });
-
     // Current frame: immediate — highest priority, uncontested bandwidth
     _ensureNexradLayer(currentFrame);
 
@@ -6688,7 +6676,8 @@ function _prefetchRadarTilesAtZoom(tileKey, z, priority) {
     const clamp    = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const nTiles   = 1 << z;
     const centerPt = crs.latLngToPoint(center, z);
-    const pad = 256; // 1 extra tile of padding per side
+    // High-priority (current frame): 1 tile padding; background: no padding
+    const pad = priority === 'high' ? 256 : 0;
     const x0 = clamp(Math.floor((centerPt.x - size.x / 2 - pad) / 256), 0, nTiles - 1);
     const x1 = clamp(Math.floor((centerPt.x + size.x / 2 + pad) / 256), 0, nTiles - 1);
     const y0 = clamp(Math.floor((centerPt.y - size.y / 2 - pad) / 256), 0, nTiles - 1);
@@ -6704,17 +6693,22 @@ function _prefetchRadarTilesAtZoom(tileKey, z, priority) {
   } catch(_) {}
 }
 
-// Pre-warm current zoom AND up to 3 zoom levels below so zoom-out transitions
-// hit the cache instead of the wire. isCurrentFrame=true → high-priority fetches.
+// Pre-warm current zoom only for background frames; current frame also warms
+// 3 zoom levels below so zoom-out transitions hit cache. isCurrentFrame=true → high-priority.
 function _prefetchRadarTiles(tileKey, isCurrentFrame) {
   if (!map) return;
   const curZ = Math.min(map.getZoom(), 9);
   _prefetchRadarTilesAtZoom(tileKey, curZ, isCurrentFrame ? 'high' : 'low');
-  for (let dz = 1; dz <= 3; dz++) {
-    const z = curZ - dz;
-    if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z, 'low'), dz * 300);
+  // Only pre-warm lower zooms for the visible frame — doing it for all frames
+  // multiplies request count by 4x and caused ~9000 tile fetches on load.
+  if (isCurrentFrame) {
+    for (let dz = 1; dz <= 3; dz++) {
+      const z = curZ - dz;
+      if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z, 'low'), dz * 300);
+    }
   }
 }
+
 
 function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
@@ -11448,27 +11442,46 @@ async function loadNHC5dayOutlook() {
     tropicalLayers.push(l);
   }
 
-  // ── Past observation icons (smaller, faded TTB icons) ───────────────────
-  if (pastPts?.features?.length) {
-    pastPts.features.forEach(f => {
+  // ── Past observation icons ──────────────────────────────────────────────────
+  // Prefer layer 10 point features. If that's empty (NHC often doesn't populate
+  // it for new storms), fall back to extracting vertices from the layer 11 lines —
+  // those coordinates ARE the historical observation positions.
+  let _pastObsPts = pastPts?.features?.length ? pastPts.features : [];
+  if (!_pastObsPts.length && pastTracks?.features?.length) {
+    pastTracks.features.forEach(lf => {
+      const p = lf.properties || {};
+      const geom = lf.geometry;
+      if (!geom) return;
+      const rings = geom.type === 'MultiLineString' ? geom.coordinates : [geom.coordinates || []];
+      rings.forEach(ring => {
+        (ring || []).forEach(c => {
+          _pastObsPts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: p });
+        });
+      });
+    });
+  }
+
+  _pastObsPts.forEach(f => {
+    try {
       const p = f.properties || {};
       const coords = f.geometry?.coordinates;
-      if (!coords) return;
+      if (!coords || coords.length < 2) return;
       const lon = coords[0], lat = coords[1];
-      const typeKey = (p.stormtype || p.STORMTYPE || 'TD').toUpperCase();
-      const kt  = parseInt(p.intensity || p.INTENSITY || p.maxwind || 0) || 0;
+      if (!isFinite(lat) || !isFinite(lon)) return;
+      const typeKey = (p.stormtype || p.STORMTYPE || p.type || p.TYPE || 'TD').toUpperCase();
+      const kt  = parseInt(p.intensity || p.INTENSITY || p.maxwind || p.MAXWIND || 0) || 0;
       const cat = _nhcTypeToTtbCat(typeKey, kt);
       const ic  = TTB_ICONS[cat] || TTB_ICONS.td;
       const sz = 22, half = 11;
       const icon = L.divIcon({
         className: '',
         iconAnchor: [half, half],
-        html: `<div style="width:${sz}px;height:${sz}px;opacity:0.6;"><img src="data:image/png;base64,${ic.b64}" style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 3px ${ic.color});"/></div>`
+        html: `<div style="width:${sz}px;height:${sz}px;opacity:0.55;"><img src="data:image/png;base64,${ic.b64}" style="width:${sz}px;height:${sz}px;filter:drop-shadow(0 0 2px ${ic.color});"/></div>`
       });
       const m = L.marker([lat, lon], { icon, zIndexOffset: 900 })
         .bindPopup(_nhcPopup({
           lat, lon, color: ic.color, emoji: '🕐',
-          name:    p.stormname || p.STORMNAME || 'Storm',
+          name:    p.stormname || p.STORMNAME || p.name || p.NAME || 'Storm',
           winds:   kt || '—',
           pres:    _nhcPres(p),
           basin:   p.basin || p.BASIN || '',
@@ -11478,8 +11491,8 @@ async function loadNHC5dayOutlook() {
         }), { maxWidth: 280 }).addTo(map);
       _nhcExtraLayers.push(m);
       tropicalLayers.push(m);
-    });
-  }
+    } catch(e) { console.warn('NHC past obs icon error:', e, f); }
+  });
 }
 
 function _modelsNHCToggle() {
@@ -20009,7 +20022,8 @@ function _makeDraggable(el, handle) {
 let _surfaceLayer = null;
 let _surfaceOn = true;
 let _surfaceLoading = false;
-const SA_URL = 'https://forecast.weather.gov/product.php?site=CRH&product=COD&issuedby=SUS';
+const SA_URL = 'https://forecast.weather.gov/product.php?site=NWS&product=CODSUS';
+const SA_URL_FALLBACK = 'https://forecast.weather.gov/product.php?site=NWS&product=COD&issuedby=SUS';
 
 function _parseSurfaceText(text) {
   const FRONT_TYPES = new Set(['STNRY','TROF','COLD','WARM','OCFNT']);
@@ -20084,8 +20098,12 @@ async function loadSurfaceAnalysis() {
   _surfaceLoading=true;
   updateLoadStatus('Loading surface fronts…');
   let text=null;
-  try{const r=await fetchWithTimeout(SA_URL,6000);if(r.ok)text=await r.text();}catch(e){}
-  if(!text){try{const r=await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(SA_URL)}`,8000);if(r.ok)text=await r.text();}catch(e){}}
+  // 1. cachefetch proxy (handles CORS reliably, same as NHC data)
+  const _saProxy = u => `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=3600&url=${encodeURIComponent(u)}`;
+  try{const r=await fetchWithTimeout(_saProxy(SA_URL),8000);if(r.ok)text=await r.text();}catch(e){}
+  // 2. fallback URL via cachefetch
+  if(!text){try{const r=await fetchWithTimeout(_saProxy(SA_URL_FALLBACK),8000);if(r.ok)text=await r.text();}catch(e){}}
+  // 3. allorigins.win
   if(!text){try{text=await proxiedFetch(SA_URL,10000);}catch(e){}}
 
   _surfaceLoading=false;
