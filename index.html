@@ -11211,11 +11211,12 @@ async function loadNHC5dayOutlook() {
   const riskColor = r => r === 'High' ? '#ff2121' : r === 'Medium' ? '#ff8800' : '#ffcc00';
   const trackColor = t => ({ TD:'#27beff', TS:'#2a7fff', HU:'#ff2121', MH:'#9900ff' })[t] || '#888888';
 
-  // Fire all four MapServer requests in parallel
-  const [invests, cones, tracks, pastTracks] = await Promise.all([
+  // Fire all five MapServer requests in parallel
+  const [invests, cones, tracks, fcastPts, pastTracks] = await Promise.all([
     _fetchNHCLayer(3),   // invest areas (7-day risk)
     _fetchNHCLayer(7),   // forecast cones
     _fetchNHCLayer(6),   // forecast tracks
+    _fetchNHCLayer(5),   // forecast points (current storm positions)
     _fetchNHCLayer(11),  // past tracks
   ]);
 
@@ -11261,6 +11262,45 @@ async function loadNHC5dayOutlook() {
     }).addTo(map);
     _nhcExtraLayers.push(l);
     tropicalLayers.push(l);
+  }
+
+  // ── Storm position icons (makeTropMarker style) on forecast points ───────
+  if (fcastPts?.features?.length) {
+    fcastPts.features.forEach(f => {
+      const p  = f.properties || {};
+      const coords = f.geometry?.coordinates;
+      if (!coords) return;
+      const lon = coords[0], lat = coords[1];
+      const typeKey = (p.stormtype || p.STORMTYPE || 'LO').toUpperCase();
+      const s = TROP_TYPE_STYLE[typeKey] || TROP_TYPE_STYLE['LO'];
+      const icon = L.divIcon({
+        className: '',
+        iconSize:   [s.ring*2, s.ring*2],
+        iconAnchor: [s.ring, s.ring],
+        html: `<div style="
+          width:${s.ring*2}px;height:${s.ring*2}px;border-radius:50%;
+          border:3px solid ${s.color};background:${s.color}33;
+          box-shadow:0 0 12px ${s.color}99;
+          display:flex;align-items:center;justify-content:center;
+          font-size:${Math.round(s.ring*0.9)}px;line-height:1;
+        ">${s.label}</div>`
+      });
+      const name  = p.stormname || p.STORMNAME || 'Storm';
+      const winds = p.intensity || p.INTENSITY || p.maxwind || '—';
+      const pres  = p.mslp     || p.MSLP      || p.pressure || '—';
+      const basin = p.basin    || p.BASIN     || '';
+      const m = L.marker([lat, lon], { icon, zIndexOffset: 950 })
+        .bindPopup(`<div style="font-family:'Comfortaa',sans-serif;min-width:170px;padding:4px 0;">
+          <div style="font-size:15px;font-weight:700;color:${s.color};margin-bottom:3px;">${s.label} ${name}</div>
+          <div style="font-size:10px;color:#aaa;margin-bottom:6px;">${s.name}${basin ? ' · ' + basin : ''}</div>
+          <div style="font-size:12px;line-height:1.8;">
+            💨 <b>${winds} kt</b> &nbsp; 🌡 <b>${pres} mb</b><br>
+            📍 ${lat.toFixed(1)}°${lat>=0?'N':'S'}, ${Math.abs(lon).toFixed(1)}°${lon<0?'W':'E'}
+          </div>
+        </div>`).addTo(map);
+      _nhcExtraLayers.push(m);
+      tropicalLayers.push(m);
+    });
   }
 
   // ── Past tracks (semi-transparent) ──────────────────────────────────────
