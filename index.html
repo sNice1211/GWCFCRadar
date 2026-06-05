@@ -6655,7 +6655,6 @@ function _switchSlotToWms(i) {
       _radarLayerPool.forEach((l, j) => {
         if (!l) return;
         l.setOpacity(j === i ? radarOpacity : 0);
-        l.options.updateWhenIdle = (j !== i);
       });
       if (_canadaPoolBuilt) _canadaLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
       radarLayer = _radarLayerPool[i] || null;
@@ -6737,7 +6736,7 @@ function _ensureNexradLayer(i) {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     noWrap: true, tileSize: 256,
     maxNativeZoom: 9, detectRetina: false,
-    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: true, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: false, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
 
@@ -6773,7 +6772,6 @@ function _ensureNexradLayer(i) {
       _radarLayerPool.forEach((l, j) => {
         if (!l) return;
         l.setOpacity(j === i ? radarOpacity : 0);
-        l.options.updateWhenIdle = (j !== i);
       });
       if (_canadaPoolBuilt) _canadaLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
       radarLayer = _radarLayerPool[i] || null;
@@ -6782,8 +6780,9 @@ function _ensureNexradLayer(i) {
   };
 
   l.on('load', () => _markFrameReady(true));
-  // Safety: mark ready after 800 ms for frames where all tiles 404 (no coverage)
-  _readyTimer = setTimeout(() => _markFrameReady(false), 800);
+  // Safety: mark ready after 3 s for frames where all tiles 404 (no coverage).
+  // First tileload cancels this timer, so real data always wins.
+  _readyTimer = setTimeout(() => _markFrameReady(false), 3000);
 
   // Per-slot error handling — only switch THIS slot to WMS after 3 errors.
   // The old approach (switch all slots on the first error) caused a single 404
@@ -6817,7 +6816,7 @@ function _ensureCanadaLayer(i) {
     version: '1.1.1', TIME: iso,
     opacity: 0, zIndex: 11, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
-    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: true, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: false, updateWhenZooming: false,
     detectRetina: false,
     attribution: 'Canada Radar © ECCC via Iowa Mesonet',
   });
@@ -6929,9 +6928,6 @@ function showFrame(idx) {
       _radarLayerPool.forEach((l, i) => {
         if (!l) return;
         l.setOpacity(i === di ? op : 0);
-        // Only the visible frame should reload tiles on pan — all others stay idle
-        // until they become current. Halts the 12-layer tile-request avalanche.
-        l.options.updateWhenIdle = (i !== di);
       });
       radarLayer = _radarLayerPool[di] || null;
       if (_canadaPoolBuilt) {
@@ -6941,7 +6937,18 @@ function showFrame(idx) {
 
     // Find the nearest frame that actually has tiles loaded — use it as a
     // placeholder so radar NEVER goes blank while the target frame fetches.
+    // Pass 1: prefer frames with real tile data (_radarFrameHasTiles) so we never
+    // accidentally show a timeout-marked frame that has zero visible tiles.
+    // Pass 2: fall back to any loaded frame (covers genuine no-coverage areas).
     const findFallback = (target) => {
+      if (_radarLayerLoaded[target] && _radarFrameHasTiles[target] && _radarLayerPool[target]) return target;
+      for (let d = 1; d < radarFrames.length; d++) {
+        const p = target - d;
+        if (p >= 0 && _radarLayerLoaded[p] && _radarFrameHasTiles[p] && _radarLayerPool[p]) return p;
+        const n = target + d;
+        if (n < radarFrames.length && _radarLayerLoaded[n] && _radarFrameHasTiles[n] && _radarLayerPool[n]) return n;
+      }
+      // No real-tile frame found yet — accept timeout-marked frames as last resort
       if (_radarLayerLoaded[target] && _radarLayerPool[target]) return target;
       for (let d = 1; d < radarFrames.length; d++) {
         const p = target - d;
@@ -6949,22 +6956,21 @@ function showFrame(idx) {
         const n = target + d;
         if (n < radarFrames.length && _radarLayerLoaded[n] && _radarLayerPool[n]) return n;
       }
-      return target; // nothing loaded at all — show blank (only possible on very first load)
+      return target; // nothing loaded at all — only on very first load
     };
 
     const displayIdx = findFallback(idx);
     applyOpacity(displayIdx);
 
-    // If showing a fallback (or target not yet loaded), poll until the real frame arrives.
-    // No hard timeout — keep trying until tiles land or user seeks away.
-    // 30s safety cleanup for frames that permanently fail (network error / 404).
-    if (displayIdx !== idx || !_radarLayerLoaded[idx]) {
+    // If showing a fallback (or target not yet loaded with real tiles), poll until the
+    // real frame arrives. 4s safety cleanup for frames that permanently fail (404/no-coverage).
+    if (displayIdx !== idx || !_radarFrameHasTiles[idx]) {
       const target = idx;
       let waited = 0;
       _showFrameTick = setInterval(() => {
         waited += 50;
         if (currentFrame !== target) { clearInterval(_showFrameTick); _showFrameTick = null; return; }
-        if (_radarLayerLoaded[target] && _radarLayerPool[target]) {
+        if (_radarLayerLoaded[target] && _radarFrameHasTiles[target] && _radarLayerPool[target]) {
           clearInterval(_showFrameTick); _showFrameTick = null;
           applyOpacity(target);
         } else if (waited >= 4000) {
