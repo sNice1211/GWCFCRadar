@@ -6766,8 +6766,8 @@ function _ensureNexradLayer(i) {
   };
 
   l.on('load', () => _markFrameReady(true));
-  // Safety: mark ready after 1.5 s for frames where all tiles 404 (no coverage)
-  _readyTimer = setTimeout(() => _markFrameReady(false), 1500);
+  // Safety: mark ready after 800 ms for frames where all tiles 404 (no coverage)
+  _readyTimer = setTimeout(() => _markFrameReady(false), 800);
 
   // Per-slot error handling — only switch THIS slot to WMS after 3 errors.
   // The old approach (switch all slots on the first error) caused a single 404
@@ -6944,9 +6944,9 @@ function showFrame(idx) {
         if (_radarLayerLoaded[target] && _radarLayerPool[target]) {
           clearInterval(_showFrameTick); _showFrameTick = null;
           applyOpacity(target);
-        } else if (waited >= 30000) {
+        } else if (waited >= 4000) {
           clearInterval(_showFrameTick); _showFrameTick = null;
-          applyOpacity(target, true); // force-reveal after 30s — show whatever tiles arrived
+          applyOpacity(target, true); // force-reveal after 4s — show whatever tiles arrived
         }
       }, 50);
     }
@@ -11343,10 +11343,12 @@ function _nhcPopup(d) {
 }
 
 async function loadNHC5dayOutlook() {
-  // Clear any previous layers owned by this function
-  if (nhc5dayLayer) { try { map.removeLayer(nhc5dayLayer); } catch(e){} nhc5dayLayer = null; }
+  // Clear any previous layers owned by this function from both tracking arrays
+  const _prevSet = new Set([nhc5dayLayer, ..._nhcExtraLayers].filter(Boolean));
+  tropicalLayers = tropicalLayers.filter(l => !_prevSet.has(l));
   _nhcExtraLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _nhcExtraLayers = [];
+  if (nhc5dayLayer) { try { map.removeLayer(nhc5dayLayer); } catch(e){} nhc5dayLayer = null; }
 
   const riskColor = r => r === 'High' ? '#ff2121' : r === 'Medium' ? '#ff8800' : '#ffcc00';
   const trackColor = t => ({ TD:'#27beff', TS:'#2a7fff', HU:'#ff2121', MH:'#9900ff' })[t] || '#888888';
@@ -11419,24 +11421,28 @@ async function loadNHC5dayOutlook() {
     });
 
     // Draw category-colored track segments first so icons sit on top
-    Object.values(stormPaths).forEach(pts => {
-      for (let i = 0; i < pts.length - 1; i++) {
-        const seg = L.polyline([[pts[i].lat, pts[i].lon], [pts[i+1].lat, pts[i+1].lon]], {
-          color: pts[i+1].ic.color, weight: 3, opacity: 0.9,
-          lineJoin: 'round', lineCap: 'round'
-        }).addTo(map);
-        _nhcExtraLayers.push(seg);
-        tropicalLayers.push(seg);
-      }
-    });
+    try {
+      Object.values(stormPaths).forEach(pts => {
+        for (let i = 0; i < pts.length - 1; i++) {
+          const seg = L.polyline([[pts[i].lat, pts[i].lon], [pts[i+1].lat, pts[i+1].lon]], {
+            color: pts[i+1].ic.color, weight: 3, opacity: 0.9,
+            lineJoin: 'round', lineCap: 'round'
+          }).addTo(map);
+          _nhcExtraLayers.push(seg);
+          tropicalLayers.push(seg);
+        }
+      });
+    } catch(e) { console.warn('NHC track segments error:', e); }
 
     // Draw TTB icons at each forecast position on top of track
     markerQueue.forEach(d => {
-      const icon = _ttbMakeIcon(d.cat, false);
-      const m = L.marker([d.lat, d.lon], { icon, zIndexOffset: 950 })
-        .bindPopup(_nhcPopup(d), { maxWidth: 280 }).addTo(map);
-      _nhcExtraLayers.push(m);
-      tropicalLayers.push(m);
+      try {
+        const icon = _ttbMakeIcon(d.cat, false);
+        const m = L.marker([d.lat, d.lon], { icon, zIndexOffset: 950 })
+          .bindPopup(_nhcPopup(d), { maxWidth: 280 }).addTo(map);
+        _nhcExtraLayers.push(m);
+        tropicalLayers.push(m);
+      } catch(e) { console.warn('NHC forecast icon error:', e, d); }
     });
   }
 
@@ -11468,12 +11474,13 @@ async function loadNHC5dayOutlook() {
   // Source 1 — Layer 10: dedicated past-obs points (best per-point props, unreliable)
   (pastPts?.features || []).forEach(_collectPastPt);
 
-  // Source 2 — Layer 5 (forecast points) where tau ≤ 0: NHC includes the current
-  // and recent best-track positions here even when Layer 10 is empty.
+  // Source 2 — Layer 5 (forecast points) where tau < 0: pure past best-track
+  // positions. tau=0 (current position) is already rendered as a forecast icon
+  // above, so we skip it here to avoid stacking a dimmer icon behind it.
   (fcastPts?.features || []).forEach(f => {
     const tau = parseInt(f.properties?.fcsthour ?? f.properties?.FCSTHOUR
                       ?? f.properties?.tau      ?? f.properties?.TAU      ?? 99);
-    if (!isNaN(tau) && tau <= 0) _collectPastPt(f);
+    if (!isNaN(tau) && tau < 0) _collectPastPt(f);
   });
 
   // Source 3 — Layer 11 vertex extraction: every vertex of every past-track
