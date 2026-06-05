@@ -6736,14 +6736,14 @@ function _ensureNexradLayer(i) {
     return tile;
   };
 
-  // Apply image rendering per tile as they arrive
+  // Apply image rendering per tile as they arrive; mark frame ready on first hit
   l.on('tileload', (e) => {
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
+    // Mark ready on the first successful tile so animation never shows a blank
+    // frame just because 404s in non-coverage areas delayed the 'load' event.
+    if (!_radarLayerLoaded[i]) _markFrameReady(true);
   });
 
-  // Mark frame ready only when ALL viewport tiles have settled (loaded or errored).
-  // Using the layer 'load' event instead of the first 'tileload' prevents revealing
-  // a partially-painted frame with empty tile gaps.
   let _readyTimer = null;
   const _markFrameReady = (hasTiles) => {
     if (_readyTimer) { clearTimeout(_readyTimer); _readyTimer = null; }
@@ -6765,8 +6765,8 @@ function _ensureNexradLayer(i) {
   };
 
   l.on('load', () => _markFrameReady(true));
-  // Safety: mark ready after 6 s so animation is never blocked by a stalled tile
-  _readyTimer = setTimeout(() => _markFrameReady(false), 6000);
+  // Safety: mark ready after 1.5 s for frames where all tiles 404 (no coverage)
+  _readyTimer = setTimeout(() => _markFrameReady(false), 1500);
 
   // Per-slot error handling — only switch THIS slot to WMS after 3 errors.
   // The old approach (switch all slots on the first error) caused a single 404
