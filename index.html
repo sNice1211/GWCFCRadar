@@ -6341,6 +6341,8 @@ async function loadNEXRAD() {
     // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
     // match layers by tileKey (not index) so every unchanged frame keeps its live tiles.
     if (_radarPoolBuilt && _radarLayerPool.some(l => l !== null)) {
+      // Reset IEM failure flags so a previous transient outage doesn't lock us into WMS forever
+      if (!_customRadarColors) { _nexradCacheFailed = false; _nexradWmsSlotCount = 0; }
       // 1. Snapshot current key→layer mapping before touching radarFrames.
       const oldLayerMap = new Map(); // tileKey → layer
       const oldLoadedMap = new Map(); // tileKey → loaded bool
@@ -6516,7 +6518,8 @@ function _finalizeTimelineRange() {
     else if (currentFrame > last) { currentFrame = last; tl.value = last; showFrame(last); }
   }
   buildTimelineLabels();
-  _updateTimelineGradient(Math.min(currentFrame, last), last - first + 1);
+  // Gradient needs relative position within the trimmed range, not absolute index
+  _updateTimelineGradient(Math.min(currentFrame, last) - first, last - first + 1);
 }
 
 // ── DOUBLE-BUFFER RADAR (no-flash frame system) ──
@@ -6649,14 +6652,18 @@ function _switchSlotToWms(i) {
     // Proactively reveal this frame if it's current — same logic as _markFrameReady.
     // Without this the polling loop in showFrame can take up to 50ms to notice.
     if (i === currentFrame && activeLayers.nexrad) {
-      _radarLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
+      _radarLayerPool.forEach((l, j) => {
+        if (!l) return;
+        l.setOpacity(j === i ? radarOpacity : 0);
+        l.options.updateWhenIdle = (j !== i);
+      });
       if (_canadaPoolBuilt) _canadaLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
       radarLayer = _radarLayerPool[i] || null;
     }
     try { _refreshPlayButtonsEnabled(); } catch(e) {}
   };
   l.on('load', _markWmsReady);
-  _wmsReadyTimer = setTimeout(_markWmsReady, 30000); // match showFrame's 30s force-reveal
+  _wmsReadyTimer = setTimeout(_markWmsReady, 6000); // 6 s safety — just above showFrame's 4 s force-reveal
   _radarLayerLoaded[i] = false;
   l.addTo(map);
   _radarLayerPool[i] = l;
@@ -6696,16 +6703,21 @@ function _prefetchRadarTilesAtZoom(tileKey, z, priority) {
 
 // Pre-warm current zoom only for background frames; current frame also warms
 // 3 zoom levels below so zoom-out transitions hit cache. isCurrentFrame=true → high-priority.
+let _prefetchZoomTimers = [];
 function _prefetchRadarTiles(tileKey, isCurrentFrame) {
   if (!map) return;
+  // Cancel any still-pending zoom-level pre-warm from the previous call
+  _prefetchZoomTimers.forEach(clearTimeout);
+  _prefetchZoomTimers = [];
   const curZ = Math.min(map.getZoom(), 9);
   _prefetchRadarTilesAtZoom(tileKey, curZ, isCurrentFrame ? 'high' : 'low');
-  // Only pre-warm lower zooms for the visible frame — doing it for all frames
-  // multiplies request count by 4x and caused ~9000 tile fetches on load.
+  // Only pre-warm lower zooms for the visible frame
   if (isCurrentFrame) {
     for (let dz = 1; dz <= 3; dz++) {
       const z = curZ - dz;
-      if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z, 'low'), dz * 300);
+      if (z >= 2) _prefetchZoomTimers.push(
+        setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z, 'low'), dz * 300)
+      );
     }
   }
 }
@@ -6724,8 +6736,8 @@ function _ensureNexradLayer(i) {
   const l = L.tileLayer(IEM_TILE_BASE + frame.tileKey + '/{z}/{x}/{y}.png', {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     noWrap: true, tileSize: 256,
-    maxNativeZoom: 9,
-    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: false, updateWhenZooming: false,
+    maxNativeZoom: 9, detectRetina: false,
+    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: true, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
 
@@ -6758,7 +6770,11 @@ function _ensureNexradLayer(i) {
     // Reveal this frame and hide any fallback that was standing in for it.
     // applyOpacity is local to showFrame so we inline the same logic here.
     if (i === currentFrame && activeLayers.nexrad) {
-      _radarLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
+      _radarLayerPool.forEach((l, j) => {
+        if (!l) return;
+        l.setOpacity(j === i ? radarOpacity : 0);
+        l.options.updateWhenIdle = (j !== i);
+      });
       if (_canadaPoolBuilt) _canadaLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
       radarLayer = _radarLayerPool[i] || null;
     }
@@ -6801,12 +6817,12 @@ function _ensureCanadaLayer(i) {
     version: '1.1.1', TIME: iso,
     opacity: 0, zIndex: 11, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
-    keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: false, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: true, updateWhenZooming: false,
     detectRetina: false,
     attribution: 'Canada Radar © ECCC via Iowa Mesonet',
   });
   _canadaLayerLoaded[i] = false;
-  l.on('tileload', () => { _canadaLayerLoaded[i] = true; });
+  l.once('tileload', () => { _canadaLayerLoaded[i] = true; });
   l.addTo(map);
   _canadaLayerPool[i] = l;
 }
@@ -6815,6 +6831,7 @@ let _lastWindowS = -1, _lastWindowE = -1;
 
 
 function _activateWindow(idx) {
+  if (!_radarPoolBuilt) return;
   const { s, e } = _poolWindow(idx);
   // Early-exit once the full window is already built , no eviction, keep all loaded frames
   if (s === _lastWindowS && e === _lastWindowE) return;
@@ -6909,7 +6926,13 @@ function showFrame(idx) {
     // force=true bypasses the check (used for 30s timeout fallback).
     const applyOpacity = (di, force) => {
       const op = (force || _radarLayerLoaded[di]) ? radarOpacity : 0;
-      _radarLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === di ? op : 0); });
+      _radarLayerPool.forEach((l, i) => {
+        if (!l) return;
+        l.setOpacity(i === di ? op : 0);
+        // Only the visible frame should reload tiles on pan — all others stay idle
+        // until they become current. Halts the 12-layer tile-request avalanche.
+        l.options.updateWhenIdle = (i !== di);
+      });
       radarLayer = _radarLayerPool[di] || null;
       if (_canadaPoolBuilt) {
         _canadaLayerPool.forEach((l, i) => { if (l) l.setOpacity(i === di ? op : 0); });
