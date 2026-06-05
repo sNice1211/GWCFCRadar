@@ -5054,7 +5054,7 @@ body.gwcfc-crosshair #map::after {
   border-color: var(--accent) !important; font-weight: 700; }
 @keyframes lockShake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
 
-/* ── CLEAN MODE (5-tap toggle) ───────────────────────────────────────────── */
+/* ── CLEAN MODE (10-second hold toggle) ──────────────────────────────────── */
 body.clean-mode #tabs-left,
 body.clean-mode #tabs-right,
 body.clean-mode #topbar,
@@ -6736,14 +6736,14 @@ function _ensureNexradLayer(i) {
     return tile;
   };
 
-  // Apply image rendering per tile as they arrive
+  // Apply image rendering per tile as they arrive; mark frame ready on first hit
   l.on('tileload', (e) => {
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
+    // Mark ready on the first successful tile so animation never shows a blank
+    // frame just because 404s in non-coverage areas delayed the 'load' event.
+    if (!_radarLayerLoaded[i]) _markFrameReady(true);
   });
 
-  // Mark frame ready only when ALL viewport tiles have settled (loaded or errored).
-  // Using the layer 'load' event instead of the first 'tileload' prevents revealing
-  // a partially-painted frame with empty tile gaps.
   let _readyTimer = null;
   const _markFrameReady = (hasTiles) => {
     if (_readyTimer) { clearTimeout(_readyTimer); _readyTimer = null; }
@@ -6765,8 +6765,8 @@ function _ensureNexradLayer(i) {
   };
 
   l.on('load', () => _markFrameReady(true));
-  // Safety: mark ready after 6 s so animation is never blocked by a stalled tile
-  _readyTimer = setTimeout(() => _markFrameReady(false), 6000);
+  // Safety: mark ready after 1.5 s for frames where all tiles 404 (no coverage)
+  _readyTimer = setTimeout(() => _markFrameReady(false), 1500);
 
   // Per-slot error handling — only switch THIS slot to WMS after 3 errors.
   // The old approach (switch all slots on the first error) caused a single 404
@@ -20487,35 +20487,40 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="clean-hint">tap ×5 to restore</div>
 
 <script>
-// ── 5-TAP CLEAN MODE TOGGLE ────────────────────────────────────────────────
-// Tap anywhere 5 times within 1.5 s to hide/show all UI chrome.
+// ── HOLD-TO-CLEAN MODE TOGGLE ──────────────────────────────────────────────
+// Hold anywhere on the bare map for 10 s to hide/show all UI chrome.
 (function () {
-  let count = 0, timer = null;
+  let holdTimer = null;
+  let startX = 0, startY = 0;
 
-  function onTap(e) {
-    // Ignore taps that land on interactive UI elements — only count bare-map taps
-    const tag = (e.target || e.srcElement).closest(
-      '#tabs-left,#tabs-right,#topbar,#sidebar,#animbar,' +
-      '#right-menu,#sub-bubbles,#float-search-btn,' +
-      '#overlay-launcher,#overlay-toggle-btn,#statusbar,' +
-      '.leaflet-control,input,button,select,textarea'
-    );
-    if (tag) return;
+  const EXCLUDED = '#tabs-left,#tabs-right,#topbar,#sidebar,#animbar,' +
+    '#right-menu,#sub-bubbles,#float-search-btn,' +
+    '#overlay-launcher,#overlay-toggle-btn,#statusbar,' +
+    '.leaflet-control,input,button,select,textarea';
 
-    count++;
-    clearTimeout(timer);
-    timer = setTimeout(() => { count = 0; }, 1500);
-
-    if (count >= 5) {
-      count = 0;
-      clearTimeout(timer);
+  function onDown(e) {
+    if ((e.target || e.srcElement).closest(EXCLUDED)) return;
+    startX = e.clientX; startY = e.clientY;
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => {
+      holdTimer = null;
       document.body.classList.toggle('clean-mode');
+    }, 10000);
+  }
+
+  function onMove(e) {
+    if (!holdTimer) return;
+    if (Math.abs(e.clientX - startX) > 10 || Math.abs(e.clientY - startY) > 10) {
+      clearTimeout(holdTimer); holdTimer = null;
     }
   }
 
-  // Use touchend on touch devices (no 300ms delay), click on desktop
-  const isTouchDevice = ('ontouchstart' in window);
-  document.addEventListener(isTouchDevice ? 'touchend' : 'click', onTap, { passive: true });
+  function onUp() { clearTimeout(holdTimer); holdTimer = null; }
+
+  document.addEventListener('pointerdown',   onDown,  { passive: true });
+  document.addEventListener('pointermove',   onMove,  { passive: true });
+  document.addEventListener('pointerup',     onUp,    { passive: true });
+  document.addEventListener('pointercancel', onUp,    { passive: true });
 })();
 </script>
 </body>
