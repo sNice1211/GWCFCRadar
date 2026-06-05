@@ -6306,35 +6306,38 @@ function _initGraticule() {
   redraw();
 }
 
-// ── RADAR (RainViewer global composite) ──
+// ── RADAR (IEM NEXRAD composite) ──
 let lastPastIdx = 0;
 
-// RainViewer public API — returns up to 12 past frames (every 5 min)
-// Tile URL: {host}{path}/256/{z}/{x}/{y}/{color}/{smooth}_{snow}.png
-// Color 6 = NEXRAD Level III palette (closest to traditional US radar)
-const RV_API   = 'https://api.rainviewer.com/public/weather-maps.json';
-const RV_COLOR = 6;
+// IEM tile cache keeps the composite mosaic for 24+ hours at 5-min intervals.
+// We generate frame timestamps synthetically — no external API call needed.
+const RADAR_HISTORY_HOURS = 6;  // hours of playback history
 
-async function _loadRainViewerFrames() {
-  const r = await fetchWithTimeout(RV_API, 8000);
-  if (!r.ok) throw new Error('RainViewer API ' + r.status);
-  const data = await r.json();
-  const host = data.host || 'https://tilecache.rainviewer.com';
-  const past = data.radar?.past || [];
-  return past.map(f => ({
-    time:    f.time,
-    tileKey: String(f.time),
-    tileUrl: `${host}${f.path}/256/{z}/{x}/{y}/${RV_COLOR}/1_0.png`,
-    iso:     new Date(f.time * 1000).toISOString().slice(0, 16) + ':00Z',
-    forecast: false
-  }));
+function _fmtIEMKey(unixSec) {
+  const d = new Date(unixSec * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(Math.floor(d.getUTCMinutes()/5)*5)}`;
+}
+
+function _loadIEMFrames() {
+  const STEP = 5 * 60 * 1000;
+  const now  = Date.now();
+  // Lag one slot so the latest tiles have had time to process at IEM
+  const latest = Math.floor(now / STEP) * STEP - STEP;
+  const oldest = now - RADAR_HISTORY_HOURS * 3600 * 1000;
+  const frames = [];
+  for (let t = latest; t > oldest; t -= STEP) {
+    const tileKey = _fmtIEMKey(t / 1000);
+    frames.unshift({ time: Math.round(t / 1000), tileKey, iso: new Date(t).toISOString().slice(0,16) + ':00Z', forecast: false });
+  }
+  return frames;
 }
 
 
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const newFrames = await _loadRainViewerFrames();
+    const newFrames = _loadIEMFrames();
 
     // Periodic refresh — sliding-window layer reuse.
     // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
