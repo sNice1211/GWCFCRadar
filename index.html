@@ -6306,35 +6306,36 @@ function _initGraticule() {
   redraw();
 }
 
-// ── RADAR (RainViewer global composite) ──
+// ── RADAR (IEM NEXRAD composite) ──
 let lastPastIdx = 0;
 
-// RainViewer public API — returns up to 12 past frames (every 5 min)
-// Tile URL: {host}{path}/256/{z}/{x}/{y}/{color}/{smooth}_{snow}.png
-// Color 6 = NEXRAD Level III palette (closest to traditional US radar)
-const RV_API   = 'https://api.rainviewer.com/public/weather-maps.json';
-const RV_COLOR = 6;
+// Generate the last 12 frames (1 hour) at 5-min intervals using IEM's tile cache.
+// No external API call needed — timestamps come from the system clock.
+function _fmtIEMKey(unixSec) {
+  const d = new Date(unixSec * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(Math.floor(d.getUTCMinutes()/5)*5)}`;
+}
 
-async function _loadRainViewerFrames() {
-  const r = await fetchWithTimeout(RV_API, 8000);
-  if (!r.ok) throw new Error('RainViewer API ' + r.status);
-  const data = await r.json();
-  const host = data.host || 'https://tilecache.rainviewer.com';
-  const past = (data.radar?.past || []).slice(-12); // cap at 1 hour (12 × 5 min)
-  return past.map(f => ({
-    time:    f.time,
-    tileKey: String(f.time),
-    tileUrl: `${host}${f.path}/256/{z}/{x}/{y}/${RV_COLOR}/1_0.png`,
-    iso:     new Date(f.time * 1000).toISOString().slice(0, 16) + ':00Z',
-    forecast: false
-  }));
+function _loadIEMFrames() {
+  const STEP = 5 * 60 * 1000;
+  const now  = Date.now();
+  // Lag one slot so the most recent IEM tile has had time to process
+  let t = Math.floor(now / STEP) * STEP - STEP;
+  const frames = [];
+  while (frames.length < 12) {
+    frames.unshift({ time: Math.round(t / 1000), tileKey: _fmtIEMKey(t / 1000),
+      iso: new Date(t).toISOString().slice(0, 16) + ':00Z', forecast: false });
+    t -= STEP;
+  }
+  return frames;
 }
 
 
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const newFrames = await _loadRainViewerFrames();
+    const newFrames = _loadIEMFrames();
 
     // Periodic refresh — sliding-window layer reuse.
     // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
