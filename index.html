@@ -11241,11 +11241,17 @@ let _nhcExtraLayers = []; // cones, tracks, past tracks added by loadNHC5dayOutl
 // 10=past points, 11=past tracks.
 async function _fetchNHCLayer(layerNum) {
   const noaaUrl = `https://mapservices.weather.noaa.gov/tropical/rest/services/tropical/NHC_tropical_weather_summary/MapServer/${layerNum}/query?where=1%3D1&outFields=*&f=geojson`;
-  const url = `https://cachefetch.sparkradar.app/cache?format=json&maxAge=900&url=${encodeURIComponent(noaaUrl)}`;
-  try {
-    const r = await fetchWithTimeout(url, 10000);
-    if (r.ok) return await r.json();
-  } catch(e) {}
+  const proxied = `https://cachefetch.sparkradar.app/cache?format=json&maxAge=900&url=${encodeURIComponent(noaaUrl)}`;
+  // Try proxy first; fall back to direct NHC URL on failure
+  for (const url of [proxied, noaaUrl]) {
+    try {
+      const r = await fetchWithTimeout(url, 12000);
+      if (r.ok) {
+        const data = await r.json();
+        if (data?.features !== undefined) return data;  // valid GeoJSON
+      }
+    } catch(e) {}
+  }
   return null;
 }
 
@@ -11442,24 +11448,50 @@ async function loadNHC5dayOutlook() {
     tropicalLayers.push(l);
   }
 
-  // ── Past observation icons ──────────────────────────────────────────────────
-  // Prefer layer 10 point features. If that's empty (NHC often doesn't populate
-  // it for new storms), fall back to extracting vertices from the layer 11 lines —
-  // those coordinates ARE the historical observation positions.
-  let _pastObsPts = pastPts?.features?.length ? pastPts.features : [];
-  if (!_pastObsPts.length && pastTracks?.features?.length) {
-    pastTracks.features.forEach(lf => {
-      const p = lf.properties || {};
-      const geom = lf.geometry;
-      if (!geom) return;
-      const rings = geom.type === 'MultiLineString' ? geom.coordinates : [geom.coordinates || []];
-      rings.forEach(ring => {
-        (ring || []).forEach(c => {
-          _pastObsPts.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: p });
-        });
+  // ── Past observation icons — MAX EFFORT: merge all three sources ────────────
+  // Layer 10 is dedicated but NHC often leaves it empty. Rather than a cascade,
+  // we collect from every source simultaneously and deduplicate by coordinate so
+  // no position is double-rendered regardless of how many layers return it.
+  const _obsSeen   = new Set();
+  const _pastObsPts = [];
+
+  const _collectPastPt = (feat) => {
+    const c = feat?.geometry?.coordinates;
+    if (!c || c.length < 2 || !isFinite(c[0]) || !isFinite(c[1])) return;
+    const key = `${c[0].toFixed(1)},${c[1].toFixed(1)}`;
+    if (_obsSeen.has(key)) return;
+    _obsSeen.add(key);
+    _pastObsPts.push(feat);
+  };
+
+  // Source 1 — Layer 10: dedicated past-obs points (best per-point props, unreliable)
+  (pastPts?.features || []).forEach(_collectPastPt);
+
+  // Source 2 — Layer 5 (forecast points) where tau ≤ 0: NHC includes the current
+  // and recent best-track positions here even when Layer 10 is empty.
+  (fcastPts?.features || []).forEach(f => {
+    const tau = parseInt(f.properties?.fcsthour ?? f.properties?.FCSTHOUR
+                      ?? f.properties?.tau      ?? f.properties?.TAU      ?? 99);
+    if (!isNaN(tau) && tau <= 0) _collectPastPt(f);
+  });
+
+  // Source 3 — Layer 11 vertex extraction: every vertex of every past-track
+  // LineString is a historical obs position. Falls through if both other sources
+  // failed or returned empty, ensuring something always renders.
+  (pastTracks?.features || []).forEach(lf => {
+    const geom = lf.geometry;
+    if (!geom) return;
+    const rings = geom.type === 'MultiLineString'
+      ? geom.coordinates
+      : [geom.coordinates || []];
+    rings.forEach(ring => {
+      (ring || []).forEach(c => {
+        _collectPastPt({ type: 'Feature',
+          geometry: { type: 'Point', coordinates: c },
+          properties: lf.properties || {} });
       });
     });
-  }
+  });
 
   _pastObsPts.forEach(f => {
     try {
