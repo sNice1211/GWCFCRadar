@@ -6734,11 +6734,13 @@ function _ensureNexradLayer(i) {
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
 
-  // Priority checked dynamically so seeked frames always get high priority
+  // Give the current frame high fetch priority; background frames use 'auto'
+  // (not 'low' — 'low' causes browsers to delay background tiles too aggressively,
+  // making them miss the readiness timeout and appear blank during animation).
   const _origCT = l.createTile.bind(l);
   l.createTile = function(coords, done) {
     const tile = _origCT(coords, done);
-    tile.fetchPriority = (i === currentFrame) ? 'high' : 'low';
+    tile.fetchPriority = (i === currentFrame) ? 'high' : 'auto';
     return tile;
   };
 
@@ -6762,7 +6764,7 @@ function _ensureNexradLayer(i) {
     else { updateLoadStatus(''); _finalizeTimelineRange(); }
     // Reveal this frame and hide any fallback that was standing in for it.
     // applyOpacity is local to showFrame so we inline the same logic here.
-    if (i === currentFrame && activeLayers.nexrad) {
+    if (i === currentFrame && activeLayers.nexrad && _radarFrameHasTiles[i]) {
       _radarLayerPool.forEach((l, j) => {
         if (!l) return;
         l.setOpacity(j === i ? radarOpacity : 0);
@@ -6918,7 +6920,10 @@ function showFrame(idx) {
     // loaded — prevents the checkerboard "tiles loading one-by-one" appearance.
     // force=true bypasses the check (used for 30s timeout fallback).
     const applyOpacity = (di, force) => {
-      const op = (force || _radarLayerLoaded[di]) ? radarOpacity : 0;
+      // Use _radarFrameHasTiles (real tile data arrived) not _radarLayerLoaded
+      // (_radarLayerLoaded can be set by the safety timeout with zero actual tiles,
+      // which would reveal a blank layer at full opacity).
+      const op = (force || _radarFrameHasTiles[di]) ? radarOpacity : 0;
       _radarLayerPool.forEach((l, i) => {
         if (!l) return;
         l.setOpacity(i === di ? op : 0);
@@ -6935,22 +6940,23 @@ function showFrame(idx) {
     // accidentally show a timeout-marked frame that has zero visible tiles.
     // Pass 2: fall back to any loaded frame (covers genuine no-coverage areas).
     const findFallback = (target) => {
-      if (_radarLayerLoaded[target] && _radarFrameHasTiles[target] && _radarLayerPool[target]) return target;
+      // Pass 1: nearest frame that has confirmed tile pixels
+      if (_radarFrameHasTiles[target] && _radarLayerPool[target]) return target;
       for (let d = 1; d < radarFrames.length; d++) {
         const p = target - d;
-        if (p >= 0 && _radarLayerLoaded[p] && _radarFrameHasTiles[p] && _radarLayerPool[p]) return p;
+        if (p >= 0 && _radarFrameHasTiles[p] && _radarLayerPool[p]) return p;
         const n = target + d;
-        if (n < radarFrames.length && _radarLayerLoaded[n] && _radarFrameHasTiles[n] && _radarLayerPool[n]) return n;
+        if (n < radarFrames.length && _radarFrameHasTiles[n] && _radarLayerPool[n]) return n;
       }
-      // No real-tile frame found yet — accept timeout-marked frames as last resort
-      if (_radarLayerLoaded[target] && _radarLayerPool[target]) return target;
+      // Pass 2: nearest timeout-only frame (no-coverage area) — check neighbours
+      // before the target itself so we never show a blank target over a valid neighbour
       for (let d = 1; d < radarFrames.length; d++) {
         const p = target - d;
         if (p >= 0 && _radarLayerLoaded[p] && _radarLayerPool[p]) return p;
         const n = target + d;
         if (n < radarFrames.length && _radarLayerLoaded[n] && _radarLayerPool[n]) return n;
       }
-      return target; // nothing loaded at all — only on very first load
+      return target; // nothing at all loaded yet
     };
 
     const displayIdx = findFallback(idx);
