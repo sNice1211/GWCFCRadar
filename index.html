@@ -6744,11 +6744,21 @@ function _ensureNexradLayer(i) {
     return tile;
   };
 
-  // Apply image rendering per tile as they arrive; mark frame ready on first hit
+  // Apply image rendering per tile as they arrive; mark frame ready on first hit.
+  // IMPORTANT: set _radarFrameHasTiles unconditionally — the guard on _markFrameReady
+  // would skip it after the safety timeout fires, leaving the flag stuck at false
+  // even though real tile pixels have arrived.
   l.on('tileload', (e) => {
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
-    // Mark ready on the first successful tile so animation never shows a blank
-    // frame just because 404s in non-coverage areas delayed the 'load' event.
+    if (!_radarFrameHasTiles[i]) {
+      _radarFrameHasTiles[i] = true;
+      // Immediately reveal this frame if it's the one currently on screen
+      if (i === currentFrame && activeLayers.nexrad) {
+        _radarLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
+        if (_canadaPoolBuilt) _canadaLayerPool.forEach((l, j) => { if (l) l.setOpacity(j === i ? radarOpacity : 0); });
+        radarLayer = _radarLayerPool[i] || null;
+      }
+    }
     if (!_radarLayerLoaded[i]) _markFrameReady(true);
   });
 
@@ -6780,17 +6790,18 @@ function _ensureNexradLayer(i) {
   // First tileload cancels this timer, so real data always wins.
   _readyTimer = setTimeout(() => _markFrameReady(false), 3000);
 
-  // Per-slot error handling — only switch THIS slot to WMS after 3 errors.
-  // The old approach (switch all slots on the first error) caused a single 404
-  // to immediately replace all fast tile-cache layers with slow WMS.
+  // Per-slot error handling. Out-of-coverage tiles (ocean, edges) naturally 404
+  // at all zoom levels — at zoom 5 a full-US view has ~15 no-coverage tiles per
+  // frame. Threshold must be high enough that normal 404s don't trigger a WMS
+  // switch, but low enough to catch frames where the tile cache is genuinely broken.
   let _slotErrCount = 0;
   l.on('tileerror', () => {
     _slotErrCount++;
-    if (_slotErrCount >= 3 && !_radarLayerLoaded[i]) {
+    if (_slotErrCount >= 15 && !_radarLayerLoaded[i]) {
       if (_readyTimer) { clearTimeout(_readyTimer); _readyTimer = null; }
       _nexradWmsSlotCount++;
-      // If 5+ slots have failed, IEM appears globally down — use WMS for all future slots
-      if (_nexradWmsSlotCount >= 5) _nexradCacheFailed = true;
+      // Switch all future slots to WMS only when 10+ slots have individually failed
+      if (_nexradWmsSlotCount >= 10) _nexradCacheFailed = true;
       _switchSlotToWms(i);
       if (activeLayers.nexrad && i === currentFrame) showFrame(currentFrame);
     }
