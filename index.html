@@ -6577,19 +6577,13 @@ function _buildRadarPool() {
   try { _refreshPlayButtonsEnabled(); } catch(e){}
 
   if (_radarPoolBuilt && radarFrames.length) {
-    // Current frame: immediate — highest priority, uncontested bandwidth
+    // Current frame first so its <img> tiles enter the browser queue ahead of others.
+    // All other frames follow immediately — fetchPriority:'low' on their tiles means
+    // the browser downloads current-frame tiles first while all frames load in parallel.
     _ensureNexradLayer(currentFrame);
-
-    // Adjacent frames (±1–3): 150 ms — so current-frame tiles win the first burst
-    // All other frames: 400 ms — ensures every layer exists before the user can scrub to it
-    const near = [], far = [];
-    for (let d = 1; d < radarFrames.length; d++) {
-      const arr = d <= 3 ? near : far;
-      const prev = currentFrame - d; if (prev >= 0) arr.push(prev);
-      const next = currentFrame + d; if (next < radarFrames.length) arr.push(next);
+    for (let i = 0; i < radarFrames.length; i++) {
+      if (i !== currentFrame) _ensureNexradLayer(i);
     }
-    setTimeout(() => { near.forEach(i => { if (_radarPoolBuilt) _ensureNexradLayer(i); }); }, 150);
-    setTimeout(() => { far.forEach(i  => { if (_radarPoolBuilt) _ensureNexradLayer(i); }); }, 400);
   }
 }
 
