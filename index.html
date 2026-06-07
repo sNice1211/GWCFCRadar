@@ -12,6 +12,7 @@ setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.tra
 <!-- Critical: needed before first paint -->
 <link rel="preconnect" href="https://api.maptiler.com">
 <link rel="preconnect" href="https://mesonet.agron.iastate.edu">
+<link rel="preconnect" href="https://geo.weather.gc.ca">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- Secondary: used almost always -->
 <link rel="preconnect" href="https://api.weather.gov">
@@ -6301,21 +6302,22 @@ function _initGraticule() {
 // ── RADAR (IEM NEXRAD composite) ──
 let lastPastIdx = 0;
 
-// IEM tileKey format: YYYYMMDDHHMI — matches pre-rendered tile cache URL.
-function _fmtIEMKey(d) {
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}`;
-}
-
-// Generate last 12 frames (1 hour) at 5-min intervals from IEM tile timestamps.
-// No API call needed — IEM tiles are immutable once published.
-function _loadIEMFrames() {
-  const latest = Math.floor((Date.now() / 1000 - 300) / 300) * 300; // round down, -5min propagation lag
+// ── IEM NOAA L3 N0Q composite frame fetch ──
+// IEM NEXRAD composites run every 5 min at predictable times — compute timestamps directly.
+// No API call needed; tiles exist at mesonet.agron.iastate.edu/cache/tile.py/.../nexrad-n0q-{key}/...
+function _generateL3Frames(count) {
+  count = count || 12;
+  const interval = 5 * 60 * 1000;
+  const lag = 10 * 60 * 1000; // IEM tiles lag ~10 min behind real-time
+  const latest = Math.floor((Date.now() - lag) / interval) * interval;
+  const pad = n => String(n).padStart(2, '0');
   const frames = [];
-  for (let i = 11; i >= 0; i--) {
-    const t = latest - i * 300;
-    const d = new Date(t * 1000);
-    frames.push({ time: t, tileKey: _fmtIEMKey(d), iso: d.toISOString().slice(0, 16) + ':00Z', forecast: false });
+  for (let i = count - 1; i >= 0; i--) {
+    const t = latest - i * interval;
+    const d = new Date(t);
+    const key = `${d.getUTCFullYear()}${pad(d.getUTCMonth()+1)}${pad(d.getUTCDate())}${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`;
+    const iso = d.toISOString().slice(0,16) + ':00Z';
+    frames.push({ time: Math.floor(t / 1000), tileKey: key, iso, forecast: false });
   }
   return frames;
 }
@@ -6324,102 +6326,9 @@ function _loadIEMFrames() {
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const newFrames = _loadIEMFrames();
-
-    // Periodic refresh — sliding-window layer reuse.
-    // IEM tiles are immutable per tileKey. After 5 min the window shifts by one slot;
-    // match layers by tileKey (not index) so every unchanged frame keeps its live tiles.
-    if (_radarPoolBuilt && _radarLayerPool.some(l => l !== null)) {
-      // 1. Snapshot current key→layer mapping before touching radarFrames.
-      const oldLayerMap = new Map(); // tileKey → layer
-      const oldLoadedMap = new Map(); // tileKey → loaded bool
-      const oldCanadaMap = new Map(); // tileKey → canada layer
-      const oldCanadaLoadedMap = new Map();
-      radarFrames.forEach((frame, i) => {
-        if (_radarLayerPool[i]) {
-          oldLayerMap.set(frame.tileKey, _radarLayerPool[i]);
-          oldLoadedMap.set(frame.tileKey, _radarLayerLoaded[i]);
-        }
-        if (_canadaPoolBuilt && _canadaLayerPool[i]) {
-          oldCanadaMap.set(frame.tileKey, _canadaLayerPool[i]);
-          oldCanadaLoadedMap.set(frame.tileKey, _canadaLayerLoaded[i]);
-        }
-      });
-
-      radarFrames = newFrames;
-      lastPastIdx = radarFrames.length - 1;
-
-      // 2. Remap pool slots to new frame ordering, reusing layers wherever tileKey matches.
-      const reusedLayers = new Set();
-      for (let i = 0; i < radarFrames.length; i++) {
-        const key = radarFrames[i].tileKey;
-        const existing = oldLayerMap.get(key);
-        if (existing) {
-          _radarLayerPool[i] = existing;
-          _radarLayerLoaded[i] = oldLoadedMap.get(key) || false;
-          reusedLayers.add(existing);
-        } else {
-          _radarLayerPool[i] = null;
-          _radarLayerLoaded[i] = false;
-        }
-      }
-
-      // 3. Remove layers that rolled off the window (no longer in new frame list).
-      oldLayerMap.forEach((layer, key) => {
-        if (!reusedLayers.has(layer)) {
-          try { map.removeLayer(layer); } catch(e) {}
-        }
-      });
-
-      // 3b. Apply the same sliding-window remap to the Canada pool so its layers
-      // stay aligned with the new radarFrames timestamps. Without this, Canada
-      // layers go stale (TIME param frozen at old timestamp) after each refresh.
-      if (_canadaPoolBuilt) {
-        const reusedCanada = new Set();
-        _canadaLayerPool.length = 0;
-        _canadaLayerLoaded.length = 0;
-        for (let i = 0; i < radarFrames.length; i++) {
-          const key = radarFrames[i].tileKey;
-          const ex = oldCanadaMap.get(key);
-          if (ex) {
-            _canadaLayerPool[i] = ex;
-            _canadaLayerLoaded[i] = oldCanadaLoadedMap.get(key) || false;
-            reusedCanada.add(ex);
-          } else {
-            _canadaLayerPool[i] = null;
-            _canadaLayerLoaded[i] = false;
-          }
-        }
-        oldCanadaMap.forEach((layer) => {
-          if (!reusedCanada.has(layer)) {
-            try { map.removeLayer(layer); } catch(e) {}
-          }
-        });
-      }
-
-      // 4. Create fresh layers only for slots with no existing layer (genuinely new timestamps).
-      radarFrames.forEach((frame, i) => {
-        if (!_radarLayerPool[i]) _ensureNexradLayer(i);
-      });
-
-      // Recompute readiness counter after sliding-window remap (some loaded frames rolled off,
-      // some fresh slots are now empty). Without this, _radarFramesReady drifts over time.
-      _radarFramesReady = _radarLayerLoaded.reduce((a, b) => a + (b ? 1 : 0), 0);
-      _lastWindowS = -1; _lastWindowE = -1; // force window re-activation after remap
-      try { _refreshPlayButtonsEnabled(); } catch(e){}
-
-      currentFrame = Math.min(currentFrame, radarFrames.length - 1);
-      const tl = document.getElementById('timeline');
-      if (tl) { tl.max = radarFrames.length - 1; tl.value = currentFrame; }
-      buildTimelineLabels();
-      _updateTimelineGradient(lastPastIdx, radarFrames.length);
-      if (activeLayers.nexrad) showFrame(currentFrame);
-      updateLoadStatus('');
-      return;
-    }
-
-    // First load: full build
-    radarFrames = newFrames;
+    const frames = _generateL3Frames(12);
+    console.log(`[Radar] NOAA L3 (IEM computed): ${frames.length} frames`);
+    radarFrames = frames;
     lastPastIdx = radarFrames.length - 1;
     const tl = document.getElementById('timeline');
     if (tl) { tl.max = radarFrames.length - 1; tl.value = lastPastIdx; }
@@ -6532,8 +6441,8 @@ let _nexradCacheFailed  = false; // set true when IEM appears globally unreliabl
 let _nexradWmsSlotCount = 0;    // how many individual slots switched to WMS; gates global failure
 
 // ── CANADA RADAR (Iowa Mesonet WMS-T composite) ──
-const CANADA_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/canada/radar.cgi';
-const CANADA_LAYER = 'ca_composite_dz';
+const CANADA_WMS = 'https://geo.weather.gc.ca/geomet';
+const CANADA_LAYER = 'RADAR_1KM_RDBR';
 const _canadaLayerPool = [];
 let   _canadaPoolBuilt = false;
 const _canadaLayerLoaded = [];
@@ -6787,12 +6696,12 @@ function _ensureCanadaLayer(i) {
   const iso = frame.iso || new Date(frame.time * 1000).toISOString().slice(0,19) + 'Z';
   const l = L.tileLayer.wms(CANADA_WMS, {
     layers: CANADA_LAYER, format: 'image/png', transparent: true,
-    version: '1.1.1', TIME: iso,
+    version: '1.3.0', TIME: iso,
     opacity: 0, zIndex: 11, pane: 'radarPane',
-    crossOrigin: 'anonymous', noWrap: true, tileSize: 512,
-    keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: false, updateWhenZooming: false,
+    crossOrigin: 'anonymous', noWrap: true, tileSize: 256,
+    keepBuffer: 2, updateWhenIdle: true, updateWhenZooming: false,
     detectRetina: false,
-    attribution: 'Canada Radar © ECCC via Iowa Mesonet',
+    attribution: 'Canada Radar © Environment and Climate Change Canada',
   });
   _canadaLayerLoaded[i] = false;
   l.on('tileload', () => { _canadaLayerLoaded[i] = true; });
