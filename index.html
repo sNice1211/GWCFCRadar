@@ -6069,7 +6069,7 @@ function initMap() {
   // Apply saved color palette on init
 
   // ── MapTiler tile layers ──
-  const MT_KEY = 'LBJrsFKOW9Nra6lmFyne';
+  const MT_KEY = 'hhZtXzaWhHvodutvLXzo';
   const mtAttr = '© <a href="https://www.maptiler.com/">MapTiler</a> © <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
   const osmAttr = '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
 
@@ -20098,13 +20098,22 @@ async function loadSurfaceAnalysis() {
   _surfaceLoading=true;
   updateLoadStatus('Loading surface fronts…');
   let text=null;
-  // 1. cachefetch proxy (handles CORS reliably, same as NHC data)
+  // Fire all three sources in parallel — take the first that succeeds.
   const _saProxy = u => `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=3600&url=${encodeURIComponent(u)}`;
-  try{const r=await fetchWithTimeout(_saProxy(SA_URL),8000);if(r.ok)text=await r.text();}catch(e){}
-  // 2. fallback URL via cachefetch
-  if(!text){try{const r=await fetchWithTimeout(_saProxy(SA_URL_FALLBACK),8000);if(r.ok)text=await r.text();}catch(e){}}
-  // 3. allorigins.win
-  if(!text){try{text=await proxiedFetch(SA_URL,10000);}catch(e){}}
+  const _tryFetch = async (url, ms) => {
+    const r = await fetchWithTimeout(url, ms);
+    if (!r.ok) throw new Error(r.status);
+    const t = await r.text();
+    if (!t) throw new Error('empty');
+    return t;
+  };
+  try {
+    text = await Promise.any([
+      _tryFetch(_saProxy(SA_URL), 6000),
+      _tryFetch(_saProxy(SA_URL_FALLBACK), 6000),
+      proxiedFetch(SA_URL, 6000),
+    ]);
+  } catch(e) {}
 
   _surfaceLoading=false;
 
