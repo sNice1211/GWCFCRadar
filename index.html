@@ -19927,11 +19927,25 @@ const SA_URL_FALLBACK = 'https://forecast.weather.gov/product.php?site=NWS&produ
 const SA_URL_CRH = 'https://forecast.weather.gov/product.php?site=CRH&product=COD&issuedby=SUS';
 const SA_CACHE_KEY = 'gwcfc_surfaceAnalysisCache';
 const SA_CACHE_TTL = 15 * 60 * 1000;
+// A real WPC coded-surface product must contain front/center section markers
+// AND at least one 7-digit coordinate token. Proxy error pages / rate-limit
+// messages / "product not found" pages will NOT pass this — preventing us from
+// accepting or caching garbage that wins the Promise.any race.
+function _saIsValidProduct(text) {
+  if (typeof text !== 'string' || text.length < 40) return false;
+  if (!/(COLD|WARM|STNRY|OCFNT|HIGHS|LOWS)/.test(text)) return false;
+  return /\b\d{7}\b/.test(text);
+}
 function _saLoadCache() {
-  try { const p=JSON.parse(localStorage.getItem(SA_CACHE_KEY)||'null'); return(p&&p.timestamp&&p.text)?p:null; } catch{return null;}
+  try {
+    const p = JSON.parse(localStorage.getItem(SA_CACHE_KEY) || 'null');
+    // Reject cache entries that don't hold a valid product (purges old poison)
+    return (p && p.timestamp && _saIsValidProduct(p.text)) ? p : null;
+  } catch { return null; }
 }
 function _saSaveCache(text) {
-  try{localStorage.setItem(SA_CACHE_KEY,JSON.stringify({timestamp:Date.now(),text}));}catch{}
+  if (!_saIsValidProduct(text)) return; // never cache junk
+  try { localStorage.setItem(SA_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), text })); } catch {}
 }
 
 function _parseSurfaceText(text) {
@@ -20014,13 +20028,23 @@ async function loadSurfaceAnalysis() {
   }
 
   if (!text) {
-    const _saProxy = u => `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=3600&url=${encodeURIComponent(u)}`;
-    const _corsProxy = u => `https://corsproxy.io/?${encodeURIComponent(u)}`;
+    const _saProxy   = u => `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=3600&url=${encodeURIComponent(u)}`;
+    const _corsProxy = u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`;
+    const _allOrigin = u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`;
+    // Fetch a URL and ONLY resolve if the body is a genuine WPC product.
+    // Otherwise throw, so Promise.any ignores junk and waits for a real source.
     const _tryFetch = async (url, ms) => {
       const r = await fetchWithTimeout(url, ms);
       if (!r.ok) throw new Error(r.status);
       const t = await r.text();
-      if (!t) throw new Error('empty');
+      // A proxy may wrap the page in HTML — accept it if a <pre> block holds
+      // the product, otherwise validate the raw text directly.
+      let body = t;
+      if (t && t.includes('<')) {
+        const m = t.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+        if (m) body = m[1];
+      }
+      if (!_saIsValidProduct(body)) throw new Error('not a valid product');
       return t;
     };
     for (let attempt = 0; attempt < 3 && !text; attempt++) {
@@ -20030,7 +20054,8 @@ async function loadSurfaceAnalysis() {
           _tryFetch(_saProxy(SA_URL), 6000),
           _tryFetch(_saProxy(SA_URL_FALLBACK), 6000),
           _tryFetch(_saProxy(SA_URL_CRH), 6000),
-          proxiedFetch(SA_URL, 6000),
+          _tryFetch(_allOrigin(SA_URL), 7000),
+          _tryFetch(_allOrigin(SA_URL_FALLBACK), 7000),
           _tryFetch(_corsProxy(SA_URL), 8000),
         ]);
       } catch(e) {}
