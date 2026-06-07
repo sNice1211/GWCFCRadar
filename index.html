@@ -10,7 +10,8 @@
 setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.transition='none';e.style.opacity='0';e.style.display='none';try{e.parentNode.removeChild(e);}catch(_){}}},10000);
 </script>
 <!-- Critical: needed before first paint -->
-<link rel="preconnect" href="https://api.maptiler.com">
+<link rel="preconnect" href="https://basemaps.cartocdn.com">
+<link rel="preconnect" href="https://server.arcgisonline.com">
 <link rel="preconnect" href="https://mesonet.agron.iastate.edu">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- Secondary: used almost always -->
@@ -6068,28 +6069,31 @@ function initMap() {
   _radarPaneEl.style.pointerEvents = 'none';
   // Apply saved color palette on init
 
-  // ── MapTiler tile layers ──
-  const MT_KEY = 'hhZtXzaWhHvodutvLXzo';
-  const mtAttr = '© <a href="https://www.maptiler.com/">MapTiler</a> © <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
-  const osmAttr = '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
+  // ── Basemap tile layers (free, no API key required) ──
+  const cartoAttr = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/attributions">CARTO</a>';
+  const esriAttr  = 'Tiles © Esri — Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP';
+  const osmAttr   = '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
 
-  const _mtOpts = { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, keepBuffer: _isIOS ? 2 : 4, updateWhenZooming: true };
-  const cartoDark  = L.tileLayer(`https://api.maptiler.com/maps/dataviz-dark/{z}/{x}/{y}.webp?key=${MT_KEY}`, _mtOpts);
-  const cartoLight = L.tileLayer(`https://api.maptiler.com/maps/dataviz/{z}/{x}/{y}.webp?key=${MT_KEY}`,        _mtOpts);
-  const satellite  = L.tileLayer(`https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MT_KEY}`,          _mtOpts);
-  const topo       = L.tileLayer(`https://api.maptiler.com/maps/topo-v2/{z}/{x}/{y}.webp?key=${MT_KEY}`,        _mtOpts);
+  const _baseOpts = { maxZoom: 20, noWrap: true, crossOrigin: true, keepBuffer: _isIOS ? 2 : 4, updateWhenZooming: true };
+  const cartoDark  = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+    { ..._baseOpts, attribution: cartoAttr, subdomains: 'abcd' });
+  const cartoLight = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+    { ..._baseOpts, attribution: cartoAttr, subdomains: 'abcd' });
+  const satellite  = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { ..._baseOpts, attribution: esriAttr });
+  const topo       = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    { ..._baseOpts, attribution: osmAttr, subdomains: 'abc', maxNativeZoom: 17 });
 
-  // Fallback: only switch to OSM after 8+ MapTiler tile errors (avoids triggering on transient
-  // network blips). A hard domain-restriction failure will hit this threshold quickly.
+  // OSM fallback if primary tile source becomes unavailable
   const _osmFallback = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     { attribution: osmAttr, maxZoom: 19, noWrap: true, keepBuffer: _isIOS ? 2 : 4 });
-  let _mtFailed = false, _mtErrors = 0;
+  let _baseFailed = false, _baseErrors = 0;
   [cartoDark, cartoLight, satellite, topo].forEach(layer => {
     layer.on('tileerror', () => {
-      if (_mtFailed) return;
-      _mtErrors++;
-      if (_mtErrors < 8) return;
-      _mtFailed = true;
+      if (_baseFailed) return;
+      _baseErrors++;
+      if (_baseErrors < 10) return;
+      _baseFailed = true;
       Object.values(mapTileLayers).forEach(l => { try { map.removeLayer(l); } catch(e){} });
       _osmFallback.addTo(map);
       _osmFallback.bringToBack();
@@ -18078,7 +18082,7 @@ function selectProduct(p) {
     GWCFC Radar<br>
     Data: NOAA · NWS · SPC · NHC<br>
     ADS-B: OpenSky Network (free)<br>
-    Tiles: MapTiler · OpenStreetMap
+    Tiles: CARTO · Esri · OpenStreetMap
   </div>
 </div>
 
