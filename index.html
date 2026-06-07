@@ -19924,6 +19924,15 @@ let _surfaceOn = true;
 let _surfaceLoading = false;
 const SA_URL = 'https://forecast.weather.gov/product.php?site=NWS&product=CODSUS';
 const SA_URL_FALLBACK = 'https://forecast.weather.gov/product.php?site=NWS&product=COD&issuedby=SUS';
+const SA_URL_CRH = 'https://forecast.weather.gov/product.php?site=CRH&product=COD&issuedby=SUS';
+const SA_CACHE_KEY = 'gwcfc_surfaceAnalysisCache';
+const SA_CACHE_TTL = 15 * 60 * 1000;
+function _saLoadCache() {
+  try { const p=JSON.parse(localStorage.getItem(SA_CACHE_KEY)||'null'); return(p&&p.timestamp&&p.text)?p:null; } catch{return null;}
+}
+function _saSaveCache(text) {
+  try{localStorage.setItem(SA_CACHE_KEY,JSON.stringify({timestamp:Date.now(),text}));}catch{}
+}
 
 function _parseSurfaceText(text) {
   const FRONT_TYPES = new Set(['STNRY','TROF','COLD','WARM','OCFNT']);
@@ -19998,26 +20007,36 @@ async function loadSurfaceAnalysis() {
   _surfaceLoading=true;
   updateLoadStatus('Loading surface fronts…');
   let text=null;
-  const _saProxy = u => `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=3600&url=${encodeURIComponent(u)}`;
-  const _corsProxy = u => `https://corsproxy.io/?${encodeURIComponent(u)}`;
-  const _tryFetch = async (url, ms) => {
-    const r = await fetchWithTimeout(url, ms);
-    if (!r.ok) throw new Error(r.status);
-    const t = await r.text();
-    if (!t) throw new Error('empty');
-    return t;
-  };
-  // Retry up to 3 times with 3s backoff if all sources fail
-  for (let attempt = 0; attempt < 3 && !text; attempt++) {
-    if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
-    try {
-      text = await Promise.any([
-        _tryFetch(_saProxy(SA_URL), 6000),
-        _tryFetch(_saProxy(SA_URL_FALLBACK), 6000),
-        proxiedFetch(SA_URL, 6000),
-        _tryFetch(_corsProxy(SA_URL), 8000),
-      ]);
-    } catch(e) {}
+
+  const _cached = _saLoadCache();
+  if (_cached && (Date.now() - _cached.timestamp) < SA_CACHE_TTL) {
+    text = _cached.text;
+  }
+
+  if (!text) {
+    const _saProxy = u => `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=3600&url=${encodeURIComponent(u)}`;
+    const _corsProxy = u => `https://corsproxy.io/?${encodeURIComponent(u)}`;
+    const _tryFetch = async (url, ms) => {
+      const r = await fetchWithTimeout(url, ms);
+      if (!r.ok) throw new Error(r.status);
+      const t = await r.text();
+      if (!t) throw new Error('empty');
+      return t;
+    };
+    for (let attempt = 0; attempt < 3 && !text; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
+      try {
+        text = await Promise.any([
+          _tryFetch(_saProxy(SA_URL), 6000),
+          _tryFetch(_saProxy(SA_URL_FALLBACK), 6000),
+          _tryFetch(_saProxy(SA_URL_CRH), 6000),
+          proxiedFetch(SA_URL, 6000),
+          _tryFetch(_corsProxy(SA_URL), 8000),
+        ]);
+      } catch(e) {}
+    }
+    if (text) _saSaveCache(text);
+    if (!text && _cached) text = _cached.text;
   }
 
   _surfaceLoading=false;
