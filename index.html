@@ -19998,8 +19998,8 @@ async function loadSurfaceAnalysis() {
   _surfaceLoading=true;
   updateLoadStatus('Loading surface fronts…');
   let text=null;
-  // Fire all three sources in parallel — take the first that succeeds.
   const _saProxy = u => `https://cachefetch.sparkradar.app/cache?format=txt&maxAge=3600&url=${encodeURIComponent(u)}`;
+  const _corsProxy = u => `https://corsproxy.io/?${encodeURIComponent(u)}`;
   const _tryFetch = async (url, ms) => {
     const r = await fetchWithTimeout(url, ms);
     if (!r.ok) throw new Error(r.status);
@@ -20007,13 +20007,18 @@ async function loadSurfaceAnalysis() {
     if (!t) throw new Error('empty');
     return t;
   };
-  try {
-    text = await Promise.any([
-      _tryFetch(_saProxy(SA_URL), 6000),
-      _tryFetch(_saProxy(SA_URL_FALLBACK), 6000),
-      proxiedFetch(SA_URL, 6000),
-    ]);
-  } catch(e) {}
+  // Retry up to 3 times with 3s backoff if all sources fail
+  for (let attempt = 0; attempt < 3 && !text; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
+    try {
+      text = await Promise.any([
+        _tryFetch(_saProxy(SA_URL), 6000),
+        _tryFetch(_saProxy(SA_URL_FALLBACK), 6000),
+        proxiedFetch(SA_URL, 6000),
+        _tryFetch(_corsProxy(SA_URL), 8000),
+      ]);
+    } catch(e) {}
+  }
 
   _surfaceLoading=false;
 
