@@ -5412,8 +5412,9 @@ body.clean-mode #clean-hint { opacity: 1; }
           <select id="sev-run-sel" onchange="_sevSetRun(this.value)"></select>
         </div>
         <div id="sev-frame-row">
+          <button id="sev-play-btn" onclick="_sevTogglePlay()" style="font-size:11px;padding:2px 7px;background:rgba(0,200,200,0.15);border:1px solid rgba(0,200,200,0.4);border-radius:4px;color:#00c8c8;cursor:pointer;">▶</button>
           <span class="trop-run-lbl">Hour:</span>
-          <input type="range" id="sev-frame-slider" min="0" max="10" value="0" oninput="_sevSetFrame(this.value)">
+          <input type="range" id="sev-frame-slider" min="0" max="6" value="0" oninput="_sevSetFrame(this.value)">
           <span id="sev-frame-lbl">F000</span>
         </div>
         <div id="sev-panel-body"></div>
@@ -10406,16 +10407,37 @@ function _sevRender() {
   if(!ok && body && body.innerHTML.includes('⟳')) body.innerHTML=`<div class="trop-model-err">No data available for this product.</div>`;
 }
 
+let _sevPlaying = false, _sevPlayTimer = null;
+
 function _sevSetSection(s){_sevSection=s;const el=document.getElementById('sev-model-sel');if(el&&el.value!==s)el.value=s;_sevRender();}
-function _sevSetVar(v){_sevVar=v;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=v==='precip'?48:24;sl.value=0;}_sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();}
+function _sevSetVar(v){_sevVar=v;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=6;sl.value=0;}_sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();}
 function _sevSetRun(v){_sevRun=v;_sevRender();}
-function _sevSetFrame(v){_sevFrame=parseInt(v);document.getElementById('sev-frame-lbl').textContent='F'+String(_sevFrame*3).padStart(3,'0');_sevRender();}
+function _sevSetFrame(v){
+  _sevFrame=parseInt(v);
+  const sl=document.getElementById('sev-frame-slider');if(sl)sl.value=_sevFrame;
+  document.getElementById('sev-frame-lbl').textContent='F'+String(_sevFrame*3).padStart(3,'0');
+  _sevRender();
+}
+function _sevTogglePlay(){
+  _sevPlaying=!_sevPlaying;
+  const btn=document.getElementById('sev-play-btn');
+  if(btn)btn.textContent=_sevPlaying?'■':'▶';
+  if(_sevPlaying){
+    _sevPlayTimer=setInterval(()=>{
+      const sl=document.getElementById('sev-frame-slider');
+      const max=sl?parseInt(sl.max):6;
+      _sevSetFrame(_sevFrame>=max?0:_sevFrame+1);
+    },700);
+  } else {
+    clearInterval(_sevPlayTimer);_sevPlayTimer=null;
+  }
+}
 function _sevInit() {
   const mSel=document.getElementById('sev-model-sel');if(mSel)mSel.value=_sevSection;
   const vSel=document.getElementById('sev-var-sel');if(vSel)vSel.value=_sevVar;
   const sel=document.getElementById('sev-run-sel');
   if(sel&&!sel.options.length){const now=new Date();for(let d=0;d<1;d++)for(const h of[18,12,6,0]){const t=new Date(now);t.setUTCDate(t.getUTCDate()-d);t.setUTCHours(h,0,0,0);const val=`${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(h)}`;const opt=document.createElement('option');opt.value=val;opt.textContent=`${pad(t.getUTCMonth()+1)}/${pad(t.getUTCDate())} ${pad(h)}z`;sel.appendChild(opt);if(!_sevRun)_sevRun=val;}}
-  const sl=document.getElementById('sev-frame-slider');if(sl)sl.max=24;
+  const sl=document.getElementById('sev-frame-slider');if(sl)sl.max=6;
   _sevRender();
 }
 
