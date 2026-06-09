@@ -1508,6 +1508,40 @@ body {
   margin-bottom: 8px;
   text-transform: uppercase;
 }
+#sev-dropdowns {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px 2px;
+}
+.sev-dd-wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.sev-dd-label {
+  font-family: var(--mono);
+  font-size: 9px;
+  text-transform: uppercase;
+  color: rgba(232,184,0,0.7);
+  margin-bottom: 3px;
+  letter-spacing: 0.05em;
+}
+.sev-dd-wrap select {
+  background: rgba(20,20,28,0.92);
+  border: 1px solid rgba(232,184,0,0.35);
+  border-radius: 5px;
+  color: #e8b800;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 4px 6px;
+  cursor: pointer;
+  outline: none;
+  width: 100%;
+}
+.sev-dd-wrap select:focus {
+  border-color: #e8b800;
+}
 #trop-model-tabs, #trop-src-tabs, #sev-model-tabs, #sev-var-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -5343,21 +5377,29 @@ body.clean-mode #clean-hint { opacity: 1; }
 
       <!-- ── SEVERE CONTENT ── -->
       <div id="models-severe-section">
-        <div id="sev-model-tabs">
-          <div class="trop-mtab active" data-src="sref" onclick="_sevSetSection('sref')">SREF</div>
-          <div class="trop-mtab" data-src="href" onclick="_sevSetSection('href')">HREF</div>
-          <div class="trop-mtab" data-src="nam" onclick="_sevSetSection('nam')">NAM</div>
-          <div class="trop-mtab" data-src="hrrr" onclick="_sevSetSection('hrrr')">HRRR</div>
-        </div>
-        <div id="sev-var-tabs">
-          <div class="trop-stab active" data-var="precip"  onclick="_sevSetVar('precip')">QPF</div>
-          <div class="trop-stab" data-var="cape"    onclick="_sevSetVar('cape')">CAPE</div>
-          <div class="trop-stab" data-var="shear"   onclick="_sevSetVar('shear')">Shear</div>
-          <div class="trop-stab" data-var="500mb"   onclick="_sevSetVar('500mb')">500mb</div>
-          <div class="trop-stab" data-var="refc"    onclick="_sevSetVar('refc')">SimREFL</div>
-          <div class="trop-stab" data-var="temp"    onclick="_sevSetVar('temp')">Temp</div>
-          <div class="trop-stab" data-var="srh"     onclick="_sevSetVar('srh')">SRH</div>
-          <div class="trop-stab" data-var="sounding" onclick="_sevSetVar('sounding')">Sounding</div>
+        <div id="sev-dropdowns">
+          <div class="sev-dd-wrap">
+            <label class="sev-dd-label">Model</label>
+            <select id="sev-model-sel" onchange="_sevSetSection(this.value)">
+              <option value="hrrr">HRRR</option>
+              <option value="nam">NAM</option>
+              <option value="sref">SREF (GFS)</option>
+              <option value="href">HREF (GFS)</option>
+            </select>
+          </div>
+          <div class="sev-dd-wrap">
+            <label class="sev-dd-label">Product</label>
+            <select id="sev-var-sel" onchange="_sevSetVar(this.value)">
+              <option value="precip">QPF (Precip)</option>
+              <option value="cape">CAPE</option>
+              <option value="shear">Wind Shear</option>
+              <option value="500mb">500mb Wind</option>
+              <option value="refc">Sim Reflectivity</option>
+              <option value="temp">2m Temperature</option>
+              <option value="srh">Storm Rel. Helicity</option>
+              <option value="sounding">Sounding</option>
+            </select>
+          </div>
         </div>
         <div id="sev-run-row">
           <span class="trop-run-lbl">Run:</span>
@@ -10347,15 +10389,32 @@ async function _wxfFetch(model, run, fhr, variable) {
 function _wxfDecode(bytes) {
   try {
     if (typeof fzstd === 'undefined') return null;
+    // Validate zstd magic bytes: 28 B5 2F FD
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const hLen = view.getUint32(0, false); // big-endian
     if (hLen < 2 || hLen > 4096 || 4 + hLen >= bytes.length) return null;
+    const compressed = bytes.subarray(4 + hLen);
+    // Verify zstd magic (28 B5 2F FD) before attempting decompress
+    if (compressed.length < 4 ||
+        compressed[0] !== 0x28 || compressed[1] !== 0xB5 ||
+        compressed[2] !== 0x2F || compressed[3] !== 0xFD) return null;
     const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + hLen)));
     if (!Number.isFinite(header.min_value) || !Number.isFinite(header.max_value)) return null;
-    const raw = fzstd.decompress(bytes.subarray(4 + hLen));
+    const raw = fzstd.decompress(compressed);
     if (!raw || !raw.length) return null;
-    return { header, raw };
-  } catch(e) { return null; }
+    // Auto-detect grid dimensions from known WeatherFront sizes (handoff doc §6)
+    const KNOWN = {
+      1906200: { cols:1800, rows:1059, type:'lcc',    bounds:[[21.1,-134.1],[52.6,-60.9]] }, // HRRR/NAMNESTCONUS
+      1038240: { cols:1440, rows:721,  type:'latlon',  bounds:[[-90,-180],[90,180]] },         // GFS 0.25°
+      151987:  { cols:451,  rows:337,  type:'lcc',    bounds:[[21.1,-134.1],[52.6,-60.9]] },  // RAP 13km
+    };
+    const grid = KNOWN[raw.length];
+    if (!grid) {
+      console.warn(`[WxFront] Unknown grid size ${raw.length} — skipping`);
+      return null;
+    }
+    return { header, raw, grid };
+  } catch(e) { console.warn('[WxFront] decode error:', e.message); return null; }
 }
 
 // Map variable code + physical value → RGBA (or null = transparent)
@@ -10425,25 +10484,25 @@ function _wxfRGBA(variable, val) {
 // Render a raw grid to a canvas imageOverlay.
 // GFS: 1440×721 regular lat/lon 0.25°, row0=90°N, col0=0°E (0→360 convention)
 // HRRR: 1800×1059 Lambert Conformal Conic 3km CONUS
-function _wxfRenderCanvas(variable, raw, header, model) {
-  const isGFS = model === 'GFS';
-  const GRID_COLS = isGFS ? 1440 : 1800;
-  const GRID_ROWS = isGFS ? 721  : 1059;
+function _wxfRenderCanvas(variable, raw, header, model, grid) {
+  const GRID_COLS = grid.cols;
+  const GRID_ROWS = grid.rows;
 
-  // For GFS, extract the CONUS slice (lon -135→-55, lat 12→57)
+  // For GFS (lat/lon grid), extract the CONUS slice (lon -135→-55, lat 12→57)
   // GFS lon convention: 0→360, so -135 → col 900, -55 → col 1220
   let sliceColStart, sliceColEnd, sliceRowStart, sliceRowEnd, bounds;
-  if (isGFS) {
-    sliceColStart = Math.round((-135 + 360) / 0.25);  // 900
-    sliceColEnd   = Math.round((-55  + 360) / 0.25);  // 1220
-    sliceRowStart = Math.round((90 - 57) / 0.25);     // 132
-    sliceRowEnd   = Math.round((90 - 12) / 0.25);     // 312
+  if (grid.type === 'latlon') {
+    const res = 360 / GRID_COLS; // degrees per cell (0.25 for GFS)
+    sliceColStart = Math.round((-135 + 360) / res);
+    sliceColEnd   = Math.round((-55  + 360) / res);
+    sliceRowStart = Math.round((90 - 57) / res);
+    sliceRowEnd   = Math.round((90 - 12) / res);
     bounds = [[12, -135], [57, -55]];
   } else {
-    // HRRR: render full grid, approximate CONUS LCC extent for overlay
+    // LCC grid (HRRR/NAM/RAP): render full grid using detected bounds
     sliceColStart = 0; sliceColEnd = GRID_COLS - 1;
     sliceRowStart = 0; sliceRowEnd = GRID_ROWS - 1;
-    bounds = [[21.1, -134.1], [52.6, -60.9]];
+    bounds = grid.bounds;
   }
 
   const srcCols = sliceColEnd - sliceColStart + 1;
@@ -10502,8 +10561,8 @@ async function _sevRenderWxf(body) {
   const fhr    = Math.min(fhrRaw, _WXF_MAX_FHR[wxModel] ?? 48);
 
   try {
-    const { header, raw } = await _wxfFetch(wxModel, run, fhr, wxVar);
-    const { dataUrl, bounds } = _wxfRenderCanvas(wxVar, raw, header, wxModel);
+    const { header, raw, grid } = await _wxfFetch(wxModel, run, fhr, wxVar);
+    const { dataUrl, bounds } = _wxfRenderCanvas(wxVar, raw, header, wxModel, grid);
 
     if (_wxfOverlay) { map.removeLayer(_wxfOverlay); _wxfOverlay = null; }
     if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
@@ -10634,11 +10693,13 @@ async function _sevRender() {
   }
 }
 
-function _sevSetSection(s){_sevSection=s;document.querySelectorAll('#sev-model-tabs .trop-mtab').forEach(t=>t.classList.toggle('active',t.dataset.src===s));_sevForecastCache=null;_sevRender();}
-function _sevSetVar(v){_sevVar=v;_sevForecastCache=null;document.querySelectorAll('#sev-var-tabs .trop-stab').forEach(t=>t.classList.toggle('active',t.dataset.var===v));const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=v==='precip'?48:24;sl.value=0;}_sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();}
+function _sevSetSection(s){_sevSection=s;const el=document.getElementById('sev-model-sel');if(el&&el.value!==s)el.value=s;_sevForecastCache=null;_sevRender();}
+function _sevSetVar(v){_sevVar=v;_sevForecastCache=null;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=v==='precip'?48:24;sl.value=0;}_sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();}
 function _sevSetRun(v){_sevRun=v;_sevRender();}
 function _sevSetFrame(v){_sevFrame=parseInt(v);document.getElementById('sev-frame-lbl').textContent='F'+String(_sevFrame*3).padStart(3,'0');_sevRender();}
 function _sevInit() {
+  const mSel=document.getElementById('sev-model-sel');if(mSel)mSel.value=_sevSection;
+  const vSel=document.getElementById('sev-var-sel');if(vSel)vSel.value=_sevVar;
   const sel=document.getElementById('sev-run-sel');
   if(sel&&!sel.options.length){const now=new Date();for(let d=0;d<1;d++)for(const h of[18,12,6,0]){const t=new Date(now);t.setUTCDate(t.getUTCDate()-d);t.setUTCHours(h,0,0,0);const val=`${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(h)}`;const opt=document.createElement('option');opt.value=val;opt.textContent=`${pad(t.getUTCMonth()+1)}/${pad(t.getUTCDate())} ${pad(h)}z`;sel.appendChild(opt);if(!_sevRun)_sevRun=val;}}
   const sl=document.getElementById('sev-frame-slider');if(sl)sl.max=24;
