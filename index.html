@@ -5020,6 +5020,7 @@ body.gwcfc-crosshair #map::after {
 <script>
 (function(){var libs=['firebase-app-compat.js','firebase-auth-compat.js','firebase-firestore-compat.js'];libs.forEach(function(l){var s=document.createElement('script');s.src='https://www.gstatic.com/firebasejs/9.22.2/'+l;document.head.appendChild(s);});})();
 </script>
+<script src="https://cdn.jsdelivr.net/npm/fzstd@0.1.0/umd/index.js"></script>
 </head>
 <body>
 
@@ -5353,7 +5354,8 @@ body.clean-mode #clean-hint { opacity: 1; }
           <div class="trop-stab" data-var="cape"    onclick="_sevSetVar('cape')">CAPE</div>
           <div class="trop-stab" data-var="shear"   onclick="_sevSetVar('shear')">Shear</div>
           <div class="trop-stab" data-var="500mb"   onclick="_sevSetVar('500mb')">500mb</div>
-          <div class="trop-stab" data-var="hodo"    onclick="_sevSetVar('hodo')">Hodo</div>
+          <div class="trop-stab" data-var="refc"    onclick="_sevSetVar('refc')">SimREFL</div>
+          <div class="trop-stab" data-var="temp"    onclick="_sevSetVar('temp')">Temp</div>
           <div class="trop-stab" data-var="srh"     onclick="_sevSetVar('srh')">SRH</div>
           <div class="trop-stab" data-var="sounding" onclick="_sevSetVar('sounding')">Sounding</div>
         </div>
@@ -10290,7 +10292,238 @@ function _tropInit() {
   _ttLoad();
 }
 
-// (Legacy Open-Meteo grid overlay engine removed , replaced by Tropical Tidbits viewer above.)
+// ── WEATHERFRONT CDN ENGINE ──────────────────────────────────────────────────
+// Fetches high-res weather model grids from cdn.wxfront.com and renders them
+// as canvas imageOverlays on the Leaflet map.
+//
+// Format: [4B big-endian uint32 = JSON header length][JSON header][zstd body]
+// Body: 1 byte/cell, linear: value = min_value + (byte/255)*(max_value-min_value)
+// Decompression: fzstd (loaded from CDN in <head>)
+//
+// CDN access: server-side proxies don't send Origin headers so the Cloudflare
+// Referer gate is bypassed. cachefetch + allorigins are server-side.
+
+const WXF_CDN = 'https://cdn.wxfront.com/data2';
+let   _wxfOverlay = null;          // current L.imageOverlay on map
+const _wxfCache   = new Map();     // url → {header,raw}  (capped at 8 entries)
+
+// Build a WeatherFront run ID: MMDDYY_HHZ (e.g. "060826_18Z")
+function _wxfRunId(model) {
+  const lag   = { GFS:6, HRRR:2, NAM:4, RAP:2, NAMNESTCONUS:4 }[model] ?? 4;
+  const cycle = { GFS:6, HRRR:1, NAM:6, RAP:1, NAMNESTCONUS:6 }[model] ?? 6;
+  const d = new Date(Date.now() - lag * 3600000);
+  const h = Math.floor(d.getUTCHours() / cycle) * cycle;
+  const mm = String(d.getUTCMonth()+1).padStart(2,'0');
+  const dd = String(d.getUTCDate()).padStart(2,'0');
+  const yy = String(d.getUTCFullYear()).slice(2);
+  return `${mm}${dd}${yy}_${String(h).padStart(2,'0')}Z`;
+}
+
+// Fetch + decode a .bin.zstd field. Returns {header,raw} or throws.
+async function _wxfFetch(model, run, fhr, variable) {
+  const url = `${WXF_CDN}/${model}/${run}/${fhr}/${variable}.bin.zstd`;
+  if (_wxfCache.has(url)) return _wxfCache.get(url);
+  const proxies = [
+    `https://cachefetch.sparkradar.app/cache?maxAge=3600&url=${encodeURIComponent(url)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+    `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  ];
+  for (const p of proxies) {
+    try {
+      const r = await fetchWithTimeout(p, 25000);
+      if (!r.ok) continue;
+      const buf = await r.arrayBuffer();
+      if (buf.byteLength < 10) continue;
+      const decoded = _wxfDecode(new Uint8Array(buf));
+      if (!decoded) continue;
+      if (_wxfCache.size >= 8) _wxfCache.clear();
+      _wxfCache.set(url, decoded);
+      return decoded;
+    } catch(e) { continue; }
+  }
+  throw new Error(`WxFront: all proxies failed (${model}/${variable})`);
+}
+
+function _wxfDecode(bytes) {
+  try {
+    if (typeof fzstd === 'undefined') return null;
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const hLen = view.getUint32(0, false); // big-endian
+    if (hLen < 2 || hLen > 4096 || 4 + hLen >= bytes.length) return null;
+    const header = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + hLen)));
+    if (!Number.isFinite(header.min_value) || !Number.isFinite(header.max_value)) return null;
+    const raw = fzstd.decompress(bytes.subarray(4 + hLen));
+    if (!raw || !raw.length) return null;
+    return { header, raw };
+  } catch(e) { return null; }
+}
+
+// Map variable code + physical value → RGBA (or null = transparent)
+function _wxfRGBA(variable, val) {
+  if (variable === 'REFC' || variable === 'MAXREF') {
+    if (val < 5)  return null;
+    if (val < 15) return [4,233,231,160];
+    if (val < 25) return [2,253,2,180];
+    if (val < 35) return [253,248,2,200];
+    if (val < 45) return [253,149,0,215];
+    if (val < 55) return [253,0,0,225];
+    if (val < 65) return [188,0,0,235];
+    return [248,0,253,245];
+  }
+  if (variable === 'SBCAPE' || variable === 'MUCAPE') {
+    if (val < 50)   return null;
+    if (val < 500)  return [180,255,100,110];
+    if (val < 1500) return [255,255,0,150];
+    if (val < 2500) return [255,180,0,185];
+    if (val < 4000) return [255,60,0,210];
+    return [180,0,0,235];
+  }
+  if (variable === 'APCP1H-sum' || variable === 'APCP24H-sum') {
+    if (val < 0.1) return null;
+    if (val < 1)   return [0,255,200,110];
+    if (val < 5)   return [0,200,100,155];
+    if (val < 15)  return [0,80,255,185];
+    if (val < 30)  return [180,0,255,210];
+    return [80,0,180,235];
+  }
+  if (variable === '6kmSHR') {
+    if (val < 8)  return null;
+    if (val < 20) return [0,60,140,100];
+    if (val < 30) return [0,180,255,145];
+    if (val < 40) return [255,220,0,175];
+    if (val < 55) return [255,120,0,205];
+    return [200,0,200,230];
+  }
+  if (variable === '500mbWIND' || variable === '850mbWIND') {
+    if (val < 15) return null;
+    const n = Math.max(0, Math.min(1, (val-15)/90));
+    return [Math.round(255*n), 80, Math.round(255*(1-n)), 165];
+  }
+  if (variable === 'HLCY3km' || variable === 'HLCY1km') {
+    if (val < 50)  return null;
+    if (val < 150) return [0,255,150,120];
+    if (val < 300) return [255,230,0,165];
+    if (val < 500) return [255,80,0,210];
+    return [200,0,0,240];
+  }
+  if (variable === '2mTMP') {
+    // Kelvin → °F
+    const f = (val - 273.15) * 9/5 + 32;
+    if (f < 0)   return [80,0,140,180];
+    if (f < 20)  return [0,0,200,170];
+    if (f < 32)  return [0,80,255,160];
+    if (f < 50)  return [0,200,255,150];
+    if (f < 70)  return [0,255,100,145];
+    if (f < 85)  return [255,255,0,155];
+    if (f < 95)  return [255,140,0,175];
+    if (f < 105) return [255,40,0,190];
+    return [180,0,0,210];
+  }
+  return null;
+}
+
+// Render a raw grid to a canvas imageOverlay.
+// GFS: 1440×721 regular lat/lon 0.25°, row0=90°N, col0=0°E (0→360 convention)
+// HRRR: 1800×1059 Lambert Conformal Conic 3km CONUS
+function _wxfRenderCanvas(variable, raw, header, model) {
+  const isGFS = model === 'GFS';
+  const GRID_COLS = isGFS ? 1440 : 1800;
+  const GRID_ROWS = isGFS ? 721  : 1059;
+
+  // For GFS, extract the CONUS slice (lon -135→-55, lat 12→57)
+  // GFS lon convention: 0→360, so -135 → col 900, -55 → col 1220
+  let sliceColStart, sliceColEnd, sliceRowStart, sliceRowEnd, bounds;
+  if (isGFS) {
+    sliceColStart = Math.round((-135 + 360) / 0.25);  // 900
+    sliceColEnd   = Math.round((-55  + 360) / 0.25);  // 1220
+    sliceRowStart = Math.round((90 - 57) / 0.25);     // 132
+    sliceRowEnd   = Math.round((90 - 12) / 0.25);     // 312
+    bounds = [[12, -135], [57, -55]];
+  } else {
+    // HRRR: render full grid, approximate CONUS LCC extent for overlay
+    sliceColStart = 0; sliceColEnd = GRID_COLS - 1;
+    sliceRowStart = 0; sliceRowEnd = GRID_ROWS - 1;
+    bounds = [[21.1, -134.1], [52.6, -60.9]];
+  }
+
+  const srcCols = sliceColEnd - sliceColStart + 1;
+  const srcRows = sliceRowEnd - sliceRowStart + 1;
+
+  // Downsample to max 720 px wide for performance
+  const scale   = Math.min(1, 720 / srcCols);
+  const cvCols  = Math.round(srcCols * scale);
+  const cvRows  = Math.round(srcRows * scale);
+
+  const cv  = document.createElement('canvas');
+  cv.width  = cvCols; cv.height = cvRows;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(cvCols, cvRows);
+  const px  = img.data;
+
+  for (let cy = 0; cy < cvRows; cy++) {
+    for (let cx = 0; cx < cvCols; cx++) {
+      const gCol = sliceColStart + Math.round(cx * (srcCols - 1) / Math.max(cvCols - 1, 1));
+      const gRow = sliceRowStart + Math.round(cy * (srcRows - 1) / Math.max(cvRows - 1, 1));
+      const idx  = gRow * GRID_COLS + gCol;
+      if (idx < 0 || idx >= raw.length) continue;
+      const val  = header.min_value + (raw[idx] / 255) * (header.max_value - header.min_value);
+      const rgba = _wxfRGBA(variable, val);
+      const pi   = (cy * cvCols + cx) * 4;
+      if (rgba) { px[pi]=rgba[0]; px[pi+1]=rgba[1]; px[pi+2]=rgba[2]; px[pi+3]=rgba[3]; }
+      else      { px[pi+3] = 0; }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return { dataUrl: cv.toDataURL('image/png'), bounds };
+}
+
+// WeatherFront variable codes for each UI tab × model
+const _WXF_VARS = {
+  precip:  'APCP1H-sum',
+  cape:    'SBCAPE',
+  shear:   '6kmSHR',
+  '500mb': '500mbWIND',
+  refc:    'REFC',
+  temp:    '2mTMP',
+  srh:     'HLCY3km',
+};
+const _WXF_MODELS = { sref:'GFS', href:'GFS', nam:'NAM', hrrr:'HRRR' };
+const _WXF_MAX_FHR = { GFS:240, HRRR:18, NAM:84, NAMNESTCONUS:60 };
+
+// Try to render via WeatherFront. Returns true on success, false to fall back.
+async function _sevRenderWxf(body) {
+  const wxVar  = _WXF_VARS[_sevVar];
+  const wxModel = _WXF_MODELS[_sevSection] || 'GFS';
+  if (!wxVar) return false;
+  if (typeof fzstd === 'undefined') { console.warn('[WxFront] fzstd not ready'); return false; }
+
+  const run    = _wxfRunId(wxModel);
+  const fhrRaw = _sevFrame * 3;
+  const fhr    = Math.min(fhrRaw, _WXF_MAX_FHR[wxModel] ?? 48);
+
+  try {
+    const { header, raw } = await _wxfFetch(wxModel, run, fhr, wxVar);
+    const { dataUrl, bounds } = _wxfRenderCanvas(wxVar, raw, header, wxModel);
+
+    if (_wxfOverlay) { map.removeLayer(_wxfOverlay); _wxfOverlay = null; }
+    if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
+    _wxfOverlay = L.imageOverlay(dataUrl, bounds, {
+      opacity: 0.72, zIndex: 6, interactive: false,
+    }).addTo(map);
+
+    if (body) {
+      const unitStr = header.units ? ` (${header.units})` : '';
+      body.innerHTML = `<div style="font-family:var(--mono);font-size:8px;color:rgba(255,255,255,0.45);padding:2px 0;">`
+        + `${wxModel} · ${wxVar}${unitStr} · F${String(fhr).padStart(3,'0')} · ${run}`
+        + `</div>`;
+    }
+    return true;
+  } catch(e) {
+    console.warn('[WxFront]', e.message);
+    return false;
+  }
+}
+
 // ── SEVERE MODEL ENGINE ──
 // Renders real GFS convective fields via Open-Meteo
 let _sevSection = 'hrrr', _sevVar = 'precip', _sevRun = '', _sevFrame = 0;
@@ -10346,7 +10579,10 @@ async function _sevFetchGrid() {
 async function _sevRender() {
   const body=document.getElementById('sev-panel-body');
   if(body)body.innerHTML=`<div class="trop-model-err" style="color:rgba(232,184,0,0.6);">⟳ Loading…</div>`;
+  if(_wxfOverlay){map.removeLayer(_wxfOverlay);_wxfOverlay=null;}
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
+  // WeatherFront high-res grids (HRRR/GFS/NAM) — fall back to Open-Meteo on failure
+  if(_sevVar!=='sounding'&&_sevVar!=='hodo'){const ok=await _sevRenderWxf(body);if(ok)return;}
   try {
     const{data,lats,lngs,ROWS,COLS}=await _sevFetchGrid();
     const fHour=_sevFrame*3;
@@ -11100,6 +11336,7 @@ function closeModelsPanel() {
   const btn = document.getElementById('sub-models');
   if (btn) btn.classList.remove('active');
   if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
+  if (_wxfOverlay) { map.removeLayer(_wxfOverlay); _wxfOverlay = null; }
   _clearTropTrackLayers();
 }
 
