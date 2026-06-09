@@ -10340,201 +10340,57 @@ function _tropInit() {
   _ttLoad();
 }
 
-// ── NOAA NOMADS ENGINE ───────────────────────────────────────────────────────
-// Fetches model grids directly from NOAA NOMADS OPeNDAP (public domain data).
-// URL pattern: https://nomads.ncep.noaa.gov/dods/gfs_0p25_1hr/gfs{YYYYMMDD}/gfs_0p25_1hr_{HH}z.ascii
+// ── IEM MODEL WMS ENGINE ─────────────────────────────────────────────────────
+// Uses Iowa Environmental Mesonet WMS tile services (mesonet.agron.iastate.edu).
+// IEM serves HRRR simulated reflectivity as Leaflet WMS tile layers — same
+// mechanism as the Canada radar and GOES satellite layers already in this app.
 //
-// CONUS subset: lat 20–55°N, lon 230–300°E (= -130–-60°W), GFS 0.25° resolution
+// HRRR reflectivity WMS:
+//   URL:   mesonet.agron.iastate.edu/cgi-bin/wms/hrrr/refd.cgi
+//   Layer: refd_MMMM  (MMMM = forecast minutes zero-padded to 4 digits)
+//   Runs:  hourly, covers F000–F1080 (18 hours)
 
-const NOMADS_BASE = 'https://nomads.ncep.noaa.gov/dods';
+const IEM_HRRR_REFD_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/hrrr/refd.cgi';
+const IEM_HRRR_REFP_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/hrrr/refp.cgi';
 
-// OPeNDAP variable names in GFS 0.25° 1-hr dataset
-const NOMADS_VARS = {
-  cape:   'cape_surface',
-  precip: 'pratesfc',        // instantaneous precip rate (kg/m²/s) — multiply × 3600 for mm/hr
-  shear:  'ugrd10m',         // U-wind 10m (m/s), proxy for surface wind speed
-  '500mb':'hgt500',          // geopotential height at 500 hPa (gpm)
-  refc:   'refc_entireatm',  // composite reflectivity (dBZ)
-  temp:   'tmp2m',           // 2m temperature (K)
-  srh:    'hlcy',            // 0–3km storm relative helicity (J/kg)
-};
+let _iemModelLayer = null;
 
-// Fixed CONUS indices for GFS 0.25° (lat row 0 = 90°N, lon col 0 = 0°E)
-const NOM_LAT0 = 140, NOM_LAT1 = 280; // rows  55°N → 20°N  (141 rows)
-const NOM_LON0 = 920, NOM_LON1 = 1200; // cols 230°E → 300°E (281 cols)
-const NOM_ROWS = NOM_LAT1 - NOM_LAT0 + 1;  // 141
-const NOM_COLS = NOM_LON1 - NOM_LON0 + 1;  // 281
-const NOM_BOUNDS = [[20, -130], [55, -60]]; // Leaflet [[sw], [ne]]
-
-let _nomadsOverlay = null;
-
-// Return up to 4 recent GFS run strings 'YYYYMMDD_HH', newest first
-function _nomadsRunCandidates() {
-  const cycle = 6;
-  const seen = new Set(), runs = [];
-  const now = Date.now();
-  for (let i = 0; i < 5 && runs.length < 4; i++) {
-    const d = new Date(now - (i * cycle + 2) * 3600000);
-    const h  = Math.floor(d.getUTCHours() / cycle) * cycle;
-    const yy = d.getUTCFullYear();
-    const mm = String(d.getUTCMonth()+1).padStart(2,'0');
-    const dd = String(d.getUTCDate()).padStart(2,'0');
-    const hh = String(h).padStart(2,'0');
-    const key = `${yy}${mm}${dd}_${hh}`;
-    if (!seen.has(key)) { seen.add(key); runs.push(key); }
-  }
-  return runs;
+function _iemHrrrLayer(wmsUrl, layerName) {
+  return L.tileLayer.wms(wmsUrl, {
+    layers:      layerName,
+    format:      'image/png',
+    transparent: true,
+    version:     '1.1.1',
+    opacity:     0.75,
+    zIndex:      6,
+  });
 }
 
-// Fetch one variable from NOMADS OPeNDAP and return a Float32Array (rows × cols)
-async function _nomadsFetch(field, fhrIdx, run) {
-  const [dateStr, hh] = run.split('_');
-  const url = `${NOMADS_BASE}/gfs_0p25_1hr/gfs${dateStr}/gfs_0p25_1hr_${hh}z.ascii`
-            + `?${field}[${fhrIdx}][${NOM_LAT0}:${NOM_LAT1}][${NOM_LON0}:${NOM_LON1}]`;
-  const r = await fetchWithTimeout(url, 30000);
-  if (!r.ok) throw new Error(`NOMADS HTTP ${r.status}`);
-  return _parseOPeNDAPAscii(await r.text());
-}
+// Render IEM HRRR WMS overlay. Returns true on success.
+function _sevRenderIEM(body) {
+  const fhrMin = Math.min(_sevFrame * 3, 18) * 60; // cap at 18h, convert to minutes
+  const layerMin = String(fhrMin).padStart(4, '0');
 
-// Parse OPeNDAP ASCII response into a flat Float32Array
-function _parseOPeNDAPAscii(text) {
-  const sep = text.indexOf('-----');
-  if (sep < 0) throw new Error('No OPeNDAP separator in response');
-  const lines = text.slice(sep + 5).split('\n');
-  const values = [];
-  for (const line of lines) {
-    // Data lines look like: [0][latIdx], v0, v1, v2, ...
-    const m = line.match(/^\[\d+\]\[\d+\],\s*(.*)/);
-    if (!m) continue;
-    for (const s of m[1].split(',')) {
-      const n = parseFloat(s.trim());
-      if (!isNaN(n)) values.push(n);
-    }
-  }
-  return new Float32Array(values);
-}
+  let wmsUrl, layerName, label;
 
-// Render a Float32Array grid to a canvas imageOverlay with bilinear interpolation
-function _nomadsRenderCanvas(varKey, data, rows, cols, bounds) {
-  const scale  = Math.min(1, 1440 / cols);
-  const cvCols = Math.round(cols * scale);
-  const cvRows = Math.round(rows * scale);
+  if (_sevVar === 'refc') {
+    wmsUrl    = IEM_HRRR_REFD_WMS;
+    layerName = `refd_${layerMin}`;
+    label     = `HRRR SimREFL · F${String(Math.min(_sevFrame*3,18)).padStart(3,'0')} · IEM`;
+  } else if (_sevVar === 'precip') {
+    wmsUrl    = IEM_HRRR_REFP_WMS;
+    layerName = `refp_${layerMin}`;
+    label     = `HRRR Precip-Type Refl · F${String(Math.min(_sevFrame*3,18)).padStart(3,'0')} · IEM`;
+  } else {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.5);font-size:9px;padding:6px;">IEM provides reflectivity only.<br>Select <b>SimREFL</b> or <b>QPF</b>.</div>`;
+    return false;
+  }
 
-  const cv  = document.createElement('canvas');
-  cv.width  = cvCols; cv.height = cvRows;
-  const ctx = cv.getContext('2d');
-  const img = ctx.createImageData(cvCols, cvRows);
-  const px  = img.data;
+  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
+  _iemModelLayer = _iemHrrrLayer(wmsUrl, layerName).addTo(map);
 
-  for (let cy = 0; cy < cvRows; cy++) {
-    const gy  = (cy / (cvRows - 1)) * (rows - 1);
-    const gy0 = Math.floor(gy), gy1 = Math.min(gy0 + 1, rows - 1);
-    const fy  = gy - gy0;
-    for (let cx = 0; cx < cvCols; cx++) {
-      const gx  = (cx / (cvCols - 1)) * (cols - 1);
-      const gx0 = Math.floor(gx), gx1 = Math.min(gx0 + 1, cols - 1);
-      const fx  = gx - gx0;
-      const v00 = data[gy0*cols+gx0], v10 = data[gy0*cols+gx1];
-      const v01 = data[gy1*cols+gx0], v11 = data[gy1*cols+gx1];
-      const val = v00*(1-fx)*(1-fy) + v10*fx*(1-fy) + v01*(1-fx)*fy + v11*fx*fy;
-      const rgba = _nomadsRGBA(varKey, val);
-      const pi   = (cy * cvCols + cx) * 4;
-      if (rgba) { px[pi]=rgba[0]; px[pi+1]=rgba[1]; px[pi+2]=rgba[2]; px[pi+3]=rgba[3]; }
-      else      { px[pi+3] = 0; }
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return { dataUrl: cv.toDataURL('image/png'), bounds };
-}
-
-// Color scales for NOMADS variable values → RGBA
-function _nomadsRGBA(varKey, val) {
-  if (!Number.isFinite(val) || Math.abs(val) > 9e10) return null; // GRIB missing
-  if (varKey === 'refc') {
-    if (val < 5)  return null;
-    if (val < 15) return [4,233,231,160];
-    if (val < 25) return [2,253,2,180];
-    if (val < 35) return [253,248,2,200];
-    if (val < 45) return [253,149,0,215];
-    if (val < 55) return [253,0,0,225];
-    if (val < 65) return [188,0,0,235];
-    return [248,0,253,245];
-  }
-  if (varKey === 'cape') {
-    if (val < 50)   return null;
-    if (val < 500)  return [180,255,100,110];
-    if (val < 1500) return [255,255,0,150];
-    if (val < 2500) return [255,180,0,185];
-    if (val < 4000) return [255,60,0,210];
-    return [180,0,0,235];
-  }
-  if (varKey === 'precip') {
-    const mmhr = val * 3600; // kg/m²/s → mm/hr
-    if (mmhr < 0.1) return null;
-    if (mmhr < 1)   return [0,255,200,110];
-    if (mmhr < 5)   return [0,200,100,155];
-    if (mmhr < 15)  return [0,80,255,185];
-    if (mmhr < 30)  return [180,0,255,210];
-    return [80,0,180,235];
-  }
-  if (varKey === 'shear') {
-    const spd = Math.abs(val); // m/s
-    if (spd < 5)  return null;
-    if (spd < 10) return [0,60,140,100];
-    if (spd < 15) return [0,180,255,145];
-    if (spd < 20) return [255,220,0,175];
-    if (spd < 25) return [255,120,0,205];
-    return [200,0,200,230];
-  }
-  if (varKey === '500mb') {
-    const n = Math.max(0, Math.min(1, (val - 5400) / 500));
-    return [Math.round(255*n), 80, Math.round(255*(1-n)), 160];
-  }
-  if (varKey === 'temp') {
-    const f = (val - 273.15) * 9/5 + 32;
-    if (f < 0)   return [80,0,140,180];
-    if (f < 20)  return [0,0,200,170];
-    if (f < 32)  return [0,80,255,160];
-    if (f < 50)  return [0,200,255,150];
-    if (f < 70)  return [0,255,100,145];
-    if (f < 85)  return [255,255,0,155];
-    if (f < 95)  return [255,140,0,175];
-    if (f < 105) return [255,40,0,190];
-    return [180,0,0,210];
-  }
-  if (varKey === 'srh') {
-    if (val < 50)  return null;
-    if (val < 150) return [0,255,150,120];
-    if (val < 300) return [255,230,0,165];
-    if (val < 500) return [255,80,0,210];
-    return [200,0,0,240];
-  }
-  return null;
-}
-
-// Fetch and render a NOMADS grid. Returns true on success.
-async function _sevRenderNomads(body) {
-  const field = NOMADS_VARS[_sevVar];
-  if (!field) return false;
-
-  const fhr     = Math.min(_sevFrame * 3, 120); // GFS 1hr dataset covers 0–120h
-  const runs    = _nomadsRunCandidates();
-
-  for (const run of runs) {
-    try {
-      const data = await _nomadsFetch(field, fhr, run);
-      if (!data || data.length < NOM_ROWS * NOM_COLS * 0.5) continue;
-      const { dataUrl, bounds } = _nomadsRenderCanvas(_sevVar, data, NOM_ROWS, NOM_COLS, NOM_BOUNDS);
-      if (_nomadsOverlay) { map.removeLayer(_nomadsOverlay); _nomadsOverlay = null; }
-      _nomadsOverlay = L.imageOverlay(dataUrl, bounds, {
-        opacity: 0.72, zIndex: 6, interactive: false, className: 'wxf-smooth-overlay',
-      }).addTo(map);
-      const [dateStr, hh] = run.split('_');
-      if (body) body.innerHTML = `<div style="font-family:var(--mono);font-size:8px;color:rgba(255,255,255,0.45);padding:2px 0;">GFS 0.25° · ${_sevVar} · F${String(fhr).padStart(3,'0')} · ${dateStr.slice(4,6)}/${dateStr.slice(6,8)} ${hh}Z — NOAA NOMADS</div>`;
-      return true;
-    } catch(e) { console.warn('[NOMADS]', run, e.message); continue; }
-  }
-  return false;
+  if (body) body.innerHTML = `<div style="font-family:var(--mono);font-size:8px;color:rgba(255,255,255,0.45);padding:2px 0;">${label}</div>`;
+  return true;
 }
 
 // ── SEVERE MODEL ENGINE ──
@@ -10542,13 +10398,12 @@ let _sevSection = 'hrrr', _sevVar = 'precip', _sevRun = '', _sevFrame = 0;
 let _sevOverlayLayer = null;
 
 
-async function _sevRender() {
+function _sevRender() {
   const body=document.getElementById('sev-panel-body');
-  if(body)body.innerHTML=`<div class="trop-model-err" style="color:rgba(232,184,0,0.6);">⟳ Loading…</div>`;
-  if(_nomadsOverlay){map.removeLayer(_nomadsOverlay);_nomadsOverlay=null;}
+  if(_iemModelLayer){map.removeLayer(_iemModelLayer);_iemModelLayer=null;}
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
-  const ok = await _sevRenderNomads(body);
-  if(!ok && body) body.innerHTML=`<div class="trop-model-err">No data available for this product.</div>`;
+  const ok = _sevRenderIEM(body);
+  if(!ok && body && body.innerHTML.includes('⟳')) body.innerHTML=`<div class="trop-model-err">No data available for this product.</div>`;
 }
 
 function _sevSetSection(s){_sevSection=s;const el=document.getElementById('sev-model-sel');if(el&&el.value!==s)el.value=s;_sevRender();}
@@ -11255,7 +11110,7 @@ function closeModelsPanel() {
   const btn = document.getElementById('sub-models');
   if (btn) btn.classList.remove('active');
   if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
-  if (_nomadsOverlay) { map.removeLayer(_nomadsOverlay); _nomadsOverlay = null; }
+  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
   _clearTropTrackLayers();
 }
 
