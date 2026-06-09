@@ -10615,114 +10615,19 @@ async function _sevRenderWxf(body) {
 // Renders real GFS convective fields via Open-Meteo
 let _sevSection = 'hrrr', _sevVar = 'precip', _sevRun = '', _sevFrame = 0;
 let _sevOverlayLayer = null;
-let _sevForecastCache = null, _sevForecastCacheKey = '';
 
-const SEV_FIELDS = {
-  precip:   'precipitation,precipitation_probability,convective_precipitation',
-  cape:     'cape,lifted_index,convective_inhibition',
-  shear:    'wind_speed_10m,wind_direction_10m,wind_speed_500hPa,wind_direction_500hPa',
-  '500mb':  'geopotential_height_500hPa,wind_speed_500hPa,wind_direction_500hPa',
-  hodo:     'wind_speed_10m,wind_direction_10m,wind_speed_500hPa,wind_direction_500hPa,wind_speed_250hPa,wind_direction_250hPa',
-  srh:      'wind_speed_10m,wind_direction_10m,wind_speed_500hPa,wind_direction_500hPa',
-  sounding: 'temperature_2m,dewpoint_2m,wind_speed_10m,wind_direction_10m,cape,surface_pressure'
-};
-const SEV_PRIMARY = { precip:'precipitation', cape:'cape', shear:'wind_speed_10m', '500mb':'geopotential_height_500hPa', hodo:'wind_speed_10m', srh:'wind_speed_10m', sounding:'cape' };
-
-function _sevFieldColor(v, val) {
-  if (v==='precip') {
-    if(val>50) return[80,0,180,220]; if(val>25) return[180,0,255,200]; if(val>10) return[0,80,255,190];
-    if(val>1)  return[0,200,100,170]; if(val>0.1)return[0,255,200,130]; return[0,0,0,0];
-  }
-  if (v==='cape') {
-    if(val>4000) return[180,0,0,220]; if(val>2500)return[255,60,0,200]; if(val>1500)return[255,180,0,185];
-    if(val>500)  return[255,255,0,165]; if(val>100)return[180,255,100,130]; return[0,0,0,0];
-  }
-  if (v==='500mb') { const n=Math.max(0,Math.min(1,(val-5400)/500)); return[Math.round(255*n),80,Math.round(255*(1-n)),160]; }
-  const s=val||0;
-  if(s>50)return[200,0,200,200]; if(s>35)return[255,0,0,185]; if(s>25)return[255,120,0,170];
-  if(s>15)return[255,220,0,155]; if(s>8)return[0,180,255,130]; return[0,60,140,80];
-}
-
-async function _sevFetchGrid() {
-  const ROWS=8,COLS=8,bounds=map.getBounds();
-  const south=bounds.getSouth()-0.5,north=bounds.getNorth()+0.5;
-  const west=bounds.getWest()-0.5,east=bounds.getEast()+0.5;
-  const lats=[],lngs=[];
-  for(let r=0;r<ROWS;r++)lats.push(+(south+(north-south)*r/(ROWS-1)).toFixed(2));
-  for(let c=0;c<COLS;c++)lngs.push(+(west+(east-west)*c/(COLS-1)).toFixed(2));
-  const aL=[],aG=[];
-  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){aL.push(lats[r]);aG.push(lngs[c]);}
-  const fields=SEV_FIELDS[_sevVar]||SEV_FIELDS.precip;
-  const cKey=`${_sevVar}_${lats[0]}_${lats[ROWS-1]}`;
-  if(_sevForecastCacheKey===cKey&&_sevForecastCache)return{data:_sevForecastCache,lats,lngs,ROWS,COLS};
-  const url=`https://api.open-meteo.com/v1/forecast?latitude=${aL.join(',')}&longitude=${aG.join(',')}&hourly=${fields}&forecast_days=3&models=gfs_seamless`;
-  const res=await fetch(url,{signal:_abortSignal(10000)});
-  const data=await res.json();
-  const arr=Array.isArray(data)?data:[data];
-  _sevForecastCache=arr;_sevForecastCacheKey=cKey;
-  return{data:arr,lats,lngs,ROWS,COLS};
-}
 
 async function _sevRender() {
   const body=document.getElementById('sev-panel-body');
   if(body)body.innerHTML=`<div class="trop-model-err" style="color:rgba(232,184,0,0.6);">⟳ Loading…</div>`;
   if(_wxfOverlay){map.removeLayer(_wxfOverlay);_wxfOverlay=null;}
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
-  // WeatherFront high-res grids (HRRR/GFS/NAM) — fall back to Open-Meteo on failure
-  if(_sevVar!=='sounding'&&_sevVar!=='hodo'){const ok=await _sevRenderWxf(body);if(ok)return;}
-  try {
-    const{data,lats,lngs,ROWS,COLS}=await _sevFetchGrid();
-    const fHour=_sevFrame*3;
-    const times=data[0]?.hourly?.time||[];
-    const now=new Date(),target=new Date(now.getTime()+fHour*3600000);
-    const tIdx=times.reduce((b,t,i)=>Math.abs(new Date(t)-target)<Math.abs(new Date(times[b])-target)?i:b,0);
-    if(_sevVar==='sounding'){
-      const d=data[Math.floor((ROWS/2)*COLS+COLS/2)];const h=d?.hourly;
-      if(!h){if(body)body.innerHTML='<div class="trop-model-err">No data</div>';return;}
-      if(body)body.innerHTML=`<div style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.7);line-height:1.8;padding:4px;">
-        <div style="color:#e8b800;font-weight:700;margin-bottom:4px;">SURFACE SOUNDING +${fHour}h</div>
-        🌡 Temp: <b>${h.temperature_2m?.[tIdx]?.toFixed(1)??'—'}°F</b><br>
-        💧 Dewpt: <b>${h.dewpoint_2m?.[tIdx]?.toFixed(1)??'—'}°F</b><br>
-        ⬡ Pressure: <b>${h.surface_pressure?.[tIdx]?.toFixed(0)??'—'} hPa</b><br>
-        💨 Wind: <b>${h.wind_speed_10m?.[tIdx]?.toFixed(0)??'—'} mph @ ${h.wind_direction_10m?.[tIdx]?.toFixed(0)??'—'}°</b><br>
-        ⚡ CAPE: <b>${h.cape?.[tIdx]?.toFixed(0)??'—'} J/kg</b></div>`;
-      return;
-    }
-    const pField=SEV_PRIMARY[_sevVar]||'cape';
-    const wDir=(_sevVar==='shear'||_sevVar==='hodo'||_sevVar==='srh')?'wind_direction_10m':null;
-    const mapSize=map.getSize();
-    const cv=document.createElement('canvas');cv.width=COLS*18;cv.height=ROWS*18;
-    const ctx=cv.getContext('2d');
-    for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
-      const idx=r*COLS+c,val=data[idx]?.hourly?.[pField]?.[tIdx];
-      if(val==null)continue;
-      const[rv,gv,bv,a]=_sevFieldColor(_sevVar,val);
-      ctx.fillStyle=`rgba(${rv},${gv},${bv},${a/255})`;
-      ctx.fillRect(c*18,(ROWS-1-r)*18,18,18);
-      if(wDir){const dir=data[idx]?.hourly?.[wDir]?.[tIdx];
-        if(dir!=null&&val>5){
-          ctx.save();ctx.translate(c*18+9,(ROWS-1-r)*18+9);ctx.rotate((dir+180)*Math.PI/180);
-          ctx.strokeStyle='rgba(255,255,255,0.75)';ctx.lineWidth=1.2;
-          ctx.beginPath();ctx.moveTo(0,-6);ctx.lineTo(0,6);
-          ctx.moveTo(0,-6);ctx.lineTo(-3,-3);ctx.moveTo(0,-6);ctx.lineTo(3,-3);
-          ctx.stroke();ctx.restore();
-        }
-      }
-    }
-    const bc=document.createElement('canvas');bc.width=mapSize.x;bc.height=mapSize.y;
-    const bCtx=bc.getContext('2d');bCtx.imageSmoothingEnabled=true;bCtx.imageSmoothingQuality='high';
-    bCtx.drawImage(cv,0,0,mapSize.x,mapSize.y);
-    _sevOverlayLayer=L.imageOverlay(bc.toDataURL('image/png'),[[lats[0],lngs[0]],[lats[ROWS-1],lngs[COLS-1]]],{opacity:0.72,zIndex:6,interactive:false,className:'wxf-smooth-overlay'}).addTo(map);
-    const ts=times[tIdx]?new Date(times[tIdx]).toUTCString().slice(0,22):'';
-    if(body)body.innerHTML=`<div style="font-family:var(--mono);font-size:8px;color:rgba(255,255,255,0.3);text-align:center;line-height:1.8;padding:4px 0;">GFS · ${_sevVar} · +${fHour}h<br>Valid: ${ts} UTC</div>`;
-  } catch(e){
-    console.warn('Sev error:',e);
-    if(body)body.innerHTML=`<div class="trop-model-err">Error: ${e.message}</div>`;
-  }
+  const ok = await _sevRenderWxf(body);
+  if(!ok && body) body.innerHTML=`<div class="trop-model-err">No data available for this product.</div>`;
 }
 
-function _sevSetSection(s){_sevSection=s;const el=document.getElementById('sev-model-sel');if(el&&el.value!==s)el.value=s;_sevForecastCache=null;_sevRender();}
-function _sevSetVar(v){_sevVar=v;_sevForecastCache=null;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=v==='precip'?48:24;sl.value=0;}_sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();}
+function _sevSetSection(s){_sevSection=s;const el=document.getElementById('sev-model-sel');if(el&&el.value!==s)el.value=s;_sevRender();}
+function _sevSetVar(v){_sevVar=v;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=v==='precip'?48:24;sl.value=0;}_sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();}
 function _sevSetRun(v){_sevRun=v;_sevRender();}
 function _sevSetFrame(v){_sevFrame=parseInt(v);document.getElementById('sev-frame-lbl').textContent='F'+String(_sevFrame*3).padStart(3,'0');_sevRender();}
 function _sevInit() {
