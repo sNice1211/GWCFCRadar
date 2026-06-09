@@ -10374,33 +10374,26 @@ function _wxfRunCandidates(model) {
   return candidates;
 }
 
-// Fetch + decode a .bin.zstd field, auto-finding the freshest available run.
-// Returns {header, raw, grid, run} or throws.
+// Fetch + decode a .bin.zstd field directly from cdn.wxfront.com.
+// Walks candidate runs newest-first until one responds. Returns {header, raw, grid, run} or throws.
 async function _wxfFetch(model, _ignoredRun, fhr, variable) {
   const runs = _wxfRunCandidates(model);
   for (const run of runs) {
     const url = `${WXF_CDN}/${model}/${run}/${fhr}/${variable}.bin.zstd`;
     if (_wxfCache.has(url)) return { ..._wxfCache.get(url), run };
-    const proxies = [
-      `https://cachefetch.sparkradar.app/cache?maxAge=3600&url=${encodeURIComponent(url)}`,
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-      `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-    ];
-    for (const p of proxies) {
-      try {
-        const r = await fetchWithTimeout(p, 25000);
-        if (!r.ok) continue;
-        const buf = await r.arrayBuffer();
-        if (buf.byteLength < 10) continue;
-        const decoded = _wxfDecode(new Uint8Array(buf));
-        if (!decoded) continue;
-        if (_wxfCache.size >= 8) _wxfCache.clear();
-        _wxfCache.set(url, decoded);
-        return { ...decoded, run };
-      } catch(e) { continue; }
-    }
+    try {
+      const r = await fetchWithTimeout(url, 25000);
+      if (!r.ok) continue;
+      const buf = await r.arrayBuffer();
+      if (buf.byteLength < 10) continue;
+      const decoded = _wxfDecode(new Uint8Array(buf));
+      if (!decoded) continue;
+      if (_wxfCache.size >= 8) _wxfCache.clear();
+      _wxfCache.set(url, decoded);
+      return { ...decoded, run };
+    } catch(e) { continue; }
   }
-  throw new Error(`WxFront: no run found for ${model}/${variable}`);
+  throw new Error(`WxFront: no data found for ${model}/${variable}`);
 }
 
 function _wxfDecode(bytes) {
