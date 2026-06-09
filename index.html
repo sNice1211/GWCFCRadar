@@ -10356,39 +10356,49 @@ const IEM_HRRR_REFP_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/hrrr/re
 
 let _iemModelLayer = null;
 
-function _iemHrrrLayer(wmsUrl, layerName) {
-  return L.tileLayer.wms(wmsUrl, {
-    layers:      layerName,
-    format:      'image/png',
-    transparent: true,
-    version:     '1.1.1',
-    opacity:     0.75,
-    zIndex:      6,
-  });
+function _iemHrrrLayer(wmsUrl, layerName, timeISO) {
+  const opts = {
+    layers: layerName, format: 'image/png', transparent: true,
+    version: '1.1.1', opacity: 0.75, zIndex: 6,
+  };
+  if (timeISO) opts.TIME = timeISO;
+  return L.tileLayer.wms(wmsUrl, opts);
+}
+
+// Compute ISO valid-time from selected run + frame offset for WMS TIME param
+function _sevValidTimeISO() {
+  if (!_sevRun || _sevRun.length < 10) return null;
+  const runMs = Date.UTC(
+    parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1,
+    parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10))
+  );
+  return new Date(runMs + _sevFrame * 3 * 3600000).toISOString().replace('.000Z','Z');
 }
 
 // Render IEM HRRR WMS overlay. Returns true on success.
 function _sevRenderIEM(body) {
-  const fhrMin = Math.min(_sevFrame * 3, 18) * 60; // cap at 18h, convert to minutes
+  const fhrMin = Math.min(_sevFrame * 3, 18) * 60;
   const layerMin = String(fhrMin).padStart(4, '0');
+  const timeISO = _sevValidTimeISO();
+  const runLbl = _sevRun ? `${_sevRun.slice(4,6)}/${_sevRun.slice(6,8)} ${_sevRun.slice(8,10)}z` : '';
 
   let wmsUrl, layerName, label;
 
   if (_sevVar === 'refc') {
     wmsUrl    = IEM_HRRR_REFD_WMS;
     layerName = `refd_${layerMin}`;
-    label     = `HRRR SimREFL · F${String(Math.min(_sevFrame*3,18)).padStart(3,'0')} · IEM`;
+    label     = `HRRR SimREFL · F${String(Math.min(_sevFrame*3,18)).padStart(3,'0')} · ${runLbl} · IEM`;
   } else if (_sevVar === 'precip') {
     wmsUrl    = IEM_HRRR_REFP_WMS;
     layerName = `refp_${layerMin}`;
-    label     = `HRRR Precip-Type Refl · F${String(Math.min(_sevFrame*3,18)).padStart(3,'0')} · IEM`;
+    label     = `HRRR Precip-Type · F${String(Math.min(_sevFrame*3,18)).padStart(3,'0')} · ${runLbl} · IEM`;
   } else {
     if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.5);font-size:9px;padding:6px;">IEM provides reflectivity only.<br>Select <b>SimREFL</b> or <b>QPF</b>.</div>`;
     return false;
   }
 
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
-  _iemModelLayer = _iemHrrrLayer(wmsUrl, layerName).addTo(map);
+  _iemModelLayer = _iemHrrrLayer(wmsUrl, layerName, timeISO).addTo(map);
 
   if (body) body.innerHTML = `<div style="font-family:var(--mono);font-size:8px;color:rgba(255,255,255,0.45);padding:2px 0;">${label}</div>`;
   return true;
@@ -10403,6 +10413,10 @@ function _sevRender() {
   const body=document.getElementById('sev-panel-body');
   if(_iemModelLayer){map.removeLayer(_iemModelLayer);_iemModelLayer=null;}
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
+  if(_sevSection !== 'hrrr'){
+    if(body) body.innerHTML=`<div class="trop-model-err" style="color:rgba(232,184,0,0.5);font-size:9px;padding:6px;">${_sevSection.toUpperCase()} data not yet available via IEM.<br>Select <b>HRRR</b> to view model data.</div>`;
+    return;
+  }
   const ok = _sevRenderIEM(body);
   if(!ok && body && body.innerHTML.includes('⟳')) body.innerHTML=`<div class="trop-model-err">No data available for this product.</div>`;
 }
@@ -10436,7 +10450,7 @@ function _sevInit() {
   const mSel=document.getElementById('sev-model-sel');if(mSel)mSel.value=_sevSection;
   const vSel=document.getElementById('sev-var-sel');if(vSel)vSel.value=_sevVar;
   const sel=document.getElementById('sev-run-sel');
-  if(sel&&!sel.options.length){const now=new Date();for(let d=0;d<1;d++)for(const h of[18,12,6,0]){const t=new Date(now);t.setUTCDate(t.getUTCDate()-d);t.setUTCHours(h,0,0,0);const val=`${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(h)}`;const opt=document.createElement('option');opt.value=val;opt.textContent=`${pad(t.getUTCMonth()+1)}/${pad(t.getUTCDate())} ${pad(h)}z`;sel.appendChild(opt);if(!_sevRun)_sevRun=val;}}
+  if(sel&&!sel.options.length){const now=new Date();const nowUTC=now.getTime();for(let d=0;d<2;d++)for(const h of[18,12,6,0]){const t=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()-d,h));if(t.getTime()>nowUTC)continue;const val=`${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(h)}`;const opt=document.createElement('option');opt.value=val;opt.textContent=`${d===0?'Today':'Yesterday'} ${pad(h)}z`;sel.appendChild(opt);if(!_sevRun)_sevRun=val;}}
   const sl=document.getElementById('sev-frame-slider');if(sl)sl.max=6;
   _sevRender();
 }
