@@ -10356,41 +10356,51 @@ const WXF_CDN = 'https://cdn.wxfront.com/data2';
 let   _wxfOverlay = null;          // current L.imageOverlay on map
 const _wxfCache   = new Map();     // url → {header,raw}  (capped at 8 entries)
 
-// Build a WeatherFront run ID: MMDDYY_HHZ (e.g. "060826_18Z")
-function _wxfRunId(model) {
-  const lag   = { GFS:6, HRRR:2, NAM:4, RAP:2, NAMNESTCONUS:4 }[model] ?? 4;
+// Build ordered list of recent WeatherFront run IDs (newest first, up to 4 back)
+function _wxfRunCandidates(model) {
   const cycle = { GFS:6, HRRR:1, NAM:6, RAP:1, NAMNESTCONUS:6 }[model] ?? 6;
-  const d = new Date(Date.now() - lag * 3600000);
-  const h = Math.floor(d.getUTCHours() / cycle) * cycle;
-  const mm = String(d.getUTCMonth()+1).padStart(2,'0');
-  const dd = String(d.getUTCDate()).padStart(2,'0');
-  const yy = String(d.getUTCFullYear()).slice(2);
-  return `${mm}${dd}${yy}_${String(h).padStart(2,'0')}Z`;
+  const candidates = [];
+  // Start from now and walk back up to 4 cycles so we always find one that exists
+  const now = Date.now();
+  for (let i = 0; i < 4; i++) {
+    const d = new Date(now - (i * cycle + 1) * 3600000); // step back i cycles (+1h buffer)
+    const h = Math.floor(d.getUTCHours() / cycle) * cycle;
+    const mm = String(d.getUTCMonth()+1).padStart(2,'0');
+    const dd = String(d.getUTCDate()).padStart(2,'0');
+    const yy = String(d.getUTCFullYear()).slice(2);
+    const id = `${mm}${dd}${yy}_${String(h).padStart(2,'0')}Z`;
+    if (!candidates.includes(id)) candidates.push(id);
+  }
+  return candidates;
 }
 
-// Fetch + decode a .bin.zstd field. Returns {header,raw} or throws.
-async function _wxfFetch(model, run, fhr, variable) {
-  const url = `${WXF_CDN}/${model}/${run}/${fhr}/${variable}.bin.zstd`;
-  if (_wxfCache.has(url)) return _wxfCache.get(url);
-  const proxies = [
-    `https://cachefetch.sparkradar.app/cache?maxAge=3600&url=${encodeURIComponent(url)}`,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  ];
-  for (const p of proxies) {
-    try {
-      const r = await fetchWithTimeout(p, 25000);
-      if (!r.ok) continue;
-      const buf = await r.arrayBuffer();
-      if (buf.byteLength < 10) continue;
-      const decoded = _wxfDecode(new Uint8Array(buf));
-      if (!decoded) continue;
-      if (_wxfCache.size >= 8) _wxfCache.clear();
-      _wxfCache.set(url, decoded);
-      return decoded;
-    } catch(e) { continue; }
+// Fetch + decode a .bin.zstd field, auto-finding the freshest available run.
+// Returns {header, raw, grid, run} or throws.
+async function _wxfFetch(model, _ignoredRun, fhr, variable) {
+  const runs = _wxfRunCandidates(model);
+  for (const run of runs) {
+    const url = `${WXF_CDN}/${model}/${run}/${fhr}/${variable}.bin.zstd`;
+    if (_wxfCache.has(url)) return { ..._wxfCache.get(url), run };
+    const proxies = [
+      `https://cachefetch.sparkradar.app/cache?maxAge=3600&url=${encodeURIComponent(url)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+      `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+    ];
+    for (const p of proxies) {
+      try {
+        const r = await fetchWithTimeout(p, 25000);
+        if (!r.ok) continue;
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength < 10) continue;
+        const decoded = _wxfDecode(new Uint8Array(buf));
+        if (!decoded) continue;
+        if (_wxfCache.size >= 8) _wxfCache.clear();
+        _wxfCache.set(url, decoded);
+        return { ...decoded, run };
+      } catch(e) { continue; }
+    }
   }
-  throw new Error(`WxFront: all proxies failed (${model}/${variable})`);
+  throw new Error(`WxFront: no run found for ${model}/${variable}`);
 }
 
 function _wxfDecode(bytes) {
@@ -10583,12 +10593,11 @@ async function _sevRenderWxf(body) {
   if (!wxVar) return false;
   if (typeof fzstd === 'undefined') { console.warn('[WxFront] fzstd not ready'); return false; }
 
-  const run    = _wxfRunId(wxModel);
   const fhrRaw = _sevFrame * 3;
   const fhr    = Math.min(fhrRaw, _WXF_MAX_FHR[wxModel] ?? 48);
 
   try {
-    const { header, raw, grid } = await _wxfFetch(wxModel, run, fhr, wxVar);
+    const { header, raw, grid, run } = await _wxfFetch(wxModel, null, fhr, wxVar);
     const { dataUrl, bounds } = _wxfRenderCanvas(wxVar, raw, header, wxModel, grid);
 
     if (_wxfOverlay) { map.removeLayer(_wxfOverlay); _wxfOverlay = null; }
