@@ -6335,7 +6335,6 @@ async function loadNEXRAD() {
     currentFrame = lastPastIdx;
     buildTimelineLabels();
     _updateTimelineGradient(lastPastIdx, radarFrames.length);
-    activeLayers.nexrad = true;
     _buildRadarPool();
     showFrame(currentFrame);
     _preloadSatBackground();
@@ -7958,17 +7957,28 @@ function _ltgStartFade() {
 async function _ltgRefresh() {
   if (!activeLayers.lightning || _ltgFetching) return;
   _ltgFetching = true;
+  const _LTG_FALLBACKS = [
+    _LTG_URL,
+    `https://corsproxy.io/?url=${encodeURIComponent(_LTG_SRC)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(_LTG_SRC)}`,
+  ];
   try {
     let text = null;
     let lastErr;
     for (let i = 1; i <= _LTG_RETRIES; i++) {
       try {
-        const r = await fetch(_LTG_URL, {
-          headers: { Accept: 'text/plain,text/html;q=0.9,*/*;q=0.8' },
-          signal: _abortSignal(_LTG_TIMEOUT_MS),
-        });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        text = await r.text();
+        // Race all proxy options; take the first valid response
+        const _tryUrl = async (url) => {
+          const r = await fetch(url, {
+            headers: { Accept: 'text/plain,text/html;q=0.9,*/*;q=0.8' },
+            signal: _abortSignal(_LTG_TIMEOUT_MS),
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const t = await r.text();
+          if (!t || t.length < 20) throw new Error('empty');
+          return t;
+        };
+        text = await Promise.any(_LTG_FALLBACKS.map(_tryUrl));
         break;
       } catch(e) {
         lastErr = e;
