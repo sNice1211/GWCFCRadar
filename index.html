@@ -1483,6 +1483,13 @@ body {
 }
 #tropical-model-panel::-webkit-scrollbar { width: 3px; }
 #tropical-model-panel::-webkit-scrollbar-thumb { background: rgba(0,200,255,0.3); }
+/* WeatherFront overlay — force browser smoothing on the stretched image */
+.wxf-smooth-overlay {
+  image-rendering: auto;
+  image-rendering: smooth;
+  image-rendering: high-quality;
+}
+
 /* ── TROPICAL / SEVERE MODEL PANELS ── */
 #severe-model-panel {
   display: none;
@@ -10481,25 +10488,22 @@ function _wxfRGBA(variable, val) {
   return null;
 }
 
-// Render a raw grid to a canvas imageOverlay.
+// Render a raw grid to a canvas imageOverlay with bilinear interpolation.
 // GFS: 1440×721 regular lat/lon 0.25°, row0=90°N, col0=0°E (0→360 convention)
 // HRRR: 1800×1059 Lambert Conformal Conic 3km CONUS
 function _wxfRenderCanvas(variable, raw, header, model, grid) {
   const GRID_COLS = grid.cols;
   const GRID_ROWS = grid.rows;
 
-  // For GFS (lat/lon grid), extract the CONUS slice (lon -135→-55, lat 12→57)
-  // GFS lon convention: 0→360, so -135 → col 900, -55 → col 1220
   let sliceColStart, sliceColEnd, sliceRowStart, sliceRowEnd, bounds;
   if (grid.type === 'latlon') {
-    const res = 360 / GRID_COLS; // degrees per cell (0.25 for GFS)
+    const res = 360 / GRID_COLS;
     sliceColStart = Math.round((-135 + 360) / res);
     sliceColEnd   = Math.round((-55  + 360) / res);
     sliceRowStart = Math.round((90 - 57) / res);
     sliceRowEnd   = Math.round((90 - 12) / res);
     bounds = [[12, -135], [57, -55]];
   } else {
-    // LCC grid (HRRR/NAM/RAP): render full grid using detected bounds
     sliceColStart = 0; sliceColEnd = GRID_COLS - 1;
     sliceRowStart = 0; sliceRowEnd = GRID_ROWS - 1;
     bounds = grid.bounds;
@@ -10508,10 +10512,24 @@ function _wxfRenderCanvas(variable, raw, header, model, grid) {
   const srcCols = sliceColEnd - sliceColStart + 1;
   const srcRows = sliceRowEnd - sliceRowStart + 1;
 
-  // Downsample to max 720 px wide for performance
-  const scale   = Math.min(1, 720 / srcCols);
-  const cvCols  = Math.round(srcCols * scale);
-  const cvRows  = Math.round(srcRows * scale);
+  // First pass: build a Float32 value grid (NaN = transparent)
+  // Use the full source resolution so bilinear has real data to work with
+  const vals = new Float32Array(srcRows * srcCols);
+  const mask = new Uint8Array(srcRows * srcCols);
+  for (let sr = 0; sr < srcRows; sr++) {
+    for (let sc = 0; sc < srcCols; sc++) {
+      const gIdx = (sliceRowStart + sr) * GRID_COLS + (sliceColStart + sc);
+      if (gIdx >= 0 && gIdx < raw.length) {
+        vals[sr * srcCols + sc] = header.min_value + (raw[gIdx] / 255) * (header.max_value - header.min_value);
+        mask[sr * srcCols + sc] = 1;
+      }
+    }
+  }
+
+  // Second pass: render to canvas at up to 1440px wide with bilinear interp
+  const scale  = Math.min(1, 1440 / srcCols);
+  const cvCols = Math.round(srcCols * scale);
+  const cvRows = Math.round(srcRows * scale);
 
   const cv  = document.createElement('canvas');
   cv.width  = cvCols; cv.height = cvRows;
@@ -10520,12 +10538,21 @@ function _wxfRenderCanvas(variable, raw, header, model, grid) {
   const px  = img.data;
 
   for (let cy = 0; cy < cvRows; cy++) {
+    const gy = (cy / (cvRows - 1)) * (srcRows - 1);
+    const gy0 = Math.floor(gy), gy1 = Math.min(gy0 + 1, srcRows - 1);
+    const fy = gy - gy0;
     for (let cx = 0; cx < cvCols; cx++) {
-      const gCol = sliceColStart + Math.round(cx * (srcCols - 1) / Math.max(cvCols - 1, 1));
-      const gRow = sliceRowStart + Math.round(cy * (srcRows - 1) / Math.max(cvRows - 1, 1));
-      const idx  = gRow * GRID_COLS + gCol;
-      if (idx < 0 || idx >= raw.length) continue;
-      const val  = header.min_value + (raw[idx] / 255) * (header.max_value - header.min_value);
+      const gx = (cx / (cvCols - 1)) * (srcCols - 1);
+      const gx0 = Math.floor(gx), gx1 = Math.min(gx0 + 1, srcCols - 1);
+      const fx = gx - gx0;
+
+      // Bilinear sample
+      const i00 = gy0 * srcCols + gx0, i10 = gy0 * srcCols + gx1;
+      const i01 = gy1 * srcCols + gx0, i11 = gy1 * srcCols + gx1;
+      if (!mask[i00] && !mask[i10] && !mask[i01] && !mask[i11]) continue;
+      const v00 = vals[i00], v10 = vals[i10], v01 = vals[i01], v11 = vals[i11];
+      const val = v00*(1-fx)*(1-fy) + v10*fx*(1-fy) + v01*(1-fx)*fy + v11*fx*fy;
+
       const rgba = _wxfRGBA(variable, val);
       const pi   = (cy * cvCols + cx) * 4;
       if (rgba) { px[pi]=rgba[0]; px[pi+1]=rgba[1]; px[pi+2]=rgba[2]; px[pi+3]=rgba[3]; }
@@ -10568,6 +10595,7 @@ async function _sevRenderWxf(body) {
     if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
     _wxfOverlay = L.imageOverlay(dataUrl, bounds, {
       opacity: 0.72, zIndex: 6, interactive: false,
+      className: 'wxf-smooth-overlay',
     }).addTo(map);
 
     if (body) {
@@ -10684,7 +10712,7 @@ async function _sevRender() {
     const bc=document.createElement('canvas');bc.width=mapSize.x;bc.height=mapSize.y;
     const bCtx=bc.getContext('2d');bCtx.imageSmoothingEnabled=true;bCtx.imageSmoothingQuality='high';
     bCtx.drawImage(cv,0,0,mapSize.x,mapSize.y);
-    _sevOverlayLayer=L.imageOverlay(bc.toDataURL('image/png'),[[lats[0],lngs[0]],[lats[ROWS-1],lngs[COLS-1]]],{opacity:0.72,zIndex:6,interactive:false}).addTo(map);
+    _sevOverlayLayer=L.imageOverlay(bc.toDataURL('image/png'),[[lats[0],lngs[0]],[lats[ROWS-1],lngs[COLS-1]]],{opacity:0.72,zIndex:6,interactive:false,className:'wxf-smooth-overlay'}).addTo(map);
     const ts=times[tIdx]?new Date(times[tIdx]).toUTCString().slice(0,22):'';
     if(body)body.innerHTML=`<div style="font-family:var(--mono);font-size:8px;color:rgba(255,255,255,0.3);text-align:center;line-height:1.8;padding:4px 0;">GFS · ${_sevVar} · +${fHour}h<br>Valid: ${ts} UTC</div>`;
   } catch(e){
