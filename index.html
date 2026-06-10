@@ -5395,21 +5395,7 @@ body.clean-mode #clean-hint { opacity: 1; }
           </div>
           <div class="sev-dd-wrap">
             <label class="sev-dd-label">Product</label>
-            <select id="sev-var-sel" onchange="_sevSetVar(this.value)">
-              <option value="refc">Reflectivity</option>
-              <option value="precip">Precip Type</option>
-              <option value="cape">CAPE</option>
-              <option value="shear">Shear</option>
-              <option value="srh">Helicity</option>
-              <option value="z500">500mb Heights</option>
-              <option value="mslp">MSLP</option>
-              <option value="t850">850mb Temp</option>
-              <option value="ws850">850mb Wind</option>
-              <option value="pm25">PM2.5</option>
-              <option value="500mb">500mb Wind</option>
-              <option value="temp">Temperature</option>
-              <option value="sounding">Sounding</option>
-            </select>
+            <select id="sev-var-sel" onchange="_sevSetVar(this.value)"></select>
           </div>
         </div>
         <div id="sev-run-row">
@@ -10497,6 +10483,25 @@ function _sevRender() {
 
 let _sevPlaying = false, _sevPlayTimer = null;
 
+const SEV_PRODUCTS = {
+  hrrr:  [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip Type'}],
+  ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t850',l:'850mb Temp'},{v:'ws850',l:'850mb Wind'},{v:'pm25',l:'PM2.5'}],
+  nam:   [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip'},{v:'cape',l:'CAPE'},{v:'temp',l:'Temperature'}],
+  sref:  [{v:'cape',l:'CAPE'},{v:'shear',l:'Shear'},{v:'srh',l:'Helicity'}],
+  href:  [{v:'refc',l:'Reflectivity'},{v:'cape',l:'CAPE'},{v:'shear',l:'Shear'}],
+};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'z500', nam:'refc', sref:'cape', href:'refc'};
+
+function _sevUpdateProducts() {
+  const sel=document.getElementById('sev-var-sel');if(!sel)return;
+  const prods=SEV_PRODUCTS[_sevSection]||SEV_PRODUCTS.hrrr;
+  sel.innerHTML='';
+  prods.forEach(p=>{const o=document.createElement('option');o.value=p.v;o.textContent=p.l;sel.appendChild(o);});
+  const valid=prods.some(p=>p.v===_sevVar);
+  if(!valid){_sevVar=SEV_DEFAULT_VAR[_sevSection]||prods[0].v;}
+  sel.value=_sevVar;
+}
+
 function _sevPopulateRuns() {
   const sel=document.getElementById('sev-run-sel');if(!sel)return;
   sel.innerHTML='';_sevRun='';
@@ -10514,9 +10519,8 @@ function _sevPopulateRuns() {
 function _sevSetSection(s){
   _sevSection=s;
   const el=document.getElementById('sev-model-sel');if(el&&el.value!==s)el.value=s;
-  // Auto-select a sensible default product for the model
-  if(s==='ecmwf' && !ECMWF_LAYERS[_sevVar]){_sevVar='z500';const vEl=document.getElementById('sev-var-sel');if(vEl)vEl.value='z500';}
-  else if(s==='hrrr' && ECMWF_LAYERS[_sevVar]){_sevVar='precip';const vEl=document.getElementById('sev-var-sel');if(vEl)vEl.value='precip';}
+  _sevVar=SEV_DEFAULT_VAR[s]||(SEV_PRODUCTS[s]||SEV_PRODUCTS.hrrr)[0].v;
+  _sevUpdateProducts();
   _sevPopulateRuns();
   _sevFrame=0;
   const sl=document.getElementById('sev-frame-slider');
@@ -10553,7 +10557,7 @@ function _sevTogglePlay(){
 }
 function _sevInit() {
   const mSel=document.getElementById('sev-model-sel');if(mSel)mSel.value=_sevSection;
-  const vSel=document.getElementById('sev-var-sel');if(vSel)vSel.value=_sevVar;
+  _sevUpdateProducts();
   _sevPopulateRuns();
   const sl=document.getElementById('sev-frame-slider');if(sl)sl.max=_sevMaxFrame();
   _sevRender();
