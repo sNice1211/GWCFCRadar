@@ -6507,13 +6507,12 @@ let _firstValidFrame = 0;  // oldest frame index with confirmed tile data
 const IEM_TILE_BASE    = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
 const IEM_NEXRAD_WMS   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
 const IEM_NEXRAD_LAYER = 'nexrad-n0q-wmst';
-// Additional IEM WMS products (no tile cache — WMS only)
+// Additional IEM WMS products (confirmed to exist via IEM GitHub source)
+// n0q + n0r are the ONLY national composite nexrad WMS products IEM serves.
+// Velocity/precip accumulation composites do not exist as IEM WMS — only per-station via ridge.cgi.
 const IEM_WMS_PRODUCTS = {
-  n0q: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi', layer: 'nexrad-n0q-wmst', label: 'Reflectivity (N0Q)', tileCache: true },
-  n0s: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0s-t.cgi', layer: 'nexrad-n0s-wmst', label: 'Storm Relative Vel (N0S)', tileCache: false },
-  n0v: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0v-t.cgi', layer: 'nexrad-n0v-wmst', label: 'Base Velocity (N0V)', tileCache: false },
-  n1p: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n1p-t.cgi', layer: 'nexrad-n1p-wmst', label: '1-Hr Precip (N1P)', tileCache: false },
-  ntp: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/ntp-t.cgi', layer: 'nexrad-ntp-wmst', label: 'Storm Total Precip (NTP)', tileCache: false },
+  n0q: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi', layer: 'nexrad-n0q-wmst', label: 'Refl Super-Res (N0Q)', tileCache: true  },
+  n0r: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0r-t.cgi', layer: 'nexrad-n0r-wmst', label: 'Refl Legacy (N0R)',    tileCache: false },
 };
 let _currentIemProduct = 'n0q'; // which IEM mosaic product is active
 let _nexradCacheFailed  = false; // set true when IEM appears globally unreliable; future slots use WMS
@@ -10702,12 +10701,9 @@ function _selectIemProduct(prodId) {
 }
 
 const RADAR_SUB_BUBBLES = [
-  { id:'reflectivity', icon:'🌧', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0q') { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0q'); } } },
-  { id:'velocity',     icon:'💨', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
-  { id:'n0s',          icon:'🌀', label:'Storm Rel Vel', action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0s'); } },
-  { id:'n0v',          icon:'💨', label:'Base Velocity', action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0v'); } },
-  { id:'n1p',          icon:'🌂', label:'1-Hr Precip',  action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n1p'); } },
-  { id:'ntp',          icon:'🌧', label:'Total Precip',  action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('ntp'); } },
+  { id:'reflectivity', icon:'🌧', label:'Reflectivity',      action: () => { if (activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0q') { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0q'); } } },
+  { id:'velocity',     icon:'💨', label:'Velocity',           action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
+  { id:'n0r',          icon:'📡', label:'Legacy Refl (N0R)',  action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0r'); } },
 ];
 
 function toggleRadarSub() {
@@ -10722,12 +10718,11 @@ function toggleRadarSub() {
     renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
   };
   wrap.appendChild(back);
-  const IEM_IDS = ['n0s','n0v','n1p','ntp'];
   RADAR_SUB_BUBBLES.forEach(b => {
     const isActiveProd =
       (b.id === 'reflectivity' && activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0q') ||
       (b.id === 'velocity'     && currentProduct === 'vel') ||
-      (IEM_IDS.includes(b.id) && activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === b.id);
+      (b.id === 'n0r'          && activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0r');
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
     el.id = 'sub-' + b.id;
