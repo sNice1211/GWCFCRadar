@@ -6507,6 +6507,15 @@ let _firstValidFrame = 0;  // oldest frame index with confirmed tile data
 const IEM_TILE_BASE    = 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-';
 const IEM_NEXRAD_WMS   = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi';
 const IEM_NEXRAD_LAYER = 'nexrad-n0q-wmst';
+// Additional IEM WMS products (no tile cache — WMS only)
+const IEM_WMS_PRODUCTS = {
+  n0q: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi', layer: 'nexrad-n0q-wmst', label: 'Reflectivity (N0Q)', tileCache: true },
+  n0s: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0s-t.cgi', layer: 'nexrad-n0s-wmst', label: 'Storm Relative Vel (N0S)', tileCache: false },
+  n0v: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0v-t.cgi', layer: 'nexrad-n0v-wmst', label: 'Base Velocity (N0V)', tileCache: false },
+  n1p: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n1p-t.cgi', layer: 'nexrad-n1p-wmst', label: '1-Hr Precip (N1P)', tileCache: false },
+  ntp: { wms: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/ntp-t.cgi', layer: 'nexrad-ntp-wmst', label: 'Storm Total Precip (NTP)', tileCache: false },
+};
+let _currentIemProduct = 'n0q'; // which IEM mosaic product is active
 let _nexradCacheFailed  = false; // set true when IEM appears globally unreliable; future slots use WMS
 let _nexradWmsSlotCount = 0;    // how many individual slots switched to WMS; gates global failure
 
@@ -6591,13 +6600,14 @@ function _switchSlotToWms(i) {
   if (_radarLayerPool[i] && _radarLayerLoaded[i]) return; // already has tiles — don't blank it
   if (_radarLayerPool[i]) { try { map.removeLayer(_radarLayerPool[i]); } catch(e){} _radarLayerPool[i] = null; }
   const frame = radarFrames[i];
-  const l = L.tileLayer.wms(IEM_NEXRAD_WMS, {
-    layers: IEM_NEXRAD_LAYER, format: 'image/png', transparent: true,
+  const prod = IEM_WMS_PRODUCTS[_currentIemProduct] || IEM_WMS_PRODUCTS.n0q;
+  const l = L.tileLayer.wms(prod.wms, {
+    layers: prod.layer, format: 'image/png', transparent: true,
     version: '1.1.1', TIME: frame.iso,
     opacity: 0, zIndex: 10, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 256,
     keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: false, updateWhenZooming: false,
-    attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
+    attribution: 'Radar: NOAA NEXRAD via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
     _remapTileColors(e.tile);
@@ -6683,7 +6693,9 @@ function _ensureNexradLayer(i) {
   if (_radarLayerPool[i]) return;
   const frame = radarFrames[i];
 
-  if (_nexradCacheFailed) { _switchSlotToWms(i); return; }
+  // Non-N0Q products have no tile cache — always use WMS
+  const _activeProd = IEM_WMS_PRODUCTS[_currentIemProduct] || IEM_WMS_PRODUCTS.n0q;
+  if (_nexradCacheFailed || !_activeProd.tileCache) { _switchSlotToWms(i); return; }
 
   // IEM pre-rendered tile cache — NOAA NEXRAD L3 data via Iowa Mesonet.
   // maxNativeZoom:9 — above z9 Leaflet upscales; pixelated keeps edges crisp.
@@ -9542,6 +9554,8 @@ function showGoesFrame(idx) {
 // Kill radar cleanly, used when satellite turns on
 function _disableRadar() {
   activeLayers.nexrad = false;
+  _currentIemProduct = 'n0q';
+  _nexradCacheFailed = false;
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
   radarLayer = null; // layers already hidden by setOpacity(0) above; keep on map so re-enable works
   // Clean up velocity if active
@@ -10673,10 +10687,27 @@ function showToast(msg, durationMs) {
 // Play through forecast frames; if none available, show a clear message.
 let _fcstPlayTimer = null;
 
+function _selectIemProduct(prodId) {
+  _currentIemProduct = prodId;
+  // Wipe pool so all frames reload with new WMS product
+  _nexradCacheFailed = !(IEM_WMS_PRODUCTS[prodId] || {}).tileCache;
+  _buildRadarPool();
+  activeLayers.nexrad = true;
+  currentProduct = 'ref';
+  updateLegend('ref');
+  const row = document.getElementById('layer-nexrad');
+  if (row) row.classList.add('active');
+  // highlight active IEM btn
+  document.querySelectorAll('.iem-prod-btn').forEach(b => b.classList.toggle('active', b.dataset.prod === prodId));
+}
+
 const RADAR_SUB_BUBBLES = [
-  { id:'reflectivity', icon:'🌧', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
+  { id:'reflectivity', icon:'🌧', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0q') { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0q'); } } },
   { id:'velocity',     icon:'💨', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
-  // future radar removed
+  { id:'n0s',          icon:'🌀', label:'Storm Rel Vel', action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0s'); } },
+  { id:'n0v',          icon:'💨', label:'Base Velocity', action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0v'); } },
+  { id:'n1p',          icon:'🌂', label:'1-Hr Precip',  action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n1p'); } },
+  { id:'ntp',          icon:'🌧', label:'Total Precip',  action: () => { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('ntp'); } },
 ];
 
 function toggleRadarSub() {
@@ -10691,23 +10722,19 @@ function toggleRadarSub() {
     renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
   };
   wrap.appendChild(back);
+  const IEM_IDS = ['n0s','n0v','n1p','ntp'];
   RADAR_SUB_BUBBLES.forEach(b => {
     const isActiveProd =
-      (b.id === 'reflectivity' && activeLayers.nexrad && currentProduct === 'ref') ||
-      (b.id === 'velocity'     && currentProduct === 'vel');
-    const isFutureBubble = b.id === 'future';
+      (b.id === 'reflectivity' && activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0q') ||
+      (b.id === 'velocity'     && currentProduct === 'vel') ||
+      (IEM_IDS.includes(b.id) && activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === b.id);
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
     el.id = 'sub-' + b.id;
-    const fcCount = radarFrames.filter(f => f.forecast).length;
-    const label = (isFutureBubble && fcCount) ? `${b.label} (${fcCount})` : b.label;
-    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${label}`;
-    if (isFutureBubble && !fcCount) el.style.opacity = '0.45';
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
     el.onclick = () => {
-      if (!isFutureBubble) {
-        document.querySelectorAll('#sub-reflectivity,#sub-velocity').forEach(s=>s.classList.remove('active'));
-        el.classList.add('active');
-      }
+      document.querySelectorAll('#sub-bubbles .sub-bubble').forEach(s=>s.classList.remove('active'));
+      el.classList.add('active');
       b.action();
     };
     wrap.appendChild(el);
