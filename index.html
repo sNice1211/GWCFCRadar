@@ -5387,6 +5387,7 @@ body.clean-mode #clean-hint { opacity: 1; }
             <label class="sev-dd-label">Model</label>
             <select id="sev-model-sel" onchange="_sevSetSection(this.value)">
               <option value="hrrr">HRRR</option>
+              <option value="ecmwf">ECMWF IFS</option>
               <option value="nam">NAM</option>
               <option value="sref">SREF (GFS)</option>
               <option value="href">HREF (GFS)</option>
@@ -5395,13 +5396,18 @@ body.clean-mode #clean-hint { opacity: 1; }
           <div class="sev-dd-wrap">
             <label class="sev-dd-label">Product</label>
             <select id="sev-var-sel" onchange="_sevSetVar(this.value)">
-              <option value="precip">Precip</option>
+              <option value="precip">Precip / Refl</option>
+              <option value="refc">Reflectivity</option>
               <option value="cape">CAPE</option>
               <option value="shear">Shear</option>
-              <option value="500mb">500mb</option>
-              <option value="refc">Reflectivity</option>
-              <option value="temp">Temperature</option>
               <option value="srh">Helicity</option>
+              <option value="z500">500mb Heights</option>
+              <option value="mslp">MSLP</option>
+              <option value="t850">850mb Temp</option>
+              <option value="ws850">850mb Wind</option>
+              <option value="pm25">PM2.5</option>
+              <option value="500mb">500mb Wind</option>
+              <option value="temp">Temperature</option>
               <option value="sounding">Sounding</option>
             </select>
           </div>
@@ -10430,17 +10436,59 @@ function _sevRenderIEM(body) {
   return true;
 }
 
+// ── ECMWF ecCharts WMS ENGINE ─────────────────────────────────────────────────
+// eccharts.ecmwf.int/wms/?token=public — global IFS ensemble forecast tiles.
+// Free, no registration, works via L.tileLayer.wms() (img tags, no CORS).
+// Runs: 00z and 12z daily. Steps: 0–240h at 6h intervals.
+
+const ECCHARTS_WMS = 'https://eccharts.ecmwf.int/wms/?token=public';
+const ECMWF_LAYERS = {
+  z500:  'z500_public',
+  mslp:  'msl_mean_public',
+  t850:  't850_mean_public',
+  ws850: 'ws850_mean_public',
+  pm25:  'composition_pm2p5',
+};
+const ECMWF_LABELS = {
+  z500:  '500mb Heights',
+  mslp:  'MSLP',
+  t850:  '850mb Temp',
+  ws850: '850mb Wind',
+  pm25:  'PM2.5',
+};
+
+function _sevRenderECMWF(body) {
+  const layerName = ECMWF_LAYERS[_sevVar];
+  if (!layerName) {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Pick an ECMWF product:<br><b>500mb Heights, MSLP, 850mb Temp, 850mb Wind, PM2.5</b></div>`;
+    return false;
+  }
+  let timeISO = null;
+  if (_sevRun && _sevRun.length >= 10) {
+    const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
+    timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString().replace('.000Z','Z');
+  }
+  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
+  const opts = { layers: layerName, format: 'image/png', transparent: true, version: '1.3.0', opacity: 0.8, zIndex: 6 };
+  if (timeISO) opts.time = timeISO;
+  _iemModelLayer = L.tileLayer.wms(ECCHARTS_WMS, opts).addTo(map);
+  if (body) body.innerHTML = '';
+  return true;
+}
+
 // ── SEVERE MODEL ENGINE ──
 let _sevSection = 'hrrr', _sevVar = 'precip', _sevRun = '', _sevFrame = 0;
 let _sevOverlayLayer = null;
 
+function _sevMaxFrame() { return _sevSection === 'ecmwf' ? 40 : 6; }
 
 function _sevRender() {
   const body=document.getElementById('sev-panel-body');
   if(_iemModelLayer){map.removeLayer(_iemModelLayer);_iemModelLayer=null;}
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
+  if(_sevSection === 'ecmwf') { _sevRenderECMWF(body); return; }
   if(_sevSection !== 'hrrr'){
-    if(body) body.innerHTML=`<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">${_sevSection.toUpperCase()} not available yet.<br>Switch to <b>HRRR</b> for now.</div>`;
+    if(body) body.innerHTML=`<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">${_sevSection.toUpperCase()} not available yet.<br>Switch to <b>HRRR</b> or <b>ECMWF</b>.</div>`;
     return;
   }
   const ok = _sevRenderIEM(body);
@@ -10449,13 +10497,41 @@ function _sevRender() {
 
 let _sevPlaying = false, _sevPlayTimer = null;
 
-function _sevSetSection(s){_sevSection=s;const el=document.getElementById('sev-model-sel');if(el&&el.value!==s)el.value=s;_sevRender();}
-function _sevSetVar(v){_sevVar=v;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=6;sl.value=0;}_sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();}
+function _sevPopulateRuns() {
+  const sel=document.getElementById('sev-run-sel');if(!sel)return;
+  sel.innerHTML='';_sevRun='';
+  const now=new Date(),nowUTC=now.getTime();
+  const hours=_sevSection==='ecmwf'?[12,0]:[18,12,6,0];
+  for(let d=0;d<2;d++)for(const h of hours){
+    const t=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()-d,h));
+    if(t.getTime()>nowUTC)continue;
+    const val=`${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(h)}`;
+    const opt=document.createElement('option');opt.value=val;
+    opt.textContent=`${d===0?'Today':'Yesterday'} ${pad(h)}z`;
+    sel.appendChild(opt);if(!_sevRun)_sevRun=val;
+  }
+}
+function _sevSetSection(s){
+  _sevSection=s;
+  const el=document.getElementById('sev-model-sel');if(el&&el.value!==s)el.value=s;
+  _sevPopulateRuns();
+  _sevFrame=0;
+  const sl=document.getElementById('sev-frame-slider');
+  if(sl){sl.max=_sevMaxFrame();sl.value=0;}
+  document.getElementById('sev-frame-lbl').textContent='F000';
+  _sevRender();
+}
+function _sevSetVar(v){
+  _sevVar=v;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;
+  const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=_sevMaxFrame();sl.value=0;}
+  _sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();
+}
 function _sevSetRun(v){_sevRun=v;_sevRender();}
 function _sevSetFrame(v){
   _sevFrame=parseInt(v);
   const sl=document.getElementById('sev-frame-slider');if(sl)sl.value=_sevFrame;
-  document.getElementById('sev-frame-lbl').textContent='F'+String(_sevFrame*3).padStart(3,'0');
+  const hrs=_sevSection==='ecmwf'?_sevFrame*6:_sevFrame*3;
+  document.getElementById('sev-frame-lbl').textContent='F'+String(hrs).padStart(3,'0');
   _sevRender();
 }
 function _sevTogglePlay(){
@@ -10465,7 +10541,7 @@ function _sevTogglePlay(){
   if(_sevPlaying){
     _sevPlayTimer=setInterval(()=>{
       const sl=document.getElementById('sev-frame-slider');
-      const max=sl?parseInt(sl.max):6;
+      const max=sl?parseInt(sl.max):_sevMaxFrame();
       _sevSetFrame(_sevFrame>=max?0:_sevFrame+1);
     },700);
   } else {
@@ -10475,9 +10551,8 @@ function _sevTogglePlay(){
 function _sevInit() {
   const mSel=document.getElementById('sev-model-sel');if(mSel)mSel.value=_sevSection;
   const vSel=document.getElementById('sev-var-sel');if(vSel)vSel.value=_sevVar;
-  const sel=document.getElementById('sev-run-sel');
-  if(sel&&!sel.options.length){const now=new Date();const nowUTC=now.getTime();for(let d=0;d<2;d++)for(const h of[18,12,6,0]){const t=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()-d,h));if(t.getTime()>nowUTC)continue;const val=`${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(h)}`;const opt=document.createElement('option');opt.value=val;opt.textContent=`${d===0?'Today':'Yesterday'} ${pad(h)}z`;sel.appendChild(opt);if(!_sevRun)_sevRun=val;}}
-  const sl=document.getElementById('sev-frame-slider');if(sl)sl.max=6;
+  _sevPopulateRuns();
+  const sl=document.getElementById('sev-frame-slider');if(sl)sl.max=_sevMaxFrame();
   _sevRender();
 }
 
