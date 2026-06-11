@@ -10736,10 +10736,45 @@ function _selectIemProduct(prodId) {
   document.querySelectorAll('.iem-prod-btn').forEach(b => b.classList.toggle('active', b.dataset.prod === prodId));
 }
 
+// ── MRMS static WMS overlays ──
+const MRMS_WMS_BASE = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/mrms/mrms.cgi';
+const MRMS_PRODUCTS = {
+  mrms_refc:  { layer: 'mrms_refc',  label: 'MRMS Composite Refl' },
+  mrms_p1h:   { layer: 'mrms_p1h',   label: 'MRMS 1-hr Precip'    },
+  mrms_p24h:  { layer: 'mrms_p24h',  label: 'MRMS 24-hr Precip'   },
+  mrms_snow:  { layer: 'mrms_snow',  label: 'MRMS Snow Cover'      },
+};
+const _mrmsLayers = {};
+
+function _toggleMrms(prodId) {
+  if (_mrmsLayers[prodId]) {
+    map.removeLayer(_mrmsLayers[prodId]);
+    delete _mrmsLayers[prodId];
+    return false; // now off
+  }
+  const cfg = MRMS_PRODUCTS[prodId];
+  if (!cfg) return false;
+  _mrmsLayers[prodId] = L.tileLayer.wms(MRMS_WMS_BASE, {
+    layers: cfg.layer, format: 'image/png', transparent: true, opacity: 0.85,
+    attribution: 'Iowa Mesonet / MRMS'
+  }).addTo(map);
+  return true; // now on
+}
+
+function _isMrmsActive(prodId) { return !!_mrmsLayers[prodId]; }
+
+function _clearAllMrms() {
+  Object.keys(_mrmsLayers).forEach(k => { try { map.removeLayer(_mrmsLayers[k]); } catch(e){} delete _mrmsLayers[k]; });
+}
+
 const RADAR_SUB_BUBBLES = [
   { id:'reflectivity', icon:'🌧', label:'Reflectivity (N0Q)',  action: () => { if (activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0q') { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0q'); } } },
   { id:'velocity',     icon:'💨', label:'Velocity',            action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
   { id:'n0r',          icon:'📡', label:'Legacy Refl (N0R)',   action: () => { if (activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0r') { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); closeS3Panel && closeS3Panel(); _disableSatellite(); _selectIemProduct('n0r'); } } },
+  { id:'mrms_refc',    icon:'🔵', label:'MRMS Composite Refl', action: () => { _toggleMrms('mrms_refc'); toggleRadarSub(); } },
+  { id:'mrms_p1h',     icon:'🌂', label:'MRMS 1-hr Precip',    action: () => { _toggleMrms('mrms_p1h');  toggleRadarSub(); } },
+  { id:'mrms_p24h',    icon:'🌊', label:'MRMS 24-hr Precip',   action: () => { _toggleMrms('mrms_p24h'); toggleRadarSub(); } },
+  { id:'mrms_snow',    icon:'❄️', label:'MRMS Snow Cover',     action: () => { _toggleMrms('mrms_snow'); toggleRadarSub(); } },
 ];
 
 function toggleRadarSub() {
@@ -10758,7 +10793,8 @@ function toggleRadarSub() {
     const isActiveProd =
       (b.id === 'reflectivity' && activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0q') ||
       (b.id === 'velocity'     && currentProduct === 'vel') ||
-      (b.id === 'n0r'          && activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0r');
+      (b.id === 'n0r'          && activeLayers.nexrad && currentProduct === 'ref' && _currentIemProduct === 'n0r') ||
+      (b.id.startsWith('mrms_') && _isMrmsActive(b.id));
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
     el.id = 'sub-' + b.id;
