@@ -7,7 +7,7 @@
 <script>
 // Earliest possible loading failsafe — runs before Leaflet, Firebase, or any app code.
 // Removes #loading after 10 s no matter what (CDN down, JS error, window.load never fires).
-setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.transition='none';e.style.opacity='0';e.style.display='none';try{e.parentNode.removeChild(e);}catch(_){}}},10000);
+setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.transition='none';e.style.opacity='0';e.style.display='none';try{e.parentNode.removeChild(e);}catch(_){}}},300000);
 </script>
 <!-- Critical: needed before first paint -->
 <link rel="preconnect" href="https://api.maptiler.com">
@@ -5242,6 +5242,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div class="load-fact-label">Did you know?</div>
     <div class="load-fact-text" id="load-fact-text">Loading hidden features…</div>
   </div>
+  <audio id="load-audio" src="sleeping_city.mp3" preload="auto"></audio>
 
 </div>
 
@@ -11058,12 +11059,31 @@ if (document.readyState === 'loading') {
 }
 
 // ── DISMISS LOADING ──
-const _loadStart       = Date.now();
-const _LOAD_MIN_MS     = 3000;   // minimum screen time so facts + tiles have a moment
-let   _dismissScheduled = false;
+const _loadStart = Date.now();
+let _appReady    = false;
+let _audioEnded  = false;
+
+(function() {
+  const audio = document.getElementById('load-audio');
+  if (!audio) return;
+  audio.volume = 0.85;
+  const tryPlay = () => audio.play().catch(() => {});
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', tryPlay);
+  } else {
+    tryPlay();
+  }
+  audio.addEventListener('ended', function() {
+    _audioEnded = true;
+    _actuallyDismiss();
+  });
+})();
 
 function _actuallyDismiss() {
+  if (!_appReady || !_audioEnded) return;
   stopLoadFacts();
+  const audio = document.getElementById('load-audio');
+  if (audio) { audio.pause(); audio.src = ''; }
   const el = document.getElementById('loading');
   if (!el) return;
   el.style.opacity = '0';
@@ -11075,27 +11095,9 @@ function _actuallyDismiss() {
 }
 
 function dismissLoading() {
-  const elapsed = Date.now() - _loadStart;
-  if (elapsed < _LOAD_MIN_MS) {
-    if (!_dismissScheduled) {
-      _dismissScheduled = true;
-      setTimeout(_actuallyDismiss, _LOAD_MIN_MS - elapsed);
-    }
-    return;
-  }
+  _appReady = true;
   _actuallyDismiss();
 }
-
-// Absolute failsafe: force-remove the loading screen after 8 s regardless of
-// whether init() runs or completes — catches CDN failures, JS errors, etc.
-setTimeout(function() {
-  var el = document.getElementById('loading');
-  if (!el) return;
-  el.style.transition = 'none';
-  el.style.opacity = '0';
-  el.style.display = 'none';
-  if (el.parentNode) el.parentNode.removeChild(el);
-}, 8000);
 
 // ── STARTUP ──
 async function init() {
