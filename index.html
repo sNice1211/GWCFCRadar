@@ -7,7 +7,7 @@
 <script>
 // Earliest possible loading failsafe — runs before Leaflet, Firebase, or any app code.
 // Removes #loading after 10 s no matter what (CDN down, JS error, window.load never fires).
-setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.transition='none';e.style.opacity='0';e.style.display='none';try{e.parentNode.removeChild(e);}catch(_){}}},300000);
+setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.transition='none';e.style.opacity='0';e.style.display='none';try{e.parentNode.removeChild(e);}catch(_){}}},30000);
 </script>
 <!-- Critical: needed before first paint -->
 <link rel="preconnect" href="https://api.maptiler.com">
@@ -11059,10 +11059,11 @@ if (document.readyState === 'loading') {
 }
 
 // ── DISMISS LOADING ──
-const _loadStart = Date.now();
-let _appReady    = false;
-let _audioEnded  = false;
+const _loadStart      = Date.now();
+const _LOAD_MIN_MS    = 13000;  // hold loading screen for full song duration
+let _dismissScheduled = false;
 
+// Play loading song
 (function() {
   const audio = document.getElementById('load-audio');
   if (!audio) return;
@@ -11073,14 +11074,9 @@ let _audioEnded  = false;
   } else {
     tryPlay();
   }
-  audio.addEventListener('ended', function() {
-    _audioEnded = true;
-    _actuallyDismiss();
-  });
 })();
 
 function _actuallyDismiss() {
-  if (!_appReady || !_audioEnded) return;
   stopLoadFacts();
   const audio = document.getElementById('load-audio');
   if (audio) { audio.pause(); audio.src = ''; }
@@ -11095,7 +11091,14 @@ function _actuallyDismiss() {
 }
 
 function dismissLoading() {
-  _appReady = true;
+  const elapsed = Date.now() - _loadStart;
+  if (elapsed < _LOAD_MIN_MS) {
+    if (!_dismissScheduled) {
+      _dismissScheduled = true;
+      setTimeout(_actuallyDismiss, _LOAD_MIN_MS - elapsed);
+    }
+    return;
+  }
   _actuallyDismiss();
 }
 
