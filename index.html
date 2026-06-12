@@ -1408,6 +1408,17 @@ body {
 .load-logo-title { font-family: var(--display); font-size: 38px; font-weight: 700; letter-spacing: 6px; color: #fff; text-transform: uppercase; }
 .load-logo-sub { font-family: var(--mono); font-size: 10px; letter-spacing: 5px; color: var(--accent2); opacity: 0.75; text-transform: uppercase; }
 .load-logo span { color: var(--warn); }
+#load-tap {
+  position: absolute; bottom: 60px; left: 50%; transform: translateX(-50%);
+  font-family: var(--display); font-size: 13px; letter-spacing: 3px; text-transform: uppercase;
+  color: rgba(255,255,255,0.7); border: 1px solid rgba(255,255,255,0.25);
+  padding: 10px 28px; border-radius: 30px; cursor: pointer;
+  animation: load-tap-pulse 1.6s ease-in-out infinite;
+  background: rgba(255,255,255,0.05); user-select: none;
+}
+@keyframes load-tap-pulse {
+  0%, 100% { opacity: 0.5; } 50% { opacity: 1; }
+}
 
 /* Fun fact , centre stage, big */
 .load-fact-wrap {
@@ -5242,6 +5253,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div class="load-fact-label">Did you know?</div>
     <div class="load-fact-text" id="load-fact-text">Loading hidden features…</div>
   </div>
+  <div id="load-tap" onclick="_loadTap()">Tap to Enter</div>
   <audio id="load-audio" src="sleeping_city.mp3" preload="auto"></audio>
 
 </div>
@@ -11063,18 +11075,19 @@ const _loadStart      = Date.now();
 const _LOAD_MIN_MS    = 13000;  // hold loading screen for full song duration
 let _dismissScheduled = false;
 
-// Play loading song
-(function() {
+// Play loading song on first tap (browser autoplay policy requires user gesture)
+let _loadTapped = false;
+function _loadTap() {
+  if (_loadTapped) return;
+  _loadTapped = true;
+  const btn = document.getElementById('load-tap');
+  if (btn) btn.style.display = 'none';
   const audio = document.getElementById('load-audio');
-  if (!audio) return;
-  audio.volume = 0.85;
-  const tryPlay = () => audio.play().catch(() => {});
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', tryPlay);
-  } else {
-    tryPlay();
-  }
-})();
+  if (audio) { audio.volume = 0.85; audio.play().catch(() => {}); }
+  // Reset timer so 13s starts from the tap, not page load
+  _loadTapTime = Date.now();
+}
+let _loadTapTime = null;
 
 function _actuallyDismiss() {
   stopLoadFacts();
@@ -11091,7 +11104,8 @@ function _actuallyDismiss() {
 }
 
 function dismissLoading() {
-  const elapsed = Date.now() - _loadStart;
+  const base = _loadTapTime || _loadStart;
+  const elapsed = Date.now() - base;
   if (elapsed < _LOAD_MIN_MS) {
     if (!_dismissScheduled) {
       _dismissScheduled = true;
