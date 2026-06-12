@@ -13033,8 +13033,12 @@ function _measureToggleFlyout() {
   // Position flyout beside button
   if (_measureOpen && fly && btn) {
     const rect = btn.getBoundingClientRect();
-    fly.style.top = (rect.top + rect.height/2) + 'px';
-    fly.style.transform = 'translateY(-50%)';
+    // Position centered on button, clamped so flyout stays within viewport
+    const flyH = fly.scrollHeight || 160;
+    const idealTop = rect.top + rect.height / 2 - flyH / 2;
+    const clampedTop = Math.max(8, Math.min(idealTop, window.innerHeight - flyH - 8));
+    fly.style.top = clampedTop + 'px';
+    fly.style.transform = 'none';
   }
 }
 
@@ -18853,39 +18857,84 @@ function lqmSetTZ(tz) {
     <div id="tut-modal-body">
 
 <style>
-/* ── Tutorial rewrite styles ── */
-#tut-hero { text-align:center; padding:28px 0 18px; }
-#tut-hero h1 { font-family:var(--display); font-size:26px; font-weight:700; letter-spacing:3px; color:#fff; margin:0 0 6px; }
-#tut-hero h1 span { color:var(--warn); }
-#tut-hero p { font-size:12px; color:rgba(212,232,255,0.5); letter-spacing:1px; margin:0; }
-#tut-toc { display:flex; flex-wrap:wrap; gap:6px; justify-content:center; margin:0 0 20px; padding:0 4px; }
-.tut-toc-btn { font-family:var(--display); font-size:10px; letter-spacing:1.5px; text-transform:uppercase;
-  color:rgba(212,232,255,0.5); background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1);
-  border-radius:20px; padding:5px 12px; cursor:pointer; text-decoration:none; transition:all 0.2s; }
-.tut-toc-btn:hover,.tut-toc-btn.active { background:rgba(0,200,200,0.15); border-color:rgba(0,200,200,0.4); color:#00c8c8; }
-.tut-sec { margin:0 0 28px; scroll-margin-top:12px; }
-.tut-sec-hdr { display:flex; align-items:center; gap:10px; margin:0 0 12px;
-  border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:8px; }
-.tut-sec-icon { font-size:20px; }
-.tut-sec-title { font-family:var(--display); font-size:14px; font-weight:700; letter-spacing:2px;
-  text-transform:uppercase; color:#fff; }
-.tut-sec-sub { font-family:var(--display); font-size:10px; color:rgba(0,200,200,0.6); letter-spacing:1px; }
-.tut-p { font-size:12px; line-height:1.75; color:rgba(212,232,255,0.75); margin:0 0 10px; }
-.tut-p strong { color:#d4e8ff; }
-.tut-cards { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; }
-.tut-card { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-  border-radius:8px; padding:10px 12px; }
-.tut-card-title { font-family:var(--display); font-size:11px; font-weight:700; letter-spacing:1px;
-  color:rgba(0,200,200,0.85); margin:0 0 4px; }
-.tut-card p { font-size:11px; line-height:1.6; color:rgba(212,232,255,0.65); margin:0; }
-.tut-grid-ui { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0; font-size:11px; }
-.tut-grid-ui-item span:first-child { color:rgba(232,184,0,0.8); display:block; font-size:10px; letter-spacing:1px; margin-bottom:2px; }
-.tut-grid-ui-item { color:rgba(212,232,255,0.65); line-height:1.6; }
-.tut-alert-row { display:flex; align-items:center; gap:8px; margin:4px 0; font-size:11px; color:rgba(212,232,255,0.7); }
-.tut-swatch { width:12px; height:12px; border-radius:3px; flex-shrink:0; }
-.tut-tip { background:rgba(232,184,0,0.07); border:1px solid rgba(232,184,0,0.2); border-radius:6px; padding:8px 12px; margin:10px 0; }
-.tut-tip p { font-size:11px; color:rgba(232,200,100,0.8); margin:0; line-height:1.6; }
-.tut-divider { border:none; border-top:1px solid rgba(255,255,255,0.06); margin:18px 0; }
+/* ── Tutorial styles ── */
+#tut-modal-body { padding: 24px 28px 32px; font-family: var(--display); }
+
+/* Hero */
+#tut-hero { text-align:center; padding:8px 0 22px; }
+#tut-hero h1 { font-family:var(--display); font-size:28px; font-weight:700; letter-spacing:4px; color:#fff; margin:0 0 6px; text-transform:uppercase; }
+#tut-hero h1 span { color:#d4af37; }
+#tut-hero p { font-size:11px; color:rgba(212,232,255,0.4); letter-spacing:2px; margin:0; text-transform:uppercase; }
+
+/* TOC pill row */
+#tut-toc { display:flex; flex-wrap:wrap; gap:5px; justify-content:center; margin:0 0 24px; padding:0; }
+.tut-toc-btn {
+  font-family:var(--display); font-size:9px; letter-spacing:1.5px; text-transform:uppercase;
+  color:rgba(212,232,255,0.45); background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.09);
+  border-radius:20px; padding:5px 13px; cursor:pointer; text-decoration:none; transition:all 0.2s;
+}
+.tut-toc-btn:hover { background:rgba(212,175,55,0.12); border-color:rgba(212,175,55,0.35); color:rgba(212,175,55,0.9); }
+
+/* Section */
+.tut-sec { margin:0 0 30px; scroll-margin-top:12px; }
+.tut-sec-hdr {
+  display:flex; align-items:center; gap:12px; margin:0 0 14px;
+  padding-bottom:10px; border-bottom:1px solid rgba(212,175,55,0.18);
+}
+.tut-sec-icon { font-size:22px; filter:drop-shadow(0 0 8px rgba(212,175,55,0.4)); }
+.tut-sec-title {
+  font-family:var(--display); font-size:13px; font-weight:700; letter-spacing:2.5px;
+  text-transform:uppercase; color:#fff;
+}
+.tut-sec-sub { font-family:var(--display); font-size:9px; color:rgba(212,175,55,0.6); letter-spacing:1.5px; margin-top:2px; }
+
+/* Body text */
+.tut-p { font-size:12px; line-height:1.8; color:rgba(212,232,255,0.7); margin:0 0 10px; }
+.tut-p strong { color:#d4e8ff; font-weight:700; }
+.tut-p em { color:rgba(212,175,55,0.85); font-style:normal; }
+
+/* Cards */
+.tut-cards { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:12px 0; }
+.tut-card {
+  background: linear-gradient(135deg, rgba(212,175,55,0.06) 0%, rgba(255,255,255,0.03) 100%);
+  border:1px solid rgba(212,175,55,0.2);
+  border-radius:10px; padding:11px 13px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.tut-card:hover { border-color:rgba(212,175,55,0.45); box-shadow:0 0 12px rgba(212,175,55,0.1); }
+.tut-card-title {
+  font-family:var(--display); font-size:11px; font-weight:700; letter-spacing:1px;
+  color:rgba(212,175,55,0.9); margin:0 0 5px; text-transform:uppercase;
+}
+.tut-card p { font-size:11px; line-height:1.65; color:rgba(212,232,255,0.6); margin:0; }
+
+/* UI grid */
+.tut-grid-ui { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:12px 0; }
+.tut-grid-ui-item {
+  background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07);
+  border-radius:8px; padding:9px 11px;
+  font-size:11px; line-height:1.65; color:rgba(212,232,255,0.6);
+}
+.tut-grid-ui-item span:first-child {
+  display:block; font-size:9px; letter-spacing:1.5px; text-transform:uppercase;
+  color:rgba(212,175,55,0.7); margin-bottom:3px; font-weight:700;
+}
+
+/* Alert color rows */
+.tut-alert-row { display:flex; align-items:center; gap:9px; margin:5px 0; font-size:11px; color:rgba(212,232,255,0.7); line-height:1.5; }
+.tut-swatch { width:13px; height:13px; border-radius:3px; flex-shrink:0; box-shadow:0 0 5px currentColor; }
+
+/* Tip callout */
+.tut-tip {
+  background:linear-gradient(135deg, rgba(0,200,200,0.07) 0%, rgba(0,150,200,0.04) 100%);
+  border:1px solid rgba(0,200,200,0.25); border-radius:8px;
+  padding:10px 14px; margin:12px 0;
+}
+.tut-tip p { font-size:11px; color:rgba(160,230,230,0.85); margin:0; line-height:1.65; }
+.tut-tip p strong { color:#00e5ff; }
+
+/* Divider */
+.tut-divider { border:none; border-top:1px solid rgba(212,175,55,0.1); margin:22px 0; }
 </style>
 
 <div id="tut-hero">
