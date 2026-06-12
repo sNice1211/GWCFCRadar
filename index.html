@@ -1672,6 +1672,57 @@ body {
 #trop-panel-body, #sev-panel-body {
   margin-top: 4px;
 }
+/* Forecast hour grid */
+#sev-fcast-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 4px 0 2px;
+}
+#sev-fcast-date {
+  font-family: var(--display); font-size: 10px; color: rgba(0,200,200,0.85);
+  letter-spacing: 1px;
+}
+#sev-fcast-flbl {
+  font-family: var(--display); font-size: 10px; color: rgba(232,184,0,0.7);
+}
+#sev-frame-grid {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 5px;
+}
+.sev-fhr-btn {
+  font-family: var(--display); font-size: 9px; font-weight: 600;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 5px; color: rgba(255,255,255,0.5);
+  padding: 4px 2px; cursor: pointer; text-align: center;
+  transition: background 0.15s, color 0.15s;
+}
+.sev-fhr-btn:hover { background: rgba(0,200,200,0.15); color: #fff; }
+.sev-fhr-btn.active {
+  background: rgba(0,200,200,0.25); border-color: rgba(0,200,200,0.6);
+  color: #00c8c8;
+}
+/* Playbar */
+#sev-playbar-row {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+}
+#sev-play-btn2 {
+  font-size: 12px; padding: 3px 10px;
+  background: rgba(0,200,200,0.12); border: 1px solid rgba(0,200,200,0.35);
+  border-radius: 4px; color: #00c8c8; cursor: pointer; flex-shrink: 0;
+}
+#sev-playbar-track {
+  flex: 1; height: 4px; background: rgba(0,200,255,0.15);
+  border-radius: 2px; position: relative; cursor: pointer;
+}
+#sev-playbar-fill {
+  height: 100%; background: #00c8c8; border-radius: 2px;
+  transition: width 0.2s linear; width: 0%;
+}
+#sev-playbar-thumb {
+  position: absolute; top: 50%; transform: translate(-50%,-50%);
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #00c8c8; left: 0%; pointer-events: none;
+}
 .trop-model-img-wrap {
   position: relative;
   border-radius: 6px;
@@ -5414,12 +5465,18 @@ body.clean-mode #clean-hint { opacity: 1; }
           <span class="trop-run-lbl">Run:</span>
           <select id="sev-run-sel" onchange="_sevSetRun(this.value)"></select>
         </div>
-        <div id="sev-frame-row">
-          <button id="sev-play-btn" onclick="_sevTogglePlay()" style="font-size:10px;padding:1px 6px;background:rgba(0,200,200,0.12);border:1px solid rgba(0,200,200,0.35);border-radius:4px;color:#00c8c8;cursor:pointer;flex-shrink:0;">▶</button>
-          <span class="trop-run-lbl">Hour:</span>
-          <input type="range" id="sev-frame-slider" min="0" max="6" value="0" oninput="_sevSetFrame(this.value)">
-          <span id="sev-frame-lbl">F000</span>
+        <div id="sev-playbar-row">
+          <button id="sev-play-btn2" onclick="_sevTogglePlay()">▶</button>
+          <div id="sev-playbar-track" onclick="_sevPlaybarClick(event)">
+            <div id="sev-playbar-fill"></div>
+            <div id="sev-playbar-thumb"></div>
+          </div>
         </div>
+        <div id="sev-fcast-header">
+          <span id="sev-fcast-date">—</span>
+          <span id="sev-fcast-flbl">F+000</span>
+        </div>
+        <div id="sev-frame-grid"></div>
         <div id="sev-panel-body"></div>
       </div>
 
@@ -10589,32 +10646,105 @@ function _sevSetSection(s){
   _sevUpdateProducts();
   _sevPopulateRuns();
   _sevFrame=0;
-  const sl=document.getElementById('sev-frame-slider');
-  if(sl){sl.max=_sevMaxFrame();sl.value=0;}
-  document.getElementById('sev-frame-lbl').textContent='F000';
+  _sevBuildFrameGrid();
   _sevRender();
 }
 function _sevSetVar(v){
   _sevVar=v;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;
-  const sl=document.getElementById('sev-frame-slider');if(sl){sl.max=_sevMaxFrame();sl.value=0;}
-  _sevFrame=0;document.getElementById('sev-frame-lbl').textContent='F000';_sevRender();
+  _sevFrame=0;_sevBuildFrameGrid();_sevRender();
 }
-function _sevSetRun(v){_sevRun=v;_sevRender();}
+function _sevSetRun(v){_sevRun=v;_sevFrame=0;_sevBuildFrameGrid();_sevRender();}
+const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+function _sevFcastDateTime(frame) {
+  if (!_sevRun || _sevRun.length < 10) return { date: '—', flbl: 'F+000' };
+  const step = _sevSection === 'ecmwf' ? 6 : 3;
+  const hrs = frame * step;
+  const runMs = Date.UTC(
+    parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1,
+    parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10))
+  );
+  const t = new Date(runMs + hrs * 3600000);
+  const dow = DAYS[t.getUTCDay()];
+  const mon = MONS[t.getUTCMonth()];
+  const day = t.getUTCDate();
+  const hr  = String(t.getUTCHours()).padStart(2,'0');
+  return {
+    date: `${dow} ${mon} ${day} — ${hr}:00z`,
+    flbl: 'F+' + String(hrs).padStart(3,'0')
+  };
+}
+
+function _sevBuildFrameGrid() {
+  const grid = document.getElementById('sev-frame-grid');
+  if (!grid) return;
+  const max = _sevMaxFrame();
+  const total = max + 1;
+  // Square-ish grid: find cols so rows ≈ cols
+  const cols = Math.ceil(Math.sqrt(total));
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.innerHTML = '';
+  const step = _sevSection === 'ecmwf' ? 6 : 3;
+  for (let i = 0; i <= max; i++) {
+    const hrs = i * step;
+    const btn = document.createElement('button');
+    btn.className = 'sev-fhr-btn' + (i === _sevFrame ? ' active' : '');
+    btn.textContent = 'F+' + String(hrs).padStart(3,'0');
+    btn.dataset.frame = i;
+    btn.onclick = () => _sevSetFrame(i);
+    grid.appendChild(btn);
+  }
+  _sevUpdatePlaybar();
+  _sevUpdateFcastHeader();
+}
+
+function _sevUpdateFcastHeader() {
+  const { date, flbl } = _sevFcastDateTime(_sevFrame);
+  const d = document.getElementById('sev-fcast-date');
+  const f = document.getElementById('sev-fcast-flbl');
+  if (d) d.textContent = date;
+  if (f) f.textContent = flbl;
+}
+
+function _sevUpdatePlaybar() {
+  const max = _sevMaxFrame();
+  const pct = max > 0 ? (_sevFrame / max) * 100 : 0;
+  const fill  = document.getElementById('sev-playbar-fill');
+  const thumb = document.getElementById('sev-playbar-thumb');
+  if (fill)  fill.style.width  = pct + '%';
+  if (thumb) thumb.style.left  = pct + '%';
+}
+
+function _sevPlaybarClick(e) {
+  const track = document.getElementById('sev-playbar-track');
+  if (!track) return;
+  const rect = track.getBoundingClientRect();
+  const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  _sevSetFrame(Math.round(pct * _sevMaxFrame()));
+}
+
 function _sevSetFrame(v){
   _sevFrame=parseInt(v);
-  const sl=document.getElementById('sev-frame-slider');if(sl)sl.value=_sevFrame;
-  const hrs=_sevSection==='ecmwf'?_sevFrame*6:_sevFrame*3;
-  document.getElementById('sev-frame-lbl').textContent='F'+String(hrs).padStart(3,'0');
+  // Update active grid button
+  document.querySelectorAll('.sev-fhr-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.frame) === _sevFrame);
+  });
+  // Scroll active button into view
+  const active = document.querySelector('.sev-fhr-btn.active');
+  if (active) active.scrollIntoView({ block: 'nearest' });
+  _sevUpdatePlaybar();
+  _sevUpdateFcastHeader();
   _sevRender();
 }
+
 function _sevTogglePlay(){
   _sevPlaying=!_sevPlaying;
-  const btn=document.getElementById('sev-play-btn');
+  const btn=document.getElementById('sev-play-btn2');
   if(btn)btn.textContent=_sevPlaying?'■':'▶';
   if(_sevPlaying){
     _sevPlayTimer=setInterval(()=>{
-      const sl=document.getElementById('sev-frame-slider');
-      const max=sl?parseInt(sl.max):_sevMaxFrame();
+      const max=_sevMaxFrame();
       _sevSetFrame(_sevFrame>=max?0:_sevFrame+1);
     },700);
   } else {
@@ -10625,7 +10755,7 @@ function _sevInit() {
   const mSel=document.getElementById('sev-model-sel');if(mSel)mSel.value=_sevSection;
   _sevUpdateProducts();
   _sevPopulateRuns();
-  const sl=document.getElementById('sev-frame-slider');if(sl)sl.max=_sevMaxFrame();
+  _sevBuildFrameGrid();
   _sevRender();
 }
 
