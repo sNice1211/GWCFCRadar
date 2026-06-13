@@ -18585,16 +18585,9 @@ function selectProduct(p) {
   </div>
   <!-- ─── AI ─── -->
   <div class="lqm-settings-category">AI CHAT</div>
-  <div class="lqm-settings-row" style="flex-direction:column;align-items:flex-start;gap:5px;">
-    <span class="lqm-settings-lbl">Gemini API Key</span>
-    <div style="display:flex;gap:6px;width:100%">
-      <input id="lqm-set-gemini-key" type="password" placeholder="Paste AIza… key here"
-        style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;font-family:var(--mono);font-size:10px;padding:5px 8px;outline:none;"
-        oninput="try{localStorage.setItem('gwcfc_gemini_key',this.value)}catch(e){}">
-      <button onclick="(function(){const k=document.getElementById('lqm-set-gemini-key');k.type=k.type==='password'?'text':'password'})()"
-        style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#aaa;font-size:10px;padding:4px 8px;cursor:pointer;">👁</button>
-    </div>
-    <span style="font-family:var(--mono);font-size:8px;color:rgba(255,255,255,0.28);">Get key at aistudio.google.com · stored locally only</span>
+  <div class="lqm-settings-row">
+    <span class="lqm-settings-lbl">Powered by Gemini 2.0 Flash</span>
+    <span style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.4);">Ready to use</span>
   </div>
   <!-- ─── ALERTS ─── -->
   <div class="lqm-settings-category">ALERTS</div>
@@ -18812,17 +18805,7 @@ async function lqmDoSearch() {
 }
 
 // ── AI CHAT ──
-function _geminiKey() { try { return localStorage.getItem('gwcfc_gemini_key') || ''; } catch(e) { return ''; } }
-function _geminiUrl(key) {
-  const base = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
-  // AIza... keys go as query param; OAuth tokens (AQ., ya29., etc.) go as Bearer header
-  return key.startsWith('AIza') ? `${base}?key=${key}` : base;
-}
-function _geminiHeaders(key) {
-  const h = { 'Content-Type': 'application/json' };
-  if (!key.startsWith('AIza')) h['Authorization'] = `Bearer ${key}`;
-  return h;
-}
+const _AI_WORKER = 'https://asturio-ai.ralphies1005.workers.dev';
 let _aiHistory = [];
 
 function lqmOpenAI() {
@@ -18868,11 +18851,9 @@ Answer concisely. Focus on weather topics.`;
       system_instruction: { parts: [{ text: ctx }] },
       contents: _aiHistory
     };
-    const key = _geminiKey();
-    if (!key) throw new Error('No API key set. Add your Gemini key in ⚙ Settings → AI CHAT.');
-    const res = await fetch(_geminiUrl(key), {
+    const res = await fetch(_AI_WORKER, {
       method: 'POST',
-      headers: _geminiHeaders(key),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
     const data = await res.json();
@@ -18928,8 +18909,6 @@ function lqmOpenSettings() {
   if (bcRow) bcRow.style.display = _locMarker ? '' : 'none';
   const bcCb = document.getElementById('lqm-set-breadcrumb');
   if (bcCb) bcCb.checked = _gpsBreadcrumbOn;
-  const gkInput = document.getElementById('lqm-set-gemini-key');
-  if (gkInput) { try { gkInput.value = localStorage.getItem('gwcfc_gemini_key') || ''; } catch(e) {} }
 }
 function lqmCloseSettings() {
   const el = document.getElementById('lqm-settings-overlay');
