@@ -3375,6 +3375,61 @@ body {
 }
 #lqm-search-close:hover { color: #fff; }
 /* Settings overlay */
+/* ── AI CHAT PANEL ── */
+#lqm-ai-overlay {
+  position: fixed;
+  top: 155px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  background: rgb(8,12,16);
+  border: 1px solid rgba(0,200,200,0.3);
+  border-radius: 16px;
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  display: none;
+  flex-direction: column;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.8);
+  overflow: hidden;
+}
+#lqm-ai-overlay.lqm-panel-open { display: flex; }
+#lqm-ai-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(0,200,200,0.15);
+  background: rgba(0,200,200,0.04);
+}
+#lqm-ai-header-title { font-family: var(--display); font-size: 13px; font-weight: 700; letter-spacing: 1px; color: var(--accent2); flex: 1; }
+#lqm-ai-header-sub { font-family: var(--mono); font-size: 8px; color: rgba(255,255,255,0.28); letter-spacing: 1px; }
+#lqm-ai-close { background: none; border: none; color: rgba(255,255,255,0.35); font-size: 16px; cursor: pointer; padding: 0 2px; line-height: 1; }
+#lqm-ai-close:hover { color: #fff; }
+#lqm-ai-messages {
+  flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+  max-height: 320px; min-height: 80px;
+}
+.ai-msg { font-family: var(--sans); font-size: 12px; line-height: 1.6; max-width: 90%; }
+.ai-msg.user { align-self: flex-end; background: rgba(0,200,200,0.12); border: 1px solid rgba(0,200,200,0.2); border-radius: 10px 10px 2px 10px; padding: 7px 11px; color: #e0f7fa; }
+.ai-msg.bot { align-self: flex-start; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px 10px 10px 2px; padding: 7px 11px; color: rgba(255,255,255,0.85); }
+.ai-msg.bot.typing { color: rgba(255,255,255,0.4); font-style: italic; }
+.ai-msg.error { color: #ff7070; background: rgba(255,0,0,0.08); border-color: rgba(255,0,0,0.2); }
+#lqm-ai-input-row {
+  display: flex; gap: 6px; padding: 10px 14px 12px;
+  border-top: 1px solid rgba(255,255,255,0.07);
+}
+#lqm-ai-input {
+  flex: 1; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px; color: #fff; font-family: var(--sans); font-size: 12px;
+  padding: 7px 10px; outline: none; resize: none; min-height: 36px; max-height: 80px;
+}
+#lqm-ai-input:focus { border-color: rgba(0,200,200,0.4); }
+#lqm-ai-send {
+  background: var(--accent2); border: none; border-radius: 8px; color: #000;
+  font-family: var(--display); font-size: 11px; font-weight: 700; padding: 7px 12px;
+  cursor: pointer; flex-shrink: 0; align-self: flex-end;
+}
+#lqm-ai-send:hover { opacity: 0.85; }
+#lqm-ai-send:disabled { opacity: 0.35; cursor: default; }
+
 #lqm-settings-overlay {
   position: fixed;
   top: 155px;
@@ -18334,6 +18389,21 @@ function selectProduct(p) {
   <div id="lqm-search-dropdown"></div>
 </div>
 
+<div id="lqm-ai-overlay">
+  <div id="lqm-ai-header">
+    <span id="lqm-ai-header-title">🤖 Ask AI</span>
+    <span id="lqm-ai-header-sub">Gemini 2.0 Flash</span>
+    <button id="lqm-ai-close" onclick="lqmCloseAI()">✕</button>
+  </div>
+  <div id="lqm-ai-messages">
+    <div class="ai-msg bot">Hey! Ask me anything about weather — radar, alerts, models, or what you're seeing on the map.</div>
+  </div>
+  <div id="lqm-ai-input-row">
+    <textarea id="lqm-ai-input" placeholder="Ask a weather question…" rows="1" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();_aiSend();}"></textarea>
+    <button id="lqm-ai-send" onclick="_aiSend()">Send</button>
+  </div>
+</div>
+
 <div id="lqm-settings-overlay">
   <button id="lqm-settings-close" onclick="lqmCloseSettings()">✕</button>
   <div class="lqm-settings-title">⚙ Settings</div>
@@ -18513,6 +18583,19 @@ function selectProduct(p) {
       <div class="lqm-toggle-knob"></div>
     </label>
   </div>
+  <!-- ─── AI ─── -->
+  <div class="lqm-settings-category">AI CHAT</div>
+  <div class="lqm-settings-row" style="flex-direction:column;align-items:flex-start;gap:5px;">
+    <span class="lqm-settings-lbl">Gemini API Key</span>
+    <div style="display:flex;gap:6px;width:100%">
+      <input id="lqm-set-gemini-key" type="password" placeholder="Paste AIza… key here"
+        style="flex:1;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#fff;font-family:var(--mono);font-size:10px;padding:5px 8px;outline:none;"
+        oninput="try{localStorage.setItem('gwcfc_gemini_key',this.value)}catch(e){}">
+      <button onclick="(function(){const k=document.getElementById('lqm-set-gemini-key');k.type=k.type==='password'?'text':'password'})()"
+        style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:6px;color:#aaa;font-size:10px;padding:4px 8px;cursor:pointer;">👁</button>
+    </div>
+    <span style="font-family:var(--mono);font-size:8px;color:rgba(255,255,255,0.28);">Get key at aistudio.google.com · stored locally only</span>
+  </div>
   <!-- ─── ALERTS ─── -->
   <div class="lqm-settings-category">ALERTS</div>
   <div class="lqm-settings-row">
@@ -18587,7 +18670,7 @@ function selectProduct(p) {
   }, { passive: true });
 
   function _isNear() {
-    const ids = ['logo-wrap', 'logo-quick-menu', 'lqm-search-overlay', 'lqm-settings-overlay'];
+    const ids = ['logo-wrap', 'logo-quick-menu', 'lqm-search-overlay', 'lqm-settings-overlay', 'lqm-ai-overlay'];
     for (const id of ids) {
       const el = document.getElementById(id);
       if (!el) continue;
@@ -18729,14 +18812,70 @@ async function lqmDoSearch() {
 }
 
 // ── AI CHAT ──
+function _geminiKey() { try { return localStorage.getItem('gwcfc_gemini_key') || ''; } catch(e) { return ''; } }
+function _geminiUrl() { return `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${_geminiKey()}`; }
+let _aiHistory = [];
+
 function lqmOpenAI() {
-  // AI panel coming soon , attempt to open existing ask panel if present
-  const panel = document.getElementById('ask-panel');
-  if (panel) {
-    if (typeof toggleAskPanel === 'function') toggleAskPanel();
-  } else {
-    // Show brief toast
-    _lqmToast('AI Chat coming soon!');
+  document.getElementById('lqm-ai-overlay')?.classList.add('lqm-panel-open');
+}
+function lqmCloseAI() {
+  document.getElementById('lqm-ai-overlay')?.classList.remove('lqm-panel-open');
+}
+
+function _aiAddMsg(role, text, extra='') {
+  const box = document.getElementById('lqm-ai-messages');
+  if (!box) return null;
+  const div = document.createElement('div');
+  div.className = `ai-msg ${role}${extra ? ' '+extra : ''}`;
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+async function _aiSend() {
+  const input = document.getElementById('lqm-ai-input');
+  const sendBtn = document.getElementById('lqm-ai-send');
+  const text = input?.value.trim();
+  if (!text) return;
+  input.value = '';
+  sendBtn.disabled = true;
+
+  _aiAddMsg('user', text);
+  _aiHistory.push({ role: 'user', parts: [{ text }] });
+
+  const typing = _aiAddMsg('bot', 'Thinking…', 'typing');
+
+  // Build system context from current map state
+  const ctx = `You are a weather assistant built into GWCFC Radar, a live weather map app.
+Current date/time: ${new Date().toUTCString()}.
+Active layers: ${Object.entries(activeLayers||{}).filter(([,v])=>v).map(([k])=>k).join(', ')||'none'}.
+Map center: ${typeof map!=='undefined'?map.getCenter().lat.toFixed(2)+'°N, '+Math.abs(map.getCenter().lng).toFixed(2)+'°W':'unknown'}.
+Answer concisely. Focus on weather topics.`;
+
+  try {
+    const body = {
+      system_instruction: { parts: [{ text: ctx }] },
+      contents: _aiHistory
+    };
+    const key = _geminiKey();
+    if (!key) throw new Error('No API key set. Add your Gemini key in ⚙ Settings → AI Key.');
+    const res = await fetch(_geminiUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error?.message || res.status);
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response.';
+    _aiHistory.push({ role: 'model', parts: [{ text: reply }] });
+    if (typing) { typing.textContent = reply; typing.classList.remove('typing'); }
+  } catch(e) {
+    if (typing) { typing.textContent = '⚠ ' + (e.message || 'Error reaching Gemini.'); typing.classList.add('error'); typing.classList.remove('typing'); }
+  } finally {
+    sendBtn.disabled = false;
+    input.focus();
   }
 }
 function _lqmToast(msg) {
@@ -18780,6 +18919,8 @@ function lqmOpenSettings() {
   if (bcRow) bcRow.style.display = _locMarker ? '' : 'none';
   const bcCb = document.getElementById('lqm-set-breadcrumb');
   if (bcCb) bcCb.checked = _gpsBreadcrumbOn;
+  const gkInput = document.getElementById('lqm-set-gemini-key');
+  if (gkInput) { try { gkInput.value = localStorage.getItem('gwcfc_gemini_key') || ''; } catch(e) {} }
 }
 function lqmCloseSettings() {
   const el = document.getElementById('lqm-settings-overlay');
