@@ -18813,7 +18813,16 @@ async function lqmDoSearch() {
 
 // ── AI CHAT ──
 function _geminiKey() { try { return localStorage.getItem('gwcfc_gemini_key') || ''; } catch(e) { return ''; } }
-function _geminiUrl() { return `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${_geminiKey()}`; }
+function _geminiUrl(key) {
+  const base = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+  // AIza... keys go as query param; OAuth tokens (AQ., ya29., etc.) go as Bearer header
+  return key.startsWith('AIza') ? `${base}?key=${key}` : base;
+}
+function _geminiHeaders(key) {
+  const h = { 'Content-Type': 'application/json' };
+  if (!key.startsWith('AIza')) h['Authorization'] = `Bearer ${key}`;
+  return h;
+}
 let _aiHistory = [];
 
 function lqmOpenAI() {
@@ -18860,10 +18869,10 @@ Answer concisely. Focus on weather topics.`;
       contents: _aiHistory
     };
     const key = _geminiKey();
-    if (!key) throw new Error('No API key set. Add your Gemini key in ⚙ Settings → AI Key.');
-    const res = await fetch(_geminiUrl(), {
+    if (!key) throw new Error('No API key set. Add your Gemini key in ⚙ Settings → AI CHAT.');
+    const res = await fetch(_geminiUrl(key), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: _geminiHeaders(key),
       body: JSON.stringify(body)
     });
     const data = await res.json();
