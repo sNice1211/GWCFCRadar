@@ -18976,18 +18976,57 @@ function _aiAddMsg(role, text, extra='') {
   return div;
 }
 
-function _aiBuildContext(imageB64) {
-  const mapCenter = typeof map!=='undefined' ? `${map.getCenter().lat.toFixed(3)}°N, ${Math.abs(map.getCenter().lng).toFixed(3)}°W (zoom ${map.getZoom()})` : 'unknown';
+// Fetch NWS forecast for a lat/lon — returns text summary or null
+async function _aiFetchForecast(lat, lon) {
+  try {
+    const pts = await fetch(`https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`, { signal: AbortSignal.timeout(6000) });
+    if (!pts.ok) return null;
+    const pj = await pts.json();
+    const furl = pj.properties?.forecast;
+    if (!furl) return null;
+    const fc = await fetch(furl, { signal: AbortSignal.timeout(6000) });
+    if (!fc.ok) return null;
+    const fj = await fc.json();
+    return (fj.properties?.periods || []).slice(0, 5).map(p =>
+      `• ${p.name}: ${p.detailedForecast}`
+    ).join('\n');
+  } catch { return null; }
+}
+
+// Fetch ALL active NWS alerts (not just rendered ones)
+async function _aiFetchAllAlerts() {
+  try {
+    const r = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert&limit=50', { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    return (j.features || []).map(f => {
+      const p = f.properties;
+      return `• ${p.event||'Alert'} — ${(p.areaDesc||'').substring(0,80)}${p.expires ? ' [exp '+new Date(p.expires).toUTCString()+']' : ''}`;
+    }).join('\n') || 'No active alerts.';
+  } catch { return null; }
+}
+
+async function _aiBuildContext(imageB64) {
+  const lat = typeof map!=='undefined' ? map.getCenter().lat : 0;
+  const lon = typeof map!=='undefined' ? map.getCenter().lng : 0;
+  const mapCenter = typeof map!=='undefined' ? `${lat.toFixed(3)}°N, ${Math.abs(lon).toFixed(3)}°W (zoom ${map.getZoom()})` : 'unknown';
   const activeLyrs = Object.entries(activeLayers||{}).filter(([,v])=>v).map(([k])=>k).join(', ') || 'none';
   const radarSite = typeof _refStation !== 'undefined' && _refStation ? `Active NEXRAD site: ${_refStation}` : 'No single-site radar open (composite view)';
-  const alertSummary = (typeof _lastAlertFeatures !== 'undefined' && _lastAlertFeatures.length)
-    ? _lastAlertFeatures.slice(0,10).map(f => {
-        const p = f.properties;
-        return `• ${p.event||'Alert'} — ${(p.areaDesc||'').substring(0,60)}${p.expires ? ' (expires '+new Date(p.expires).toUTCString()+')' : ''}`;
-      }).join('\n')
-    : 'No active NWS alerts on map.';
 
-  return `You are Asturio AI, the built-in weather intelligence system for GWCFC Radar — a professional live weather map app for storm chasers, enthusiasts, and weather watchers.
+  // Fetch live data in parallel
+  const [forecastText, allAlertsText] = await Promise.all([
+    _aiFetchForecast(lat, lon),
+    _aiFetchAllAlerts()
+  ]);
+
+  const alertSummary = allAlertsText || ((typeof _lastAlertFeatures !== 'undefined' && _lastAlertFeatures.length)
+    ? _lastAlertFeatures.slice(0,15).map(f => {
+        const p = f.properties;
+        return `• ${p.event||'Alert'} — ${(p.areaDesc||'').substring(0,80)}`;
+      }).join('\n')
+    : 'No active NWS alerts.');
+
+  return `You are Asturio AI, the built-in weather intelligence system for GWCFC Radar — a professional live weather map for storm chasers, enthusiasts, and weather watchers.
 
 === CURRENT MAP STATE ===
 Date/time (UTC): ${new Date().toUTCString()}
@@ -18995,7 +19034,10 @@ Map center: ${mapCenter}
 Active layers: ${activeLyrs}
 ${radarSite}
 
-=== LIVE NWS ALERTS ON MAP (up to 10) ===
+=== NWS FORECAST FOR MAP CENTER ===
+${forecastText || 'Forecast unavailable for this location.'}
+
+=== ALL ACTIVE NWS ALERTS (NATIONWIDE) ===
 ${alertSummary}
 
 === APP CAPABILITIES ===
@@ -19012,15 +19054,16 @@ GWCFC Radar can display:
 - Lightning strike density
 - Surface analysis fronts
 - Severe weather model guidance (HRRR, GFS, ECMWF, DWD ICON)
-${imageB64 ? '\nThe user has shared a screenshot of the current radar map. Analyze it and describe what you see.' : ''}
+${imageB64 ? '\nA screenshot of the current map has been automatically included. Analyze it — describe radar colors, storm cells, alert zones, fronts, or anything visible.' : ''}
 
 === YOUR ROLE ===
 - Be the most knowledgeable, helpful weather expert possible
-- Use **bold** for important terms, use bullet lists for multi-point answers
+- Use **bold** for important terms, bullet lists for multi-point answers
 - Explain radar products, alert types, and weather concepts clearly
-- When analyzing the map screenshot, describe colors/patterns and what they mean
-- Be conversational and direct — don't over-hedge or be overly cautious
-- Don't make up specific rainfall amounts, wind speeds, or storm paths unless shown in the image
+- When analyzing the map screenshot, describe colors/patterns and what they mean meteorologically
+- Be conversational and direct
+- Don't make up specific data not shown in the context or image
+- If asked about alerts or forecasts for a specific city, use the data provided above
 - If asked about something outside weather/this app, briefly redirect`;
 }
 
@@ -19062,7 +19105,18 @@ async function _aiSnap() {
   }
 }
 
-async function _aiSend(imageB64) {
+// Auto-capture the map — returns base64 JPEG string or null
+async function _aiAutoSnap() {
+  try {
+    await _aiLoadHtml2canvas();
+    const mapEl = document.getElementById('map');
+    if (!mapEl) return null;
+    const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: true, scale: 0.4, logging: false });
+    return canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+  } catch { return null; }
+}
+
+async function _aiSend(explicitImageB64) {
   const input = document.getElementById('lqm-ai-input');
   const sendBtn = document.getElementById('lqm-ai-send');
   const snapBtn = document.getElementById('lqm-ai-snap');
@@ -19073,17 +19127,31 @@ async function _aiSend(imageB64) {
   if (snapBtn) snapBtn.disabled = true;
 
   const hist = _aiCurrentHistory();
-  const userParts = [{ text }];
-  if (imageB64) userParts.push({ inline_data: { mime_type: 'image/jpeg', data: imageB64 } });
-  hist.push({ role: 'user', parts: userParts });
+  hist.push({ role: 'user', parts: [{ text }] });
   _aiRenderMessages();
 
-  const typing = _aiAddMsg('bot', 'Thinking…', 'typing');
+  const typing = _aiAddMsg('bot', 'Reading map & fetching live data…', 'typing');
 
   try {
+    // Auto-capture map + fetch live forecast/alerts in parallel
+    const [autoSnap, ctx] = await Promise.all([
+      explicitImageB64 ? Promise.resolve(explicitImageB64) : _aiAutoSnap(),
+      _aiBuildContext(true) // pass true since we'll always have a snap
+    ]);
+
+    const userParts = [{ text }];
+    if (autoSnap) userParts[0] = { text }; // keep text
+    // Attach image to the LAST user message so Gemini sees it with this turn
+    const contents = hist.map((m, i) => {
+      if (i === hist.length - 1 && autoSnap) {
+        return { role: m.role, parts: [...m.parts, { inline_data: { mime_type: 'image/jpeg', data: autoSnap } }] };
+      }
+      return m;
+    });
+
     const body = {
-      system_instruction: { parts: [{ text: _aiBuildContext(imageB64 || null) }] },
-      contents: hist
+      system_instruction: { parts: [{ text: ctx }] },
+      contents
     };
     const res = await fetch(_AI_WORKER, {
       method: 'POST',
