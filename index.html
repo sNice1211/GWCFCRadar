@@ -680,15 +680,71 @@ body {
 }
 .dp-row b { color: #fff; font-weight: 600; white-space: nowrap; }
 .nwr-popup .leaflet-popup-content-wrapper {
-  background: #1a1a1a;
-  border: 1px solid #cc6600;
-  border-radius: 8px;
-  color: #eee;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.8);
-  padding: 0;
+  background: rgb(8,12,16) !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  border-radius: 10px !important;
+  color: #eee !important;
+  box-shadow: 0 4px 28px rgba(0,0,0,0.75) !important;
+  padding: 0 !important;
+  min-width: 260px !important;
 }
-.nwr-popup .leaflet-popup-tip { background: #1a1a1a; }
-.nwr-popup .leaflet-popup-content { margin: 0; }
+.nwr-popup .leaflet-popup-tip { background: rgb(8,12,16) !important; }
+.nwr-popup .leaflet-popup-content { margin: 0 !important; width: auto !important; }
+.nwr-popup .leaflet-popup-close-button { color: rgba(255,255,255,0.35) !important; top: 8px !important; right: 8px !important; font-size: 14px !important; }
+/* NWR popup internals */
+.nwr-inner { overflow: hidden; border-radius: 10px; font-family: var(--sans); }
+.nwr-header {
+  display: flex; align-items: center; gap: 9px;
+  padding: 10px 36px 9px 13px;
+  border-top: 3px solid #ff9900;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: rgba(255,153,0,0.06);
+}
+.nwr-header-icon { font-size: 18px; line-height: 1; flex-shrink: 0; }
+.nwr-header-text { display: flex; flex-direction: column; gap: 1px; }
+.nwr-callsign { font-family: var(--display); font-size: 14px; font-weight: 700; letter-spacing: 1px; color: #ff9900; }
+.nwr-sitename { font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,0.45); }
+.nwr-status-badge {
+  margin-left: auto; flex-shrink: 0;
+  font-family: var(--display); font-size: 8px; font-weight: 700; letter-spacing: 1px;
+  padding: 2px 7px; border-radius: 20px;
+}
+.nwr-body { padding: 8px 13px 4px; }
+.nwr-meta-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin-bottom: 4px; }
+.nwr-meta-cell { display: flex; flex-direction: column; gap: 1px; }
+.nwr-meta-lbl { font-family: var(--display); font-size: 7px; letter-spacing: 1.5px; color: rgba(255,255,255,0.28); text-transform: uppercase; }
+.nwr-meta-val { font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.8); }
+.nwr-meta-full { margin-bottom: 4px; }
+.nwr-meta-full .nwr-meta-val { font-size: 9px; color: rgba(255,255,255,0.55); line-height: 1.5; }
+.nwr-audio-wrap { margin: 6px 13px 10px; background: rgba(255,153,0,0.07); border: 1px solid rgba(255,153,0,0.25); border-radius: 8px; overflow: hidden; }
+.nwr-audio-label { padding: 5px 10px 0; font-family: var(--display); font-size: 8px; letter-spacing: 1.5px; color: rgba(255,153,0,0.6); text-transform: uppercase; }
+.nwr-tab-bar { display: flex; border-bottom: 1px solid rgba(255,153,0,0.15); }
+.nwr-tab {
+  flex: 1; padding: 5px 4px; border: 0; border-bottom: 2px solid transparent;
+  cursor: pointer; font-family: var(--display); font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+  background: transparent; color: rgba(255,255,255,0.3); transition: color 0.15s;
+}
+.nwr-tab.active { border-bottom-color: #ff9900; color: #ff9900; background: rgba(255,153,0,0.08); }
+.nwr-stream-panel { padding: 8px 10px; }
+.nwr-stream-btns { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.nwr-btn-play {
+  background: #cc6600; border: none; border-radius: 6px; color: #fff;
+  font-family: var(--display); font-size: 11px; font-weight: 700;
+  padding: 6px 14px; cursor: pointer; flex-shrink: 0; letter-spacing: 0.5px;
+}
+.nwr-btn-play:hover { background: #e07000; }
+.nwr-btn-rec {
+  background: rgba(180,0,0,0.25); border: 1px solid rgba(220,0,0,0.4); border-radius: 6px;
+  color: #ff8888; font-family: var(--display); font-size: 10px; font-weight: 700;
+  padding: 6px 10px; cursor: pointer; flex-shrink: 0;
+}
+.nwr-btn-rec:hover { background: rgba(220,0,0,0.35); }
+.nwr-stream-meta { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.nwr-live-count { font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,0.35); }
+.nwr-stream-link { color: #ff9900; font-family: var(--mono); font-size: 9px; text-decoration: none; }
+.nwr-footer { padding: 0 13px 10px; }
+.nwr-footer a { color: rgba(255,153,0,0.55); font-family: var(--mono); font-size: 9px; text-decoration: none; }
+.nwr-footer a:hover { color: #ff9900; }
 .dp-coord {
   font-family: var(--mono);
   font-size: 9px;
@@ -15105,70 +15161,96 @@ function _nwrSwitchTab(call, tab) {
 function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
   const status   = p?.STATUS || 'NORMAL';
   const isOut    = status === 'OUT OF SERVICE';
-  const statCol  = isOut ? '#ff4040' : '#00ff99';
   const freq     = p?.FREQ   ? p.FREQ + ' MHz'           : '162.4–162.55 MHz';
-  const pwr      = p?.PWR    ? p.PWR + ' W'              : '—';
-  const wfo      = p?.WFO    ? p.WFO.replace('|', ' / ') : '—';
-  const counties = p?.COUNTY ? (Array.isArray(p.COUNTY) ? p.COUNTY.join(', ') : p.COUNTY) : '—';
-  const same     = p?.SAME   ? (Array.isArray(p.SAME)   ? p.SAME.join(', ')   : p.SAME)   : '—';
+  const pwr      = p?.PWR    ? p.PWR + ' W'              : 'N/A';
+  const wfo      = p?.WFO    ? p.WFO.replace('|', ' / ') : 'N/A';
+  const counties = p?.COUNTY ? (Array.isArray(p.COUNTY) ? p.COUNTY.join(', ') : p.COUNTY) : 'N/A';
+  const same     = p?.SAME   ? (Array.isArray(p.SAME)   ? p.SAME.join(', ')   : p.SAME)   : 'N/A';
   const stream   = gwesStream || wxrStream || wusaStream;
   const siteName = p?.SITENAME || stream?.server_name?.split(' - ')[0] || call;
   const state    = p?.STATE  || '';
-
-  const tabStyle = (active) => active
-    ? 'flex:1;padding:6px 4px;border:0;border-top:2px solid #ff9900;cursor:pointer;font-family:inherit;font-size:10px;font-weight:bold;background:#2d1a00;color:#ff9900;letter-spacing:.03em'
-    : 'flex:1;padding:6px 4px;border:0;border-top:2px solid transparent;cursor:pointer;font-family:inherit;font-size:10px;background:#111;color:#555;letter-spacing:.03em';
+  const statusBadgeStyle = isOut
+    ? 'background:rgba(255,50,50,0.15);border:1px solid rgba(255,50,50,0.4);color:#ff6060;'
+    : 'background:rgba(0,255,100,0.1);border:1px solid rgba(0,255,100,0.3);color:#00e676;';
 
   const streamPanel = (src, listeners, playId, callKey) => `
-    <div style="padding:8px">
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        <button id="${playId}" onclick="_nwrPlayAudio('${src}','${playId}','${callKey}')" style="background:#cc6600;border:none;border-radius:5px;color:white;font-family:inherit;font-size:12px;padding:5px 12px;cursor:pointer;flex-shrink:0">▶ Play</button>
-        <button onclick="_nwrStartRecord('${call}','${src}','${siteName}')" style="background:#550000;border:1px solid #aa0000;border-radius:5px;color:#ff8888;font-family:inherit;font-size:11px;padding:5px 10px;cursor:pointer;flex-shrink:0">🔴 Rec</button>
-        <span style="color:#aaa;font-size:9px">${listeners ?? 0} live</span>
-        <a href="${src}" target="_blank" style="color:#ff9900;font-size:9px;flex:1;text-align:right">link ↗</a>
+    <div class="nwr-stream-panel">
+      <div class="nwr-stream-btns">
+        <button id="${playId}" class="nwr-btn-play" onclick="_nwrPlayAudio('${src}','${playId}','${callKey}')">▶ Play</button>
+        <button class="nwr-btn-rec" onclick="_nwrStartRecord('${call}','${src}','${siteName}')">🔴 Rec</button>
+        <div class="nwr-stream-meta">
+          <span class="nwr-live-count">${listeners ?? 0} live</span>
+          <a class="nwr-stream-link" href="${src}" target="_blank">link ↗</a>
+        </div>
       </div>
     </div>`;
 
   const activeSources = [
-    gwesStream  ? { id: 'g', name: 'gwes', label: 'GWES',  s: gwesStream,  playId: `nwr-play-${call}`,   callKey: call }         : null,
-    wxrStream   ? { id: 'w', name: 'wxr',  label: 'NWRO',  s: wxrStream,   playId: `nwr-play-w-${call}`, callKey: `${call}-w` }  : null,
-    wusaStream  ? { id: 'u', name: 'wusa', label: 'WXUSA', s: wusaStream,  playId: `nwr-play-u-${call}`, callKey: `${call}-u` }  : null,
+    gwesStream  ? { id: 'g', name: 'gwes', label: 'GWES',  s: gwesStream,  playId: `nwr-play-${call}`,   callKey: call }        : null,
+    wxrStream   ? { id: 'w', name: 'wxr',  label: 'NWRO',  s: wxrStream,   playId: `nwr-play-w-${call}`, callKey: `${call}-w` } : null,
+    wusaStream  ? { id: 'u', name: 'wusa', label: 'WXUSA', s: wusaStream,  playId: `nwr-play-u-${call}`, callKey: `${call}-u` } : null,
   ].filter(Boolean);
 
-  let audioHTML;
+  let audioHTML = '';
   if (activeSources.length > 1) {
     const tabBar = activeSources.map((t, i) =>
-      `<button id="nwr-tab-${t.id}-${call}" onclick="_nwrSwitchTab('${call}','${t.name}')" style="${tabStyle(i === 0)}">${t.label}</button>`
+      `<button id="nwr-tab-${t.id}-${call}" class="nwr-tab${i===0?' active':''}" onclick="_nwrSwitchTab('${call}','${t.name}')">${t.label}</button>`
     ).join('');
     const panels = activeSources.map((t, i) =>
-      `<div id="nwr-panel-${t.id}-${call}" style="display:${i === 0 ? 'block' : 'none'}">${streamPanel(t.s.listenurl, t.s.listeners, t.playId, t.callKey)}</div>`
+      `<div id="nwr-panel-${t.id}-${call}" style="display:${i===0?'block':'none'}">${streamPanel(t.s.listenurl, t.s.listeners, t.playId, t.callKey)}</div>`
     ).join('');
-    audioHTML = `<div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
-      <div style="display:flex;border-bottom:1px solid #553300">${tabBar}</div>
+    audioHTML = `<div class="nwr-audio-wrap">
+      <div class="nwr-tab-bar">${tabBar}</div>
       ${panels}
     </div>`;
-  } else {
+  } else if (activeSources.length === 1) {
     const t = activeSources[0];
     const label = gwesStream ? 'GWES' : wxrStream ? 'NWRO' : 'WXUSA';
-    audioHTML = `<div style="margin-top:9px;background:#2d1a00;border:1px solid #cc6600;border-radius:6px;overflow:hidden">
-      <div style="padding:4px 8px 0;color:#ffaa33;font-weight:bold;font-size:10px">🔊 ${label} · LIVE AUDIO</div>
+    audioHTML = `<div class="nwr-audio-wrap">
+      <div class="nwr-audio-label">🔊 ${label} · Live Audio</div>
       ${streamPanel(t.s.listenurl, t.s.listeners, t.playId, t.callKey)}
     </div>`;
   }
 
-  return `<div style="font-family:'Comfortaa', sans-serif;font-size:11px;color:#eee;min-width:240px;background:#1a1a1a;padding:10px;border-radius:6px">
-    <div style="color:#ff9900;font-weight:bold;font-size:13px;margin-bottom:2px;">📡 ${call} <span style="color:#00ff66;font-size:9px">● LIVE</span></div>
-    <div style="color:#aaa;font-size:10px;margin-bottom:7px;">${siteName}${state ? ', ' + state : ''}</div>
-    <table style="border-collapse:collapse;font-size:10px;line-height:1.75;width:100%;background:#1a1a1a">
-      <tr><td style="color:#888;padding-right:10px;white-space:nowrap">Status</td><td style="color:${statCol};font-weight:bold">${status}</td></tr>
-      <tr><td style="color:#888;padding-right:10px">Freq</td><td style="color:#88ff88;font-weight:bold">${freq}</td></tr>
-      <tr><td style="color:#888;padding-right:10px">Power</td><td>${pwr}</td></tr>
-      <tr><td style="color:#888;padding-right:10px">WFO</td><td>${wfo}</td></tr>
-      <tr><td style="color:#888;padding-right:10px;vertical-align:top">County</td><td style="font-size:9px;color:#ccc">${counties}</td></tr>
-      <tr><td style="color:#888;padding-right:10px">SAME</td><td style="font-size:9px;color:#ccc">${same}</td></tr>
-    </table>
+  return `<div class="nwr-inner">
+    <div class="nwr-header">
+      <span class="nwr-header-icon">📡</span>
+      <div class="nwr-header-text">
+        <span class="nwr-callsign">${call}</span>
+        <span class="nwr-sitename">${siteName}${state ? ', ' + state : ''}</span>
+      </div>
+      <span class="nwr-status-badge" style="${statusBadgeStyle}">${isOut ? 'OFFLINE' : 'LIVE'}</span>
+    </div>
+    <div class="nwr-body">
+      <div class="nwr-meta-grid">
+        <div class="nwr-meta-cell">
+          <span class="nwr-meta-lbl">Frequency</span>
+          <span class="nwr-meta-val" style="color:#88dd88">${freq}</span>
+        </div>
+        <div class="nwr-meta-cell">
+          <span class="nwr-meta-lbl">Power</span>
+          <span class="nwr-meta-val">${pwr}</span>
+        </div>
+        <div class="nwr-meta-cell">
+          <span class="nwr-meta-lbl">Status</span>
+          <span class="nwr-meta-val" style="color:${isOut?'#ff6060':'#00e676'}">${status}</span>
+        </div>
+        <div class="nwr-meta-cell">
+          <span class="nwr-meta-lbl">WFO</span>
+          <span class="nwr-meta-val">${wfo}</span>
+        </div>
+      </div>
+      <div class="nwr-meta-full">
+        <span class="nwr-meta-lbl">Counties Served</span>
+        <div class="nwr-meta-val">${counties}</div>
+      </div>
+      <div class="nwr-meta-full">
+        <span class="nwr-meta-lbl">SAME Codes</span>
+        <div class="nwr-meta-val">${same}</div>
+      </div>
+    </div>
     ${audioHTML}
-    <div style="margin-top:6px;background:#1a1a1a"><a href="https://www.weather.gov/nwr/" target="_blank" style="color:#ff9900;font-size:10px">weather.gov/nwr ↗</a></div>
+    <div class="nwr-footer"><a href="https://www.weather.gov/nwr/" target="_blank">weather.gov/nwr ↗</a></div>
   </div>`;
 }
 
