@@ -622,15 +622,61 @@ body {
 /* ── DATA CLICK POPUP ── */
 .data-popup .leaflet-popup-content-wrapper {
   background: rgb(8,12,16);
-  border: 1px solid rgba(220,0,0,0.5);
+  border: 1px solid rgba(255,255,255,0.12);
   border-radius: 10px;
   color: #fff;
-  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+  box-shadow: 0 4px 28px rgba(0,0,0,0.75);
   padding: 0;
+  min-width: 220px;
 }
 .data-popup .leaflet-popup-tip { background: rgb(8,12,16); }
-.data-popup .leaflet-popup-content { margin: 0; }
-.data-popup-inner { padding: 10px 13px; min-width: 180px; }
+.data-popup .leaflet-popup-content { margin: 0; width: auto !important; }
+.data-popup-inner { overflow: hidden; border-radius: 10px; }
+.dp-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px 8px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  border-top: 3px solid var(--dp-accent, #00e5ff);
+  border-radius: 8px 8px 0 0;
+}
+.dp-header-icon { font-size: 16px; line-height: 1; flex-shrink: 0; }
+.dp-header-label {
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #fff;
+}
+.dp-header-sub {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: rgba(255,255,255,0.38);
+  letter-spacing: 0.5px;
+  margin-left: auto;
+}
+.dp-body { padding: 8px 13px 11px; }
+.dp-section {
+  font-family: var(--display);
+  font-size: 8px;
+  letter-spacing: 1.5px;
+  color: rgba(255,255,255,0.3);
+  text-transform: uppercase;
+  margin: 8px 0 4px;
+}
+.dp-section:first-child { margin-top: 2px; }
+.dp-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  padding: 2px 0;
+}
+.dp-row b { color: #fff; font-weight: 600; white-space: nowrap; }
 .nwr-popup .leaflet-popup-content-wrapper {
   background: #1a1a1a;
   border: 1px solid #cc6600;
@@ -670,6 +716,7 @@ body {
 }
 .dp-row b { color: #fff; font-weight: 600; white-space: nowrap; }
 .dp-loading { font-family: var(--mono); font-size: 11px; color: rgba(255,255,255,0.5); padding: 10px 13px; }
+.data-popup .leaflet-popup-close-button { color: rgba(255,255,255,0.35) !important; top: 6px !important; right: 8px !important; font-size: 14px !important; }
 
 /* ── LEGEND / SCALE (with embedded overlay icons) ── */
 /* ── OVERLAY LAUNCHER (layers button + fly-out pills) ── */
@@ -8821,16 +8868,23 @@ async function _loadMetarTemp() {
         </div>`
       });
       L.marker([lat, lon], { icon, zIndexOffset: 300 })
-        .bindPopup(`<div class="data-popup-inner">
-          <div class="dp-coord">${stId} · ${lat.toFixed(2)}°, ${lon.toFixed(2)}°</div>
-          <div class="dp-section">🌡 Temperature</div>
-          <div class="dp-row"><span>Temp</span><b style="color:${col}">${tF}°F / ${tC}°C</b></div>
-          ${dewF!=null?`<div class="dp-row"><span>Dewpoint</span><b>${dewF}°F / ${dewC}°C</b></div>`:''}
-          ${wSpd!=null?`<div class="dp-row"><span>Wind</span><b>${Math.round(wSpd)} kt @ ${wDir!=null?wDir+'°':'VRB'}</b></div>`:''}
-          ${p.R_HUMIDITY!=null?`<div class="dp-row"><span>Humidity</span><b>${p.R_HUMIDITY}%</b></div>`:''}
-          ${p.SKY_CONDTN?`<div class="dp-row"><span>Sky</span><b style="font-size:9px">${p.SKY_CONDTN}</b></div>`:''}
-          <div class="dp-row"><span>Station</span><b>${stName}</b></div>
-        </div>`, { className:'data-popup', maxWidth:220 })
+        .bindPopup(`<div class="data-popup-inner" style="--dp-accent:#ff7043">
+          <div class="dp-header">
+            <span class="dp-header-icon">🌡</span>
+            <span class="dp-header-label">${stName || stId}</span>
+            <span class="dp-header-sub">${stId}</span>
+          </div>
+          <div class="dp-body">
+            <div class="dp-section">Temperature</div>
+            <div class="dp-row"><span>Air Temp</span><b style="color:${col}">${tF}°F / ${tC}°C</b></div>
+            ${dewF!=null?`<div class="dp-row"><span>Dewpoint</span><b>${dewF}°F / ${dewC}°C</b></div>`:''}
+            ${p.R_HUMIDITY!=null?`<div class="dp-row"><span>Humidity</span><b>${p.R_HUMIDITY}%</b></div>`:''}
+            ${wSpd!=null?`<div class="dp-section">Wind</div><div class="dp-row"><span>Speed</span><b>${Math.round(wSpd)} kt</b></div><div class="dp-row"><span>Direction</span><b>${wDir!=null?wDir+'°':'Variable'}</b></div>`:''}
+            ${p.SKY_CONDTN?`<div class="dp-section">Sky</div><div class="dp-row"><span>Condition</span><b>${p.SKY_CONDTN}</b></div>`:''}
+            <div class="dp-section">Location</div>
+            <div class="dp-row"><span>Coords</span><b>${lat.toFixed(2)}°, ${lon.toFixed(2)}°</b></div>
+          </div>
+        </div>`, { className:'data-popup', maxWidth:240 })
         .addTo(_metarLayer);
     });
   } catch(e) {
@@ -8964,50 +9018,56 @@ async function _onDataClick(e) {
     const byLabel = {};
     labels.forEach((l, i) => byLabel[l] = results[i]);
 
-    let html = `<div class="dp-coord">${lat.toFixed(3)}°, ${lng.toFixed(3)}°</div>`;
+    let body = '';
 
     const lt = byLabel['land_temp'];
     if (lt?.current) {
       const c = lt.current;
       if (c.temperature_2m != null) {
-        html += `<div class="dp-section">🌡 <b>Temperature</b></div>`;
-        html += `<div class="dp-row"><span>Air Temp</span><b>${Math.round(c.temperature_2m)}°F</b></div>`;
-        if (c.apparent_temperature != null) html += `<div class="dp-row"><span>Feels Like</span><b>${Math.round(c.apparent_temperature)}°F</b></div>`;
-        if (c.relative_humidity_2m != null) html += `<div class="dp-row"><span>Humidity</span><b>${Math.round(c.relative_humidity_2m)}%</b></div>`;
-        if (c.dew_point_2m != null) html += `<div class="dp-row"><span>Dew Point</span><b>${Math.round(c.dew_point_2m)}°F</b></div>`;
+        body += `<div class="dp-section">Temperature</div>`;
+        body += `<div class="dp-row"><span>Air Temp</span><b>${Math.round(c.temperature_2m)}°F</b></div>`;
+        if (c.apparent_temperature != null) body += `<div class="dp-row"><span>Feels Like</span><b>${Math.round(c.apparent_temperature)}°F</b></div>`;
+        if (c.dew_point_2m != null) body += `<div class="dp-row"><span>Dew Point</span><b>${Math.round(c.dew_point_2m)}°F</b></div>`;
+        if (c.relative_humidity_2m != null) body += `<div class="dp-row"><span>Humidity</span><b>${Math.round(c.relative_humidity_2m)}%</b></div>`;
       }
     }
 
     const sst = byLabel['sst'];
     if (sst?.current?.sea_surface_temperature != null) {
-      html += `<div class="dp-row"><span>Sea Surface</span><b>${Math.round(sst.current.sea_surface_temperature)}°F</b></div>`;
+      body += `<div class="dp-section">Sea Surface</div>`;
+      body += `<div class="dp-row"><span>SST</span><b>${Math.round(sst.current.sea_surface_temperature)}°F</b></div>`;
     }
 
     const tide = byLabel['tide'];
     if (tide?.current) {
       const c = tide.current;
       if (c.wave_height != null) {
-        html += `<div class="dp-section">🌊 <b>Waves</b></div>`;
-        html += `<div class="dp-row"><span>Height</span><b>${c.wave_height.toFixed(1)} ft</b></div>`;
-        if (c.wave_period != null) html += `<div class="dp-row"><span>Period</span><b>${c.wave_period.toFixed(0)}s</b></div>`;
-        if (c.wave_direction != null) html += `<div class="dp-row"><span>Direction</span><b>${_degToCompass(c.wave_direction)} (${Math.round(c.wave_direction)}°)</b></div>`;
+        body += `<div class="dp-section">Waves</div>`;
+        body += `<div class="dp-row"><span>Height</span><b>${c.wave_height.toFixed(1)} ft</b></div>`;
+        if (c.wave_period != null) body += `<div class="dp-row"><span>Period</span><b>${c.wave_period.toFixed(0)}s</b></div>`;
+        if (c.wave_direction != null) body += `<div class="dp-row"><span>Direction</span><b>${_degToCompass(c.wave_direction)} (${Math.round(c.wave_direction)}°)</b></div>`;
       }
     }
 
     const surge = byLabel['surge'];
     if (surge?.current?.swell_wave_height != null) {
       const c = surge.current;
-      html += `<div class="dp-section">🌊 <b>Swell</b></div>`;
-      html += `<div class="dp-row"><span>Height</span><b>${c.swell_wave_height.toFixed(1)} ft</b></div>`;
-      if (c.swell_wave_period != null) html += `<div class="dp-row"><span>Period</span><b>${c.swell_wave_period.toFixed(0)}s</b></div>`;
-      if (c.swell_wave_direction != null) html += `<div class="dp-row"><span>Direction</span><b>${_degToCompass(c.swell_wave_direction)} (${Math.round(c.swell_wave_direction)}°)</b></div>`;
+      body += `<div class="dp-section">Swell</div>`;
+      body += `<div class="dp-row"><span>Height</span><b>${c.swell_wave_height.toFixed(1)} ft</b></div>`;
+      if (c.swell_wave_period != null) body += `<div class="dp-row"><span>Period</span><b>${c.swell_wave_period.toFixed(0)}s</b></div>`;
+      if (c.swell_wave_direction != null) body += `<div class="dp-row"><span>Direction</span><b>${_degToCompass(c.swell_wave_direction)} (${Math.round(c.swell_wave_direction)}°)</b></div>`;
     }
 
-    if (html === `<div class="dp-coord">${lat.toFixed(3)}°, ${lng.toFixed(3)}°</div>`) {
-      html += `<div class="dp-row"><span>No data at this point</span></div>`;
-    }
+    if (!body) body = `<div class="dp-row"><span>No data at this point</span></div>`;
 
-    popup.setContent(`<div class="data-popup-inner">${html}</div>`);
+    popup.setContent(`<div class="data-popup-inner" style="--dp-accent:#29b6f6">
+      <div class="dp-header">
+        <span class="dp-header-icon">🌊</span>
+        <span class="dp-header-label">Marine Data</span>
+        <span class="dp-header-sub">${lat.toFixed(2)}°, ${lng.toFixed(2)}°</span>
+      </div>
+      <div class="dp-body">${body}</div>
+    </div>`);
   } catch(e) {
     popup.setContent('<div class="dp-loading">⚠ Error fetching data</div>');
   }
@@ -9162,16 +9222,23 @@ function _windCanvasClick(e, mode) {
   const prsMb = o.pressurePa != null ? (o.pressurePa / 100).toFixed(0) : null;
   const [r,g,b] = _windColor(kph);
   const col = `rgb(${r},${g},${b})`;
-  L.popup({ className: 'data-popup', maxWidth: 230 })
+  L.popup({ className: 'data-popup', maxWidth: 240 })
     .setLatLng([best.lat, best.lon])
-    .setContent(`<div class="data-popup-inner">
-      <div class="dp-coord">${best.lat.toFixed(2)}°, ${best.lon.toFixed(2)}°</div>
-      <div class="dp-section">💨 ${isGust ? 'Gusts' : 'Wind'}</div>
-      <div class="dp-row"><span>Speed</span><b style="color:${col}">${mph} mph / ${kt} kt</b></div>
-      <div class="dp-row"><span>Direction</span><b>${compass}</b></div>
-      ${o.gustKph != null ? `<div class="dp-row"><span>Gusts</span><b>${Math.round(o.gustKph*0.621371)} mph</b></div>` : ''}
-      ${tempF != null ? `<div class="dp-section">🌡 Temperature</div><div class="dp-row"><span>Air</span><b>${tempF}°F / ${Math.round(o.tempC)}°C</b></div>` : ''}
-      ${prsMb != null ? `<div class="dp-section">⬡ Pressure</div><div class="dp-row"><span>Surface</span><b>${prsMb} hPa</b></div>` : ''}
+    .setContent(`<div class="data-popup-inner" style="--dp-accent:#00e5ff">
+      <div class="dp-header">
+        <span class="dp-header-icon">💨</span>
+        <span class="dp-header-label">${isGust ? 'Wind Gusts' : 'Wind'}</span>
+        <span class="dp-header-sub">${best.lat.toFixed(2)}°, ${best.lon.toFixed(2)}°</span>
+      </div>
+      <div class="dp-body">
+        <div class="dp-section">Speed</div>
+        <div class="dp-row"><span>Sustained</span><b style="color:${col}">${mph} mph / ${kt} kt</b></div>
+        ${o.gustKph != null ? `<div class="dp-row"><span>Gusts</span><b>${Math.round(o.gustKph*0.621371)} mph / ${Math.round(o.gustKph*0.539957)} kt</b></div>` : ''}
+        <div class="dp-section">Direction</div>
+        <div class="dp-row"><span>From</span><b>${compass}</b></div>
+        ${tempF != null ? `<div class="dp-section">Temperature</div><div class="dp-row"><span>Air</span><b>${tempF}°F / ${Math.round(o.tempC)}°C</b></div>` : ''}
+        ${prsMb != null ? `<div class="dp-section">Pressure</div><div class="dp-row"><span>Surface</span><b>${prsMb} hPa</b></div>` : ''}
+      </div>
     </div>`)
     .openOn(map);
 }
@@ -9350,14 +9417,20 @@ async function _loadSSTBarbLayer() {
       const tF = sst != null ? Math.round(sst) : Math.round(air[i]?.current?.temperature_2m ?? 0);
       const col = tF > 84 ? '#ff2a2a' : tF > 72 ? '#ff8800' : tF > 60 ? '#00c8c8' : tF > 48 ? '#4488ff' : '#9966ff';
       const m = L.circleMarker([pt.lat, pt.lng], { radius: 7, color: col, fillColor: col, fillOpacity: 0.85, weight: 0 });
-      m.bindPopup(`<div class="data-popup-inner">
-        <div class="dp-coord">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</div>
-        <div class="dp-section">🌡 Sea Surface Temp</div>
-        <div class="dp-row"><span>SST</span><b style="color:${col}">${tF}°F / ${Math.round((tF-32)*5/9)}°C</b></div>
-        ${wh != null ? `<div class="dp-section">🌊 Waves</div>
-        <div class="dp-row"><span>Height</span><b>${wh.toFixed(1)} ft</b></div>
-        ${wd != null ? `<div class="dp-row"><span>Direction</span><b>${Math.round(wd)}°</b></div>` : ''}` : ''}
-      </div>`, { className: 'data-popup', maxWidth: 220 });
+      m.bindPopup(`<div class="data-popup-inner" style="--dp-accent:#29b6f6">
+        <div class="dp-header">
+          <span class="dp-header-icon">🌡</span>
+          <span class="dp-header-label">Sea Surface</span>
+          <span class="dp-header-sub">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</span>
+        </div>
+        <div class="dp-body">
+          <div class="dp-section">Temperature</div>
+          <div class="dp-row"><span>SST</span><b style="color:${col}">${tF}°F / ${Math.round((tF-32)*5/9)}°C</b></div>
+          ${wh != null ? `<div class="dp-section">Waves</div>
+          <div class="dp-row"><span>Height</span><b>${wh.toFixed(1)} ft</b></div>
+          ${wd != null ? `<div class="dp-row"><span>Direction</span><b>${_degToCompass ? _degToCompass(wd) : Math.round(wd)+'°'}</b></div>` : ''}` : ''}
+        </div>
+      </div>`, { className: 'data-popup', maxWidth: 240 });
       m.addTo(_sstBarbLayer);
     });
   } catch(e) { console.warn('SST barb error:', e); }
