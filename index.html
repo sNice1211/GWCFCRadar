@@ -19063,7 +19063,13 @@ function _aiActionLabel(action) {
 async function _aiExecuteAction(action) {
   const a = action.action, p = action.params || {};
   if (a === 'toggleLayer' && p.layer) {
-    if (typeof toggleLayer === 'function') toggleLayer(p.layer);
+    // Some layers are controlled by the overlay-pill system, not toggleLayer
+    const pillLayers = ['fronts', 'lightning', 'radio', 'forecasts', 'alerts'];
+    if (pillLayers.includes(p.layer) && typeof toggleOverlayPill === 'function') {
+      toggleOverlayPill(p.layer);
+    } else if (typeof toggleLayer === 'function') {
+      toggleLayer(p.layer);
+    }
     return `Layer "${p.layer}" toggled.`;
   }
   if (a === 'panTo' && p.lat != null && p.lon != null) {
@@ -21071,10 +21077,27 @@ async function loadSurfaceAnalysis() {
       if (!_saIsValidProduct(body)) throw new Error('not a valid product');
       return t;
     };
+    // CORS-native source: api.weather.gov serves the same CODSUS coded product
+    // as JSON with proper CORS headers — no proxy needed, so it still works when
+    // every third-party proxy is down. This is the most reliable path.
+    const _tryFetchNWS = async (ms) => {
+      const list = await fetchWithTimeout('https://api.weather.gov/products/types/CODSUS', ms);
+      if (!list.ok) throw new Error('NWS list ' + list.status);
+      const lj = await list.json();
+      const first = (lj['@graph'] || [])[0];
+      if (!first || !first['@id']) throw new Error('NWS: no products');
+      const prod = await fetchWithTimeout(first['@id'], ms);
+      if (!prod.ok) throw new Error('NWS prod ' + prod.status);
+      const pj = await prod.json();
+      const body = pj.productText || '';
+      if (!_saIsValidProduct(body)) throw new Error('NWS: not a valid product');
+      return body;
+    };
     for (let attempt = 0; attempt < 3 && !text; attempt++) {
       if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
       try {
         text = await Promise.any([
+          _tryFetchNWS(8000),
           _tryFetch(_saProxy(SA_URL), 6000),
           _tryFetch(_saProxy(SA_URL_FALLBACK), 6000),
           _tryFetch(_saProxy(SA_URL_CRH), 6000),
