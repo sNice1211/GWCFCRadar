@@ -18799,22 +18799,27 @@ function selectProduct(p) {
 
     logo.removeAttribute('href');
 
-    // Desktop: open on hover, proximity-based close
-    wrap.addEventListener('mouseenter', _openMenu);
-    wrap.addEventListener('mouseleave', _scheduleClose);
-    menu.addEventListener('mouseenter', _cancelClose);
-    menu.addEventListener('mouseleave', _scheduleClose);
-
-    // Touch: tap toggles. Track _lastTouch so the synthetic click after touchend doesn't double-fire.
+    // Track whether the last interaction was touch so we can ignore synthetic mouse events
     let _lastTouch = 0;
+    const _wasTouch = () => Date.now() - _lastTouch < 800;
+
+    // Desktop hover — ignored right after a touch to avoid synthetic mouseleave closing the menu
+    wrap.addEventListener('mouseenter', function() { if (!_wasTouch()) _openMenu(); });
+    wrap.addEventListener('mouseleave', function() { if (!_wasTouch()) _scheduleClose(); });
+    menu.addEventListener('mouseenter', function() { if (!_wasTouch()) _cancelClose(); });
+    menu.addEventListener('mouseleave', function() { if (!_wasTouch()) _scheduleClose(); });
+
+    // Touch: set timestamp, toggle menu
+    logo.addEventListener('touchstart', function() { _lastTouch = Date.now(); }, { passive: true });
     logo.addEventListener('touchend', function(e) {
       e.preventDefault();
       _lastTouch = Date.now();
       if (_menuOpen) _closeMenu(); else _openMenu();
     }, { passive: false });
-    // Click: desktop left-click, or synthetic click on mobile (suppressed if touch just fired)
-    logo.addEventListener('click', function(e) {
-      if (Date.now() - _lastTouch < 600) return;
+
+    // Click: desktop only (suppressed if touch just fired)
+    logo.addEventListener('click', function() {
+      if (_wasTouch()) return;
       if (_menuOpen) _closeMenu(); else _openMenu();
     });
   }
