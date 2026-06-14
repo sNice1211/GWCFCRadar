@@ -19271,12 +19271,21 @@ async function _aiSend(explicitImageB64) {
       body: JSON.stringify({ system_instruction: { parts: [{ text: ctx }] }, contents })
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.error?.message || res.status);
-    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response.';
+    if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+    // Diagnose empty candidates (safety block, quota, etc.)
+    if (!data.candidates || data.candidates.length === 0) {
+      const block = data.promptFeedback?.blockReason;
+      throw new Error(block ? `Blocked by safety filter: ${block}` : (data.error?.message || 'Gemini returned no candidates. Check the Worker API key or quota.'));
+    }
+    const cand = data.candidates[0];
+    const finishReason = cand.finishReason;
+    const reply = cand.content?.parts?.[0]?.text ||
+      (finishReason && finishReason !== 'STOP' ? `[Stopped: ${finishReason}]` : null) ||
+      'No response.';
     hist.push({ role: 'model', parts: [{ text: reply }] });
     // Pull out any action blocks and show the cleaned human text
     const { actions, clean } = _aiExtractActions(reply);
-    if (typing) { typing.innerHTML = _aiMarkdown(clean || (actions.length ? 'On it…' : 'No response.')); typing.classList.remove('typing'); }
+    if (typing) { typing.innerHTML = _aiMarkdown(clean || (actions.length ? 'On it…' : reply)); typing.classList.remove('typing'); }
     // Run the actions (one permission prompt for the whole batch)
     if (actions.length) {
       const allowed = await _aiAskPermission(actions);
