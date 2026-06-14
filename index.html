@@ -19014,30 +19014,34 @@ Surface fronts: analysis chart fronts
 Model guidance: HRRR (18h), GFS (10d), ECMWF IFS, DWD ICON, Canadian RDPS
 ${hasSnap ? '\nA live map screenshot is attached — analyze it visually.' : ''}
 
-=== ACTIONS YOU CAN PERFORM (with user permission) ===
-Respond with a JSON block anywhere in your reply: {"action":"<name>","params":{...},"reason":"<short reason>"}
+=== ACTIONS YOU CAN PERFORM (you control the map like a person would) ===
+To DO something on the map, include one or more JSON blocks in your reply, each like:
+{"action":"<name>","params":{...},"reason":"<short reason>"}
+You can include SEVERAL blocks to do multiple things at once (e.g. turn on a layer AND pan there).
 Available actions:
-- toggleLayer {"layer":"<id>"} — IDs: tornado, tstm, flood, wind, temp, waves, lightning, nwr, spcrpts, spc1, spc2, spc3, satellite, fronts
-- panTo {"lat":0,"lon":0,"zoom":7} — move map to any location
-- openForecast {"name":"<city name>","lat":0,"lon":0} — opens the app's full forecast panel (current conditions + hourly + 7-day) for any location. USE THIS whenever the user asks about a forecast — do NOT try to describe forecast data yourself, just open the panel.
-- openRadar {"site":"KXXX"} — open single-site NEXRAD for a station
+- panTo {"place":"Dallas, TX"} — fly the map to any city/place by name (preferred). You may also give {"lat":32.78,"lon":-96.80,"zoom":8}.
+- setZoom {"direction":"in"} or {"direction":"out"} or {"zoom":9} — zoom the map
+- toggleLayer {"layer":"<id>"} — turn a layer on/off. IDs: nexrad, satellite, tornado, tstm, flood, wind, temp, waves, lightning, radio, nwr, spcrpts, spc1, spc2, spc3, fronts, forecasts, alerts
+- openRadar {"site":"KFWS"} or {"place":"Dallas"} — open single-site NEXRAD radar (gives the nearest station if you pass a place)
+- openForecast {"place":"Miami"} — open the full in-app forecast panel (current + hourly + 7-day). ALWAYS use this for forecast questions instead of reciting numbers.
 
-IMPORTANT: For forecast questions (current conditions, hourly, 7-day, "what's the weather like", etc.) ALWAYS use openForecast to open the in-app panel. Do not recite forecast numbers — just say you're opening it and trigger the action.
+When the user asks you to show, go to, turn on, enable, zoom, or open something — DO IT with an action, don't just describe it. Be proactive and decisive, like a human driving the app. Briefly say what you're doing (e.g. "On it — flying to Dallas and turning on radar.") then include the action blocks.
 
 STYLE: Conversational, direct, short. Like a knowledgeable friend. Use **bold** for key terms. For non-forecast questions, answer from the alert/storm report data above.`;
 }
 
 // ── AI ACTION SYSTEM ──
-async function _aiAskPermission(action, reason) {
+// One permission prompt for a whole batch of actions (human-like, not nagging)
+async function _aiAskPermission(actions) {
   return new Promise(resolve => {
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9000;display:flex;align-items:center;justify-content:center;';
     const box = document.createElement('div');
-    box.style.cssText = 'background:rgb(10,14,20);border:1px solid rgba(0,200,200,0.4);border-radius:14px;padding:20px 22px;max-width:300px;width:90%;font-family:var(--sans);color:#fff;';
+    box.style.cssText = 'background:rgb(10,14,20);border:1px solid rgba(0,200,200,0.4);border-radius:14px;padding:20px 22px;max-width:320px;width:90%;font-family:var(--sans);color:#fff;';
+    const list = actions.map(a => `<li style="margin-bottom:5px;">${_aiActionLabel(a)}</li>`).join('');
     box.innerHTML = `
-      <div style="font-family:var(--display);font-size:13px;color:var(--accent2);margin-bottom:10px;letter-spacing:1px;">🤖 ASTURIO AI WANTS TO</div>
-      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">${_aiActionLabel(action)}</div>
-      <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:18px;">${reason}</div>
+      <div style="font-family:var(--display);font-size:13px;color:var(--accent2);margin-bottom:12px;letter-spacing:1px;">🤖 ASTURIO AI WANTS TO</div>
+      <ul style="font-size:12.5px;font-weight:500;margin:0 0 16px;padding-left:18px;line-height:1.5;">${list}</ul>
       <div style="display:flex;gap:10px;">
         <button id="_ai-allow" style="flex:1;background:var(--accent2);border:none;border-radius:8px;color:#000;font-family:var(--display);font-size:12px;font-weight:700;padding:9px;cursor:pointer;">Allow</button>
         <button id="_ai-deny" style="flex:1;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-radius:8px;color:#fff;font-family:var(--display);font-size:12px;font-weight:700;padding:9px;cursor:pointer;">Deny</button>
@@ -19051,17 +19055,43 @@ async function _aiAskPermission(action, reason) {
 }
 
 function _aiActionLabel(action) {
-  const labels = {
-    toggleLayer: `Toggle a map layer`,
-    panTo: `Move the map to a new location`,
-    openForecast: `Open the forecast panel`,
-    openRadar: `Open a NEXRAD radar site`
-  };
-  return labels[action.action] || action.action;
+  const a = action.action, p = action.params || {};
+  switch (a) {
+    case 'panTo':       return `Fly the map to <b>${p.place || (p.lat!=null ? p.lat+', '+p.lon : 'a location')}</b>`;
+    case 'setZoom':     return `Zoom ${p.direction ? p.direction : 'to '+p.zoom}`;
+    case 'toggleLayer': return `Toggle the <b>${p.layer}</b> layer`;
+    case 'openRadar':   return `Open <b>${(p.site || p.place || '').toString().toUpperCase()}</b> radar`;
+    case 'openForecast':return `Open the forecast for <b>${p.place || p.name || 'here'}</b>`;
+    default:            return a;
+  }
+}
+
+// Geocode a place name → {lat, lon, label} using the same API the search box uses
+async function _aiGeocode(place) {
+  try {
+    const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?name=' + encodeURIComponent(place) + '&count=1&language=en&format=json', { signal: AbortSignal.timeout(6000) });
+    const d = await r.json();
+    if (d.results && d.results.length) {
+      const loc = d.results[0];
+      return { lat: loc.latitude, lon: loc.longitude, label: [loc.name, loc.admin1, loc.country].filter(Boolean).join(', ') };
+    }
+  } catch {}
+  return null;
+}
+
+// Find the NEXRAD station nearest a lat/lon
+function _aiNearestStation(lat, lon) {
+  let best = null, bestD = Infinity;
+  for (const s of NEXRAD_STATIONS) {
+    const d = (s.lat - lat) ** 2 + (s.lon - lon) ** 2;
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best;
 }
 
 async function _aiExecuteAction(action) {
   const a = action.action, p = action.params || {};
+
   if (a === 'toggleLayer' && p.layer) {
     // Some layers are controlled by the overlay-pill system, not toggleLayer
     const pillLayers = ['fronts', 'lightning', 'radio', 'forecasts', 'alerts'];
@@ -19070,33 +19100,90 @@ async function _aiExecuteAction(action) {
     } else if (typeof toggleLayer === 'function') {
       toggleLayer(p.layer);
     }
-    return `Layer "${p.layer}" toggled.`;
+    return `Toggled ${p.layer}.`;
   }
-  if (a === 'panTo' && p.lat != null && p.lon != null) {
-    map.setView([p.lat, p.lon], p.zoom || map.getZoom());
-    return `Map moved to ${p.lat.toFixed(2)}, ${p.lon.toFixed(2)}.`;
-  }
-  if (a === 'openForecast' && p.name) {
-    if (typeof openForecastModal === 'function') {
-      const center = typeof map !== 'undefined' ? map.getCenter() : { lat: 35, lng: -90 };
-      openForecastModal({ name: p.name || 'Current Location', lat: p.lat || center.lat, lon: p.lon || center.lng });
+
+  if (a === 'panTo') {
+    let lat = p.lat, lon = p.lon, label = '';
+    if ((lat == null || lon == null) && p.place) {
+      const g = await _aiGeocode(p.place);
+      if (!g) return `Couldn't find "${p.place}".`;
+      lat = g.lat; lon = g.lon; label = g.label;
     }
-    return `Opened forecast for ${p.name}.`;
+    if (lat == null || lon == null) return 'No location given.';
+    const zoom = p.zoom || Math.max(map.getZoom(), 8);
+    map.flyTo([lat, lon], zoom, { duration: 1.4 });   // flyTo = smooth, visible glide
+    return `Flew to ${label || (lat.toFixed(2) + ', ' + lon.toFixed(2))}.`;
   }
-  if (a === 'openRadar' && p.site) {
-    const pill = document.querySelector(`.radar-pill[data-site="${p.site}"]`);
-    if (pill) pill.click();
-    else _lqmToast(`Radar site ${p.site} not found on map`);
-    return `Opened ${p.site} radar.`;
+
+  if (a === 'setZoom') {
+    let z = p.zoom;
+    if (z == null) z = p.direction === 'out' ? map.getZoom() - 2 : map.getZoom() + 2;
+    z = Math.max(3, Math.min(15, z));
+    map.flyTo(map.getCenter(), z, { duration: 0.8 });
+    return `Zoomed to level ${z}.`;
   }
-  return 'Action not recognized.';
+
+  if (a === 'openForecast') {
+    let lat = p.lat, lon = p.lon, name = p.place || p.name;
+    if ((lat == null || lon == null) && name) {
+      const g = await _aiGeocode(name);
+      if (g) { lat = g.lat; lon = g.lon; name = g.label; }
+    }
+    const center = typeof map !== 'undefined' ? map.getCenter() : { lat: 35, lng: -90 };
+    if (typeof openForecastModal === 'function') {
+      openForecastModal({ name: name || 'Current Location', lat: lat != null ? lat : center.lat, lon: lon != null ? lon : center.lng });
+    }
+    return `Opened forecast for ${name || 'current location'}.`;
+  }
+
+  if (a === 'openRadar') {
+    const raw = (p.site || '').toString().toLowerCase().trim();
+    let st = NEXRAD_STATIONS.find(s => s.id === raw || s.id === 'k' + raw || s.id.slice(1) === raw);
+    if (!st && p.place) {
+      const g = await _aiGeocode(p.place);
+      if (g) st = _aiNearestStation(g.lat, g.lon);
+    }
+    if (!st) return `Radar site "${p.site || p.place || '?'}" not found.`;
+    // Single-site radar only activates in reflectivity mode
+    if (typeof currentProduct !== 'undefined' && currentProduct !== 'ref' && currentProduct !== 'vel') {
+      currentProduct = 'ref';
+    }
+    if (typeof _loadSingleSiteRef === 'function') _loadSingleSiteRef(st.id);
+    if (typeof openS3Panel === 'function') openS3Panel(st.id);
+    map.flyTo([st.lat, st.lon], Math.max(map.getZoom(), 8), { duration: 1.2 });
+    return `Opened ${st.id.toUpperCase()} radar.`;
+  }
+
+  return `Hmm, I don't know how to "${a}".`;
 }
 
-// Parse action JSON from AI reply
-function _aiParseAction(reply) {
-  const m = reply.match(/\{[\s\S]*?"action"\s*:\s*"[^"]+?"[\s\S]*?\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
+// Extract ALL action JSON blocks from a reply + the cleaned display text.
+// Uses brace-matching so nested params ({"params":{...}}) parse correctly.
+function _aiExtractActions(reply) {
+  const actions = [];
+  let clean = '', i = 0;
+  while (i < reply.length) {
+    if (reply[i] === '{') {
+      let depth = 0, j = i;
+      for (; j < reply.length; j++) {
+        if (reply[j] === '{') depth++;
+        else if (reply[j] === '}') { depth--; if (depth === 0) break; }
+      }
+      if (j < reply.length) {
+        const chunk = reply.slice(i, j + 1);
+        if (chunk.includes('"action"')) {
+          try { actions.push(JSON.parse(chunk)); i = j + 1; continue; }
+          catch { /* not valid JSON — fall through and keep as text */ }
+        }
+      }
+    }
+    clean += reply[i];
+    i++;
+  }
+  // Tidy leftover markdown fences/labels around the stripped JSON
+  clean = clean.replace(/```json|```/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  return { actions, clean };
 }
 
 function lqmOpenAI() {
@@ -19187,18 +19274,19 @@ async function _aiSend(explicitImageB64) {
     if (!res.ok) throw new Error(data?.error?.message || res.status);
     const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response.';
     hist.push({ role: 'model', parts: [{ text: reply }] });
-    // Strip action JSON from display text
-    const displayReply = reply.replace(/\{[\s\S]*?"action"\s*:\s*"[^"]+?"[\s\S]*?\}/g, '').trim();
-    if (typing) { typing.innerHTML = _aiMarkdown(displayReply); typing.classList.remove('typing'); }
-    // Handle action if present
-    const action = _aiParseAction(reply);
-    if (action) {
-      const allowed = await _aiAskPermission(action, action.reason || 'Asturio AI wants to perform this action.');
+    // Pull out any action blocks and show the cleaned human text
+    const { actions, clean } = _aiExtractActions(reply);
+    if (typing) { typing.innerHTML = _aiMarkdown(clean || (actions.length ? 'On it…' : 'No response.')); typing.classList.remove('typing'); }
+    // Run the actions (one permission prompt for the whole batch)
+    if (actions.length) {
+      const allowed = await _aiAskPermission(actions);
       if (allowed) {
-        const result = await _aiExecuteAction(action);
-        _aiAddMsg('bot', `✓ ${result}`);
+        for (const act of actions) {
+          const result = await _aiExecuteAction(act);
+          _aiAddMsg('bot', `✓ ${result}`);
+        }
       } else {
-        _aiAddMsg('bot', 'Action denied.');
+        _aiAddMsg('bot', "Okay, I won't touch the map.");
       }
     }
   } catch(e) {
