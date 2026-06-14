@@ -18977,21 +18977,6 @@ function _aiAddMsg(role, text, extra='') {
 }
 
 // Fetch NWS forecast for a lat/lon
-async function _aiFetchForecast(lat, lon) {
-  try {
-    const pts = await fetch(`https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`, { signal: AbortSignal.timeout(5000) });
-    if (!pts.ok) return null;
-    const pj = await pts.json();
-    const furl = pj.properties?.forecast;
-    if (!furl) return null;
-    const fc = await fetch(furl, { signal: AbortSignal.timeout(5000) });
-    if (!fc.ok) return null;
-    const fj = await fc.json();
-    return (fj.properties?.periods || []).slice(0, 4).map(p =>
-      `${p.name}: ${p.shortForecast}, ${p.temperature}°${p.temperatureUnit}, wind ${p.windSpeed} ${p.windDirection}`
-    ).join(' | ');
-  } catch { return null; }
-}
 
 // Fetch all active NWS alerts
 async function _aiFetchAllAlerts() {
@@ -19044,30 +19029,6 @@ function _aiNeedsSnap(text) {
 }
 
 // Fetch full Open-Meteo forecast (same data as the app's forecast panel)
-async function _aiFetchFullForecast(lat, lon) {
-  try {
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}` +
-      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,wind_direction_10m_dominant,uv_index_max,sunrise,sunset` +
-      `&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,weather_code` +
-      `&current=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,relative_humidity_2m,apparent_temperature,dew_point_2m,surface_pressure,cloud_cover,visibility,uv_index,precipitation` +
-      `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=7`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!r.ok) return null;
-    const d = await r.json();
-    const c = d.current;
-    const dd = d.daily;
-    const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
-    const dir = deg => deg != null ? dirs[Math.round(deg/22.5)%16] : '';
-    const wc = (code) => {
-      const m = {0:'Clear',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Foggy',48:'Icy fog',51:'Light drizzle',53:'Drizzle',55:'Heavy drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',71:'Light snow',73:'Snow',75:'Heavy snow',80:'Light showers',81:'Showers',82:'Heavy showers',95:'Thunderstorm',96:'T-storm w/ hail',99:'T-storm w/ heavy hail'};
-      return m[code] || `Code ${code}`;
-    };
-    const now = `NOW: ${c.temperature_2m}°F (feels ${c.apparent_temperature}°F) | ${wc(c.weather_code||c.weathercode)} | Wind ${c.wind_speed_10m}mph ${dir(c.wind_direction_10m)}, gusts ${c.wind_gusts_10m}mph | Humidity ${c.relative_humidity_2m}% | Dewpoint ${c.dew_point_2m}°F | Pressure ${c.surface_pressure ? (c.surface_pressure/33.8639).toFixed(2)+' inHg' : 'N/A'} | Visibility ${c.visibility ? (c.visibility*0.000621371).toFixed(1)+' mi' : 'N/A'} | UV ${c.uv_index} | Cloud cover ${c.cloud_cover}%`;
-    const daily = (dd?.time||[]).map((t,i) => `${t}: High ${dd.temperature_2m_max[i]}°F / Low ${dd.temperature_2m_min[i]}°F, ${wc(dd.weather_code?.[i]||dd.weathercode?.[i])}, Wind ${dd.wind_speed_10m_max?.[i]||dd.windspeed_10m_max?.[i]}mph ${dir(dd.wind_direction_10m_dominant?.[i])}, Precip ${dd.precipitation_sum?.[i]?.toFixed(2)}"`, UV ${dd.uv_index_max?.[i]}`).join('\n');
-    return `${now}\n\n7-DAY:\n${daily}`;
-  } catch { return null; }
-}
-
 async function _aiBuildContext(hasSnap) {
   const lat = typeof map!=='undefined' ? map.getCenter().lat : 35;
   const lon = typeof map!=='undefined' ? map.getCenter().lng : -90;
@@ -19075,8 +19036,7 @@ async function _aiBuildContext(hasSnap) {
   const activeLyrs = Object.entries(activeLayers||{}).filter(([,v])=>v).map(([k])=>k).join(', ') || 'none';
   const radarSite = typeof _refStation !== 'undefined' && _refStation ? _refStation : 'composite mosaic';
 
-  const [fullForecast, allAlertsText, stormRpts] = await Promise.all([
-    _aiFetchFullForecast(lat, lon),
+  const [allAlertsText, stormRpts] = await Promise.all([
     _aiFetchAllAlerts(),
     _aiFetchStormReports()
   ]);
@@ -19085,9 +19045,6 @@ async function _aiBuildContext(hasSnap) {
 
 MAP: center ${mapCenter} | layers on: ${activeLyrs} | radar: ${radarSite}
 TIME: ${new Date().toUTCString()}
-
-=== FULL FORECAST (map center) ===
-${fullForecast || 'unavailable'}
 
 === STORM REPORTS TODAY (SPC) ===
 ${stormRpts || 'unavailable'}
@@ -19111,16 +19068,16 @@ Model guidance: HRRR (18h), GFS (10d), ECMWF IFS, DWD ICON, Canadian RDPS
 ${hasSnap ? '\nA live map screenshot is attached — analyze it visually.' : ''}
 
 === ACTIONS YOU CAN PERFORM (with user permission) ===
-You can request these by responding with a JSON block: {"action":"<name>","params":{...},"reason":"<why>"}
+Respond with a JSON block anywhere in your reply: {"action":"<name>","params":{...},"reason":"<short reason>"}
 Available actions:
-- toggleLayer: {"layer":"<id>"} — layer IDs: tornado, tstm, flood, wind, temp, waves, lightning, nwr, spcrpts, spc1, spc2, spc3, satellite, fronts
-- panTo: {"lat":0,"lon":0,"zoom":7} — move map to a location
-- openForecast: {"name":"<city>","lat":0,"lon":0} — open the forecast panel for a location
-- openRadar: {"site":"KXXX"} — open single-site NEXRAD for a station
+- toggleLayer {"layer":"<id>"} — IDs: tornado, tstm, flood, wind, temp, waves, lightning, nwr, spcrpts, spc1, spc2, spc3, satellite, fronts
+- panTo {"lat":0,"lon":0,"zoom":7} — move map to any location
+- openForecast {"name":"<city name>","lat":0,"lon":0} — opens the app's full forecast panel (current conditions + hourly + 7-day) for any location. USE THIS whenever the user asks about a forecast — do NOT try to describe forecast data yourself, just open the panel.
+- openRadar {"site":"KXXX"} — open single-site NEXRAD for a station
 
-If the user asks you to do something on the map (turn on a layer, show a forecast, go somewhere), propose the action. The app will show a permission prompt before executing. Only include the JSON block if you intend to perform an action.
+IMPORTANT: For forecast questions (current conditions, hourly, 7-day, "what's the weather like", etc.) ALWAYS use openForecast to open the in-app panel. Do not recite forecast numbers — just say you're opening it and trigger the action.
 
-STYLE: Conversational, direct, like a knowledgeable friend. Short answers unless detail is asked for. Use **bold** for key terms. Answer from the data above when possible.`;
+STYLE: Conversational, direct, short. Like a knowledgeable friend. Use **bold** for key terms. For non-forecast questions, answer from the alert/storm report data above.
 }
 
 // ── AI ACTION SYSTEM ──
@@ -19167,7 +19124,10 @@ async function _aiExecuteAction(action) {
     return `Map moved to ${p.lat.toFixed(2)}, ${p.lon.toFixed(2)}.`;
   }
   if (a === 'openForecast' && p.name) {
-    if (typeof openForecastModal === 'function') openForecastModal({ name: p.name, lat: p.lat||map.getCenter().lat, lon: p.lon||map.getCenter().lng });
+    if (typeof openForecastModal === 'function') {
+      const center = typeof map !== 'undefined' ? map.getCenter() : { lat: 35, lng: -90 };
+      openForecastModal({ name: p.name || 'Current Location', lat: p.lat || center.lat, lon: p.lon || center.lng });
+    }
     return `Opened forecast for ${p.name}.`;
   }
   if (a === 'openRadar' && p.site) {
