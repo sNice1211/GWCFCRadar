@@ -18976,95 +18976,102 @@ function _aiAddMsg(role, text, extra='') {
   return div;
 }
 
-// Fetch NWS forecast for a lat/lon — returns text summary or null
+// Fetch NWS forecast for a lat/lon
 async function _aiFetchForecast(lat, lon) {
   try {
-    const pts = await fetch(`https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`, { signal: AbortSignal.timeout(6000) });
+    const pts = await fetch(`https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`, { signal: AbortSignal.timeout(5000) });
     if (!pts.ok) return null;
     const pj = await pts.json();
     const furl = pj.properties?.forecast;
     if (!furl) return null;
-    const fc = await fetch(furl, { signal: AbortSignal.timeout(6000) });
+    const fc = await fetch(furl, { signal: AbortSignal.timeout(5000) });
     if (!fc.ok) return null;
     const fj = await fc.json();
-    return (fj.properties?.periods || []).slice(0, 5).map(p =>
-      `• ${p.name}: ${p.detailedForecast}`
-    ).join('\n');
+    return (fj.properties?.periods || []).slice(0, 4).map(p =>
+      `${p.name}: ${p.shortForecast}, ${p.temperature}°${p.temperatureUnit}, wind ${p.windSpeed} ${p.windDirection}`
+    ).join(' | ');
   } catch { return null; }
 }
 
-// Fetch ALL active NWS alerts (not just rendered ones)
+// Fetch all active NWS alerts
 async function _aiFetchAllAlerts() {
   try {
-    const r = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert&limit=50', { signal: AbortSignal.timeout(6000) });
+    const r = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert&limit=100', { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return null;
     const j = await r.json();
-    return (j.features || []).map(f => {
+    const feats = j.features || [];
+    if (!feats.length) return 'No active NWS alerts nationwide.';
+    // Group by event type
+    const grouped = {};
+    feats.forEach(f => {
+      const ev = f.properties.event || 'Alert';
+      grouped[ev] = (grouped[ev] || 0) + 1;
+    });
+    const summary = Object.entries(grouped).map(([k,v]) => `${v}x ${k}`).join(', ');
+    const details = feats.slice(0, 20).map(f => {
       const p = f.properties;
-      return `• ${p.event||'Alert'} — ${(p.areaDesc||'').substring(0,80)}${p.expires ? ' [exp '+new Date(p.expires).toUTCString()+']' : ''}`;
-    }).join('\n') || 'No active alerts.';
+      return `• ${p.event} — ${(p.areaDesc||'').substring(0,70)}`;
+    }).join('\n');
+    return `Summary: ${summary}\n${details}`;
   } catch { return null; }
 }
 
-async function _aiBuildContext(imageB64) {
-  const lat = typeof map!=='undefined' ? map.getCenter().lat : 0;
-  const lon = typeof map!=='undefined' ? map.getCenter().lng : 0;
-  const mapCenter = typeof map!=='undefined' ? `${lat.toFixed(3)}°N, ${Math.abs(lon).toFixed(3)}°W (zoom ${map.getZoom()})` : 'unknown';
-  const activeLyrs = Object.entries(activeLayers||{}).filter(([,v])=>v).map(([k])=>k).join(', ') || 'none';
-  const radarSite = typeof _refStation !== 'undefined' && _refStation ? `Active NEXRAD site: ${_refStation}` : 'No single-site radar open (composite view)';
+// Fetch today's SPC storm reports
+async function _aiFetchStormReports() {
+  try {
+    const now = new Date();
+    const dateStr = now.getUTCFullYear().toString().slice(2) + (now.getUTCMonth()+1).toString().padStart(2,'0') + now.getUTCDate().toString().padStart(2,'0');
+    const [torRes, hailRes, windRes] = await Promise.all([
+      fetch(`https://www.spc.noaa.gov/climo/reports/${dateStr}_rpts_torn.csv`, { signal: AbortSignal.timeout(5000) }),
+      fetch(`https://www.spc.noaa.gov/climo/reports/${dateStr}_rpts_hail.csv`, { signal: AbortSignal.timeout(5000) }),
+      fetch(`https://www.spc.noaa.gov/climo/reports/${dateStr}_rpts_wind.csv`, { signal: AbortSignal.timeout(5000) })
+    ]);
+    const parseCount = async (res) => {
+      if (!res.ok) return 0;
+      const t = await res.text();
+      return Math.max(0, t.trim().split('\n').length - 1);
+    };
+    const [torCount, hailCount, windCount] = await Promise.all([parseCount(torRes), parseCount(hailRes), parseCount(windRes)]);
+    if (!torCount && !hailCount && !windCount) return 'No storm reports today.';
+    return `Today: ${torCount} tornado, ${hailCount} hail, ${windCount} wind reports`;
+  } catch { return null; }
+}
 
-  // Fetch live data in parallel
-  const [forecastText, allAlertsText] = await Promise.all([
+// Detect if the question needs a map visual
+function _aiNeedsSnap(text) {
+  const t = text.toLowerCase();
+  return /see|look|show|radar|image|picture|screen|map|color|what.s on|describe|satellite|front|storm cell|blob|green|red|yellow|purple|blue/.test(t);
+}
+
+async function _aiBuildContext(hasSnap) {
+  const lat = typeof map!=='undefined' ? map.getCenter().lat : 35;
+  const lon = typeof map!=='undefined' ? map.getCenter().lng : -90;
+  const mapCenter = typeof map!=='undefined' ? `${lat.toFixed(2)}°N, ${Math.abs(lon).toFixed(2)}°W (zoom ${map.getZoom()})` : 'unknown';
+  const activeLyrs = Object.entries(activeLayers||{}).filter(([,v])=>v).map(([k])=>k).join(', ') || 'none';
+  const radarSite = typeof _refStation !== 'undefined' && _refStation ? _refStation : 'composite';
+
+  const [forecastText, allAlertsText, stormRpts] = await Promise.all([
     _aiFetchForecast(lat, lon),
-    _aiFetchAllAlerts()
+    _aiFetchAllAlerts(),
+    _aiFetchStormReports()
   ]);
 
-  const alertSummary = allAlertsText || ((typeof _lastAlertFeatures !== 'undefined' && _lastAlertFeatures.length)
-    ? _lastAlertFeatures.slice(0,15).map(f => {
-        const p = f.properties;
-        return `• ${p.event||'Alert'} — ${(p.areaDesc||'').substring(0,80)}`;
-      }).join('\n')
-    : 'No active NWS alerts.');
+  return `You are Asturio AI inside GWCFC Radar, a live weather map for storm enthusiasts.
 
-  return `You are Asturio AI, the built-in weather intelligence system for GWCFC Radar — a professional live weather map for storm chasers, enthusiasts, and weather watchers.
+MAP: center ${mapCenter} | active layers: ${activeLyrs} | radar: ${radarSite}
+TIME: ${new Date().toUTCString()}
 
-=== CURRENT MAP STATE ===
-Date/time (UTC): ${new Date().toUTCString()}
-Map center: ${mapCenter}
-Active layers: ${activeLyrs}
-${radarSite}
+FORECAST (map center): ${forecastText || 'unavailable'}
 
-=== NWS FORECAST FOR MAP CENTER ===
-${forecastText || 'Forecast unavailable for this location.'}
+STORM REPORTS TODAY: ${stormRpts || 'unavailable'}
 
-=== ALL ACTIVE NWS ALERTS (NATIONWIDE) ===
-${alertSummary}
+ACTIVE NWS ALERTS:
+${allAlertsText || 'none'}
 
-=== APP CAPABILITIES ===
-GWCFC Radar can display:
-- NEXRAD radar (reflectivity N0Q, velocity N0U, dual-pol ZDR/KDP/CC, single-site or mosaic)
-- Live NWS watches, warnings, advisories as county polygons
-- METAR wind barbs (surface winds at observation stations)
-- Temperature stations
-- Ocean/lake wave heights (buoy + model data)
-- NOAA Weather Radio (NWR) live audio streams
-- Hurricane/tropical storm tracks (NHC official + cone)
-- Storm reports (hail, wind, tornado LSRs)
-- Satellite imagery (GOES visible, IR, water vapor)
-- Lightning strike density
-- Surface analysis fronts
-- Severe weather model guidance (HRRR, GFS, ECMWF, DWD ICON)
-${imageB64 ? '\nA screenshot of the current map has been automatically included. Analyze it — describe radar colors, storm cells, alert zones, fronts, or anything visible.' : ''}
+APP LAYERS AVAILABLE (on or off): NEXRAD radar (reflectivity N0Q, velocity N0U, dual-pol), NWS alert polygons, METAR wind barbs, temp stations, wave heights, NWR radio, hurricane tracks, storm reports, GOES satellite (vis/IR/WV), lightning, surface fronts, HRRR/GFS/ECMWF/ICON model guidance.
+${hasSnap ? 'A live screenshot of the map is attached — analyze it.' : ''}
 
-=== YOUR ROLE ===
-- Be the most knowledgeable, helpful weather expert possible
-- Use **bold** for important terms, bullet lists for multi-point answers
-- Explain radar products, alert types, and weather concepts clearly
-- When analyzing the map screenshot, describe colors/patterns and what they mean meteorologically
-- Be conversational and direct
-- Don't make up specific data not shown in the context or image
-- If asked about alerts or forecasts for a specific city, use the data provided above
-- If asked about something outside weather/this app, briefly redirect`;
+STYLE: Be direct and conversational like a knowledgeable friend, not a textbook. Keep replies short unless detail is genuinely needed. Use **bold** for key terms. No fluff, no over-hedging. If the data above covers the question, answer from it. If not, say so briefly.`;
 }
 
 function lqmOpenAI() {
@@ -19105,14 +19112,14 @@ async function _aiSnap() {
   }
 }
 
-// Auto-capture the map — returns base64 JPEG string or null
+// Capture map — only called when question is visual
 async function _aiAutoSnap() {
   try {
     await _aiLoadHtml2canvas();
     const mapEl = document.getElementById('map');
     if (!mapEl) return null;
-    const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: true, scale: 0.4, logging: false });
-    return canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+    const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: true, scale: 0.35, logging: false });
+    return canvas.toDataURL('image/jpeg', 0.55).split(',')[1];
   } catch { return null; }
 }
 
@@ -19130,33 +19137,26 @@ async function _aiSend(explicitImageB64) {
   hist.push({ role: 'user', parts: [{ text }] });
   _aiRenderMessages();
 
-  const typing = _aiAddMsg('bot', 'Reading map & fetching live data…', 'typing');
+  const needsVisual = explicitImageB64 || _aiNeedsSnap(text);
+  const typing = _aiAddMsg('bot', 'Checking live data…', 'typing');
 
   try {
-    // Auto-capture map + fetch live forecast/alerts in parallel
-    const [autoSnap, ctx] = await Promise.all([
-      explicitImageB64 ? Promise.resolve(explicitImageB64) : _aiAutoSnap(),
-      _aiBuildContext(true) // pass true since we'll always have a snap
+    const [snapB64, ctx] = await Promise.all([
+      needsVisual ? (explicitImageB64 ? Promise.resolve(explicitImageB64) : _aiAutoSnap()) : Promise.resolve(null),
+      _aiBuildContext(needsVisual)
     ]);
 
-    const userParts = [{ text }];
-    if (autoSnap) userParts[0] = { text }; // keep text
-    // Attach image to the LAST user message so Gemini sees it with this turn
     const contents = hist.map((m, i) => {
-      if (i === hist.length - 1 && autoSnap) {
-        return { role: m.role, parts: [...m.parts, { inline_data: { mime_type: 'image/jpeg', data: autoSnap } }] };
+      if (i === hist.length - 1 && snapB64) {
+        return { role: m.role, parts: [...m.parts, { inline_data: { mime_type: 'image/jpeg', data: snapB64 } }] };
       }
       return m;
     });
 
-    const body = {
-      system_instruction: { parts: [{ text: ctx }] },
-      contents
-    };
     const res = await fetch(_AI_WORKER, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      body: JSON.stringify({ system_instruction: { parts: [{ text: ctx }] }, contents })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error?.message || res.status);
