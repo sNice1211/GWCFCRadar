@@ -11241,8 +11241,8 @@ function switchTab(tab) {
 // ── LOCATE USER ──
 function locateUser() {
   if (!navigator.geolocation) {
-    updateLoadStatus('Geolocation not supported by your browser');
-    setTimeout(() => updateLoadStatus(''), 3000);
+    updateLoadStatus('⚠ Geolocation not supported by your browser');
+    setTimeout(() => updateLoadStatus(''), 4000);
     return;
   }
   if (_locWatchId !== null && _locMarker) {
@@ -11250,10 +11250,21 @@ function locateUser() {
     map.panTo(_locMarker.getLatLng(), { animate: true });
     return;
   }
-  // Start live tracking and sync the settings toggle
-  _startLocationTracking();
-  const cb = document.getElementById('lqm-set-location');
-  if (cb) cb.checked = true;
+  // Show immediate feedback so user knows it's working
+  updateLoadStatus('📍 Getting your location…');
+  // One-shot getCurrentPosition first so we get a fast result, then watchPosition
+  navigator.geolocation.getCurrentPosition(pos => {
+    updateLoadStatus('');
+    _startLocationTracking();
+    const cb = document.getElementById('lqm-set-location');
+    if (cb) cb.checked = true;
+  }, err => {
+    const msg = err.code === 1 ? '⚠ Location denied — please allow location access in your browser/phone settings'
+              : err.code === 2 ? '⚠ Location unavailable — try moving outdoors'
+              : '⚠ Location timed out — try again';
+    updateLoadStatus(msg);
+    setTimeout(() => updateLoadStatus(''), 6000);
+  }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
 }
 
 // ── LIVE LOCATION TRACKING ──
