@@ -19076,20 +19076,32 @@ Surface fronts: analysis chart fronts
 Model guidance: HRRR (18h), GFS (10d), ECMWF IFS, DWD ICON, Canadian RDPS
 ${hasSnap ? '\nA live map screenshot is attached — analyze it visually.' : ''}
 
-=== ACTIONS YOU CAN PERFORM (you control the map like a person would) ===
-To DO something on the map, include one or more JSON blocks in your reply, each like:
-{"action":"<name>","params":{...},"reason":"<short reason>"}
-You can include SEVERAL blocks to do multiple things at once (e.g. turn on a layer AND pan there).
+=== ACTIONS YOU CAN PERFORM (you control the map exactly like a human would click through the UI) ===
+To DO something on the map, include one or more JSON action blocks in your reply:
+{"action":"<name>","params":{...},"reason":"<why>"}
+
+Stack MULTIPLE blocks to do things in the right human order. For example, to show radar at a station:
+1. toggleLayer nexrad (turn radar on)
+2. selectProduct ref (click Reflectivity)
+3. openRadar KFWS (select the station)
+4. panTo Dallas (fly there)
+
 Available actions:
-- panTo {"place":"Dallas, TX"} — fly the map to any city/place by name (preferred). You may also give {"lat":32.78,"lon":-96.80,"zoom":8}. For "my location"/"near me" use the user's GPS coords above.
-- setZoom {"direction":"in"} or {"direction":"out"} or {"zoom":9} — zoom the map
-- toggleLayer {"layer":"<id>"} — turn a layer on/off. IDs: nexrad, satellite, tornado, tstm, flood, wind, temp, waves, lightning, radio, nwr, spcrpts, spc1, spc2, spc3, fronts, forecasts, alerts
-- openRadar {"site":"KFWS"} or {"place":"Dallas"} — open single-site NEXRAD radar (gives the nearest station if you pass a place). For "my radar"/"nearest radar" use the Nearest radar to user above.
-- openForecast {"place":"Miami"} or {"lat":25.7,"lon":-80.2,"name":"My Location"} — open the full in-app forecast panel. For "my forecast"/"forecast here" use the user GPS coords above.
+- panTo {"place":"Dallas, TX"} or {"lat":32.78,"lon":-96.80,"zoom":8} -- fly map to a place. Use GPS coords for "my location"/"near me".
+- setZoom {"direction":"in"/"out"} or {"zoom":9}
+- toggleLayer {"layer":"<id>"} -- IDs: nexrad, satellite, tornado, tstm, flood, wind, temp, waves, lightning, radio, nwr, spcrpts, spc1, spc2, spc3, fronts, forecasts, alerts
+- selectProduct {"product":"ref"} -- switch radar product. Options: ref (reflectivity), vel (velocity)
+- openRadar {"site":"KFWS"} or {"place":"Dallas"} -- open single-site NEXRAD. For "nearest"/"my radar" use the user GPS nearest station above.
+- openForecast {"place":"Miami"} or {"lat":25.7,"lon":-80.2,"name":"My Location"} -- open in-app forecast panel. Use GPS coords for "my forecast".
 
-When the user asks you to show, go to, turn on, enable, zoom, or open something — DO IT with an action, don't just describe it. Be proactive and decisive, like a human driving the app. Briefly say what you're doing (e.g. "On it — flying to Dallas and turning on radar.") then include the action blocks.
+CRITICAL RULES:
+- ALWAYS do the full sequence when opening radar: toggleLayer nexrad, then selectProduct, then openRadar, then panTo. All in one reply.
+- ALWAYS use openForecast for any forecast question. Never type out forecast numbers yourself.
+- Be decisive. Do not ask for confirmation. Just do it and say what you did in 1-2 short sentences.
+- NEVER use em dashes (--) in your responses. Use a comma or short sentence break instead.
+- Write like a sharp, knowledgeable friend texting you. Short. Direct. No filler.
 
-STYLE: Conversational, direct, short. Like a knowledgeable friend. Use **bold** for key terms. For non-forecast questions, answer from the alert/storm report data above.`;
+STYLE: Casual and smart. Use **bold** for key numbers or terms. Never start a sentence with "Certainly", "Sure", "Of course", "Absolutely", or "Great". Just answer.`;
 }
 
 // ── AI ACTION SYSTEM ──
@@ -19121,10 +19133,11 @@ function _aiActionLabel(action) {
   switch (a) {
     case 'panTo':       return `Fly the map to <b>${p.place || (p.lat!=null ? p.lat+', '+p.lon : 'a location')}</b>`;
     case 'setZoom':     return `Zoom ${p.direction ? p.direction : 'to '+p.zoom}`;
-    case 'toggleLayer': return `Toggle the <b>${p.layer}</b> layer`;
-    case 'openRadar':   return `Open <b>${(p.site || p.place || '').toString().toUpperCase()}</b> radar`;
-    case 'openForecast':return `Open the forecast for <b>${p.place || p.name || 'here'}</b>`;
-    default:            return a;
+    case 'toggleLayer':   return `Toggle the <b>${p.layer}</b> layer`;
+    case 'selectProduct': return `Switch radar to <b>${p.product === 'vel' ? 'Velocity' : 'Reflectivity'}</b>`;
+    case 'openRadar':     return `Open <b>${(p.site || p.place || '').toString().toUpperCase()}</b> radar`;
+    case 'openForecast':  return `Open the forecast for <b>${p.place || p.name || 'here'}</b>`;
+    default:              return a;
   }
 }
 
@@ -19153,6 +19166,13 @@ function _aiNearestStation(lat, lon) {
 
 async function _aiExecuteAction(action) {
   const a = action.action, p = action.params || {};
+
+  if (a === 'selectProduct' && p.product) {
+    const prod = p.product === 'velocity' ? 'vel' : p.product === 'reflectivity' ? 'ref' : p.product;
+    if (typeof selectProduct === 'function') selectProduct(prod);
+    activeLayers.nexrad = true;
+    return `Switched to ${prod === 'vel' ? 'Velocity' : 'Reflectivity'}.`;
+  }
 
   if (a === 'toggleLayer' && p.layer) {
     // Some layers are controlled by the overlay-pill system, not toggleLayer
