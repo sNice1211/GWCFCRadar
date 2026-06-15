@@ -19016,6 +19016,25 @@ async function _aiBuildContext(hasSnap) {
   const activeLyrs = Object.entries(activeLayers||{}).filter(([,v])=>v).map(([k])=>k).join(', ') || 'none';
   const radarSite = typeof _refStation !== 'undefined' && _refStation ? _refStation : 'composite mosaic';
 
+  // User GPS location (if tracking is on)
+  let userLocLine = 'User GPS: not tracking (location permission not granted or tracking off)';
+  if (typeof _lastGpsPos !== 'undefined' && _lastGpsPos) {
+    const ula = _lastGpsPos.coords.latitude, ulo = _lastGpsPos.coords.longitude;
+    const ulaStr = `${Math.abs(ula).toFixed(4)}° ${ula>=0?'N':'S'}`;
+    const uloStr = `${Math.abs(ulo).toFixed(4)}° ${ulo>=0?'E':'W'}`;
+    const acc = Math.round(_lastGpsPos.coords.accuracy);
+    userLocLine = `User GPS: ${ulaStr}, ${uloStr} (±${acc} m) — use this as "my location" / "near me" / "here"`;
+    // Find nearest NEXRAD station for the user
+    if (typeof NEXRAD_STATIONS !== 'undefined') {
+      let nearest = null, bestDist = Infinity;
+      NEXRAD_STATIONS.forEach(st => {
+        const d = Math.hypot(st.lat - ula, st.lon - ulo);
+        if (d < bestDist) { bestDist = d; nearest = st; }
+      });
+      if (nearest) userLocLine += `\nNearest radar to user: ${nearest.id} (${nearest.name || nearest.id}) — use this for openRadar when user says "my radar" or "nearest"`;
+    }
+  }
+
   const [allAlertsText, stormRpts] = await Promise.all([
     _aiFetchAllAlerts(),
     _aiFetchStormReports()
@@ -19025,6 +19044,7 @@ async function _aiBuildContext(hasSnap) {
 
 MAP: center ${mapCenter} | layers on: ${activeLyrs} | radar: ${radarSite}
 TIME: ${new Date().toUTCString()}
+${userLocLine}
 
 === STORM REPORTS TODAY (SPC) ===
 ${stormRpts || 'unavailable'}
@@ -19052,11 +19072,11 @@ To DO something on the map, include one or more JSON blocks in your reply, each 
 {"action":"<name>","params":{...},"reason":"<short reason>"}
 You can include SEVERAL blocks to do multiple things at once (e.g. turn on a layer AND pan there).
 Available actions:
-- panTo {"place":"Dallas, TX"} — fly the map to any city/place by name (preferred). You may also give {"lat":32.78,"lon":-96.80,"zoom":8}.
+- panTo {"place":"Dallas, TX"} — fly the map to any city/place by name (preferred). You may also give {"lat":32.78,"lon":-96.80,"zoom":8}. For "my location"/"near me" use the user's GPS coords above.
 - setZoom {"direction":"in"} or {"direction":"out"} or {"zoom":9} — zoom the map
 - toggleLayer {"layer":"<id>"} — turn a layer on/off. IDs: nexrad, satellite, tornado, tstm, flood, wind, temp, waves, lightning, radio, nwr, spcrpts, spc1, spc2, spc3, fronts, forecasts, alerts
-- openRadar {"site":"KFWS"} or {"place":"Dallas"} — open single-site NEXRAD radar (gives the nearest station if you pass a place)
-- openForecast {"place":"Miami"} — open the full in-app forecast panel (current + hourly + 7-day). ALWAYS use this for forecast questions instead of reciting numbers.
+- openRadar {"site":"KFWS"} or {"place":"Dallas"} — open single-site NEXRAD radar (gives the nearest station if you pass a place). For "my radar"/"nearest radar" use the Nearest radar to user above.
+- openForecast {"place":"Miami"} or {"lat":25.7,"lon":-80.2,"name":"My Location"} — open the full in-app forecast panel. For "my forecast"/"forecast here" use the user GPS coords above.
 
 When the user asks you to show, go to, turn on, enable, zoom, or open something — DO IT with an action, don't just describe it. Be proactive and decisive, like a human driving the app. Briefly say what you're doing (e.g. "On it — flying to Dallas and turning on radar.") then include the action blocks.
 
@@ -19136,16 +19156,31 @@ async function _aiExecuteAction(action) {
     return `Toggled ${p.layer}.`;
   }
 
+  // Helper: get user GPS coords if available
+  const _userGPS = () => (typeof _lastGpsPos !== 'undefined' && _lastGpsPos)
+    ? { lat: _lastGpsPos.coords.latitude, lon: _lastGpsPos.coords.longitude }
+    : null;
+
   if (a === 'panTo') {
-    let lat = p.lat, lon = p.lon, label = '';
-    if ((lat == null || lon == null) && p.place) {
+    let lat = p.lat, lon = p.lon, label = p.name || '';
+    const myLoc = /\b(my location|here|me|where i am|near me|current location)\b/i.test(p.place || '');
+    if (myLoc) {
+      const gps = _userGPS();
+      if (gps) { lat = gps.lat; lon = gps.lon; label = 'your location'; }
+      else return 'Location tracking is off — tap 📍 Locate first.';
+    } else if ((lat == null || lon == null) && p.place) {
       const g = await _aiGeocode(p.place);
       if (!g) return `Couldn't find "${p.place}".`;
       lat = g.lat; lon = g.lon; label = g.label;
     }
-    if (lat == null || lon == null) return 'No location given.';
+    if (lat == null || lon == null) {
+      // Last resort: use user GPS
+      const gps = _userGPS();
+      if (gps) { lat = gps.lat; lon = gps.lon; label = 'your location'; }
+      else return 'No location given.';
+    }
     const zoom = p.zoom || Math.max(map.getZoom(), 8);
-    map.flyTo([lat, lon], zoom, { duration: 1.4 });   // flyTo = smooth, visible glide
+    map.flyTo([lat, lon], zoom, { duration: 1.4 });
     return `Flew to ${label || (lat.toFixed(2) + ', ' + lon.toFixed(2))}.`;
   }
 
@@ -19158,27 +19193,50 @@ async function _aiExecuteAction(action) {
   }
 
   if (a === 'openForecast') {
-    let lat = p.lat, lon = p.lon, name = p.place || p.name;
-    if ((lat == null || lon == null) && name) {
+    let lat = p.lat, lon = p.lon, name = p.place || p.name || '';
+    const myLoc = !name || /\b(my location|here|me|near me|current location)\b/i.test(name);
+    if (myLoc) {
+      const gps = _userGPS();
+      if (gps) { lat = gps.lat; lon = gps.lon; name = 'My Location'; }
+    } else if ((lat == null || lon == null) && name) {
       const g = await _aiGeocode(name);
       if (g) { lat = g.lat; lon = g.lon; name = g.label; }
     }
-    const center = typeof map !== 'undefined' ? map.getCenter() : { lat: 35, lng: -90 };
-    if (typeof openForecastModal === 'function') {
-      openForecastModal({ name: name || 'Current Location', lat: lat != null ? lat : center.lat, lon: lon != null ? lon : center.lng });
+    if (lat == null || lon == null) {
+      const gps = _userGPS();
+      if (gps) { lat = gps.lat; lon = gps.lon; name = name || 'My Location'; }
+      else {
+        const c = map.getCenter();
+        lat = c.lat; lon = c.lng; name = name || 'Map Center';
+      }
     }
-    return `Opened forecast for ${name || 'current location'}.`;
+    if (typeof openForecastModal === 'function') {
+      openForecastModal({ name, lat, lon });
+    }
+    return `Opened forecast for ${name}.`;
   }
 
   if (a === 'openRadar') {
     const raw = (p.site || '').toString().toLowerCase().trim();
-    let st = NEXRAD_STATIONS.find(s => s.id === raw || s.id === 'k' + raw || s.id.slice(1) === raw);
+    let st = raw ? NEXRAD_STATIONS.find(s => s.id === raw || s.id === 'k' + raw || s.id.slice(1) === raw) : null;
     if (!st && p.place) {
-      const g = await _aiGeocode(p.place);
-      if (g) st = _aiNearestStation(g.lat, g.lon);
+      const myLoc = /\b(my|here|me|near me|nearest|closest)\b/i.test(p.place);
+      if (myLoc) {
+        const gps = _userGPS();
+        if (gps) st = _aiNearestStation(gps.lat, gps.lon);
+        else return 'Location tracking is off — tap 📍 Locate first.';
+      } else {
+        const g = await _aiGeocode(p.place);
+        if (g) st = _aiNearestStation(g.lat, g.lon);
+      }
     }
-    if (!st) return `Radar site "${p.site || p.place || '?'}" not found.`;
-    // Single-site radar only activates in reflectivity mode
+    if (!st) {
+      // Final fallback: nearest to user GPS or map center
+      const gps = _userGPS();
+      const c = gps || { lat: map.getCenter().lat, lon: map.getCenter().lng };
+      st = _aiNearestStation(c.lat, c.lon);
+    }
+    if (!st) return `Radar site not found.`;
     if (typeof currentProduct !== 'undefined' && currentProduct !== 'ref' && currentProduct !== 'vel') {
       currentProduct = 'ref';
     }
