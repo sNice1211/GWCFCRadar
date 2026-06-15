@@ -21126,10 +21126,14 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch(e) {}
     // Add scale control by default
     if (!window._scaleCtrl && window.map) { window._scaleCtrl = L.control.scale({imperial:true,metric:true}).addTo(map); }
-    // Auto-resume location tracking if it was enabled last session
-    try {
-      if (localStorage.getItem('gwcfc_location') === '1') _startLocationTracking();
-    } catch(e) {}
+    // Always ask for location — silently start if granted, do nothing if denied
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        () => { _startLocationTracking(); try { localStorage.setItem('gwcfc_location','1'); } catch(e){} },
+        () => { try { localStorage.removeItem('gwcfc_location'); } catch(e){} },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }
   }, 1500);
 });
 
