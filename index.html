@@ -4901,17 +4901,33 @@ footer {
 }
 .lqm-settings-btn:hover { background: rgba(220,0,0,0.18); border-color: rgba(220,0,0,0.7); }
 
-/* ── MY LOCATION DOT ── */
-.my-location-dot {
-  width: 14px; height: 14px; background: #1a8fff;
-  border: 2.5px solid #fff; border-radius: 50%;
-  box-shadow: 0 0 0 0 rgba(26,143,255,0.5);
+/* ── MY LOCATION DOT (Google Maps style) ── */
+.my-loc-wrap {
+  position: relative; width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+}
+.my-loc-cone {
+  position: absolute; top: -18px; left: 50%;
+  transform: translateX(-50%);
+  width: 0; height: 0;
+  border-left: 7px solid transparent;
+  border-right: 7px solid transparent;
+  border-bottom: 18px solid rgba(26,143,255,0.45);
+  transform-origin: bottom center;
+  pointer-events: none;
+}
+.my-loc-dot {
+  width: 18px; height: 18px; background: #1a8fff;
+  border: 3px solid #fff; border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(26,143,255,0.55), 0 2px 6px rgba(0,0,0,0.35);
   animation: loc-pulse 2s ease-out infinite;
+  position: relative; z-index: 1;
+  flex-shrink: 0;
 }
 @keyframes loc-pulse {
-  0%   { box-shadow: 0 0 0 0   rgba(26,143,255,0.5); }
-  70%  { box-shadow: 0 0 0 10px rgba(26,143,255,0); }
-  100% { box-shadow: 0 0 0 0   rgba(26,143,255,0); }
+  0%   { box-shadow: 0 0 0 0   rgba(26,143,255,0.55), 0 2px 6px rgba(0,0,0,0.35); }
+  70%  { box-shadow: 0 0 0 12px rgba(26,143,255,0),   0 2px 6px rgba(0,0,0,0.35); }
+  100% { box-shadow: 0 0 0 0   rgba(26,143,255,0),    0 2px 6px rgba(0,0,0,0.35); }
 }
 
 /* ── GPS INFO HUD ── */
@@ -11320,11 +11336,14 @@ function _startLocationTracking() {
   _locWatchId = navigator.geolocation.watchPosition(pos => {
     const { latitude: lat, longitude: lng, accuracy: acc } = pos.coords;
     const ll = [lat, lng];
+    const heading = pos.coords.heading;
+    const hasHeading = heading != null && pos.coords.speed != null && pos.coords.speed > 0.3;
+    const coneHtml = hasHeading
+      ? `<div class="my-loc-cone" style="transform:translateX(-50%) rotate(${heading}deg);"></div>`
+      : '';
+    const markerHtml = `<div class="my-loc-wrap">${coneHtml}<div class="my-loc-dot"></div></div>`;
     if (!_locMarker) {
-      const icon = L.divIcon({
-        className: '', html: '<div class="my-location-dot"></div>',
-        iconSize: [14, 14], iconAnchor: [7, 7],
-      });
+      const icon = L.divIcon({ className: '', html: markerHtml, iconSize: [22, 22], iconAnchor: [11, 11] });
       _locMarker = L.marker(ll, { icon, zIndexOffset: 2000 })
         .bindPopup(`📍 Your location<br><span style="font-size:10px;color:#aaa">±${Math.round(acc)} m accuracy</span>`)
         .addTo(map);
@@ -11332,14 +11351,15 @@ function _startLocationTracking() {
         radius: acc, color: '#1a8fff', fillColor: '#1a8fff',
         fillOpacity: 0.08, weight: 1, opacity: 0.25, interactive: false,
       }).addTo(map);
-      const row = document.getElementById('lqm-follow-row');
-      if (row) row.style.display = '';
-      ['lqm-hud-row','lqm-breadcrumb-row'].forEach(id => { const r=document.getElementById(id); if(r) r.style.display=''; });
+      ['lqm-follow-row','lqm-hud-row','lqm-breadcrumb-row'].forEach(id => { const r=document.getElementById(id); if(r) r.style.display=''; });
       map.setView(ll, Math.max(map.getZoom(), 8));
       try { localStorage.setItem('gwcfc_location', '1'); } catch(e) {}
     } else {
       _locMarker.setLatLng(ll);
       _locMarker.setPopupContent(`📍 Your location<br><span style="font-size:10px;color:#aaa">±${Math.round(acc)} m accuracy</span>`);
+      // Update cone direction on existing marker
+      const el = _locMarker.getElement();
+      if (el) el.querySelector('.my-loc-wrap').innerHTML = coneHtml + '<div class="my-loc-dot"></div>';
       _locCircle.setLatLng(ll);
       _locCircle.setRadius(acc);
     }
@@ -11347,8 +11367,6 @@ function _startLocationTracking() {
     _updateGpsHud(pos);
   }, err => {
     _stopLocationTracking();
-    const cb = document.getElementById('lqm-set-location');
-    if (cb) cb.checked = false;
     try { localStorage.removeItem('gwcfc_location'); } catch(e) {}
     const msg = err.code === 1 ? 'Location access denied — enable in browser settings'
               : err.code === 2 ? 'Location unavailable'
@@ -18650,14 +18668,6 @@ function selectProduct(p) {
   </div>
   <!-- ─── LOCATION ─── -->
   <div class="lqm-settings-category">LOCATION</div>
-  <div class="lqm-settings-row">
-    <span class="lqm-settings-lbl">Track My Location</span>
-    <label class="lqm-toggle">
-      <input type="checkbox" id="lqm-set-location" onchange="lqmToggleSetting('location',this.checked)">
-      <div class="lqm-toggle-track"></div>
-      <div class="lqm-toggle-knob"></div>
-    </label>
-  </div>
   <div class="lqm-settings-row" id="lqm-follow-row" style="display:none;">
     <span class="lqm-settings-lbl">Follow Me</span>
     <label class="lqm-toggle">
