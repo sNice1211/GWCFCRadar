@@ -4474,6 +4474,8 @@ footer {
   padding: 28px 28px 24px;
   max-width: 420px;
   width: 92%;
+  max-height: 92vh;
+  overflow-y: auto;
   box-shadow: 0 16px 60px rgba(0,0,0,0.8);
   position: relative;
 }
@@ -4657,6 +4659,17 @@ footer {
   margin-top: 14px;
   letter-spacing: 1px;
 }
+.auth-field-row {
+  display: flex;
+  gap: 8px;
+}
+.auth-field-row .auth-field {
+  flex: 1;
+  min-width: 0;
+}
+#auth-discord-info {
+  font-family: 'Comfortaa', sans-serif;
+}
 
 /* ══════════════════════════════════════════════════════════
    PROFILE PANEL (inside LQM area)
@@ -4791,7 +4804,7 @@ footer {
 }
 .lqm-edit-back:hover { color:#fff; }
 .lqm-edit-title {
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:12px; font-weight:700;
   color:#fff; letter-spacing:.05em;
   text-transform:uppercase;
@@ -4799,7 +4812,7 @@ footer {
 
 /* Section labels */
 .lqm-edit-label {
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:9px;
   color:rgba(212,232,255,0.45);
   margin:12px 0 5px;
@@ -4816,7 +4829,7 @@ footer {
   border:1px solid rgba(255,255,255,0.12);
   border-radius:7px;
   color:#fff;
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:12px;
   padding:8px 10px;
   outline:none;
@@ -4831,7 +4844,7 @@ footer {
   border:1px solid rgba(255,255,255,0.1);
   background:rgba(255,255,255,0.04);
   color:rgba(212,232,255,0.5);
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:10px; cursor:pointer; transition:all .13s;
 }
 .lqm-av-tab.active {
@@ -4873,7 +4886,7 @@ footer {
   border:1px dashed rgba(255,255,255,0.18);
   background:rgba(255,255,255,0.04);
   color:rgba(212,232,255,0.6);
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:10px; cursor:pointer; transition:border-color .15s;
 }
 .lqm-upload-btn:hover { border-color:rgba(0,200,200,0.45); color:#fff; }
@@ -4884,7 +4897,7 @@ footer {
   width:100%;
 }
 .lqm-rotate-label {
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:10px; color:rgba(212,232,255,0.45);
   flex-shrink:0;
 }
@@ -4930,7 +4943,7 @@ footer {
   border:1px solid rgba(0,200,200,0.45);
   background:rgba(0,200,200,0.1);
   color:#00c8c8;
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:11px; cursor:pointer; transition:background .15s;
 }
 .lqm-edit-save-btn:hover { background:rgba(0,200,200,0.22); }
@@ -4939,7 +4952,7 @@ footer {
   border:1px solid rgba(255,255,255,0.1);
   background:rgba(255,255,255,0.04);
   color:rgba(212,232,255,0.5);
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:11px; cursor:pointer; transition:background .15s;
 }
 .lqm-edit-cancel-btn:hover { background:rgba(255,255,255,0.1); color:#fff; }
@@ -4953,7 +4966,7 @@ footer {
   border:1px solid rgba(255,255,255,0.1);
   background:rgba(255,255,255,0.04);
   color:rgba(212,232,255,0.6);
-  font-family:'IBM Plex Mono',monospace;
+  font-family:'Comfortaa',sans-serif;
   font-size:9px; cursor:pointer; text-align:center;
   transition:background .13s;
 }
@@ -21135,12 +21148,21 @@ function authSwitchTab(mode) {
   _authMode = mode;
   document.getElementById('auth-tab-signin').classList.toggle('active', mode === 'signin');
   document.getElementById('auth-tab-signup').classList.toggle('active', mode === 'signup');
-  const signup = mode === 'signup';
-  document.getElementById('auth-field-name').style.display   = signup ? '' : 'none';
-  document.getElementById('auth-field-region').style.display = signup ? '' : 'none';
-  document.getElementById('auth-field-role').style.display   = signup ? '' : 'none';
-  document.getElementById('auth-submit-btn').textContent     = signup ? 'CREATE ACCOUNT →' : 'SIGN IN →';
-  document.getElementById('auth-input-pass').autocomplete    = signup ? 'new-password' : 'current-password';
+  const s = mode === 'signup';
+  ['auth-field-name','auth-field-location','auth-field-region','auth-field-role','auth-field-bio'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = s ? '' : 'none';
+  });
+  document.getElementById('auth-submit-btn').textContent  = s ? 'CREATE ACCOUNT →' : 'SIGN IN →';
+  document.getElementById('auth-input-pass').autocomplete = s ? 'new-password' : 'current-password';
+}
+
+function authUpdateStateLabel() {
+  const country = (document.getElementById('auth-input-country') || {}).value;
+  const label   = document.getElementById('auth-state-label');
+  if (!label) return;
+  const map = { US:'State', CA:'Province', AU:'State / Territory', IN:'State', MX:'State', BR:'State', DE:'State', other:'State / Province' };
+  label.textContent = map[country] || 'State / Province';
 }
 
 function authSwitchMethod(method) {
@@ -21152,7 +21174,7 @@ function authSwitchMethod(method) {
   const credLabel = document.getElementById('auth-cred-label');
   const passField = document.getElementById('auth-field-pass');
   const discInfo  = document.getElementById('auth-discord-info');
-  const formFields = ['auth-field-cred','auth-field-pass','auth-field-name','auth-field-region','auth-field-role'];
+  const formFields = ['auth-field-cred','auth-field-pass','auth-field-name','auth-field-location','auth-field-region','auth-field-role','auth-field-bio'];
 
   if (method === 'discord') {
     formFields.forEach(id => { const el=document.getElementById(id); if(el) el.style.display='none'; });
@@ -21207,6 +21229,9 @@ async function authSubmit() {
   const name     = document.getElementById('auth-input-name').value.trim();
   const region   = document.getElementById('auth-input-region').value;
   const role     = document.getElementById('auth-input-role').value;
+  const country  = (document.getElementById('auth-input-country')  || {}).value || null;
+  const state    = ((document.getElementById('auth-input-state')    || {}).value || '').trim() || null;
+  const bio      = ((document.getElementById('auth-input-bio')      || {}).value || '').trim() || null;
 
   if (!credRaw || !pass) { _showAuthError('Please fill in all required fields.'); return; }
   if (_authMode === 'signup' && !name) { _showAuthError('Please enter a display name.'); return; }
@@ -21232,7 +21257,7 @@ async function authSubmit() {
         authMethod:  _authMethod,
         email:       _authMethod === 'email' ? credRaw : null,
         phone:       _authMethod === 'phone' ? credRaw : null,
-        region, role,
+        region, role, country, state, bio,
         createdAt:   firebase.firestore.FieldValue.serverTimestamp(),
         guestId:     localStorage.getItem('gwcfc_guest_id') || null,
         savedLayers: null,
@@ -21318,11 +21343,22 @@ async function _loadUserPrefs(uid) {
     if (!snap.exists) return;
     const d = snap.data();
     const sub = document.getElementById('lqm-profile-sub-txt');
-    if (sub) sub.textContent = (d.region || '') + (d.role ? ' · ' + d.role : '');
+    // Build a subtitle: bio OR role · region
+    const subtitleParts = [];
+    if (d.bio) subtitleParts.push(d.bio);
+    else {
+      if (d.role)   subtitleParts.push(d.role);
+      if (d.region) subtitleParts.push(d.region);
+    }
+    if (sub) sub.textContent = subtitleParts.join(' · ') || '';
     const rv = document.getElementById('lqm-profile-region-val');
     const ro = document.getElementById('lqm-profile-role-val');
-    if (rv) rv.textContent = d.region || '—';
-    if (ro) ro.textContent = d.role   || '—';
+    if (rv) {
+      // Show state + country if available, else watch region
+      const loc = [d.state, d.country].filter(Boolean).join(', ');
+      rv.textContent = loc || d.region || '—';
+    }
+    if (ro) ro.textContent = d.role || '—';
     // Restore avatar
     if (d.avatarImage) {
       // Pre-load raw image so rotate/re-edit still works
@@ -22162,27 +22198,83 @@ document.addEventListener('DOMContentLoaded', () => {
              onkeydown="if(event.key==='Enter')authSubmit()"/>
     </div>
 
-    <!-- Region (signup only) -->
+    <!-- Country + State/Province (signup only) -->
+    <div id="auth-field-location" style="display:none;">
+      <div class="auth-field-row">
+        <div class="auth-field">
+          <label>Country</label>
+          <select id="auth-input-country" onchange="authUpdateStateLabel()">
+            <option value="">— Select —</option>
+            <option value="US">🇺🇸 United States</option>
+            <option value="CA">🇨🇦 Canada</option>
+            <option value="MX">🇲🇽 Mexico</option>
+            <option value="GB">🇬🇧 United Kingdom</option>
+            <option value="AU">🇦🇺 Australia</option>
+            <option value="NZ">🇳🇿 New Zealand</option>
+            <option value="DE">🇩🇪 Germany</option>
+            <option value="FR">🇫🇷 France</option>
+            <option value="ES">🇪🇸 Spain</option>
+            <option value="IT">🇮🇹 Italy</option>
+            <option value="NL">🇳🇱 Netherlands</option>
+            <option value="BE">🇧🇪 Belgium</option>
+            <option value="SE">🇸🇪 Sweden</option>
+            <option value="NO">🇳🇴 Norway</option>
+            <option value="DK">🇩🇰 Denmark</option>
+            <option value="FI">🇫🇮 Finland</option>
+            <option value="PL">🇵🇱 Poland</option>
+            <option value="JP">🇯🇵 Japan</option>
+            <option value="KR">🇰🇷 South Korea</option>
+            <option value="CN">🇨🇳 China</option>
+            <option value="IN">🇮🇳 India</option>
+            <option value="BR">🇧🇷 Brazil</option>
+            <option value="AR">🇦🇷 Argentina</option>
+            <option value="CL">🇨🇱 Chile</option>
+            <option value="CO">🇨🇴 Colombia</option>
+            <option value="ZA">🇿🇦 South Africa</option>
+            <option value="NG">🇳🇬 Nigeria</option>
+            <option value="PH">🇵🇭 Philippines</option>
+            <option value="ID">🇮🇩 Indonesia</option>
+            <option value="other">🌍 Other</option>
+          </select>
+        </div>
+        <div class="auth-field">
+          <label id="auth-state-label">State / Province</label>
+          <input type="text" id="auth-input-state" placeholder="e.g. Texas" autocomplete="address-level1" maxlength="60"/>
+        </div>
+      </div>
+    </div>
+
+    <!-- Watch region (signup only) -->
     <div class="auth-field" id="auth-field-region" style="display:none;">
-      <label>Home Region</label>
+      <label>Primary Watch Area</label>
       <select id="auth-input-region">
-        <option value="">, Select your primary watch area ,</option>
-        <option value="ne">Northeast US</option>
-        <option value="se">Southeast US</option>
-        <option value="gulfcoast">Gulf Coast</option>
-        <option value="florida">Florida</option>
-        <option value="midwest">Midwest</option>
-        <option value="southern_plains">Southern Plains (Tornado Alley)</option>
-        <option value="northern_plains">Northern Plains</option>
-        <option value="rockies">Rockies / Mountain West</option>
-        <option value="southwest">Southwest US</option>
-        <option value="pacific_nw">Pacific Northwest</option>
-        <option value="california">California</option>
-        <option value="alaska">Alaska</option>
-        <option value="hawaii">Hawaii / Pacific</option>
-        <option value="caribbean">Caribbean</option>
-        <option value="canada">Canada</option>
-        <option value="international">International</option>
+        <option value="">— Select your watch area —</option>
+        <optgroup label="United States">
+          <option value="ne">Northeast US</option>
+          <option value="se">Southeast US</option>
+          <option value="gulfcoast">Gulf Coast</option>
+          <option value="florida">Florida</option>
+          <option value="midwest">Midwest</option>
+          <option value="southern_plains">Southern Plains (Tornado Alley)</option>
+          <option value="northern_plains">Northern Plains</option>
+          <option value="rockies">Rockies / Mountain West</option>
+          <option value="southwest">Southwest US</option>
+          <option value="pacific_nw">Pacific Northwest</option>
+          <option value="california">California</option>
+          <option value="alaska">Alaska</option>
+          <option value="hawaii">Hawaii / Pacific</option>
+        </optgroup>
+        <optgroup label="International">
+          <option value="caribbean">Caribbean</option>
+          <option value="canada">Canada</option>
+          <option value="mexico">Mexico / Central America</option>
+          <option value="south_america">South America</option>
+          <option value="europe">Europe</option>
+          <option value="asia_pacific">Asia / Pacific</option>
+          <option value="australia">Australia / New Zealand</option>
+          <option value="africa">Africa</option>
+          <option value="other_intl">Other International</option>
+        </optgroup>
       </select>
     </div>
 
@@ -22190,7 +22282,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="auth-field" id="auth-field-role" style="display:none;">
       <label>I Am A…</label>
       <select id="auth-input-role">
-        <option value="">, Select your role ,</option>
+        <option value="">— Select your role —</option>
         <option value="hobbyist">Weather Hobbyist</option>
         <option value="spotter">Trained Spotter / Chaser</option>
         <option value="broadcast">Broadcast Meteorologist</option>
@@ -22198,18 +22290,25 @@ document.addEventListener('DOMContentLoaded', () => {
         <option value="researcher">Researcher / Academic</option>
         <option value="pilot">Pilot / Aviation</option>
         <option value="maritime">Maritime / Coastal</option>
+        <option value="student">Student</option>
         <option value="other">Other</option>
       </select>
+    </div>
+
+    <!-- Bio / tagline (signup only) -->
+    <div class="auth-field" id="auth-field-bio" style="display:none;">
+      <label>Short Bio / Tagline <span style="color:rgba(212,232,255,0.3);font-size:8px;">(optional)</span></label>
+      <input type="text" id="auth-input-bio" placeholder="e.g. Storm chaser since 2010, based in Oklahoma" maxlength="100"/>
     </div>
 
     <button class="auth-submit-btn" id="auth-submit-btn" onclick="authSubmit()">SIGN IN →</button>
 
     <div style="display:flex;align-items:center;gap:10px;margin:12px 0 4px;">
       <div style="flex:1;height:1px;background:rgba(255,255,255,0.12);"></div>
-      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:rgba(212,232,255,0.4);">OR</span>
+      <span style="font-family:'Comfortaa',sans-serif;font-size:10px;color:rgba(212,232,255,0.4);">OR</span>
       <div style="flex:1;height:1px;background:rgba(255,255,255,0.12);"></div>
     </div>
-    <button id="auth-google-btn" onclick="authSignInWithGoogle()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:11px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.07);color:#fff;font-family:'IBM Plex Mono',monospace;font-size:13px;cursor:pointer;transition:background .18s;">
+    <button id="auth-google-btn" onclick="authSignInWithGoogle()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;padding:11px 0;border-radius:8px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.07);color:#fff;font-family:'Comfortaa',sans-serif;font-size:13px;cursor:pointer;transition:background .18s;">
       <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/><path fill="none" d="M0 0h48v48H0z"/></svg>
       Continue with Google
     </button>
@@ -22254,7 +22353,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       <hr class="lqm-profile-divider" style="margin:10px 0;">
       <div class="lqm-profile-row" id="lqm-profile-region-row">
-        <span>Region</span>
+        <span>Location</span>
         <span id="lqm-profile-region-val" style="font-size:11px;color:rgba(212,232,255,0.6);">—</span>
       </div>
       <div class="lqm-profile-row" id="lqm-profile-role-row">
