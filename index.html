@@ -21164,6 +21164,8 @@ async function saveProfileChanges() {
     const locCounty  = (document.getElementById('lqm-loc-county')  || {}).value || '';
     const locCity    = (document.getElementById('lqm-loc-city')    || {}).value || '';
     _homeLocation = { country: locCountry, state: locState, county: locCounty, city: locCity };
+    // Push location to SW immediately so background sync is current
+    _postLocationToSW();
 
     const payload = {
       displayName: newName,
@@ -21193,6 +21195,14 @@ let _notifEnabled = false;
 let _notifPollInterval = null;
 let _notifSeenIds = new Set();
 
+const GWCFC_VAPID_KEY = 'BKym-V7qKDUCZi-fhxnapaPcTt6gfothVc3vY_wKOQaHcnn6zpoFCeRtLTil3sGQY5qd2-CAXsdMjBIN0o95c0E';
+
+function _urlBase64ToUint8Array(b64) {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
 // Called from lqmOpenEditView — pre-fill location fields
 function _fillLocationFields() {
   ['country','state','county','city'].forEach(k => {
@@ -21205,22 +21215,19 @@ function _fillLocationFields() {
 function _alertMatchesHome(areaDesc) {
   if (!areaDesc) return false;
   const desc = areaDesc.toLowerCase();
-  const { country, state, county, city } = _homeLocation;
-  // Match any non-empty field that appears in the areaDesc
-  const terms = [county, city, state].filter(Boolean).map(s => s.toLowerCase());
+  const { state, county, city } = _homeLocation;
+  const terms = [county, city, state].filter(Boolean).map(s => s.toLowerCase().trim());
   if (!terms.length) return false;
   return terms.some(t => desc.includes(t));
 }
 
 // Injects a home-area badge and class on matching alert cards
 function _decorateAlertCards() {
-  if (!document.getElementById('alerts-panel')) return;
   document.querySelectorAll('#alerts-panel .alert-card, #past-alerts-list .alert-card').forEach(card => {
     const areaEl = card.querySelector('.alert-area');
     if (!areaEl) return;
     const matches = _alertMatchesHome(areaEl.textContent);
     card.classList.toggle('home-area', matches);
-    // add/remove badge
     let badge = card.querySelector('.alert-home-badge');
     if (matches && !badge) {
       badge = document.createElement('div');
@@ -21230,6 +21237,15 @@ function _decorateAlertCards() {
     } else if (!matches && badge) {
       badge.remove();
     }
+  });
+}
+
+// Send home location to the service worker so background sync can use it
+function _postLocationToSW() {
+  if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) return;
+  navigator.serviceWorker.controller.postMessage({
+    type: 'SET_LOCATION',
+    location: _homeLocation,
   });
 }
 
@@ -21247,13 +21263,13 @@ async function lqmToggleNotifications(enabled) {
     return;
   }
 
-  // Request permission
+  // 1. Request permission
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') {
     _notifEnabled = false;
     const cb = document.getElementById('lqm-notif-toggle');
     if (cb) cb.checked = false;
-    if (sub) sub.textContent = 'Permission denied — allow notifications in browser settings';
+    if (sub) sub.textContent = 'Blocked — allow notifications in browser settings';
     return;
   }
 
@@ -21261,19 +21277,46 @@ async function lqmToggleNotifications(enabled) {
   if (_currentUser && _fbDb)
     _fbDb.collection('users').doc(_currentUser.uid).update({ notifEnabled: true }).catch(()=>{});
 
+  // 2. Subscribe push + register periodic sync
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.ready.then(async reg => {
+      // Push subscription (saves endpoint to Firestore for future FCM backend)
+      try {
+        const pushSub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: _urlBase64ToUint8Array(GWCFC_VAPID_KEY),
+        });
+        if (_currentUser && _fbDb) {
+          _fbDb.collection('users').doc(_currentUser.uid).update({
+            pushSubscription: JSON.stringify(pushSub),
+          }).catch(()=>{});
+        }
+      } catch(e) { console.warn('Push subscribe:', e); }
+
+      // Periodic background sync (Chrome Android — works with browser closed)
+      try {
+        await reg.periodicSync.register('check-alerts', { minInterval: 5 * 60 * 1000 });
+      } catch(e) { /* not supported on this browser */ }
+
+      // Send location to SW immediately
+      _postLocationToSW();
+    });
+  }
+
+  // 3. Also poll in-page every 5 min (all browsers)
   _startNotifPoll();
 }
 
 function _startNotifPoll() {
   if (_notifPollInterval) return;
-  _pollAlertNotifications();                          // immediate check
-  _notifPollInterval = setInterval(_pollAlertNotifications, 5 * 60 * 1000); // every 5 min
+  _pollAlertNotifications();
+  _notifPollInterval = setInterval(_pollAlertNotifications, 5 * 60 * 1000);
 }
 
 async function _pollAlertNotifications() {
   if (!_notifEnabled || Notification.permission !== 'granted') return;
   const terms = [_homeLocation.county, _homeLocation.city, _homeLocation.state]
-    .filter(Boolean).map(s => s.toLowerCase());
+    .filter(Boolean).map(s => s.toLowerCase().trim());
   if (!terms.length) return;
 
   try {
@@ -21282,35 +21325,31 @@ async function _pollAlertNotifications() {
     });
     if (!r.ok) return;
     const data = await r.json();
-    const features = data.features || [];
-    const matches = features.filter(f => {
+    const matches = (data.features || []).filter(f => {
       const desc = (f.properties.areaDesc || '').toLowerCase();
       return terms.some(t => desc.includes(t));
     });
     for (const f of matches) {
       const id = f.properties.id || f.id;
-      if (_notifSeenIds.has(id)) continue;
+      if (!id || _notifSeenIds.has(id)) continue;
       _notifSeenIds.add(id);
       const ev   = f.properties.event || 'Weather Alert';
       const area = (f.properties.areaDesc || '').slice(0, 80);
       const sev  = f.properties.severity || '';
-      // Show notification via service worker (works when tab is in background)
-      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
-        navigator.serviceWorker.ready.then(reg => {
-          reg.showNotification(`⚡ ${ev}`, {
-            body: area,
-            icon: './icons/icon-192.png',
-            badge: './icons/icon-192.png',
-            tag: id,
-            data: { url: location.href },
-            vibrate: sev === 'Extreme' || sev === 'Severe' ? [200,100,200] : [100],
-          });
+      navigator.serviceWorker.ready.then(reg => {
+        reg.showNotification(`⚡ ${ev}`, {
+          body:    area,
+          icon:    './icons/icon-192.png',
+          badge:   './icons/icon-192.png',
+          tag:     id,
+          vibrate: (sev === 'Extreme' || sev === 'Severe') ? [200, 100, 200] : [100],
+          data:    { url: location.href },
         });
-      } else {
+      }).catch(() => {
         new Notification(`⚡ ${ev}`, { body: area, tag: id });
-      }
+      });
     }
-  } catch(e) { /* silent fail */ }
+  } catch(e) { /* silent */ }
 }
 
 // ── AUTH MODAL ──────────────────────────────────────────────
