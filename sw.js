@@ -1,5 +1,5 @@
 // GWCFCRadar Service Worker — radar tile cache + background alert notifications
-const CACHE       = 'gwcfc-v11';
+const CACHE       = 'gwcfc-v12';
 const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
@@ -24,7 +24,8 @@ const TTL_MS = {
 
 // ── Home location + GPS coords (sent from page via postMessage) ──
 let _swLocation = null;
-let _swCoords   = null; // { lat, lon } for rain detection
+let _swCoords   = null;   // { lat, lon } for rain detection
+let _swTileKey  = null;   // current IEM radar tileKey (e.g. "202406191800")
 let _swRainWas  = false;
 
 // ── Lifecycle ────────────────────────────────────────────────
@@ -42,7 +43,8 @@ self.addEventListener('activate', e => e.waitUntil(
 self.addEventListener('message', e => {
   if (e.data && e.data.type === 'SET_LOCATION') {
     _swLocation = e.data.location || null;
-    if (e.data.coords) _swCoords = e.data.coords;
+    if (e.data.coords)   _swCoords   = e.data.coords;
+    if (e.data.tileKey)  _swTileKey  = e.data.tileKey;
   }
 });
 
@@ -256,72 +258,64 @@ async function _checkAndNotify() {
     }
   }
 
-  // ── Rain Near Me — sample actual RainViewer radar tile at GPS position ──
-  if (_swCoords) {
+  // ── Rain Near Me — read the IEM radar tile already in the SW cache ──
+  if (_swCoords && _swTileKey) {
     try {
-      // Get latest RainViewer frame
-      const meta = await fetch('https://api.rainviewer.com/public/weather-maps.json', {
-        signal: AbortSignal.timeout(8000),
-      }).then(r => r.json());
-      const frames = (meta.radar && meta.radar.past) || [];
-      if (frames.length) {
-        const framePath = frames[frames.length - 1].path;
-        const { lat, lon } = _swCoords;
+      const { lat, lon } = _swCoords;
+      const Z   = 7;
+      const n   = 1 << Z;
+      const xF  = (lon + 180) / 360 * n;
+      const latR = lat * Math.PI / 180;
+      const yF  = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * n;
+      const tx  = Math.floor(xF), ty = Math.floor(yF);
+      const px  = Math.floor((xF - tx) * 256);
+      const py  = Math.floor((yF - ty) * 256);
 
-        // Convert GPS to tile coords at zoom 7 (~1.2 km/pixel; ±20px ≈ 25 miles)
-        const Z   = 7;
-        const n   = 1 << Z;
-        const xF  = (lon + 180) / 360 * n;
-        const latR = lat * Math.PI / 180;
-        const yF  = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * n;
-        const tx  = Math.floor(xF), ty = Math.floor(yF);
-        const px  = Math.floor((xF - tx) * 256);
-        const py  = Math.floor((yF - ty) * 256);
+      const tileUrl = `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-${_swTileKey}/${Z}/${tx}/${ty}.png`;
 
-        const tileUrl = `https://tilecache.rainviewer.com${framePath}/256/${Z}/${tx}/${ty}/4/1_1.png`;
-        const tr = await fetch(tileUrl, { signal: AbortSignal.timeout(8000) });
-        if (tr.ok) {
-          const blob = await tr.blob();
-          // OffscreenCanvas is available in Chrome SW (v69+)
-          const bmp  = await createImageBitmap(blob);
-          const oc   = new OffscreenCanvas(256, 256);
-          const octx = oc.getContext('2d');
-          octx.drawImage(bmp, 0, 0);
-          const R  = 20;
-          const x0 = Math.max(0, px - R), x1 = Math.min(255, px + R);
-          const y0 = Math.max(0, py - R), y1 = Math.min(255, py + R);
-          const pxData = octx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1).data;
+      // Try the SW cache first — this tile was already downloaded by the map
+      const radarCache = await caches.open(CACHE);
+      let resp = await radarCache.match(tileUrl);
+      if (!resp) resp = await fetch(tileUrl, { signal: AbortSignal.timeout(8000) });
+      if (!resp || !resp.ok) { _swRainWas = false; return; }
 
-          let maxAlpha = 0, bestR = 0, bestG = 0, bestB = 0;
-          for (let i = 0; i < pxData.length; i += 4) {
-            if (pxData[i + 3] > maxAlpha) {
-              maxAlpha = pxData[i + 3];
-              bestR = pxData[i]; bestG = pxData[i + 1]; bestB = pxData[i + 2];
-            }
-          }
+      const blob = await resp.blob();
+      const bmp  = await createImageBitmap(blob);
+      const oc   = new OffscreenCanvas(256, 256);
+      const octx = oc.getContext('2d');
+      octx.drawImage(bmp, 0, 0);
+      const R  = 20;
+      const x0 = Math.max(0, px - R), x1 = Math.min(255, px + R);
+      const y0 = Math.max(0, py - R), y1 = Math.min(255, py + R);
+      const pxData = octx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1).data;
 
-          const isRaining = maxAlpha > 20;
-          if (isRaining && !_swRainWas) {
-            _swRainWas = true;
-            // Classify by RainViewer color palette
-            let emoji = '🌧️', label = 'Rain';
-            if (bestR > 180 && bestG < 80)           { emoji = '⛈️'; label = 'Heavy Rain'; }
-            else if (bestR < 100 && bestB > 150)     { emoji = '❄️'; label = 'Snow/Sleet'; }
-            else if (bestG > 150 && bestR < 120)     { emoji = '🌦️'; label = 'Light Rain'; }
-            await self.registration.showNotification(`${emoji} ${label} Near You`, {
-              body:    'Radar shows precipitation within ~25 miles of your location',
-              icon:    './icons/icon-192.png',
-              badge:   './icons/icon-192.png',
-              tag:     'rain-near-me',
-              vibrate: [150],
-              data:    { url: self.location.origin + '/GWCFCRadar/' },
-            });
-          } else if (!isRaining) {
-            _swRainWas = false;
-          }
+      let maxAlpha = 0, bestR = 0, bestG = 0, bestB = 0;
+      for (let i = 0; i < pxData.length; i += 4) {
+        if (pxData[i + 3] > maxAlpha) {
+          maxAlpha = pxData[i + 3];
+          bestR = pxData[i]; bestG = pxData[i + 1]; bestB = pxData[i + 2];
         }
       }
-    } catch(e) { /* rain radar check failed silently */ }
+
+      const isRaining = maxAlpha > 20;
+      if (isRaining && !_swRainWas) {
+        _swRainWas = true;
+        let emoji = '🌧️', label = 'Rain';
+        if (bestR > 180 && bestG < 80)       { emoji = '⛈️'; label = 'Heavy Rain'; }
+        else if (bestR < 100 && bestB > 150) { emoji = '❄️'; label = 'Snow/Sleet'; }
+        else if (bestG > 150 && bestR < 120) { emoji = '🌦️'; label = 'Light Rain'; }
+        await self.registration.showNotification(`${emoji} ${label} Near You`, {
+          body:    'Radar shows precipitation within ~25 miles of your location',
+          icon:    './icons/icon-192.png',
+          badge:   './icons/icon-192.png',
+          tag:     'rain-near-me',
+          vibrate: [150],
+          data:    { url: self.location.origin + '/GWCFCRadar/' },
+        });
+      } else if (!isRaining) {
+        _swRainWas = false;
+      }
+    } catch(e) { /* silent */ }
   }
 
   // Prune seen cache entries older than 24 h

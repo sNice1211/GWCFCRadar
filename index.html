@@ -20760,6 +20760,9 @@ function _postLocationToSW() {
   if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) return;
   const msg = { type: 'SET_LOCATION', location: _homeLocation };
   if (_userCoords) msg.coords = _userCoords;
+  // Pass the current radar frame's tileKey so SW can read the already-cached tile
+  if (radarFrames.length && radarFrames[currentFrame])
+    msg.tileKey = radarFrames[currentFrame].tileKey;
   navigator.serviceWorker.controller.postMessage(msg);
 }
 
@@ -21046,21 +21049,7 @@ async function lqmToggleRainDetect(enabled) {
   );
 }
 
-// Convert lat/lon to tile X/Y and sub-pixel offset at a given zoom
-function _latLonToTilePixel(lat, lon, z) {
-  const n    = 1 << z;
-  const xF   = (lon + 180) / 360 * n;
-  const latR = lat * Math.PI / 180;
-  const yF   = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * n;
-  return {
-    tx: Math.floor(xF),
-    ty: Math.floor(yF),
-    px: Math.floor((xF - Math.floor(xF)) * 256),
-    py: Math.floor((yF - Math.floor(yF)) * 256),
-  };
-}
-
-// Map a RainViewer pixel colour to a precipitation label
+// Map a radar pixel colour to a precipitation label
 function _rvPixelIntensity(r, g, b) {
   // RainViewer default palette: blue→cyan→green→yellow→orange→red (light→heavy)
   if (r > 180 && g < 80)               return { emoji:'⛈️', label:'Heavy Rain',   sev:3 };
@@ -21074,53 +21063,52 @@ async function _pollRainRadar() {
   if (!_rainDetectEnabled || !_userCoords) return;
   const sub = document.getElementById('lqm-rain-sublabel');
   try {
-    // 1. Get latest RainViewer frame list
-    const meta = await fetch('https://api.rainviewer.com/public/weather-maps.json', {
-      signal: AbortSignal.timeout(8000),
-    }).then(r => r.json());
+    // Use the radar tiles already loaded on the map — zero new network requests
+    if (!radarFrames.length) return;
+    const frame = radarFrames[currentFrame];
+    if (!frame || !frame.tileKey) return;
 
-    const frames = (meta.radar && meta.radar.past) || [];
-    if (!frames.length) return;
-    const framePath = frames[frames.length - 1].path; // e.g. "/v2/radar/1234567890"
+    // Convert GPS to tile XY at zoom 7 (~1.2 km/pixel; ±20px radius ≈ 25 miles)
+    const Z   = 7;
+    const n   = 1 << Z;
+    const xF  = (_userCoords.lon + 180) / 360 * n;
+    const latR = _userCoords.lat * Math.PI / 180;
+    const yF  = (1 - Math.log(Math.tan(latR) + 1 / Math.cos(latR)) / Math.PI) / 2 * n;
+    const tx  = Math.floor(xF), ty = Math.floor(yF);
+    const px  = Math.floor((xF - tx) * 256);
+    const py  = Math.floor((yF - ty) * 256);
 
-    // 2. Convert user's GPS to tile coords at zoom 7
-    //    At z=7 one pixel ≈ 1.2 km; a ±20-pixel radius ≈ 25 miles
-    const Z = 7;
-    const { tx, ty, px, py } = _latLonToTilePixel(_userCoords.lat, _userCoords.lon, Z);
-    const tileUrl = `https://tilecache.rainviewer.com${framePath}/256/${Z}/${tx}/${ty}/4/1_1.png`;
+    // Same URL the map already fetched and the SW already cached
+    const tileUrl = `${IEM_TILE_BASE}${frame.tileKey}/${Z}/${tx}/${ty}.png`;
 
-    // 3. Fetch tile and draw to an OffscreenCanvas (or regular canvas)
-    const resp = await fetch(tileUrl, { signal: AbortSignal.timeout(8000) });
-    if (!resp.ok) return;
-    const blob = await resp.blob();
-
-    let pixels;
-    if (typeof OffscreenCanvas !== 'undefined') {
-      const bmp    = await createImageBitmap(blob);
-      const oc     = new OffscreenCanvas(256, 256);
-      const octx   = oc.getContext('2d');
-      octx.drawImage(bmp, 0, 0);
-      const RADIUS = 20; // ~25 miles at z=7
-      const x0 = Math.max(0, px - RADIUS), x1 = Math.min(255, px + RADIUS);
-      const y0 = Math.max(0, py - RADIUS), y1 = Math.min(255, py + RADIUS);
-      pixels = octx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1).data;
-    } else {
-      // Fallback: draw into a regular canvas element
-      const img = new Image();
-      const url = URL.createObjectURL(blob);
-      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
-      URL.revokeObjectURL(url);
-      const cv   = document.createElement('canvas');
-      cv.width   = cv.height = 256;
-      const cvx  = cv.getContext('2d');
-      cvx.drawImage(img, 0, 0);
-      const RADIUS = 20;
-      const x0 = Math.max(0, px - RADIUS), x1 = Math.min(255, px + RADIUS);
-      const y0 = Math.max(0, py - RADIUS), y1 = Math.min(255, py + RADIUS);
-      pixels = cvx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1).data;
+    // Pull from SW cache first — it's already there; only fall back to network
+    let blob;
+    if ('caches' in window) {
+      const cache = await caches.open('gwcfc-v12');
+      const hit   = await cache.match(tileUrl);
+      blob = hit ? await hit.blob() : null;
+    }
+    if (!blob) {
+      const r = await fetch(tileUrl, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return;
+      blob = await r.blob();
     }
 
-    // 4. Find the most intense pixel (highest alpha = most precipitation)
+    // Draw to canvas and sample a ±20 px square around user's pixel
+    const img = new Image();
+    const objUrl = URL.createObjectURL(blob);
+    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = objUrl; });
+    URL.revokeObjectURL(objUrl);
+    const cv  = document.createElement('canvas');
+    cv.width  = cv.height = 256;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const R  = 20;
+    const x0 = Math.max(0, px - R), x1 = Math.min(255, px + R);
+    const y0 = Math.max(0, py - R), y1 = Math.min(255, py + R);
+    const pixels = ctx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1).data;
+
+    // Transparent = no echo; any colour = precipitation
     let maxAlpha = 0, bestR = 0, bestG = 0, bestB = 0;
     for (let i = 0; i < pixels.length; i += 4) {
       if (pixels[i + 3] > maxAlpha) {
