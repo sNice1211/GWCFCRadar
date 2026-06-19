@@ -20583,8 +20583,16 @@ function _onSignedOut() {
 function _updateProfileBadge(user, avatarEmoji) {
   const sm  = document.getElementById('lqm-profile-avatar-sm');
   const lbl = document.getElementById('lqm-profile-label');
-  // Keep cached emoji across calls (e.g. reload after prefs load)
-  if (avatarEmoji !== undefined) _selectedEmoji = avatarEmoji || null;
+  // Second arg may be a scalar emoji string or an avatar options object
+  if (avatarEmoji !== undefined) {
+    if (avatarEmoji && typeof avatarEmoji === 'object') {
+      _selectedEmoji        = avatarEmoji.avatarEmoji  || null;
+      _selectedAvatarImage  = avatarEmoji.avatarImage  || null;
+      _selectedAvatarShape  = avatarEmoji.avatarShape  || 'circle';
+    } else {
+      _selectedEmoji = avatarEmoji || null;
+    }
+  }
   if (user) {
     const name  = user.displayName || 'User';
     const init  = name.charAt(0).toUpperCase();
@@ -20643,6 +20651,28 @@ const _PROFILE_EMOJIS = [
   '🦅','🐦','🦆','🐬','🐘','🦁','🐺','🦊','👁','⚡','🎯','🧭'
 ];
 let _selectedEmoji = null;
+
+function lqmOpenEditView() {
+  document.getElementById('lqm-view-profile').style.display = 'none';
+  document.getElementById('lqm-view-edit').style.display    = '';
+  _fillLocationFields();
+  const nameEl = document.getElementById('lqm-edit-name');
+  if (nameEl && _currentUser) nameEl.value = _currentUser.displayName || '';
+  const grid = document.getElementById('lqm-emoji-grid');
+  if (grid && !grid.hasChildNodes()) {
+    _PROFILE_EMOJIS.forEach(e => {
+      const btn = document.createElement('button');
+      btn.className = 'lqm-emoji-opt' + (e === _selectedEmoji ? ' selected' : '');
+      btn.textContent = e;
+      btn.onclick = () => selectProfileEmoji(e);
+      grid.appendChild(btn);
+    });
+  }
+}
+function lqmCloseEditView() {
+  document.getElementById('lqm-view-edit').style.display    = 'none';
+  document.getElementById('lqm-view-profile').style.display = '';
+}
 
 function lqmToggleProfileEdit() {
   const panel = document.getElementById('lqm-profile-edit');
@@ -21361,6 +21391,8 @@ async function _loadUserPrefs(uid) {
       img.onload = () => { _rawImageEl = img; };
       img.src = d.avatarImage;
     }
+    _selectedAvatarImage = d.avatarImage || null;
+    _selectedAvatarShape = d.avatarShape || 'circle';
     _updateProfileBadge(_currentUser, {
       avatarEmoji: d.avatarEmoji || null,
       avatarImage: d.avatarImage || null,
@@ -22345,7 +22377,7 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
 
     <!-- VIEW: edit profile -->
-    <div id="lqm-view-edit">
+    <div id="lqm-view-edit" style="display:none">
       <div class="lqm-edit-header">
         <button class="lqm-edit-back" onclick="lqmCloseEditView()" title="Back">←</button>
         <span class="lqm-edit-title">Edit Profile</span>
