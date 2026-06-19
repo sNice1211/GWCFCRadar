@@ -1254,6 +1254,23 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Home-area alert highlight */
+.alert-card.home-area {
+  border-left-color: #00c8c8 !important;
+  box-shadow: inset 0 0 0 1px rgba(0,200,200,0.18);
+}
+.alert-home-badge {
+  display:inline-block;
+  font-size:8px;
+  background:rgba(0,200,200,0.2);
+  border:1px solid rgba(0,200,200,0.45);
+  border-radius:4px;
+  color:#00c8c8;
+  padding:1px 5px;
+  margin-top:3px;
+  font-family:'Comfortaa',sans-serif;
+  letter-spacing:.04em;
+}
 
 /* ── SUB BUBBLES ── */
 #sub-bubbles {
@@ -4972,6 +4989,41 @@ footer {
 }
 .lqm-profile-action-btn:hover { background:rgba(255,255,255,0.1); color:#fff; }
 
+/* Notification toggle row */
+.lqm-notif-row {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:8px 0; border-top:1px solid rgba(255,255,255,0.07);
+  margin-top:6px;
+}
+.lqm-notif-label {
+  font-family:'Comfortaa',sans-serif;
+  font-size:11px; color:rgba(212,232,255,0.7);
+}
+.lqm-notif-sublabel {
+  font-family:'Comfortaa',sans-serif;
+  font-size:9px; color:rgba(212,232,255,0.35);
+  margin-top:1px;
+}
+/* Toggle switch */
+.lqm-toggle {
+  position:relative; width:36px; height:20px;
+  cursor:pointer; flex-shrink:0;
+}
+.lqm-toggle input { opacity:0; width:0; height:0; position:absolute; }
+.lqm-toggle-track {
+  position:absolute; inset:0;
+  background:rgba(255,255,255,0.12);
+  border-radius:10px; transition:background .2s;
+}
+.lqm-toggle input:checked ~ .lqm-toggle-track { background:#00c8c8; }
+.lqm-toggle-thumb {
+  position:absolute; top:3px; left:3px;
+  width:14px; height:14px;
+  background:#fff; border-radius:50%;
+  transition:left .2s; pointer-events:none;
+}
+.lqm-toggle input:checked ~ .lqm-toggle-thumb { left:19px; }
+
 /* Guest state */
 .lqm-profile-guest-note {
   font-family: 'Comfortaa', sans-serif;
@@ -7985,6 +8037,8 @@ div.onclick = () => {
 
     panel.appendChild(div);
   });
+  // Highlight home-area alerts
+  _decorateAlertCards();
 }
 
 // ── SPC OUTLOOKS ──
@@ -20824,8 +20878,8 @@ function lqmOpenEditView() {
   if (nameEl && _currentUser) nameEl.value = _currentUser.displayName || '';
   _buildEmojiGrid();
   lqmSelectShape(_selectedShape, false);
-  // If there's a cached image, re-render the crop canvas
   if (_rawImageEl) _lqmRenderCropCanvas();
+  _fillLocationFields();
 }
 
 function lqmCloseEditView() {
@@ -21104,14 +21158,24 @@ async function saveProfileChanges() {
       _croppedImageB64 = final.toDataURL('image/png');
     }
     await _currentUser.updateProfile({ displayName: newName });
+    // Read location fields
+    const locCountry = (document.getElementById('lqm-loc-country') || {}).value || '';
+    const locState   = (document.getElementById('lqm-loc-state')   || {}).value || '';
+    const locCounty  = (document.getElementById('lqm-loc-county')  || {}).value || '';
+    const locCity    = (document.getElementById('lqm-loc-city')    || {}).value || '';
+    _homeLocation = { country: locCountry, state: locState, county: locCounty, city: locCity };
+
     const payload = {
       displayName: newName,
       avatarShape: _selectedShape || 'circle',
       updatedAt:   firebase.firestore.FieldValue.serverTimestamp(),
       avatarImage: _croppedImageB64 || null,
       avatarEmoji: _croppedImageB64 ? null : (_selectedEmoji || null),
+      homeLocation: _homeLocation,
     };
     await _fbDb.collection('users').doc(_currentUser.uid).set(payload, { merge: true });
+    // Re-decorate alert cards with new location
+    _decorateAlertCards();
     _updateProfileBadge(_currentUser);
     lqmCloseEditView();
     if (typeof _lqmToast === 'function') _lqmToast('Profile updated ✓');
@@ -21121,6 +21185,132 @@ async function saveProfileChanges() {
   } finally {
     if (saveBtn) { saveBtn.textContent = 'SAVE'; saveBtn.disabled = false; }
   }
+}
+
+// ── HOME LOCATION & ALERT FILTERING ─────────────────────────
+let _homeLocation = { country:'', state:'', county:'', city:'' };
+let _notifEnabled = false;
+let _notifPollInterval = null;
+let _notifSeenIds = new Set();
+
+// Called from lqmOpenEditView — pre-fill location fields
+function _fillLocationFields() {
+  ['country','state','county','city'].forEach(k => {
+    const el = document.getElementById('lqm-loc-' + k);
+    if (el) el.value = _homeLocation[k] || '';
+  });
+}
+
+// Returns true if an alert's areaDesc matches the user's home location
+function _alertMatchesHome(areaDesc) {
+  if (!areaDesc) return false;
+  const desc = areaDesc.toLowerCase();
+  const { country, state, county, city } = _homeLocation;
+  // Match any non-empty field that appears in the areaDesc
+  const terms = [county, city, state].filter(Boolean).map(s => s.toLowerCase());
+  if (!terms.length) return false;
+  return terms.some(t => desc.includes(t));
+}
+
+// Injects a home-area badge and class on matching alert cards
+function _decorateAlertCards() {
+  if (!document.getElementById('alerts-panel')) return;
+  document.querySelectorAll('#alerts-panel .alert-card, #past-alerts-list .alert-card').forEach(card => {
+    const areaEl = card.querySelector('.alert-area');
+    if (!areaEl) return;
+    const matches = _alertMatchesHome(areaEl.textContent);
+    card.classList.toggle('home-area', matches);
+    // add/remove badge
+    let badge = card.querySelector('.alert-home-badge');
+    if (matches && !badge) {
+      badge = document.createElement('div');
+      badge.className = 'alert-home-badge';
+      badge.textContent = '📍 My Area';
+      areaEl.after(badge);
+    } else if (!matches && badge) {
+      badge.remove();
+    }
+  });
+}
+
+// ── NOTIFICATIONS ─────────────────────────────────────────────
+async function lqmToggleNotifications(enabled) {
+  _notifEnabled = enabled;
+  const sub = document.getElementById('lqm-notif-sublabel');
+
+  if (!enabled) {
+    clearInterval(_notifPollInterval);
+    _notifPollInterval = null;
+    if (sub) sub.textContent = 'Off — enable to get alerts for your area';
+    if (_currentUser && _fbDb)
+      _fbDb.collection('users').doc(_currentUser.uid).update({ notifEnabled: false }).catch(()=>{});
+    return;
+  }
+
+  // Request permission
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') {
+    _notifEnabled = false;
+    const cb = document.getElementById('lqm-notif-toggle');
+    if (cb) cb.checked = false;
+    if (sub) sub.textContent = 'Permission denied — allow notifications in browser settings';
+    return;
+  }
+
+  if (sub) sub.textContent = 'On — watching for alerts in your area';
+  if (_currentUser && _fbDb)
+    _fbDb.collection('users').doc(_currentUser.uid).update({ notifEnabled: true }).catch(()=>{});
+
+  _startNotifPoll();
+}
+
+function _startNotifPoll() {
+  if (_notifPollInterval) return;
+  _pollAlertNotifications();                          // immediate check
+  _notifPollInterval = setInterval(_pollAlertNotifications, 5 * 60 * 1000); // every 5 min
+}
+
+async function _pollAlertNotifications() {
+  if (!_notifEnabled || Notification.permission !== 'granted') return;
+  const terms = [_homeLocation.county, _homeLocation.city, _homeLocation.state]
+    .filter(Boolean).map(s => s.toLowerCase());
+  if (!terms.length) return;
+
+  try {
+    const r = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert', {
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    const features = data.features || [];
+    const matches = features.filter(f => {
+      const desc = (f.properties.areaDesc || '').toLowerCase();
+      return terms.some(t => desc.includes(t));
+    });
+    for (const f of matches) {
+      const id = f.properties.id || f.id;
+      if (_notifSeenIds.has(id)) continue;
+      _notifSeenIds.add(id);
+      const ev   = f.properties.event || 'Weather Alert';
+      const area = (f.properties.areaDesc || '').slice(0, 80);
+      const sev  = f.properties.severity || '';
+      // Show notification via service worker (works when tab is in background)
+      if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.ready.then(reg => {
+          reg.showNotification(`⚡ ${ev}`, {
+            body: area,
+            icon: './icons/icon-192.png',
+            badge: './icons/icon-192.png',
+            tag: id,
+            data: { url: location.href },
+            vibrate: sev === 'Extreme' || sev === 'Severe' ? [200,100,200] : [100],
+          });
+        });
+      } else {
+        new Notification(`⚡ ${ev}`, { body: area, tag: id });
+      }
+    }
+  } catch(e) { /* silent fail */ }
 }
 
 // ── AUTH MODAL ──────────────────────────────────────────────
@@ -21371,6 +21561,20 @@ async function _loadUserPrefs(uid) {
       avatarImage: d.avatarImage || null,
       avatarShape: d.avatarShape || 'circle',
     });
+    // Restore home location for alert filtering
+    if (d.homeLocation) {
+      _homeLocation = { country:'', state:'', county:'', city:'', ...d.homeLocation };
+      setTimeout(_decorateAlertCards, 1200); // alerts may not be rendered yet
+    }
+    // Restore notification preference
+    if (d.notifEnabled && Notification.permission === 'granted') {
+      _notifEnabled = true;
+      const cb  = document.getElementById('lqm-notif-toggle');
+      const sub = document.getElementById('lqm-notif-sublabel');
+      if (cb)  cb.checked = true;
+      if (sub) sub.textContent = 'On — watching for alerts in your area';
+      _startNotifPoll();
+    }
     if (d.homeRegion) map.setView([d.homeRegion.lat, d.homeRegion.lng], d.homeRegion.zoom || 7);
     if (d.savedLayers) {
       Object.entries(d.savedLayers).forEach(([id, on]) => {
@@ -22360,6 +22564,19 @@ document.addEventListener('DOMContentLoaded', () => {
         <span>Role</span>
         <span id="lqm-profile-role-val" style="font-size:11px;color:rgba(212,232,255,0.6);">—</span>
       </div>
+      <!-- Notification toggle -->
+      <div class="lqm-notif-row">
+        <div>
+          <div class="lqm-notif-label">🔔 Alert Notifications</div>
+          <div class="lqm-notif-sublabel" id="lqm-notif-sublabel">Off — enable to get alerts for your area</div>
+        </div>
+        <label class="lqm-toggle">
+          <input type="checkbox" id="lqm-notif-toggle" onchange="lqmToggleNotifications(this.checked)"/>
+          <span class="lqm-toggle-track"></span>
+          <span class="lqm-toggle-thumb"></span>
+        </label>
+      </div>
+
       <button class="lqm-profile-signout-btn" onclick="authSignOut()">Sign Out</button>
     </div>
 
@@ -22402,6 +22619,17 @@ document.addEventListener('DOMContentLoaded', () => {
             <button class="lqm-rotate-btn" onclick="lqmRotateImage(90)"  title="Rotate right">↻</button>
           </div>
         </div>
+      </div>
+
+      <!-- MY LOCATION for alert filtering -->
+      <div class="lqm-edit-label" style="margin-top:14px;">📍 My Location <span style="font-size:8px;color:rgba(212,232,255,0.35);font-weight:400;">(for alert filtering)</span></div>
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <input class="lqm-edit-input" id="lqm-loc-country" type="text" placeholder="Country" maxlength="60" style="flex:1;"/>
+        <input class="lqm-edit-input" id="lqm-loc-state"   type="text" placeholder="State / Province" maxlength="60" style="flex:1;"/>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <input class="lqm-edit-input" id="lqm-loc-county" type="text" placeholder="County / Parish" maxlength="60" style="flex:1;"/>
+        <input class="lqm-edit-input" id="lqm-loc-city"   type="text" placeholder="City / Town" maxlength="60" style="flex:1;"/>
       </div>
 
       <!-- SHAPE PICKER (both panes) -->

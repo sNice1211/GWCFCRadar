@@ -24,6 +24,19 @@ const TTL_MS = {
 
 self.addEventListener('install', () => self.skipWaiting());
 
+// Open the app when a notification is tapped
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || self.location.origin;
+  e.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      const match = list.find(c => c.url.startsWith(self.location.origin));
+      if (match) return match.focus();
+      return clients.openWindow(url);
+    })
+  );
+});
+
 self.addEventListener('activate', e => e.waitUntil(
   caches.keys()
     .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
