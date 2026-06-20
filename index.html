@@ -14440,6 +14440,19 @@ async function _fetchDpTimestamps(station, layerSuffix) {
   const res  = await fetch(url, { signal: _abortSignal(8000) });
   const text = await res.text();
   const xml  = new DOMParser().parseFromString(text, 'text/xml');
+
+  // Collect all layer names for debugging
+  const allNames = [...xml.querySelectorAll('Layer')].map(l =>
+    l.querySelector(':scope > Name')?.textContent?.trim()
+  ).filter(Boolean);
+
+  // Show on screen so mobile users can see available layers
+  const at = document.getElementById('anim-time');
+  if (at) {
+    at.style.visibility = 'visible';
+    at.textContent = 'Layers: ' + allNames.join(' | ');
+  }
+
   const target = `${station}_${layerSuffix}`;
   for (const lyr of xml.querySelectorAll('Layer')) {
     const nm = lyr.querySelector(':scope > Name')?.textContent?.trim().toLowerCase() ?? '';
@@ -14451,7 +14464,7 @@ async function _fetchDpTimestamps(station, layerSuffix) {
       }
     }
   }
-  throw new Error(`Layer ${target} not found in GetCapabilities`);
+  throw new Error(`Layer ${target} not found. Available: ${allNames.join(', ')}`);
 }
 
 function _buildDpPool(station, frames, layerSuffix) {
