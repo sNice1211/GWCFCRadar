@@ -8817,8 +8817,6 @@ function _applyRadarPolyMask() {
 function _applyPolyFilterNow() {
   if (alertsLayer || activeLayers.tornado || activeLayers.tstm || activeLayers.flood) loadAlerts(true);
   if (_metarActive)           _loadMetarTemp();
-  if (windBarbActive)         loadWindBarbs();
-  if (windGustBarbActive)     loadGustBarbs();
   if (activeLayers.forecasts && cityMarkersLayer) _polyFilterCityMarkers();
   if (activeLayers.spc1)      loadSPCOutlook('spc1');
   if (activeLayers.spc2)      loadSPCOutlook('spc2');
@@ -9137,13 +9135,27 @@ async function _loadMetarTemp() {
       const dewF = p.DEW_POINT != null ? Math.round(p.DEW_POINT) : null;
       const dewC = dewF != null ? Math.round((dewF - 32) * 5/9) : null;
 
+      // Wind direction: WIND_DIRECT is FROM, so wind goes TO = (wDir + 180) % 360
+      const windKph = wSpd != null ? Math.round(wSpd * 1.852) : null; // knots → kph
+      const [wr,wg,wb] = windKph != null ? _windColor(windKph) : [180,180,180];
+      const windCol = `rgb(${wr},${wg},${wb})`;
+      const windDirTo = wDir != null ? Math.round((wDir + 180) % 360) : null;
+
+      // SVG: triangle drawn first (behind circle) so it pokes out from the edge
+      const svgMark = `<svg width="70" height="70" viewBox="-35 -35 70 70" xmlns="http://www.w3.org/2000/svg" style="cursor:pointer;overflow:visible">
+        ${windDirTo != null ? `<g transform="rotate(${windDirTo})">
+          <path d="M 0,-33 L 6,-22 Q 0,-19 -6,-22 Z" fill="${windCol}" stroke="rgba(0,0,0,0.3)" stroke-width="1" stroke-linejoin="round"/>
+        </g>` : ''}
+        <circle cx="0" cy="0" r="20" fill="${col}" stroke="rgba(0,0,0,0.55)" stroke-width="2"/>
+        <text x="0" y="-3" text-anchor="middle" dominant-baseline="middle" font-family="Comfortaa,sans-serif" font-size="11" font-weight="bold" fill="#000">${tF}°</text>
+        <text x="0" y="7" text-anchor="middle" dominant-baseline="middle" font-family="Comfortaa,sans-serif" font-size="7" fill="rgba(0,0,0,0.65)">${tC}°C</text>
+      </svg>`;
+
       const icon = L.divIcon({
         className: '',
-        iconSize: [42,42], iconAnchor: [21,21],
-        html: `<div style="width:42px;height:42px;border-radius:50%;background:${col};border:2px solid rgba(0,0,0,0.55);display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.5);cursor:pointer;">
-          <span style="font:bold 12px/1 'Comfortaa', sans-serif;color:#000;">${tF}</span>
-          <span style="font:bold 7px/1.2 'Comfortaa', sans-serif;color:rgba(0,0,0,0.65);">${tC}°C</span>
-        </div>`
+        iconSize: [70, 70],
+        iconAnchor: [35, 35],
+        html: svgMark
       });
       L.marker([lat, lon], { icon, zIndexOffset: 300 })
         .bindPopup(`<div class="data-popup-inner" style="--dp-accent:#ff7043">
@@ -9170,11 +9182,11 @@ async function _loadMetarTemp() {
   }
 }
 
-function toggleTempBarbs() {
+function toggleStations() {
   _metarActive = !_metarActive;
-  // Keep the main Temp bubble highlight in sync
-  activeBubbles['temp'] = _metarActive;
-  const tempBtn = document.getElementById('sub-temp');
+  // Keep the main Stations bubble highlight in sync
+  activeBubbles['stations'] = _metarActive;
+  const tempBtn = document.getElementById('sub-stations');
   if (tempBtn) tempBtn.classList.toggle('active', _metarActive);
   if (_metarActive) {
     _loadMetarTemp();
@@ -9188,21 +9200,6 @@ function toggleTempBarbs() {
     if (_metarLayer) { map.removeLayer(_metarLayer); _metarLayer = null; }
   }
 }
-
-// ── WIND LAYER STATE ──
-let windRegularBarbActive     = false;
-let windRegularParticleActive = false;
-let windGustBarbActive        = false;
-let windGustParticleActive    = false;
-
-let windBarbLayer     = null;   // regular barbs layer group
-let windGustLayer     = null;   // gust heatmap overlay
-let windGustBarbLayer = null;   // gust barbs layer group
-let windBarbTimer     = null;
-let windGustTimer     = null;
-// legacy aliases used by old callers
-let windBarbActive = false;
-let windGustActive = false;
 
 // ── Temp colour scale (°F) ──
 function tempToColor(f) {
@@ -9243,9 +9240,9 @@ function tempToColor(f) {
 
 
 
-// ── DATA CLICK HANDLER (Temp + Waves exact point lookup) ──
+// ── DATA CLICK HANDLER (SST exact point lookup) ──
 function _syncDataClickHandler() {
-  const needsClick = sstMapActive || _wavesTideActive || _wavesSurgeActive;
+  const needsClick = sstMapActive;
   map.off('click', _onDataClick);
   if (needsClick) map.on('click', _onDataClick);
 }
@@ -9277,21 +9274,6 @@ async function _onDataClick(e) {
       );
       labels.push('sst');
     }
-    if (_wavesTideActive) {
-      fetches.push(
-        fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}&current=wave_height,wave_period,wave_direction&length_unit=imperial`)
-          .then(r => r.json()).catch(() => null)
-      );
-      labels.push('tide');
-    }
-    if (_wavesSurgeActive) {
-      fetches.push(
-        fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}&current=swell_wave_height,swell_wave_period,swell_wave_direction&length_unit=imperial`)
-          .then(r => r.json()).catch(() => null)
-      );
-      labels.push('surge');
-    }
-
     const results = await Promise.all(fetches);
     const byLabel = {};
     labels.forEach((l, i) => byLabel[l] = results[i]);
@@ -9316,26 +9298,6 @@ async function _onDataClick(e) {
       body += `<div class="dp-row"><span>SST</span><b>${Math.round(sst.current.sea_surface_temperature)}°F</b></div>`;
     }
 
-    const tide = byLabel['tide'];
-    if (tide?.current) {
-      const c = tide.current;
-      if (c.wave_height != null) {
-        body += `<div class="dp-section">Waves</div>`;
-        body += `<div class="dp-row"><span>Height</span><b>${c.wave_height.toFixed(1)} ft</b></div>`;
-        if (c.wave_period != null) body += `<div class="dp-row"><span>Period</span><b>${c.wave_period.toFixed(0)}s</b></div>`;
-        if (c.wave_direction != null) body += `<div class="dp-row"><span>Direction</span><b>${_degToCompass(c.wave_direction)} (${Math.round(c.wave_direction)}°)</b></div>`;
-      }
-    }
-
-    const surge = byLabel['surge'];
-    if (surge?.current?.swell_wave_height != null) {
-      const c = surge.current;
-      body += `<div class="dp-section">Swell</div>`;
-      body += `<div class="dp-row"><span>Height</span><b>${c.swell_wave_height.toFixed(1)} ft</b></div>`;
-      if (c.swell_wave_period != null) body += `<div class="dp-row"><span>Period</span><b>${c.swell_wave_period.toFixed(0)}s</b></div>`;
-      if (c.swell_wave_direction != null) body += `<div class="dp-row"><span>Direction</span><b>${_degToCompass(c.swell_wave_direction)} (${Math.round(c.swell_wave_direction)}°)</b></div>`;
-    }
-
     if (!body) body = `<div class="dp-row"><span>No data at this point</span></div>`;
 
     popup.setContent(`<div class="data-popup-inner" style="--dp-accent:#29b6f6">
@@ -9352,12 +9314,7 @@ async function _onDataClick(e) {
 }
 
 
-// ── WIND BARBS (proper meteorological glyphs from real observations) ──
-// Data: NWS api.weather.gov (land + coastal, CORS-enabled) +
-//       NDBC latest_obs (ocean buoys, via public CORS proxy, fail-soft).
-// Click any barb for station details.
-
-// ── WIND DOT+ARROW MARKER (matches wave style) ──
+// ── WIND COLOR SCALE (used by station markers) ──
 function _windColor(kph) {
   if (kph < 10)  return [100, 180, 255];
   if (kph < 20)  return [0,   210, 180];
@@ -9368,291 +9325,13 @@ function _windColor(kph) {
   return                [220,   0, 180];
 }
 
-// ── CANVAS WIND BARB RENDERER ────────────────────────────────────
-// Single <canvas> overlay , draws 10,000+ barbs in one paint pass,
-// eliminating DOM-per-marker overhead. Redraws instantly on move/zoom.
-
-let _windCanvas = null, _windCtx = null;
-let _gustCanvas = null, _gustCtx = null;
-let _windBarbData = [];
-let _gustBarbData = [];
-
-function _initWindCanvas(mode) {
-  const isGust = mode === 'gust';
-  if (isGust ? _gustCanvas : _windCanvas) return;
-  const c = document.createElement('canvas');
-  c.id = isGust ? '_gustBarbCanvas' : '_windBarbCanvas';
-  c.style.cssText = 'position:absolute;top:0;left:0;display:block;pointer-events:none;';
-  // Append inside Leaflet's overlayPane so popup z-index stacking works correctly
-  const pane = map.getPane('overlayPane');
-  (pane || document.getElementById('map')).appendChild(c);
-  const ctx = c.getContext('2d');
-  if (isGust) { _gustCanvas = c; _gustCtx = ctx; }
-  else        { _windCanvas = c; _windCtx  = ctx; }
-  _resizeWindCanvas(mode);
-}
-
-function _resizeWindCanvas(mode) {
-  const el = document.getElementById('map');
-  const w = el.offsetWidth, h = el.offsetHeight;
-  if (!w || !h) return; // skip if map not yet laid out
-  const c = mode === 'gust' ? _gustCanvas : _windCanvas;
-  if (!c) return;
-  if (c.width === w && c.height === h) return; // no change , skip (avoids clearing canvas on every move)
-  c.width = w; c.height = h;
-  c.style.width = w + 'px'; c.style.height = h + 'px';
-}
-
-function _destroyWindCanvas(mode) {
-  const isGust = mode === 'gust';
-  const c = isGust ? _gustCanvas : _windCanvas;
-  if (c) c.remove();
-  if (isGust) { _gustCanvas = null; _gustCtx = null; _gustBarbData = []; }
-  else        { _windCanvas = null; _windCtx  = null; _windBarbData = []; }
-}
-
-function _drawWindCanvas(mode) {
-  const isGust = mode === 'gust';
-  const ctx    = isGust ? _gustCtx    : _windCtx;
-  const canvas = isGust ? _gustCanvas : _windCanvas;
-  const data   = isGust ? _gustBarbData : _windBarbData;
-  if (!ctx || !canvas) return;
-
-  _resizeWindCanvas(mode);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  const zoom = map.getZoom();
-  const shaft    = zoom <= 4 ? 22 : zoom <= 6 ? 18 : zoom <= 8 ? 14 : 11;
-  const head     = zoom <= 4 ?  7 : zoom <= 6 ?  6 :  5;
-  const fontSize = zoom <= 4 ?  9 : zoom <= 6 ?  8 :  7;
-  const lw       = zoom <= 4 ?  2 : 1.5;
-
-  // Minimum pixel spacing between barbs , prevents overlap at low zoom
-  const minGap = zoom <= 4 ? 22 : zoom <= 6 ? 18 : zoom <= 8 ? 15 : 13;
-  const occupied = new Map(); // cell key → true
-
-  data.forEach(s => {
-    const kph = isGust ? s.obs.gustKph : s.obs.speedKph;
-    if (kph == null) return;
-    const pt = map.latLngToContainerPoint([s.lat, s.lon]);
-    const x = pt.x, y = pt.y;
-    if (!isFinite(x) || !isFinite(y)) return;
-    if (x < -40 || x > canvas.width + 40 || y < -40 || y > canvas.height + 40) return;
-
-    // Skip if a barb was already drawn within minGap pixels
-    const cx = Math.floor(x / minGap), cy = Math.floor(y / minGap);
-    const key = `${cx},${cy}`;
-    if (occupied.has(key)) return;
-    occupied.set(key, true);
-
-    const [r, g, b] = _windColor(kph);
-    const col = `rgb(${r},${g},${b})`;
-    const dir = s.obs.dirDeg;
-
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.strokeStyle = col;
-    ctx.fillStyle   = col;
-    ctx.lineWidth   = lw;
-    ctx.lineCap     = 'round';
-
-    if (dir == null) {
-      ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
-    } else {
-      const rad = (dir + 180) * Math.PI / 180;
-      ctx.rotate(rad);
-      ctx.beginPath(); ctx.moveTo(0, shaft * 0.3); ctx.lineTo(0, -shaft); ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(-head, -shaft + head * 1.3); ctx.lineTo(0, -shaft); ctx.lineTo(head, -shaft + head * 1.3);
-      ctx.stroke();
-      ctx.rotate(-rad);
-    }
-
-    if (zoom >= 5) {
-      const mph = Math.round(kph * 0.621371);
-      ctx.font = `${fontSize}px 'Comfortaa', sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.fillText(mph, 0, shaft + fontSize + 2);
-    }
-    ctx.restore();
-  });
-}
-
-function _windCanvasClick(e, mode) {
-  const isGust = mode === 'gust';
-  const canvas = isGust ? _gustCanvas : _windCanvas;
-  const data   = isGust ? _gustBarbData : _windBarbData;
-  if (!canvas || !data.length) return;
-  const rect = canvas.getBoundingClientRect();
-  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-  let best = null, bestD = 24;
-  data.forEach(s => {
-    const pt = map.latLngToContainerPoint([s.lat, s.lon]);
-    const d = Math.hypot(pt.x - mx, pt.y - my);
-    if (d < bestD) { bestD = d; best = s; }
-  });
-  if (!best) return;
-  const o = best.obs;
-  const kph = isGust ? o.gustKph : o.speedKph;
-  const mph = Math.round(kph * 0.621371);
-  const kt  = Math.round(kph * 0.539957);
-  const dirs8 = ['N','NE','E','SE','S','SW','W','NW'];
-  const compass = o.dirDeg != null ? dirs8[Math.round(o.dirDeg/45)%8] + ' (' + Math.round(o.dirDeg) + '°)' : '—';
-  const tempF = o.tempC != null ? Math.round(o.tempC * 9/5 + 32) : null;
-  const prsMb = o.pressurePa != null ? (o.pressurePa / 100).toFixed(0) : null;
-  const [r,g,b] = _windColor(kph);
-  const col = `rgb(${r},${g},${b})`;
-  L.popup({ className: 'data-popup', maxWidth: 240 })
-    .setLatLng([best.lat, best.lon])
-    .setContent(`<div class="data-popup-inner" style="--dp-accent:#00e5ff">
-      <div class="dp-header">
-        <span class="dp-header-icon">💨</span>
-        <span class="dp-header-label">${isGust ? 'Wind Gusts' : 'Wind'}</span>
-        <span class="dp-header-sub">${best.lat.toFixed(2)}°, ${best.lon.toFixed(2)}°</span>
-      </div>
-      <div class="dp-body">
-        <div class="dp-section">Speed</div>
-        <div class="dp-row"><span>Sustained</span><b style="color:${col}">${mph} mph / ${kt} kt</b></div>
-        ${o.gustKph != null ? `<div class="dp-row"><span>Gusts</span><b>${Math.round(o.gustKph*0.621371)} mph / ${Math.round(o.gustKph*0.539957)} kt</b></div>` : ''}
-        <div class="dp-section">Direction</div>
-        <div class="dp-row"><span>From</span><b>${compass}</b></div>
-        ${tempF != null ? `<div class="dp-section">Temperature</div><div class="dp-row"><span>Air</span><b>${tempF}°F / ${Math.round(o.tempC)}°C</b></div>` : ''}
-        ${prsMb != null ? `<div class="dp-section">Pressure</div><div class="dp-row"><span>Surface</span><b>${prsMb} hPa</b></div>` : ''}
-      </div>
-    </div>`)
-    .openOn(map);
-}
-
-let _windBarbReqId = 0, _gustBarbReqId = 0;
-
-async function loadWindBarbs() {
-  if (!windBarbActive) return;
-  _initWindCanvas('regular');
-  const reqId = ++_windBarbReqId;
-  try {
-    const stations = await _getMetarWindData();
-    if (reqId !== _windBarbReqId) return;
-    const valid = stations.filter(s => s.obs.speedKph != null && _ptInPolyUnion(s.lat, s.lon));
-    if (!valid.length) { showToast('⚠️ Wind: no station data', 2500); return; }
-    _windBarbData = valid;
-    _drawWindCanvas('regular');
-  } catch(e) {
-    if (reqId !== _windBarbReqId) return;
-    showToast('⚠️ Wind: ' + (e.message || 'error'), 3500);
-    console.warn('[loadWindBarbs]', e);
-  }
-}
-
-async function loadGustBarbs() {
-  if (!windGustBarbActive) return;
-  _initWindCanvas('gust');
-  const reqId = ++_gustBarbReqId;
-  try {
-    const stations = await _getMetarWindData();
-    if (reqId !== _gustBarbReqId) return;
-    // Fall back to regular wind speed when no gust readings in the data
-    const valid = stations
-      .filter(s => (s.obs.gustKph ?? s.obs.speedKph) != null && _ptInPolyUnion(s.lat, s.lon))
-      .map(s => s.obs.gustKph != null ? s : { ...s, obs: { ...s.obs, gustKph: s.obs.speedKph } });
-    if (!valid.length) { showToast('⚠️ Gusts: no data', 2500); return; }
-    _gustBarbData = valid;
-    _drawWindCanvas('gust');
-  } catch(e) {
-    if (reqId !== _gustBarbReqId) return;
-    showToast('⚠️ Gusts: ' + (e.message || 'error'), 3500);
-    console.warn('[loadGustBarbs]', e);
-  }
-}
-
-
-function toggleWindRegularBarbs() {
-  windRegularBarbActive = windBarbActive = !windRegularBarbActive;
-  if (windRegularBarbActive) {
-    loadWindBarbs();
-    // pan/zoom only redraws existing barbs , no re-fetch, no extra API calls
-    let _windBarbRaf = null;
-    map._windBarbDrawHandler = () => {
-      if (_windBarbRaf) return;
-      _windBarbRaf = requestAnimationFrame(() => { _windBarbRaf = null; _drawWindCanvas('regular'); });
-    };
-    map.on('move zoom resize', map._windBarbDrawHandler);
-    const mapEl = document.getElementById('map');
-    mapEl._windClickHandler = e => _windCanvasClick(e, 'regular');
-    mapEl.addEventListener('click', mapEl._windClickHandler);
-    windBarbTimer = setInterval(loadWindBarbs, 10 * 60 * 1000);
-  } else {
-    if (map._windBarbDrawHandler) map.off('move zoom resize', map._windBarbDrawHandler);
-    clearInterval(windBarbTimer); windBarbTimer = null;
-    _destroyWindCanvas('regular');
-    const mapEl = document.getElementById('map');
-    if (mapEl._windClickHandler) mapEl.removeEventListener('click', mapEl._windClickHandler);
-    windBarbLayer = null;
-  }
-  const wrap = document.getElementById('sub-bubbles');
-  if (wrap && wrap.dataset.mode === 'wind') toggleWindSub();
-}
-
-function toggleGustBarbs() {
-  windGustBarbActive = windGustActive = !windGustBarbActive;
-  if (windGustBarbActive) {
-    loadGustBarbs();
-    let _gustBarbRaf = null;
-    map._gustBarbDrawHandler = () => {
-      if (_gustBarbRaf) return;
-      _gustBarbRaf = requestAnimationFrame(() => { _gustBarbRaf = null; _drawWindCanvas('gust'); });
-    };
-    map.on('move zoom resize', map._gustBarbDrawHandler);
-    const mapEl = document.getElementById('map');
-    mapEl._gustClickHandler = e => _windCanvasClick(e, 'gust');
-    mapEl.addEventListener('click', mapEl._gustClickHandler);
-    windGustTimer = setInterval(loadGustBarbs, 10 * 60 * 1000);
-  } else {
-    if (map._gustBarbDrawHandler) map.off('move zoom resize', map._gustBarbDrawHandler);
-    clearInterval(windGustTimer); windGustTimer = null;
-    _destroyWindCanvas('gust');
-    const mapEl = document.getElementById('map');
-    if (mapEl._gustClickHandler) mapEl.removeEventListener('click', mapEl._gustClickHandler);
-    windGustBarbLayer = null;
-  }
-  const wrap = document.getElementById('sub-bubbles');
-  if (wrap && wrap.dataset.mode === 'wind') toggleWindSub();
-}
-
-// ── WIND SUB-MENU ──
-function toggleWindSub() {
-  const wrap = document.getElementById('sub-bubbles');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-  wrap.dataset.mode = 'wind';
-
-  const back = document.createElement('div');
-  back.className = 'sub-bubble';
-  back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('wind'); renderSubBubbles('regular'); };
-  wrap.appendChild(back);
-
-  [
-    { id: 'wind-reg',  icon: '💨', label: 'Regular', active: () => windRegularBarbActive, action: toggleWindRegularBarbs },
-    { id: 'wind-gust', icon: '🌬', label: 'Gusts',   active: () => windGustBarbActive,    action: toggleGustBarbs }
-  ].forEach(b => {
-    const el = document.createElement('div');
-    el.className = 'sub-bubble' + (b.active() ? ' active' : '');
-    el.id = 'sub-' + b.id;
-    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
-    el.onclick = () => { b.action(); _syncParentBubble('wind'); };
-    wrap.appendChild(el);
-  });
-
-  wrap.style.display = 'flex';
-}
 
 function _degToCompass(deg) {
   const dirs = ['N','NE','E','SE','S','SW','W','NW'];
   return dirs[Math.round(deg / 45) % 8];
 }
 
-// ── GUST PARTICLES ──
-// toggleTempSub no longer used , Temp is now a direct METAR toggle
+// toggleTempSub no longer used — Stations is now a direct METAR toggle
 function toggleTempSub() {}
 
 // SST (Sea Surface Temperature) layers
@@ -10098,9 +9777,7 @@ const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
   { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
   { id: 'alerts',    icon: '⚠', label: 'Alerts',     action: () => toggleAlertSub() },
-  { id: 'wind',      icon: '💨', label: 'Wind',       action: () => toggleWindSub() },
-  { id: 'temp',      icon: '🌡', label: 'Temp',       action: () => { toggleTempBarbs(); } },
-  { id: 'waves',     icon: '🌊', label: 'Waves',      action: () => toggleWavesSub() },
+  { id: 'stations', icon: `<svg width="20" height="26" viewBox="-10 -13 20 26" style="vertical-align:middle;display:inline-block"><g transform="rotate(0)"><path d="M 0,-14 L 4,-9 Q 0,-7 -4,-9 Z" fill="#00bcd4"/></g><circle cx="0" cy="0" r="8" fill="#ff7043"/></svg>`, label: 'Stations', action: () => toggleStations() },
   { id: 'models',    icon: '📊', label: 'Models',     action: () => toggleModelsPanel() },
 ];
 
@@ -10117,10 +9794,8 @@ const activeBubbles = {};
 function _getBubbleActive(id) {
   if (id === 'radar')    return !!activeLayers.nexrad;
   if (id === 'satellite') return !!activeLayers.satellite;
-  if (id === 'wind')     return !!(windRegularBarbActive || windGustBarbActive);
-  if (id === 'waves')    return !!(_wavesTideActive || _wavesSurgeActive);
   if (id === 'alerts')   return !!(activeLayers.tornado || activeLayers.tstm || activeLayers.flood || activeLayers.watch);
-  if (id === 'temp')     return !!_metarActive;
+  if (id === 'stations') return !!_metarActive;
   return !!activeBubbles[id];
 }
 
@@ -10226,254 +9901,6 @@ function _loadPrecipType(type) {
 
 function _removePrecipType(type) {
   if (_precipLayers[type]) { map.removeLayer(_precipLayers[type]); delete _precipLayers[type]; }
-}
-
-// ── WAVES SUB-MENU ──
-let _wavesTideLayer = null, _wavesSurgeLayer = null;
-let _wavesTideActive = false, _wavesSurgeActive = false;
-
-// Color scale matching reference: blue(calm)→cyan→teal→violet→magenta(extreme)
-function _waveColor(h) {
-  // WW3/NOAA/Windy standard wave height scale (feet)
-  // Deep navy(calm) → blue → cyan → green → yellow → orange → red → magenta(extreme)
-  const stops = [
-    [  0, [  5,  15,  80]],  // deep navy , calm
-    [  1, [  0,  60, 180]],  // dark blue
-    [  2, [  0, 130, 255]],  // blue
-    [  3, [  0, 200, 240]],  // cyan
-    [  4, [  0, 220, 160]],  // teal
-    [  5, [ 60, 220,  60]],  // green
-    [  7, [200, 220,   0]],  // yellow-green
-    [  9, [255, 180,   0]],  // amber
-    [ 12, [255,  80,   0]],  // orange-red
-    [ 16, [220,   0,   0]],  // red
-    [ 20, [180,   0, 180]]   // magenta , extreme
-  ];
-  h = Math.max(0, h);
-  if (h >= stops[stops.length-1][0]) return stops[stops.length-1][1];
-  for (let i = 1; i < stops.length; i++) {
-    if (h <= stops[i][0]) {
-      const t = (h - stops[i-1][0]) / (stops[i][0] - stops[i-1][0]);
-      const a = stops[i-1][1], b = stops[i][1];
-      return [
-        Math.round(a[0] + (b[0]-a[0])*t),
-        Math.round(a[1] + (b[1]-a[1])*t),
-        Math.round(a[2] + (b[2]-a[2])*t)
-      ];
-    }
-  }
-  return stops[stops.length-1][1];
-}
-
-let _tideRenderGen = 0, _surgeRenderGen = 0;
-
-async function _renderWavesMap(fieldKey, existingLayer, onLoad) {
-  // Bump generation so any older in-flight render knows to bail out
-  const isSurge = fieldKey !== 'tide';
-  const gen     = isSurge ? ++_surgeRenderGen : ++_tideRenderGen;
-  const stale   = () => (isSurge ? _surgeRenderGen : _tideRenderGen) !== gen;
-
-  // Create the new layer group up front but DON'T add it to the map yet.
-  // We only swap old→new after all data arrives, so old markers stay visible
-  // the entire time the fetch is running.
-  const group = L.layerGroup();
-
-  try {
-    const bounds = map.getBounds();
-    const zoom   = map.getZoom();
-
-    // Fixed geographic grid: each point's lat/lng is a multiple of `step`.
-    // Because the coordinates are always the same regardless of where the map
-    // is panned, markers stay in one place — new ones scroll into view, old
-    // ones scroll out, but nothing jumps.
-    const step = zoom <= 4 ? 2.5 : zoom <= 6 ? 2.0 : zoom <= 8 ? 1.25 : zoom <= 10 ? 0.75 : 0.5;
-
-    const latMin = Math.floor(Math.max(-70, bounds.getSouth()) / step) * step;
-    const latMax = Math.ceil (Math.min( 70, bounds.getNorth()) / step) * step;
-    const lngMin = Math.floor(bounds.getWest()  / step) * step;
-    const lngMax = Math.ceil (bounds.getEast()  / step) * step;
-
-    // Integer row/col counts avoid floating-point drift when adding step repeatedly
-    const latSteps = Math.round((latMax - latMin) / step);
-    const lngSteps = Math.round((lngMax - lngMin) / step);
-
-    const pts = [];
-    outer: for (let r = 0; r <= latSteps; r++) {
-      for (let c = 0; c <= lngSteps; c++) {
-        pts.push({
-          lat: Math.round((latMin + r * step) * 1e4) / 1e4,
-          lng: Math.round((lngMin + c * step) * 1e4) / 1e4,
-        });
-        if (pts.length >= 600) break outer; // cap to avoid excessive API calls
-      }
-    }
-
-    const BATCH     = 100;
-    const allFields = 'wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,sea_surface_temperature';
-    const results   = new Array(pts.length).fill(null);
-
-    for (let start = 0; start < pts.length; start += BATCH) {
-      if (stale()) return; // newer render started — discard this one
-      const chunk  = pts.slice(start, start + BATCH);
-      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}&current=${allFields}&length_unit=imperial&temperature_unit=fahrenheit`;
-      try {
-        const res = await fetch(url, { signal: _abortSignal(12000) });
-        if (!res.ok) continue;
-        const data = await res.json();
-        const arr = Array.isArray(data) ? data : (data.current ? [data] : []);
-        arr.forEach((d, i) => { results[start + i] = d; });
-      } catch(e) { /* skip batch on error */ }
-    }
-
-    if (stale()) return;
-
-    const hField = fieldKey === 'tide' ? 'wave_height'  : 'swell_wave_height';
-    const label  = fieldKey === 'tide' ? 'Wave'         : 'Swell';
-    const dirs16 = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
-    const compass = deg => deg != null ? dirs16[Math.round(deg/22.5)%16] + ' (' + Math.round(deg) + '°)' : '—';
-    const fmt = (v, u, dp=1) => v != null ? v.toFixed(dp) + ' ' + u : '—';
-
-    pts.forEach((pt, i) => {
-      const d = results[i]?.current || {};
-      const h = d[hField];
-      if (h == null) return; // land — marine API returns null for land points
-      const [rv,gv,bv] = _waveColor(h);
-      const col = `rgb(${rv},${gv},${bv})`;
-
-      const dotR = Math.round(10 + Math.min(h / 25, 1) * 6);
-      const dotD = dotR * 2;
-      const ft   = h < 10 ? h.toFixed(1) : Math.round(h) + '';
-      const fSz  = dotR >= 13 ? 9 : 8;
-
-      const html = `<div style="
-        width:${dotD}px;height:${dotD}px;
-        background:${col};
-        border-radius:50%;
-        border:1.5px solid rgba(0,0,0,0.35);
-        box-shadow:0 0 5px ${col}88,0 1px 3px rgba(0,0,0,0.5);
-        display:flex;align-items:center;justify-content:center;
-        cursor:pointer;
-      "><span style="font-family:'Comfortaa', sans-serif;font-size:${fSz}px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,0.8);line-height:1;pointer-events:none;">${ft}</span></div>`;
-      const icon = L.divIcon({ className: '', html, iconSize: [dotD, dotD], iconAnchor: [dotR, dotR] });
-      const m = L.marker([pt.lat, pt.lng], { icon, interactive: true });
-
-      const sstF = d.sea_surface_temperature;
-      m.bindPopup(`<div class="data-popup-inner">
-        <div class="dp-coord">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</div>
-        <div class="dp-section">🌊 ${label}</div>
-        <div class="dp-row"><span>Height</span><b style="color:${col}">${fmt(d.wave_height,'ft')}</b></div>
-        <div class="dp-row"><span>Direction</span><b>${compass(d.wave_direction)}</b></div>
-        <div class="dp-row"><span>Period</span><b>${fmt(d.wave_period,'s')}</b></div>
-        <div class="dp-section">🌊 Swell</div>
-        <div class="dp-row"><span>Height</span><b>${fmt(d.swell_wave_height,'ft')}</b></div>
-        <div class="dp-row"><span>Direction</span><b>${compass(d.swell_wave_direction)}</b></div>
-        <div class="dp-row"><span>Period</span><b>${fmt(d.swell_wave_period,'s')}</b></div>
-        <div class="dp-section">💨 Wind Wave</div>
-        <div class="dp-row"><span>Height</span><b>${fmt(d.wind_wave_height,'ft')}</b></div>
-        <div class="dp-row"><span>Direction</span><b>${compass(d.wind_wave_direction)}</b></div>
-        ${sstF != null ? `<div class="dp-section">🌡 Sea Surface</div>
-        <div class="dp-row"><span>SST</span><b>${Math.round(sstF)}°F / ${Math.round((sstF-32)*5/9)}°C</b></div>` : ''}
-      </div>`, { className: 'data-popup', maxWidth: 240 });
-      m.addTo(group);
-    });
-
-    // Only swap if the new group has at least one marker.
-    // If every point came back as land (marine API returns null), don't blank
-    // out the screen — keep the previous layer and wait for the next reload.
-    if (group.getLayers().length > 0) {
-      group.addTo(map);
-      if (existingLayer) { map.removeLayer(existingLayer); }
-      onLoad(group);
-    } else {
-      onLoad(existingLayer);
-    }
-  } catch(e) {
-    console.warn('Waves render error:', e);
-    onLoad(existingLayer); // keep old layer on error rather than going blank
-  }
-}
-
-let _tideMoveHandler = null, _surgeMoveHandler = null;
-
-function _loadTideLayer() {
-  _renderWavesMap('tide', _wavesTideLayer, l => { _wavesTideLayer = l; });
-}
-
-function _loadSurgeFallback() {
-  _renderWavesMap('surge', _wavesSurgeLayer, l => { _wavesSurgeLayer = l; });
-}
-
-// Debounced reload on map move
-let _waveDebounce = null;
-function _wavesReload() {
-  clearTimeout(_waveDebounce);
-  _waveDebounce = setTimeout(() => {
-    if (_wavesTideActive)  _loadTideLayer();
-    if (_wavesSurgeActive) _loadSurgeFallback();
-  }, 500);
-}
-
-function toggleWavesSub() {
-  const wrap = document.getElementById('sub-bubbles');
-  if (!wrap) return;
-  wrap.innerHTML = '';
-  wrap.dataset.mode = 'waves';
-
-  const back = document.createElement('div');
-  back.className = 'sub-bubble';
-  back.innerHTML = `<span class="sb-icon">←</span>Back`;
-  back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('waves'); renderSubBubbles('regular'); };
-  wrap.appendChild(back);
-
-  const WAVES_SUBS = [
-    { id: 'wavtide',  icon: '🌊', label: 'Tide',  active: () => _wavesTideActive,
-      action: () => {
-        _wavesTideActive = !_wavesTideActive;
-        if (_wavesTideActive) {
-          _loadTideLayer();
-          if (!_surgeMoveHandler) map.on('moveend zoomend', _wavesReload);
-          _tideMoveHandler = _wavesReload;
-        } else {
-          if (_wavesTideLayer) { map.removeLayer(_wavesTideLayer); _wavesTideLayer = null; }
-          if (!_wavesSurgeActive) { map.off('moveend zoomend', _wavesReload); _tideMoveHandler = null; }
-        }
-        _syncDataClickHandler();
-        const el = document.getElementById('sub-wavtide');
-        if (el) el.classList.toggle('active', _wavesTideActive);
-        _syncParentBubble('waves');
-      }
-    },
-    { id: 'wavsurge', icon: '🌊', label: 'Surge', active: () => _wavesSurgeActive,
-      action: () => {
-        _wavesSurgeActive = !_wavesSurgeActive;
-        if (_wavesSurgeActive) {
-          _loadSurgeFallback();
-          if (!_tideMoveHandler) map.on('moveend zoomend', _wavesReload);
-          _surgeMoveHandler = _wavesReload;
-        } else {
-          if (_wavesSurgeLayer) { map.removeLayer(_wavesSurgeLayer); _wavesSurgeLayer = null; }
-          if (!_wavesTideActive) { map.off('moveend zoomend', _wavesReload); _surgeMoveHandler = null; }
-        }
-        _syncDataClickHandler();
-        const el = document.getElementById('sub-wavsurge');
-        if (el) el.classList.toggle('active', _wavesSurgeActive);
-        _syncParentBubble('waves');
-      }
-    }
-  ];
-
-  WAVES_SUBS.forEach(b => {
-    const el = document.createElement('div');
-    el.className = 'sub-bubble' + (b.active() ? ' active' : '');
-    el.id = 'sub-' + b.id;
-    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
-    el.onclick = () => b.action();
-    wrap.appendChild(el);
-  });
-
-  wrap.style.display = 'flex';
 }
 
 // ── PRESSURE SUB-MENU ──
