@@ -25,7 +25,7 @@ const PRODUCT_META = {
 };
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request) {
     try {
       if (request.method === 'OPTIONS') {
         return new Response(null, { status: 204, headers: CORS });
@@ -60,7 +60,7 @@ export default {
             usedUrl = tgftp;
             break;
           }
-        } catch (_) { /* try next DS code */ }
+        } catch (err) { /* try next DS code */ }
       }
 
       if (!rawBuf) {
@@ -178,7 +178,7 @@ function parseL3(buf, meta) {
 
   if (numGates === 0)    throw new Error('numGates is 0');
   if (numRadials === 0)  throw new Error('numRadials is 0');
-  if (numGates * numRadials > 10_000_000) {
+  if (numGates * numRadials > 10000000) {
     throw new Error('Data too large: ' + numRadials + ' radials x ' + numGates + ' gates');
   }
 
@@ -191,7 +191,7 @@ function parseL3(buf, meta) {
   for (let r = 0; r < numRadials; r++) {
     if (off + 6 > buf.length) throw new Error('Radial header out of bounds at radial ' + r);
     const numBytes   = dv.getUint16(off,     false);
-    const startAngle = dv.getInt16 (off + 2, false) / 10; // degrees CW from N
+    const startAngle = dv.getInt16(off + 2, false) / 10; // degrees CW from N
     off += 6;
 
     if (off + numBytes > buf.length) throw new Error('Radial data out of bounds at radial ' + r);
@@ -207,7 +207,7 @@ function parseL3(buf, meta) {
     b64raw += String.fromCharCode(...flat.subarray(i, i + 8192));
   }
 
-  const epochMs = (scanDate - 1) * 86_400_000 + scanTime * 1000;
+  const epochMs = (scanDate - 1) * 86400000 + scanTime * 1000;
 
   return {
     lat,
