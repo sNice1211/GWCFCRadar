@@ -9974,13 +9974,15 @@ function _disableRadar() {
     velFrames = []; velCurrentFrame = 0;
     if (currentProduct === 'vel') currentProduct = 'ref';
   }
-  // Clean up dual-pol if active
-  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr' || _dpLayerPool.length) {
+  // Clean up dual-pol (WMS) if active
+  if (currentProduct === 'hc' || currentProduct === 'accum' || _dpLayerPool.length) {
     _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _dpLayerPool = []; _dpPoolLoaded = [];
     _dpFrames = []; _dpCurrentFrame = 0;
-    if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
+    if (currentProduct === 'hc' || currentProduct === 'accum') currentProduct = 'ref';
   }
+  // Clean up L3 canvas (CC/ZDR) if active
+  if (currentProduct === 'cc' || currentProduct === 'zdr') { _disableL3(); currentProduct = 'ref'; }
   const el = document.getElementById('layer-nexrad');
   if (el) el.classList.remove('active');
   const sub = document.getElementById('sub-nexrad');
@@ -9998,7 +10000,8 @@ function _disableDualPol() {
   _dpLayerPool = []; _dpPoolLoaded = [];
   _dpFrames = []; _dpCurrentFrame = 0;
   _dpStation = null;
-  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
+  if (currentProduct === 'hc' || currentProduct === 'accum') currentProduct = 'ref';
+  if (currentProduct === 'cc' || currentProduct === 'zdr') { _disableL3(); currentProduct = 'ref'; }
 }
 function _disableSatellite() {
   activeLayers.satellite = false;
@@ -14065,7 +14068,8 @@ function _stopRAF() {
 function _animationReady() {
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
-  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') return _dpFrames.length > 0;
+  if (currentProduct === 'hc' || currentProduct === 'accum') return _dpFrames.length > 0;
+  if (currentProduct === 'cc' || currentProduct === 'zdr') return false; // no animation yet
   if (currentProduct === 'ref' && _refStation) return true;
   if (!radarFrames.length) return false;
   // Need at least 2 frames so animation has somewhere to step
@@ -14154,12 +14158,19 @@ let _velStation    = null;   // currently loaded station ID (e.g. 'ktlx')
 let _velLayerPool  = [];     // double-buffer pool of WMS layers
 let _velPoolLoaded = [];     // per-slot load flags
 
-// ── DUAL-POL STATE ──
-const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa', cc: 'bdcc', zdr: 'bdzdr' };
+// ── DUAL-POL STATE (WMS: hc, accum) ──
+const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa' };
 let _dpStation     = null;
-let _dpProduct     = 'hc';   // 'hc' or 'accum'
+let _dpProduct     = 'hc';
 let _dpFrames      = [], _dpCurrentFrame = 0;
 let _dpLayerPool   = [], _dpPoolLoaded = [];
+
+// ── L3 CANVAS STATE (Worker: cc, zdr) ──
+const RADAR_WORKER_URL = 'REPLACE_WITH_YOUR_WORKER_URL';
+let _l3Product  = null;   // 'cc' or 'zdr'
+let _l3Station  = null;
+let _l3Overlay  = null;   // L.imageOverlay on the map
+let _l3Canvas   = null;   // offscreen HTMLCanvasElement
 
 // ── Single-site Reflectivity (NWS GeoServer per station) ──
 let _refStation    = null;   // station ID in single-site REF mode (null = composite)
@@ -14513,6 +14524,126 @@ function _buildDpPool(station, frames, layerSuffix) {
   });
 }
 
+// ── L3 CANVAS — CC / ZDR via Cloudflare Worker ───────────────────────────────
+
+// Colormaps: input t = 0..1 (already normalised from raw value), returns CSS color string
+function _ccColor(t) {
+  // CC: 0.2–1.05. Below ~0.7 = non-met (grey/purple), 0.9+ = clean rain (green)
+  if (t < 0)   return null;
+  if (t < 0.3) return `hsl(270,50%,${20 + t*60}%)`;   // dark purple
+  if (t < 0.6) return `hsl(${270-t*180},60%,40%)`;    // purple→red
+  if (t < 0.8) return `hsl(${30-t*30},80%,50%)`;      // orange→yellow
+  return `hsl(${90+(t-0.8)*300},90%,50%)`;             // yellow→green
+}
+function _zdrColor(t) {
+  // ZDR: -8 to +8 dB. t=0.5 = 0 dB (spherical drops, blue). t>0.5 = oblate (red).
+  const h = 240 - t * 240;  // 240=blue → 0=red
+  return `hsl(${h},90%,50%)`;
+}
+
+function _disableL3() {
+  if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} _l3Overlay = null; }
+  _l3Canvas = null; _l3Product = null; _l3Station = null;
+  const at = document.getElementById('anim-time');
+  if (at) at.textContent = '';
+}
+
+async function loadL3Data(product, stationOverride = null) {
+  _disableL3();
+  _l3Product = product;
+
+  const center  = map.getCenter();
+  const station = stationOverride || _nearestStation(center.lat, center.lng);
+  _l3Station    = station;
+
+  const at = document.getElementById('anim-time');
+  if (at) at.textContent = `Loading ${product.toUpperCase()}…`;
+
+  if (RADAR_WORKER_URL === 'REPLACE_WITH_YOUR_WORKER_URL') {
+    _dpAlert('⚠️ Worker not deployed yet.<br><br>Follow <b>worker/DEPLOY.md</b> to deploy the Cloudflare Worker, then paste the URL into <code>RADAR_WORKER_URL</code> in index.html.');
+    return;
+  }
+
+  let json;
+  try {
+    const res = await fetch(`${RADAR_WORKER_URL}/radar?station=${station}&product=${product}`, { signal: _abortSignal(15000) });
+    json = await res.json();
+    if (json.error) throw new Error(json.error);
+  } catch(e) {
+    _dpAlert(`❌ <b>${product.toUpperCase()} fetch failed</b><br>${e.message}`);
+    return;
+  }
+
+  _renderL3(json, product, station);
+}
+
+function _renderL3(json, product, station) {
+  const { lat, lon, num_radials, num_gates, gate_km, azimuths, min_val, max_val, time, data } = json;
+
+  // Decode base64 → Uint8Array
+  const raw = atob(data);
+  const flat = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) flat[i] = raw.charCodeAt(i);
+
+  const maxRangeKm = num_gates * gate_km;
+  const SIZE = 1000;
+  const cx = SIZE / 2, cy = SIZE / 2;
+  const scale = (SIZE / 2) / maxRangeKm; // pixels per km
+
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, SIZE, SIZE);
+
+  const colorFn = product === 'cc' ? _ccColor : _zdrColor;
+
+  for (let r = 0; r < num_radials; r++) {
+    const az1Rad = (azimuths[r] - 90) * Math.PI / 180;
+    // angular width = step between this and next radial
+    const az2Rad = az1Rad + (2 * Math.PI / num_radials);
+
+    for (let g = 0; g < num_gates; g++) {
+      const code = flat[r * num_gates + g];
+      if (code < 2) continue;  // 0=below threshold, 1=range folded
+
+      const t     = (code - 2) / 253;
+      const color = colorFn(t);
+      if (!color) continue;
+
+      const r1 = g * gate_km * scale;
+      const r2 = r1 + gate_km * scale + 0.5; // tiny overlap avoids gaps
+
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(cx + r1 * Math.cos(az1Rad), cy + r1 * Math.sin(az1Rad));
+      ctx.arc(cx, cy, r2, az1Rad, az2Rad);
+      ctx.arc(cx, cy, r1, az2Rad, az1Rad, true);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  _l3Canvas = canvas;
+
+  // Compute geographic bounds from radar lat/lon + max range
+  const kmPerDegLat = 111.0;
+  const kmPerDegLon = 111.0 * Math.cos(lat * Math.PI / 180);
+  const dLat = maxRangeKm / kmPerDegLat;
+  const dLon = maxRangeKm / kmPerDegLon;
+  const bounds = [[lat - dLat, lon - dLon], [lat + dLat, lon + dLon]];
+
+  const imgUrl = canvas.toDataURL('image/png');
+  if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} }
+  _l3Overlay = L.imageOverlay(imgUrl, bounds, { opacity: radarOpacity, zIndex: 10, pane: 'radarPane' }).addTo(map);
+
+  const d = new Date(time);
+  const at = document.getElementById('anim-time');
+  const label = product === 'cc' ? 'Corr. Coeff.' : 'Diff. Refl.';
+  if (at) at.textContent = `${_fmtHHMM(d)} · ${station.toUpperCase()} ${label}`;
+
+  _refreshNexradSiteStyles();
+}
+
 async function loadDualPolData(product, stationOverride = null) {
   // Clean up
   _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
@@ -14627,8 +14758,11 @@ function _buildNexradSiteMarkers() {
         _buildVelPool(s.id, velFrames);
         showVelFrame(velCurrentFrame);
         _refreshNexradSiteStyles();
-      } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') {
+      } else if (currentProduct === 'hc' || currentProduct === 'accum') {
         loadDualPolData(currentProduct, s.id);
+        _refreshNexradSiteStyles();
+      } else if (currentProduct === 'cc' || currentProduct === 'zdr') {
+        loadL3Data(currentProduct, s.id);
         _refreshNexradSiteStyles();
       } else {
         map.setView([s.lat, s.lon], Math.max(map.getZoom(), 7));
@@ -14646,7 +14780,8 @@ function _refreshNexradSiteStyles() {
     const labelEl = document.getElementById(`nxlbl-${id}`);
     const isActive = (currentProduct === 'vel' && id === _velStation) ||
                      (currentProduct === 'ref' && id === _refStation) ||
-                     ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') && id === _dpStation);
+                     ((currentProduct === 'hc' || currentProduct === 'accum') && id === _dpStation) ||
+                     ((currentProduct === 'cc'  || currentProduct === 'zdr')  && id === _l3Station);
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
   });
 }
@@ -18574,10 +18709,9 @@ function selectProduct(p) {
     _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _velLayerPool = []; _velPoolLoaded = [];
     if (velocityLayer) { try { map.removeLayer(velocityLayer); } catch(e){} velocityLayer = null; }
-    // Clear old dp pool
     _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _dpLayerPool = []; _dpPoolLoaded = [];
-    loadDualPolData(p);
+    loadL3Data(p);
   } else if (p === 'vel') {
     if (playing)     { clearInterval(playTimer);    playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
     if (playingBack) { clearInterval(playBackTimer); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
@@ -21988,7 +22122,8 @@ function lqmSetRadarOpacity(val) {
   try { localStorage.setItem('lqm_radaropacity', val); } catch(e){}
   radarOpacity = val / 100;
   if (currentProduct === 'vel') showVelFrame(velCurrentFrame);
-  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(_dpCurrentFrame);
+  else if (currentProduct === 'hc' || currentProduct === 'accum') showDpFrame(_dpCurrentFrame);
+  else if ((currentProduct === 'cc' || currentProduct === 'zdr') && _l3Overlay) _l3Overlay.setOpacity(radarOpacity);
   else if (typeof showFrame === 'function') showFrame(currentFrame);
 }
 
