@@ -14435,6 +14435,16 @@ function showVelFrame(idx) {
 }
 
 // ── DUAL-POL (CC / ZDR) ──
+// Temporary full-screen debug overlay (tap OK to dismiss)
+function _dpDebugAlert(html) {
+  document.getElementById('_dp_dbg')?.remove();
+  const d = document.createElement('div');
+  d.id = '_dp_dbg';
+  d.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;';
+  d.innerHTML = `<div style="background:#050f18;border:2px solid #00c8c8;border-radius:14px;padding:20px 18px;max-width:92vw;max-height:80vh;overflow:auto;color:#00c8c8;font-family:monospace;font-size:13px;word-break:break-all;line-height:1.6;">${html}<br><br><button onclick="document.getElementById('_dp_dbg').remove()" style="background:#00c8c8;color:#000;border:none;padding:10px 24px;border-radius:8px;font-weight:900;font-size:14px;cursor:pointer;width:100%;">OK</button></div>`;
+  document.body.appendChild(d);
+}
+
 // Maps product → ordered list of possible WMS layer suffixes to try
 const DP_LAYER_CANDIDATES = {
   cc:  ['sr_cc', 'n0c', 'bcc', 'cc', 'rho', 'phv'],
@@ -14457,8 +14467,8 @@ async function _fetchDpTimestamps(station, product) {
   }
   const allNames = Object.keys(layerMap);
 
-  // Toast ALL available names so user can screenshot on mobile
-  _toast('Layers: ' + allNames.join(' · '), 8000);
+  // Show ALL layer names on-screen so user can screenshot on mobile
+  _dpDebugAlert(`<b>GetCap OK — ${station}</b><br><br>${allNames.map(n=>`• ${n}`).join('<br>')}`);
 
   // Try each candidate suffix in order
   const candidates = DP_LAYER_CANDIDATES[product] || [];
@@ -14514,9 +14524,12 @@ async function loadDualPolData(product) {
 
   const layerSuffix = DP_LAYER_MAP[product];
 
+  _dpDebugAlert(`⏳ Fetching GetCapabilities for <b>${station}</b>...`);
+
   try {
     _dpFrames = await _fetchDpTimestamps(station, product);
   } catch(err) {
+    _dpDebugAlert(`❌ <b>GetCap failed</b><br>${err.message}`);
     console.warn('DP GetCapabilities failed, using synthetic frames:', err);
     const now = new Date();
     now.setUTCSeconds(0, 0);
