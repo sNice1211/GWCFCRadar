@@ -7246,7 +7246,7 @@ function updateFrameLabel(idx) {
 }
 
 function showFrame(idx) {
-  if (currentProduct === 'vel' || currentProduct === 'cc' || currentProduct === 'zdr') return;
+  if (currentProduct === 'vel' || currentProduct === 'hc' || currentProduct === 'accum') return;
   if (currentProduct === 'ref' && _refStation) {
     // Single-site is active (or loading). Never show composite behind it.
     if (_refSitePool.length) _showSingleSiteRefFrame(idx);
@@ -9975,11 +9975,11 @@ function _disableRadar() {
     if (currentProduct === 'vel') currentProduct = 'ref';
   }
   // Clean up dual-pol if active
-  if (currentProduct === 'cc' || currentProduct === 'zdr' || _dpLayerPool.length) {
+  if (currentProduct === 'hc' || currentProduct === 'accum' || _dpLayerPool.length) {
     _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _dpLayerPool = []; _dpPoolLoaded = [];
     _dpFrames = []; _dpCurrentFrame = 0;
-    if (currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
+    if (currentProduct === 'hc' || currentProduct === 'accum') currentProduct = 'ref';
   }
   const el = document.getElementById('layer-nexrad');
   if (el) el.classList.remove('active');
@@ -9998,7 +9998,7 @@ function _disableDualPol() {
   _dpLayerPool = []; _dpPoolLoaded = [];
   _dpFrames = []; _dpCurrentFrame = 0;
   _dpStation = null;
-  if (currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
+  if (currentProduct === 'hc' || currentProduct === 'accum') currentProduct = 'ref';
 }
 function _disableSatellite() {
   activeLayers.satellite = false;
@@ -11190,8 +11190,8 @@ let _fcstPlayTimer = null;
 const RADAR_SUB_BUBBLES = [
   { id:'reflectivity', icon:'🌧', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
   { id:'velocity',     icon:'💨', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
-  { id:'cc',           icon:'🔵', label:'Corr. Coef.',  action: () => { if (currentProduct === 'cc') { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('cc'); } } },
-  { id:'zdr',          icon:'🟡', label:'Diff. Refl.',  action: () => { if (currentProduct === 'zdr') { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('zdr'); } } },
+  { id:'hc',           icon:'🌈', label:'Hydro. Class.', action: () => { if (currentProduct === 'hc') { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('hc'); } } },
+  { id:'accum',        icon:'🌧', label:'Storm Accum.',  action: () => { if (currentProduct === 'accum') { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('accum'); } } },
 ];
 
 function toggleRadarSub() {
@@ -11210,8 +11210,8 @@ function toggleRadarSub() {
     const isActiveProd =
       (b.id === 'reflectivity' && activeLayers.nexrad && currentProduct === 'ref') ||
       (b.id === 'velocity'     && currentProduct === 'vel') ||
-      (b.id === 'cc'           && currentProduct === 'cc') ||
-      (b.id === 'zdr'          && currentProduct === 'zdr');
+      (b.id === 'hc'           && currentProduct === 'hc') ||
+      (b.id === 'accum'        && currentProduct === 'accum');
     const isFutureBubble = b.id === 'future';
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
@@ -11222,7 +11222,7 @@ function toggleRadarSub() {
     if (isFutureBubble && !fcCount) el.style.opacity = '0.45';
     el.onclick = () => {
       if (!isFutureBubble) {
-        document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-cc,#sub-zdr').forEach(s=>s.classList.remove('active'));
+        document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum').forEach(s=>s.classList.remove('active'));
         el.classList.add('active');
       }
       b.action();
@@ -14022,7 +14022,7 @@ function _rafTick(ts) {
     if (activeLayers.satellite && goesFrames.length) {
       goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
       showGoesFrame(goesCurrentFrame);
-    } else if (currentProduct === 'cc' || currentProduct === 'zdr') {
+    } else if (currentProduct === 'hc' || currentProduct === 'accum') {
       if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
     } else if (currentProduct === 'vel') {
       velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
@@ -14061,7 +14061,7 @@ function _stopRAF() {
 function _animationReady() {
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
-  if (currentProduct === 'cc' || currentProduct === 'zdr') return _dpFrames.length > 0;
+  if (currentProduct === 'hc' || currentProduct === 'accum') return _dpFrames.length > 0;
   if (currentProduct === 'ref' && _refStation) return true;
   if (!radarFrames.length) return false;
   // Need at least 2 frames so animation has somewhere to step
@@ -14113,7 +14113,7 @@ function stepFrame(dir) {
   if (activeLayers.satellite && goesFrames.length) {
     goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
     showGoesFrame(goesCurrentFrame);
-  } else if (currentProduct === 'cc' || currentProduct === 'zdr') {
+  } else if (currentProduct === 'hc' || currentProduct === 'accum') {
     if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
   } else if (currentProduct === 'vel') {
     velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
@@ -14133,7 +14133,7 @@ function stepFrame(dir) {
 function seekFrame(idx) {
   if (activeLayers.satellite && goesFrames.length) showGoesFrame(idx);
   else if (currentProduct === 'vel') showVelFrame(idx);
-  else if (currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(idx);
+  else if (currentProduct === 'hc' || currentProduct === 'accum') showDpFrame(idx);
   else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) _showSingleSiteRefFrame(idx);
   else showFrame(idx);
 }
@@ -14151,7 +14151,7 @@ let _velLayerPool  = [];     // double-buffer pool of WMS layers
 let _velPoolLoaded = [];     // per-slot load flags
 
 // ── DUAL-POL STATE (CC + ZDR) ──
-const DP_LAYER_MAP = { cc: 'sr_cc', zdr: 'sr_zdr' };
+const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa' };
 let _dpStation     = null;
 let _dpProduct     = 'cc';   // 'cc' or 'zdr'
 let _dpFrames      = [], _dpCurrentFrame = 0;
@@ -14446,54 +14446,29 @@ function _dpDebugAlert(html) {
 }
 
 // Maps product → ordered list of possible WMS layer suffixes to try
-const DP_LAYER_CANDIDATES = {
-  cc:  ['sr_cc', 'n0c', 'bcc', 'cc', 'rho', 'phv'],
-  zdr: ['sr_zdr', 'n0x', 'bzdr', 'zdr'],
-};
-// Resolved layer suffix after GetCapabilities lookup (overwritten each load)
-let _dpResolvedLayer = null;
-
-async function _fetchDpTimestamps(station, product) {
+async function _fetchDpTimestamps(station, layerSuffix) {
   const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities`;
   const res  = await fetch(url, { signal: _abortSignal(10000) });
-  const text = await res.text();
-  const xml  = new DOMParser().parseFromString(text, 'text/xml');
-
-  // Build map of lowercase layer name → layer element
-  const layerMap = {};
+  const xml  = new DOMParser().parseFromString(await res.text(), 'text/xml');
+  const target = `${station}_${layerSuffix}`.toLowerCase();
   for (const lyr of xml.querySelectorAll('Layer')) {
-    const nm = lyr.querySelector(':scope > Name')?.textContent?.trim() ?? '';
-    if (nm) layerMap[nm.toLowerCase()] = lyr;
-  }
-  const allNames = Object.keys(layerMap);
-
-  // Show ALL layer names on-screen so user can screenshot on mobile
-  _dpDebugAlert(`<b>GetCap OK — ${station}</b><br><br>${allNames.map(n=>`• ${n}`).join('<br>')}`);
-
-  // Try each candidate suffix in order
-  const candidates = DP_LAYER_CANDIDATES[product] || [];
-  for (const suffix of candidates) {
-    const full = `${station}_${suffix}`;
-    const lyr = layerMap[full] || layerMap[full.toLowerCase()];
-    if (lyr) {
+    const nm = lyr.querySelector(':scope > Name')?.textContent?.trim().toLowerCase() ?? '';
+    if (nm === target) {
       const dim = lyr.querySelector('Dimension[name="time"]') || lyr.querySelector('Extent[name="time"]');
       if (dim) {
-        _dpResolvedLayer = full;
-        _toast(`✅ Found: ${full}`, 4000);
         const times = dim.textContent.trim().split(',').map(s => s.trim()).filter(Boolean).slice(-20);
         return times.map(iso => ({ iso, time: new Date(iso).getTime() / 1000 }));
       }
     }
   }
-  throw new Error(`No ${product} layer found on ${station}. Got: ${allNames.join(', ')}`);
+  throw new Error(`Layer ${target} not found`);
 }
 
 function _buildDpPool(station, frames, layerSuffix) {
   _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _dpLayerPool = []; _dpPoolLoaded = [];
   const wmsUrl  = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows`;
-  // Use the resolved layer name from GetCapabilities if available, else fall back to guess
-  const layerNm = _dpResolvedLayer || `${station}_${layerSuffix}`;
+  const layerNm = `${station}_${layerSuffix}`;
   frames.forEach((frame, i) => {
     const l = L.tileLayer.wms(wmsUrl, {
       layers: layerNm, format: 'image/png', transparent: true,
@@ -14527,7 +14502,7 @@ async function loadDualPolData(product) {
   _dpDebugAlert(`⏳ Fetching GetCapabilities for <b>${station}</b>...`);
 
   try {
-    _dpFrames = await _fetchDpTimestamps(station, product);
+    _dpFrames = await _fetchDpTimestamps(station, layerSuffix);
   } catch(err) {
     _dpDebugAlert(`❌ <b>GetCap failed</b><br>${err.message}`);
     console.warn('DP GetCapabilities failed, using synthetic frames:', err);
@@ -14587,7 +14562,7 @@ function showDpFrame(idx) {
   }
 
   const d = new Date(_dpFrames[idx].time * 1000);
-  const label = _dpProduct === 'cc' ? 'Corr. Coef.' : 'Diff. Refl.';
+  const label = _dpProduct === 'hc' ? 'Hydro. Class.' : 'Storm Accum.';
   const at = document.getElementById('anim-time');
   if (at) at.textContent = `${_fmtHHMM(d)} · ${(_dpStation || '').toUpperCase()} ${label}`;
 }
@@ -14624,7 +14599,7 @@ function _buildNexradSiteMarkers() {
         _buildVelPool(s.id, velFrames);
         showVelFrame(velCurrentFrame);
         _refreshNexradSiteStyles();
-      } else if (currentProduct === 'cc' || currentProduct === 'zdr') {
+      } else if (currentProduct === 'hc' || currentProduct === 'accum') {
         _dpStation = s.id;
         if (_dpFrames.length) {
           _buildDpPool(s.id, _dpFrames, DP_LAYER_MAP[currentProduct]);
@@ -14649,7 +14624,7 @@ function _refreshNexradSiteStyles() {
     const labelEl = document.getElementById(`nxlbl-${id}`);
     const isActive = (currentProduct === 'vel' && id === _velStation) ||
                      (currentProduct === 'ref' && id === _refStation) ||
-                     ((currentProduct === 'cc' || currentProduct === 'zdr') && id === _dpStation);
+                     ((currentProduct === 'hc' || currentProduct === 'accum') && id === _dpStation);
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
   });
 }
@@ -21991,7 +21966,7 @@ function lqmSetRadarOpacity(val) {
   try { localStorage.setItem('lqm_radaropacity', val); } catch(e){}
   radarOpacity = val / 100;
   if (currentProduct === 'vel') showVelFrame(velCurrentFrame);
-  else if (currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(_dpCurrentFrame);
+  else if (currentProduct === 'hc' || currentProduct === 'accum') showDpFrame(_dpCurrentFrame);
   else if (typeof showFrame === 'function') showFrame(currentFrame);
 }
 
