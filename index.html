@@ -14435,43 +14435,55 @@ function showVelFrame(idx) {
 }
 
 // ── DUAL-POL (CC / ZDR) ──
-async function _fetchDpTimestamps(station, layerSuffix) {
+// Maps product → ordered list of possible WMS layer suffixes to try
+const DP_LAYER_CANDIDATES = {
+  cc:  ['sr_cc', 'n0c', 'bcc', 'cc', 'rho', 'phv'],
+  zdr: ['sr_zdr', 'n0x', 'bzdr', 'zdr'],
+};
+// Resolved layer suffix after GetCapabilities lookup (overwritten each load)
+let _dpResolvedLayer = null;
+
+async function _fetchDpTimestamps(station, product) {
   const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities`;
-  const res  = await fetch(url, { signal: _abortSignal(8000) });
+  const res  = await fetch(url, { signal: _abortSignal(10000) });
   const text = await res.text();
   const xml  = new DOMParser().parseFromString(text, 'text/xml');
 
-  // Collect all layer names for debugging
-  const allNames = [...xml.querySelectorAll('Layer')].map(l =>
-    l.querySelector(':scope > Name')?.textContent?.trim()
-  ).filter(Boolean);
-
-  // Show on screen so mobile users can see available layers
-  const at = document.getElementById('anim-time');
-  if (at) {
-    at.style.visibility = 'visible';
-    at.textContent = 'Layers: ' + allNames.join(' | ');
-  }
-
-  const target = `${station}_${layerSuffix}`;
+  // Build map of lowercase layer name → layer element
+  const layerMap = {};
   for (const lyr of xml.querySelectorAll('Layer')) {
-    const nm = lyr.querySelector(':scope > Name')?.textContent?.trim().toLowerCase() ?? '';
-    if (nm === target || nm.includes(layerSuffix)) {
+    const nm = lyr.querySelector(':scope > Name')?.textContent?.trim() ?? '';
+    if (nm) layerMap[nm.toLowerCase()] = lyr;
+  }
+  const allNames = Object.keys(layerMap);
+
+  // Toast ALL available names so user can screenshot on mobile
+  _toast('Layers: ' + allNames.join(' · '), 8000);
+
+  // Try each candidate suffix in order
+  const candidates = DP_LAYER_CANDIDATES[product] || [];
+  for (const suffix of candidates) {
+    const full = `${station}_${suffix}`;
+    const lyr = layerMap[full] || layerMap[full.toLowerCase()];
+    if (lyr) {
       const dim = lyr.querySelector('Dimension[name="time"]') || lyr.querySelector('Extent[name="time"]');
       if (dim) {
+        _dpResolvedLayer = full;
+        _toast(`✅ Found: ${full}`, 4000);
         const times = dim.textContent.trim().split(',').map(s => s.trim()).filter(Boolean).slice(-20);
         return times.map(iso => ({ iso, time: new Date(iso).getTime() / 1000 }));
       }
     }
   }
-  throw new Error(`Layer ${target} not found. Available: ${allNames.join(', ')}`);
+  throw new Error(`No ${product} layer found on ${station}. Got: ${allNames.join(', ')}`);
 }
 
 function _buildDpPool(station, frames, layerSuffix) {
   _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _dpLayerPool = []; _dpPoolLoaded = [];
   const wmsUrl  = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows`;
-  const layerNm = `${station}_${layerSuffix}`;
+  // Use the resolved layer name from GetCapabilities if available, else fall back to guess
+  const layerNm = _dpResolvedLayer || `${station}_${layerSuffix}`;
   frames.forEach((frame, i) => {
     const l = L.tileLayer.wms(wmsUrl, {
       layers: layerNm, format: 'image/png', transparent: true,
@@ -14503,7 +14515,7 @@ async function loadDualPolData(product) {
   const layerSuffix = DP_LAYER_MAP[product];
 
   try {
-    _dpFrames = await _fetchDpTimestamps(station, layerSuffix);
+    _dpFrames = await _fetchDpTimestamps(station, product);
   } catch(err) {
     console.warn('DP GetCapabilities failed, using synthetic frames:', err);
     const now = new Date();
