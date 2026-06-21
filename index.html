@@ -14150,10 +14150,10 @@ let _velStation    = null;   // currently loaded station ID (e.g. 'ktlx')
 let _velLayerPool  = [];     // double-buffer pool of WMS layers
 let _velPoolLoaded = [];     // per-slot load flags
 
-// ── DUAL-POL STATE (CC + ZDR) ──
+// ── DUAL-POL STATE ──
 const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa' };
 let _dpStation     = null;
-let _dpProduct     = 'cc';   // 'cc' or 'zdr'
+let _dpProduct     = 'hc';   // 'hc' or 'accum'
 let _dpFrames      = [], _dpCurrentFrame = 0;
 let _dpLayerPool   = [], _dpPoolLoaded = [];
 
@@ -14472,7 +14472,7 @@ function _buildDpPool(station, frames, layerSuffix) {
   });
 }
 
-async function loadDualPolData(product) {
+async function loadDualPolData(product, stationOverride = null) {
   // Clean up
   _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _dpLayerPool = []; _dpPoolLoaded = [];
@@ -14483,7 +14483,7 @@ async function loadDualPolData(product) {
   if (animTimeEl) animTimeEl.textContent = `Loading ${product.toUpperCase()}…`;
 
   const center  = map.getCenter();
-  const station = _nearestStation(center.lat, center.lng);
+  const station = stationOverride || _nearestStation(center.lat, center.lng);
   _dpStation = station;
 
   const layerSuffix = DP_LAYER_MAP[product];
@@ -14586,13 +14586,7 @@ function _buildNexradSiteMarkers() {
         showVelFrame(velCurrentFrame);
         _refreshNexradSiteStyles();
       } else if (currentProduct === 'hc' || currentProduct === 'accum') {
-        _dpStation = s.id;
-        if (_dpFrames.length) {
-          _buildDpPool(s.id, _dpFrames, DP_LAYER_MAP[currentProduct]);
-          showDpFrame(_dpCurrentFrame);
-        } else {
-          loadDualPolData(currentProduct);
-        }
+        loadDualPolData(currentProduct, s.id);
         _refreshNexradSiteStyles();
       } else {
         map.setView([s.lat, s.lon], Math.max(map.getZoom(), 7));
