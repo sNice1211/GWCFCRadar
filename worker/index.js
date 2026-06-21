@@ -1,12 +1,10 @@
 /**
  * GWCFCRadar — NEXRAD Level-3 Proxy Worker
- *
- * Fetches NEXRAD Level-3 dual-pol products (CC, ZDR) from NOAA's public
- * tgftp server, parses the binary format, and returns JSON that the client
- * can render with Canvas 2D — no WASM, no Workers on the client.
+ * Fetches CC / ZDR from NOAA tgftp, parses binary L3, returns JSON.
+ * Client renders with Canvas 2D — no WASM, no Workers needed on PS5.
  *
  * Deploy: cd worker && npm i && npx wrangler deploy
- * Endpoint: https://gwcfcradar-radar.YOUR_SUBDOMAIN.workers.dev/radar?station=KLTX&product=cc
+ * Test:   https://gwcfcradar-radar.YOUR.workers.dev/radar?station=KLTX&product=cc&debug
  */
 
 const CORS = {
@@ -15,173 +13,164 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-// Maps our product keys to NOAA tgftp DS folder codes and L3 product codes
-// DS folder codes confirmed from NOAA ICD for Product Distribution and Acquisition
-const PRODUCTS = {
-  cc:  { ds: 'p2cr', code: 165, name: 'Corr. Coeff.',   min: 0.2,  max: 1.05, unit: '' },
-  zdr: { ds: 'p2xr', code: 159, name: 'Diff. Refl.',    min: -8.0, max: 8.0,  unit: 'dB' },
-  ref: { ds: 'p19r0',code: 94,  name: 'Reflectivity',   min: -32,  max: 94.5, unit: 'dBZ' },
-  vel: { ds: 'p2u',  code: 99,  name: 'Velocity',       min: -127, max: 127,  unit: 'kt' },
+// DS folder codes to try in order for each product (NOAA tgftp)
+const DS_CODES = {
+  cc:  ['p2cr', 'p0c', 'n0c'],
+  zdr: ['p2xr', 'p0x', 'n0x'],
 };
 
-// Fallback DS codes to try if the primary one returns 404
-const DS_FALLBACKS = {
-  cc:  ['p2cr', 'p0c', 'n0c', '165'],
-  zdr: ['p2xr', 'p0x', 'n0x', '159'],
-  ref: ['p19r0', 'p0q', 'n0q'],
-  vel: ['p2u', 'p0v', 'n0v'],
+const PRODUCT_META = {
+  cc:  { min: 0.2,  max: 1.05, name: 'Corr. Coeff.' },
+  zdr: { min: -8.0, max: 8.0,  name: 'Diff. Refl.' },
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: CORS });
     }
 
-    const url = new URL(request.url);
+    const url     = new URL(request.url);
     const station = url.searchParams.get('station')?.toLowerCase();
     const product = url.searchParams.get('product')?.toLowerCase() || 'cc';
     const debug   = url.searchParams.has('debug');
 
-    if (!station) {
-      return err('station param required (e.g. ?station=KLTX&product=cc)', 400);
+    if (!station) return jsonErr('station param required', 400);
+
+    const codes = DS_CODES[product];
+    const meta  = PRODUCT_META[product];
+    if (!codes || !meta) {
+      return jsonErr(`unknown product "${product}" — use cc or zdr`, 400);
     }
 
-    const meta = PRODUCTS[product];
-    if (!meta) {
-      return err(`unknown product "${product}" — valid: ${Object.keys(PRODUCTS).join(', ')}`, 400);
-    }
-
-    // Try each DS code until one returns data
-    const fallbacks = DS_FALLBACKS[product] || [meta.ds];
-    let rawBuf = null, usedUrl = null;
+    // Try each DS folder code until one returns data
+    let rawBuf = null;
+    let usedUrl = null;
     const tried = [];
 
-    for (const ds of fallbacks) {
+    for (const ds of codes) {
       const tgftp = `https://tgftp.nws.noaa.gov/SL.us008001/DF.of/DC.radar/DS.${ds}/SI.${station}/sn.last`;
       tried.push(tgftp);
       try {
-        const res = await fetch(tgftp, { cf: { cacheTtl: 90, cacheEverything: true } });
+        const res = await fetch(tgftp);
         if (res.ok) {
-          rawBuf = await res.arrayBuffer();
+          rawBuf  = await res.arrayBuffer();
           usedUrl = tgftp;
           break;
         }
-      } catch (_) { /* try next */ }
+      } catch (_) { /* try next DS code */ }
     }
 
     if (!rawBuf) {
-      return err(`No Level-3 data found for ${station.toUpperCase()} ${product.toUpperCase()}. Tried:\n${tried.join('\n')}`, 502);
+      return jsonErr(
+        `No Level-3 data for ${station.toUpperCase()} ${product.toUpperCase()}.\nTried:\n${tried.join('\n')}`,
+        502
+      );
     }
 
     let parsed;
     try {
       parsed = parseL3(new Uint8Array(rawBuf), meta);
     } catch (e) {
-      if (debug) {
-        // Return raw bytes as hex for debugging
-        const hex = [...new Uint8Array(rawBuf).slice(0, 120)]
-          .map(b => b.toString(16).padStart(2, '0')).join(' ');
-        return err(`Parse failed: ${e.message}\nURL: ${usedUrl}\nFirst 120 bytes: ${hex}`, 500);
-      }
-      return err(`Parse failed: ${e.message}`, 500);
+      // Always include hex dump so we can debug DS code / format issues
+      const hex = [...new Uint8Array(rawBuf).slice(0, 160)]
+        .map(b => b.toString(16).padStart(2, '0')).join(' ');
+      return jsonErr(
+        `Parse failed: ${e.message}\nURL: ${usedUrl}\nFirst 160 bytes:\n${hex}`,
+        500
+      );
     }
 
     if (debug) parsed._debug = { url: usedUrl, rawBytes: rawBuf.byteLength };
 
     return new Response(JSON.stringify(parsed), {
-      headers: {
-        ...CORS,
-        'Content-Type': 'application/json',
-        'Cache-Control': 'public, max-age=90',
-      },
+      headers: { ...CORS, 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=90' },
     });
   },
 };
 
 // ── NEXRAD Level-3 binary parser ─────────────────────────────────────────────
-// Ref: NWS ICD 2620001 "Interface Control Document for the RPG to Class 1 User"
+// Ref: NWS ICD 2620001W "RPG to Class 1 User"
+//
+// File layout:
+//   [0..29]  WMO header (30 bytes ASCII, e.g. "SDUS53 KLTX 012345\r\r\n")
+//   [30..47] Message Header Block (MHB, 18 bytes)
+//   [48..]   Product Description Block (PDB, ~102 bytes)
+//   [30 + symHW*2 ..] Symbology Block
+//
+// All multi-byte integers are big-endian (false = big-endian in DataView).
 
 function parseL3(buf, meta) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
 
-  // Skip 30-byte WMO header (ASCII text like "SDUS53 KLTX 012345\r\r\n")
-  let off = 30;
+  // ── Message Header Block starts at file byte 30 ──
+  const scanDate = dv.getUint16(32, false); // days since 1 Jan 1970 (1-indexed)
+  const scanTime = dv.getUint32(34, false); // seconds since midnight UTC
 
-  // ── Message Header Block (18 bytes) ──
-  const productCode = dv.getInt16(off, false);
-  const scanDate    = dv.getUint16(off + 2, false);  // days since 1 Jan 1970
-  const scanTime    = dv.getUint32(off + 4, false);  // seconds since midnight UTC
-  off += 18;
+  // ── Product Description Block starts at file byte 48 ──
+  const pdb = 48;
+  const lat = dv.getInt32(pdb + 0,  false) / 1000; // degrees N
+  const lon = dv.getInt32(pdb + 4,  false) / 1000; // degrees E (West = negative)
 
-  // ── Product Description Block (102 bytes) ──
-  const pdb = off;
-  const lat = dv.getInt32(pdb + 0, false) / 1000;   // degrees N
-  const lon = dv.getInt32(pdb + 4, false) / 1000;   // degrees E (negative = West)
-
-  // Offset to Symbology Block from message start (byte 30), in 2-byte half-words
-  const symHW = dv.getInt32(pdb + 60, false);
-  let symOff  = 30 + symHW * 2;
-  off = pdb + 102;
+  // Offset to Symbology Block: PDB bytes 88-91, in halfwords from message start (file byte 30)
+  // NWS ICD Table V-E: HW54-55 = message bytes 106-109 = PDB bytes 88-91
+  const symHW  = dv.getInt32(pdb + 88, false);
+  const symOff = 30 + symHW * 2; // file byte offset
 
   // ── Symbology Block ──
-  // divider(-1,2) blockId(1,2) blockLen(4) numLayers(2) = 10 bytes header
+  // Header: divider(-1, 2B) blockId(1, 2B) blockLen(4B) numLayers(2B) = 10 bytes
   if (dv.getInt16(symOff, false) !== -1) {
-    throw new Error(`Bad symbology block divider at offset ${symOff}`);
+    throw new Error(`Bad symbology divider at file byte ${symOff} (symHW=${symHW})`);
   }
-  const numLayers = dv.getUint16(symOff + 8, false);
-  symOff += 10;
-
-  // Layer header: divider(-1,2) layerLen(4) = 6 bytes
-  symOff += 6;
+  // Skip block header (10 bytes) + layer header divider+length (6 bytes)
+  let off = symOff + 10 + 6;
 
   // ── Data Packet ──
-  const packetCode = dv.getUint16(symOff, false);
-  symOff += 2;
+  const packetCode = dv.getUint16(off, false);
+  off += 2;
 
-  if (packetCode !== 16 && packetCode !== 0xAF1F) {
-    throw new Error(`Unknown packet code 0x${packetCode.toString(16)} (expected 0x10 or 0xAF1F)`);
+  // Packet 16 (0x0010) = Digital Radial Data Array
+  // Packet 0xAF1F       = Generic Radial Data (used in some super-res products)
+  if (packetCode !== 0x0010 && packetCode !== 0xAF1F) {
+    throw new Error(`Unexpected packet code 0x${packetCode.toString(16)}`);
   }
 
   // Packet header (12 bytes):
   // indexFirstBin(2) numBins(2) iCenter(2) jCenter(2) scaleFactor(2) numRadials(2)
-  const numGates    = dv.getUint16(symOff + 2, false);
-  const scaleFactor = dv.getUint16(symOff + 8, false); // 1/1000 km per gate
-  const numRadials  = dv.getUint16(symOff + 10, false);
-  symOff += 12;
+  const numGates    = dv.getUint16(off + 2,  false);
+  const scaleFactor = dv.getUint16(off + 8,  false); // units of 1/1000 km per gate
+  const numRadials  = dv.getUint16(off + 10, false);
+  off += 12;
 
-  const gateKm = scaleFactor / 1000;
+  const gateKm = scaleFactor / 1000; // km per gate (e.g. 250 → 0.25 km)
 
   // ── Radials ──
   const azimuths = new Float32Array(numRadials);
-  // Store all gate values flat: [r0g0, r0g1, ..., r0gN, r1g0, ...]
-  const flat = new Uint8Array(numRadials * numGates);
+  const flat     = new Uint8Array(numRadials * numGates); // raw encoded values
 
   for (let r = 0; r < numRadials; r++) {
-    const numBytes   = dv.getUint16(symOff, false);
-    const startAngle = dv.getInt16(symOff + 2, false) / 10; // degrees clockwise from N
-    symOff += 6;
+    const numBytes   = dv.getUint16(off,     false);
+    const startAngle = dv.getInt16 (off + 2, false) / 10; // degrees clockwise from N
+    off += 6; // skip numBytes(2) + startAngle(2) + deltaAngle(2)
 
     azimuths[r] = startAngle;
-    const rowStart = r * numGates;
-    const copyLen  = Math.min(numBytes, numGates);
-    flat.set(buf.subarray(symOff, symOff + copyLen), rowStart);
-    symOff += numBytes;
+    const copyLen = Math.min(numBytes, numGates);
+    flat.set(buf.subarray(off, off + copyLen), r * numGates);
+    off += numBytes;
   }
 
-  // Epoch ms from WSR-88D date/time (days are 1-indexed from 1 Jan 1970)
+  // ── Base64-encode flat data for JSON transport ──
+  // Chunked to avoid stack overflow from large spread calls
+  let b64 = '';
+  for (let i = 0; i < flat.length; i += 8192) {
+    b64 += String.fromCharCode(...flat.subarray(i, i + 8192));
+  }
+
   const epochMs = (scanDate - 1) * 86_400_000 + scanTime * 1000;
 
-  // Encode flat array as base64 for JSON transport
-  // Cloudflare Workers have btoa()
-  let b64 = '';
-  const chunk = 8192;
-  for (let i = 0; i < flat.length; i += chunk) {
-    b64 += String.fromCharCode(...flat.subarray(i, i + chunk));
-  }
-
   return {
-    lat, lon,
+    lat,
+    lon,
     num_radials: numRadials,
     num_gates:   numGates,
     gate_km:     gateKm,
@@ -194,7 +183,7 @@ function parseL3(buf, meta) {
   };
 }
 
-function err(msg, status) {
+function jsonErr(msg, status) {
   return new Response(JSON.stringify({ error: msg }), {
     status,
     headers: { ...CORS, 'Content-Type': 'application/json' },
