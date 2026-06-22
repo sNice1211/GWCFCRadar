@@ -9777,6 +9777,7 @@ const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
   { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
   { id: 'alerts',    icon: '⚠', label: 'Alerts',     action: () => toggleAlertSub() },
+  { id: 'stations', icon: `<svg width="20" height="26" viewBox="-10 -13 20 26" style="vertical-align:middle;display:inline-block"><g transform="rotate(0)"><path d="M 0,-14 L 4,-9 Q 0,-7 -4,-9 Z" fill="#00bcd4"/></g><circle cx="0" cy="0" r="8" fill="#ff7043"/></svg>`, label: 'Stations', action: () => toggleStations() },
   { id: 'models',    icon: '📊', label: 'Models',     action: () => toggleModelsPanel() },
 ];
 
@@ -9794,6 +9795,7 @@ function _getBubbleActive(id) {
   if (id === 'radar')    return !!activeLayers.nexrad;
   if (id === 'satellite') return !!activeLayers.satellite;
   if (id === 'alerts')   return !!(activeLayers.tornado || activeLayers.tstm || activeLayers.flood || activeLayers.watch);
+  if (id === 'stations') return !!_metarActive;
   return !!activeBubbles[id];
 }
 
@@ -13594,12 +13596,43 @@ let _dpProduct     = 'hc';
 let _dpFrames      = [], _dpCurrentFrame = 0;
 let _dpLayerPool   = [], _dpPoolLoaded = [];
 
+// ── L2/L3 CANVAS STATE (cc, zdr via Level-2 radar) ──
+const RADAR_WORKER_URL = 'https://l2data.ralphies1005.workers.dev';
+let _l3Product  = null;
 // ── L3 CANVAS STATE (Worker: cc, zdr) ──
 const RADAR_WORKER_URL = 'https://l2data.ralphies1005.workers.dev';
 let _l3Product  = null;   // 'cc' or 'zdr'
 let _l3Station  = null;
 let _l3Overlay  = null;   // L.imageOverlay on the map
 let _l3Canvas   = null;   // offscreen HTMLCanvasElement
+
+// ── Radar Web Worker (radar_worker.bundle.js parses L2 binary) ──
+let _radarWebWorker   = null;
+let _radarWorkerPending = null;  // { resolve, reject } for current request
+
+function _getRadarWebWorker() {
+  if (_radarWebWorker) return _radarWebWorker;
+  var workerUrl = new URL('radar_worker.bundle.js', location.href).href;
+  _radarWebWorker = new Worker(workerUrl);
+  _radarWebWorker.onmessage = function(e) {
+    var p = _radarWorkerPending; _radarWorkerPending = null;
+    if (!p) return;
+    if (e.data.type === 'error') p.reject(new Error(e.data.message));
+    else p.resolve(e.data);
+  };
+  _radarWebWorker.onerror = function(e) {
+    var p = _radarWorkerPending; _radarWorkerPending = null;
+    if (p) p.reject(new Error(e.message || 'Worker error'));
+  };
+  return _radarWebWorker;
+}
+
+function _workerProcess(buffer, layer) {
+  return new Promise(function(resolve, reject) {
+    _radarWorkerPending = { resolve: resolve, reject: reject };
+    _getRadarWebWorker().postMessage({ type: 'process', buffer: buffer, layer: layer }, [buffer]);
+  });
+}
 
 // ── Single-site Reflectivity (NWS GeoServer per station) ──
 let _refStation    = null;   // station ID in single-site REF mode (null = composite)
@@ -13977,100 +14010,132 @@ function _disableL3() {
   if (at) at.textContent = '';
 }
 
-async function loadL3Data(product, stationOverride = null) {
+async function loadL3Data(product, stationOverride) {
   _disableL3();
   _l3Product = product;
 
-  const center  = map.getCenter();
-  const station = stationOverride || _nearestStation(center.lat, center.lng);
-  _l3Station    = station;
+  var center  = map.getCenter();
+  var station = stationOverride || _nearestStation(center.lat, center.lng);
+  _l3Station  = station;
 
-  const at = document.getElementById('anim-time');
-  if (at) at.textContent = `Loading ${product.toUpperCase()}…`;
+  var at = document.getElementById('anim-time');
+  if (at) at.textContent = 'Loading ' + product.toUpperCase() + '…';
 
-  if (RADAR_WORKER_URL === 'REPLACE_WITH_YOUR_WORKER_URL') {
-    _dpAlert('⚠️ Worker not deployed yet.<br><br>Follow <b>worker/DEPLOY.md</b> to deploy the Cloudflare Worker, then paste the URL into <code>RADAR_WORKER_URL</code> in index.html.');
-    return;
-  }
-
-  let json;
+  var buffer;
   try {
-    const res = await fetch(`${RADAR_WORKER_URL}/radar?station=${station}&product=${product}`, { signal: _abortSignal(15000) });
-    json = await res.json();
-    if (json.error) throw new Error(json.error);
+    var res = await fetch(RADAR_WORKER_URL + '?station=' + station, { signal: _abortSignal(30000) });
+    if (!res.ok) { var errJson = await res.json().catch(function(){ return {}; }); throw new Error(errJson.error || 'HTTP ' + res.status); }
+    buffer = await res.arrayBuffer();
   } catch(e) {
-    _dpAlert(`❌ <b>${product.toUpperCase()} fetch failed</b><br>${e.message}`);
+    _dpAlert('❌ <b>' + product.toUpperCase() + ' fetch failed</b><br>' + e.message);
     return;
   }
 
-  _renderL3(json, product, station);
+  var layerMap = { cc: 'CC', zdr: 'ZDR', vel: 'VEL', ref: 'REF' };
+  var layer = layerMap[product] || product.toUpperCase();
+  var result;
+  try {
+    result = await _workerProcess(buffer, layer);
+  } catch(e) {
+    _dpAlert('❌ <b>Parse failed</b><br>' + e.message);
+    return;
+  }
+
+  _renderMesh(result, product, station);
 }
 
-function _renderL3(json, product, station) {
-  const { lat, lon, num_radials, num_gates, gate_km, azimuths, min_val, max_val, time, data } = json;
+function _renderMesh(result, product, station) {
+  var meshData = result.meshData;
+  var bounds   = result.bounds;
+  var metadata = result.metadata;
 
-  // Decode base64 → Uint8Array
-  const raw = atob(data);
-  const flat = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) flat[i] = raw.charCodeAt(i);
+  if (!meshData || !bounds || meshData.length === 0) {
+    _dpAlert('❌ No data returned for ' + product.toUpperCase());
+    return;
+  }
 
-  const maxRangeKm = num_gates * gate_km;
-  const SIZE = 1000;
-  const cx = SIZE / 2, cy = SIZE / 2;
-  const scale = (SIZE / 2) / maxRangeKm; // pixels per km
+  var minLon = bounds[0], minLat = bounds[1], maxLon = bounds[2], maxLat = bounds[3];
+  var lonRange = maxLon - minLon;
+  var latRange = maxLat - minLat;
+  var SIZE = 1000;
 
-  const canvas = document.createElement('canvas');
+  var canvas = document.createElement('canvas');
   canvas.width = canvas.height = SIZE;
-  const ctx = canvas.getContext('2d');
+  var ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, SIZE, SIZE);
 
-  const colorFn = product === 'cc' ? _ccColor : _zdrColor;
+  var colorFn = _meshColorFn(product);
+  var STRIDE = 9;
 
-  for (let r = 0; r < num_radials; r++) {
-    const az1Rad = (azimuths[r] - 90) * Math.PI / 180;
-    // angular width = step between this and next radial
-    const az2Rad = az1Rad + (2 * Math.PI / num_radials);
+  // Batch polygons by quantized value to minimize fill() calls
+  var buckets = {};
+  for (var i = 0; i < meshData.length; i += STRIDE) {
+    var v = meshData[i + 8];
+    if (v !== v) continue; // NaN = range fold
+    var qk = Math.round(v * 4); // quantize to 0.25 units
+    if (!buckets[qk]) buckets[qk] = { repV: v, start: i, indices: [i] };
+    else buckets[qk].indices.push(i);
+  }
 
-    for (let g = 0; g < num_gates; g++) {
-      const code = flat[r * num_gates + g];
-      if (code < 2) continue;  // 0=below threshold, 1=range folded
-
-      const t     = (code - 2) / 253;
-      const color = colorFn(t);
-      if (!color) continue;
-
-      const r1 = g * gate_km * scale;
-      const r2 = r1 + gate_km * scale + 0.5; // tiny overlap avoids gaps
-
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(cx + r1 * Math.cos(az1Rad), cy + r1 * Math.sin(az1Rad));
-      ctx.arc(cx, cy, r2, az1Rad, az2Rad);
-      ctx.arc(cx, cy, r1, az2Rad, az1Rad, true);
+  var bkeys = Object.keys(buckets);
+  for (var b = 0; b < bkeys.length; b++) {
+    var bucket = buckets[bkeys[b]];
+    var color = colorFn(bucket.repV);
+    if (!color) continue;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    var idxs = bucket.indices;
+    for (var j = 0; j < idxs.length; j++) {
+      var k = idxs[j];
+      ctx.moveTo(((meshData[k]   - minLon) / lonRange) * SIZE, ((maxLat - meshData[k+1]) / latRange) * SIZE);
+      ctx.lineTo(((meshData[k+2] - minLon) / lonRange) * SIZE, ((maxLat - meshData[k+3]) / latRange) * SIZE);
+      ctx.lineTo(((meshData[k+4] - minLon) / lonRange) * SIZE, ((maxLat - meshData[k+5]) / latRange) * SIZE);
+      ctx.lineTo(((meshData[k+6] - minLon) / lonRange) * SIZE, ((maxLat - meshData[k+7]) / latRange) * SIZE);
       ctx.closePath();
-      ctx.fill();
     }
+    ctx.fill();
   }
 
   _l3Canvas = canvas;
 
-  // Compute geographic bounds from radar lat/lon + max range
-  const kmPerDegLat = 111.0;
-  const kmPerDegLon = 111.0 * Math.cos(lat * Math.PI / 180);
-  const dLat = maxRangeKm / kmPerDegLat;
-  const dLon = maxRangeKm / kmPerDegLon;
-  const bounds = [[lat - dLat, lon - dLon], [lat + dLat, lon + dLon]];
-
-  const imgUrl = canvas.toDataURL('image/png');
+  var leafletBounds = [[minLat, minLon], [maxLat, maxLon]];
+  var imgUrl = canvas.toDataURL('image/png');
   if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} }
-  _l3Overlay = L.imageOverlay(imgUrl, bounds, { opacity: radarOpacity, zIndex: 10, pane: 'radarPane' }).addTo(map);
+  _l3Overlay = L.imageOverlay(imgUrl, leafletBounds, { opacity: radarOpacity, zIndex: 10, pane: 'radarPane' }).addTo(map);
 
-  const d = new Date(time);
-  const at = document.getElementById('anim-time');
-  const label = product === 'cc' ? 'Corr. Coeff.' : 'Diff. Refl.';
-  if (at) at.textContent = `${_fmtHHMM(d)} · ${station.toUpperCase()} ${label}`;
+  var timeIso = metadata && metadata.timeIso;
+  var d = timeIso ? new Date(timeIso) : new Date();
+  var at = document.getElementById('anim-time');
+  var labels = { cc: 'Corr. Coeff.', zdr: 'Diff. Refl.', vel: 'Velocity', ref: 'Reflectivity' };
+  if (at) at.textContent = _fmtHHMM(d) + ' · ' + station.toUpperCase() + ' ' + (labels[product] || product);
 
   _refreshNexradSiteStyles();
+}
+
+function _meshColorFn(product) {
+  if (product === 'cc') return function(v) {
+    var t = v / 1.05; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return _ccColor(t);
+  };
+  if (product === 'zdr') return function(v) {
+    var t = (v + 8) / 16; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return _zdrColor(t);
+  };
+  if (product === 'vel') return function(v) {
+    var t = (v + 35) / 70; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    if (t > 0.46 && t < 0.54) return null;
+    var h = t < 0.5 ? Math.round(240 - t * 120) : Math.round(60 - (t - 0.5) * 120);
+    return 'hsl(' + h + ',90%,45%)';
+  };
+  if (product === 'ref') return function(v) {
+    if (v < 5) return null;
+    var t = (v - 5) / 70; if (t > 1) t = 1;
+    if (t < 0.2)  return 'hsl(' + Math.round(210 - t * 50) + ',70%,' + Math.round(45 + t * 20) + '%)';
+    if (t < 0.45) return 'hsl(' + Math.round(200 - (t - 0.2) * 600) + ',85%,48%)';
+    if (t < 0.7)  return 'hsl(' + Math.round(50 - (t - 0.45) * 200) + ',95%,45%)';
+    return 'hsl(' + Math.round(10 * (1 - t)) + ',100%,45%)';
+  };
+  return function() { return null; };
 }
 
 async function loadDualPolData(product, stationOverride = null) {
@@ -18130,8 +18195,9 @@ function selectProduct(p) {
   }
 
   if (p === 'cc' || p === 'zdr') {
-    if (playing)     { clearInterval(playTimer);    playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
-    if (playingBack) { clearInterval(playBackTimer); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
+    if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
+    if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
+    try { _refreshPlayButtonsEnabled(); } catch(e) {}
     activeLayers.nexrad = false;
     _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
     radarLayer = null;
@@ -18142,8 +18208,8 @@ function selectProduct(p) {
     _dpLayerPool = []; _dpPoolLoaded = [];
     loadL3Data(p);
   } else if (p === 'vel') {
-    if (playing)     { clearInterval(playTimer);    playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
-    if (playingBack) { clearInterval(playBackTimer); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
+    if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
+    if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
     activeLayers.nexrad = false;
     // Hide reflectivity pool layers (composite + single-site)
     _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
@@ -18175,6 +18241,7 @@ function selectProduct(p) {
       buildTimelineLabels();
       showFrame(currentFrame);
     }
+    try { _refreshPlayButtonsEnabled(); } catch(e) {}
   } else if (p === 'ir' || p === 'vis' || p === 'wv') {
     if (velocityLayer) { map.removeLayer(velocityLayer); velocityLayer = null; }
     _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
