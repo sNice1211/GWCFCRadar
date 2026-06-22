@@ -9679,6 +9679,7 @@ function _disableDualPol() {
   _dpLayerPool = []; _dpPoolLoaded = [];
   _dpFrames = []; _dpCurrentFrame = 0;
   _dpStation = null;
+  if (currentProduct === 'cc' || currentProduct === 'zdr') _disableL3();
   if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
 }
 function _disableSatellite() {
@@ -13458,7 +13459,7 @@ function _rafTick(ts) {
     if (activeLayers.satellite && goesFrames.length) {
       goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
       showGoesFrame(goesCurrentFrame);
-    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') {
+    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') {
       if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
     } else if (currentProduct === 'vel') {
       velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
@@ -13497,7 +13498,8 @@ function _stopRAF() {
 function _animationReady() {
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
-  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') return _dpFrames.length > 0;
+  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') return _dpFrames.length > 0;
+  if (currentProduct === 'cc' || currentProduct === 'zdr') return false;
   if (currentProduct === 'ref' && _refStation) return true;
   if (!radarFrames.length) return false;
   // Need at least 2 frames so animation has somewhere to step
@@ -14312,8 +14314,11 @@ function _buildNexradSiteMarkers() {
         _buildVelPool(s.id, velFrames);
         showVelFrame(velCurrentFrame);
         _refreshNexradSiteStyles();
-      } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') {
+      } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') {
         loadDualPolData(currentProduct, s.id);
+        _refreshNexradSiteStyles();
+      } else if (currentProduct === 'cc' || currentProduct === 'zdr') {
+        loadL3Data(currentProduct, s.id);
         _refreshNexradSiteStyles();
       } else {
         map.setView([s.lat, s.lon], Math.max(map.getZoom(), 7));
@@ -14331,7 +14336,8 @@ function _refreshNexradSiteStyles() {
     const labelEl = document.getElementById(`nxlbl-${id}`);
     const isActive = (currentProduct === 'vel' && id === _velStation) ||
                      (currentProduct === 'ref' && id === _refStation) ||
-                     ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') && id === _dpStation);
+                     ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') && id === _dpStation) ||
+                     ((currentProduct === 'cc' || currentProduct === 'zdr') && id === _l3Station);
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
   });
 }
@@ -18250,7 +18256,7 @@ function selectProduct(p) {
     _refreshNexradSiteStyles();
   }
 
-  if (p === 'cc' || p === 'zdr' || p === 'hc' || p === 'accum' || p === 'boha') {
+  if (p === 'hc' || p === 'accum' || p === 'boha') {
     if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
     if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
     activeLayers.nexrad = false;
@@ -18262,6 +18268,19 @@ function selectProduct(p) {
     _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _dpLayerPool = []; _dpPoolLoaded = [];
     loadDualPolData(p);
+  } else if (p === 'cc' || p === 'zdr') {
+    if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
+    if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
+    try { _refreshPlayButtonsEnabled(); } catch(e) {}
+    activeLayers.nexrad = false;
+    _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
+    radarLayer = null;
+    _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+    _velLayerPool = []; _velPoolLoaded = [];
+    if (velocityLayer) { try { map.removeLayer(velocityLayer); } catch(e){} velocityLayer = null; }
+    _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+    _dpLayerPool = []; _dpPoolLoaded = [];
+    loadL3Data(p);
   } else if (p === 'vel') {
     if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
     if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
@@ -21671,7 +21690,8 @@ function lqmSetRadarOpacity(val) {
   try { localStorage.setItem('lqm_radaropacity', val); } catch(e){}
   radarOpacity = val / 100;
   if (currentProduct === 'vel') showVelFrame(velCurrentFrame);
-  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(_dpCurrentFrame);
+  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') showDpFrame(_dpCurrentFrame);
+  else if ((currentProduct === 'cc' || currentProduct === 'zdr') && _l3Overlay) _l3Overlay.setOpacity(radarOpacity);
   else if (typeof showFrame === 'function') showFrame(currentFrame);
 }
 
