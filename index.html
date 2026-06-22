@@ -14018,10 +14018,13 @@ async function loadL3Data(product, stationOverride) {
 
   var buffer;
   try {
+    console.log('[L2] Fetching', product.toUpperCase(), 'from station', station);
     var res = await fetch(RADAR_WORKER_URL + '?station=' + station, { signal: _abortSignal(30000) });
     if (!res.ok) { var errJson = await res.json().catch(function(){ return {}; }); throw new Error(errJson.error || 'HTTP ' + res.status); }
     buffer = await res.arrayBuffer();
+    console.log('[L2] Fetched', buffer.byteLength, 'bytes for', station);
   } catch(e) {
+    console.error('[L2] Fetch failed:', e);
     _dpAlert('❌ <b>' + product.toUpperCase() + ' fetch failed</b><br>' + e.message);
     return;
   }
@@ -14030,8 +14033,11 @@ async function loadL3Data(product, stationOverride) {
   var layer = layerMap[product] || product.toUpperCase();
   var result;
   try {
+    console.log('[L2] Sending', buffer.byteLength, 'bytes to worker for layer', layer);
     result = await _workerProcess(buffer, layer);
+    console.log('[L2] Worker result: meshData length =', result.meshData?.length, 'bounds =', result.bounds);
   } catch(e) {
+    console.error('[L2] Parse failed:', e);
     _dpAlert('❌ <b>Parse failed</b><br>' + e.message);
     return;
   }
