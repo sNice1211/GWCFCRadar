@@ -7246,7 +7246,7 @@ function updateFrameLabel(idx) {
 }
 
 function showFrame(idx) {
-  if (currentProduct === 'vel' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') return;
+  if (currentProduct === 'vel' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') return;
   if (currentProduct === 'ref' && _refStation) {
     // Single-site is active (or loading). Never show composite behind it.
     if (_refSitePool.length) _showSingleSiteRefFrame(idx);
@@ -9654,11 +9654,11 @@ function _disableRadar() {
     if (currentProduct === 'vel') currentProduct = 'ref';
   }
   // Clean up dual-pol (WMS) if active
-  if (currentProduct === 'hc' || currentProduct === 'accum' || _dpLayerPool.length) {
+  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || _dpLayerPool.length) {
     _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _dpLayerPool = []; _dpPoolLoaded = [];
     _dpFrames = []; _dpCurrentFrame = 0;
-    if (currentProduct === 'hc' || currentProduct === 'accum') currentProduct = 'ref';
+    if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') currentProduct = 'ref';
   }
   // Clean up L3 canvas (CC/ZDR) if active
   if (currentProduct === 'cc' || currentProduct === 'zdr') { _disableL3(); currentProduct = 'ref'; }
@@ -9679,7 +9679,7 @@ function _disableDualPol() {
   _dpLayerPool = []; _dpPoolLoaded = [];
   _dpFrames = []; _dpCurrentFrame = 0;
   _dpStation = null;
-  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
+  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
 }
 function _disableSatellite() {
   activeLayers.satellite = false;
@@ -10623,6 +10623,7 @@ const RADAR_SUB_BUBBLES = [
   { id:'velocity',     icon:'💨', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
   { id:'hc',    icon:'🌈', label:'Hydro. Class.', action: () => { if (currentProduct === 'hc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('hc'); } } },
   { id:'accum', icon:'🌧', label:'Storm Accum.',  action: () => { if (currentProduct === 'accum') { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('accum'); } } },
+  { id:'boha',  icon:'🌢', label:'1-Hr Accum.',   action: () => { if (currentProduct === 'boha')  { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('boha'); } } },
   { id:'cc',    icon:'🔵', label:'Corr. Coeff.',  action: () => { if (currentProduct === 'cc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('cc'); } } },
   { id:'zdr',   icon:'📊', label:'Diff. Refl.',   action: () => { if (currentProduct === 'zdr')   { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('zdr'); } } },
 ];
@@ -13457,7 +13458,7 @@ function _rafTick(ts) {
     if (activeLayers.satellite && goesFrames.length) {
       goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
       showGoesFrame(goesCurrentFrame);
-    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') {
+    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') {
       if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
     } else if (currentProduct === 'vel') {
       velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
@@ -13496,7 +13497,7 @@ function _stopRAF() {
 function _animationReady() {
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
-  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') return _dpFrames.length > 0;
+  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') return _dpFrames.length > 0;
   if (currentProduct === 'ref' && _refStation) return true;
   if (!radarFrames.length) return false;
   // Need at least 2 frames so animation has somewhere to step
@@ -13548,7 +13549,7 @@ function stepFrame(dir) {
   if (activeLayers.satellite && goesFrames.length) {
     goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
     showGoesFrame(goesCurrentFrame);
-  } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') {
+  } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') {
     if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
   } else if (currentProduct === 'vel') {
     velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
@@ -13568,7 +13569,7 @@ function stepFrame(dir) {
 function seekFrame(idx) {
   if (activeLayers.satellite && goesFrames.length) showGoesFrame(idx);
   else if (currentProduct === 'vel') showVelFrame(idx);
-  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(idx);
+  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(idx);
   else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) _showSingleSiteRefFrame(idx);
   else showFrame(idx);
 }
@@ -13586,7 +13587,7 @@ let _velLayerPool  = [];     // double-buffer pool of WMS layers
 let _velPoolLoaded = [];     // per-slot load flags
 
 // ── DUAL-POL STATE (WMS: hc, accum) ──
-const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa', cc: 'n0c', zdr: 'n0x' };
+const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa', boha: 'boha', cc: 'n0c', zdr: 'n0x' };
 let _dpStation     = null;
 let _dpProduct     = 'hc';
 let _dpFrames      = [], _dpCurrentFrame = 0;
@@ -14273,7 +14274,7 @@ function showDpFrame(idx) {
   }
 
   const d = new Date(_dpFrames[idx].time * 1000);
-  const _DP_LABELS = { hc: 'Hydro. Class.', accum: 'Storm Accum.', cc: 'Corr. Coeff.', zdr: 'Diff. Refl.' };
+  const _DP_LABELS = { hc: 'Hydro. Class.', accum: 'Storm Accum.', boha: '1-Hr Accum.', cc: 'Corr. Coeff.', zdr: 'Diff. Refl.' };
   const label = _DP_LABELS[_dpProduct] || _dpProduct.toUpperCase();
   const at = document.getElementById('anim-time');
   if (at) at.textContent = `${_fmtHHMM(d)} · ${(_dpStation || '').toUpperCase()} ${label}`;
@@ -14311,7 +14312,7 @@ function _buildNexradSiteMarkers() {
         _buildVelPool(s.id, velFrames);
         showVelFrame(velCurrentFrame);
         _refreshNexradSiteStyles();
-      } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') {
+      } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') {
         loadDualPolData(currentProduct, s.id);
         _refreshNexradSiteStyles();
       } else {
@@ -14330,7 +14331,7 @@ function _refreshNexradSiteStyles() {
     const labelEl = document.getElementById(`nxlbl-${id}`);
     const isActive = (currentProduct === 'vel' && id === _velStation) ||
                      (currentProduct === 'ref' && id === _refStation) ||
-                     ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') && id === _dpStation);
+                     ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') && id === _dpStation);
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
   });
 }
@@ -14408,7 +14409,7 @@ function hideNexradSites() {
 // via a small helper called after any radar-state mutation.
 function _syncNexradSites() {
   // Show markers whenever nexrad layer is ON OR velocity is active
-  const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'hc' || currentProduct === 'accum';
+  const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha';
   if (radarOn) showNexradSites();
   else         hideNexradSites();
 }
@@ -18249,7 +18250,7 @@ function selectProduct(p) {
     _refreshNexradSiteStyles();
   }
 
-  if (p === 'cc' || p === 'zdr' || p === 'hc' || p === 'accum') {
+  if (p === 'cc' || p === 'zdr' || p === 'hc' || p === 'accum' || p === 'boha') {
     if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
     if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
     activeLayers.nexrad = false;
@@ -21670,7 +21671,7 @@ function lqmSetRadarOpacity(val) {
   try { localStorage.setItem('lqm_radaropacity', val); } catch(e){}
   radarOpacity = val / 100;
   if (currentProduct === 'vel') showVelFrame(velCurrentFrame);
-  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(_dpCurrentFrame);
+  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(_dpCurrentFrame);
   else if (typeof showFrame === 'function') showFrame(currentFrame);
 }
 
