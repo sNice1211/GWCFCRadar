@@ -9679,8 +9679,7 @@ function _disableDualPol() {
   _dpLayerPool = []; _dpPoolLoaded = [];
   _dpFrames = []; _dpCurrentFrame = 0;
   _dpStation = null;
-  if (currentProduct === 'hc' || currentProduct === 'accum') currentProduct = 'ref';
-  if (currentProduct === 'cc' || currentProduct === 'zdr') { _disableL3(); currentProduct = 'ref'; }
+  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
 }
 function _disableSatellite() {
   activeLayers.satellite = false;
@@ -13497,8 +13496,7 @@ function _stopRAF() {
 function _animationReady() {
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
-  if (currentProduct === 'hc' || currentProduct === 'accum') return _dpFrames.length > 0;
-  if (currentProduct === 'cc' || currentProduct === 'zdr') return false; // no animation yet
+  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'cc' || currentProduct === 'zdr') return _dpFrames.length > 0;
   if (currentProduct === 'ref' && _refStation) return true;
   if (!radarFrames.length) return false;
   // Need at least 2 frames so animation has somewhere to step
@@ -13588,7 +13586,7 @@ let _velLayerPool  = [];     // double-buffer pool of WMS layers
 let _velPoolLoaded = [];     // per-slot load flags
 
 // ── DUAL-POL STATE (WMS: hc, accum) ──
-const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa' };
+const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa', cc: 'n0c', zdr: 'n0x' };
 let _dpStation     = null;
 let _dpProduct     = 'hc';
 let _dpFrames      = [], _dpCurrentFrame = 0;
@@ -14257,7 +14255,7 @@ function _buildNexradSiteMarkers() {
         loadDualPolData(currentProduct, s.id);
         _refreshNexradSiteStyles();
       } else if (currentProduct === 'cc' || currentProduct === 'zdr') {
-        loadL3Data(currentProduct, s.id);
+        loadDualPolData(currentProduct, s.id);
         _refreshNexradSiteStyles();
       } else {
         map.setView([s.lat, s.lon], Math.max(map.getZoom(), 7));
@@ -14354,7 +14352,7 @@ function hideNexradSites() {
 // via a small helper called after any radar-state mutation.
 function _syncNexradSites() {
   // Show markers whenever nexrad layer is ON OR velocity is active
-  const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr';
+  const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'hc' || currentProduct === 'accum';
   if (radarOn) showNexradSites();
   else         hideNexradSites();
 }
@@ -18195,10 +18193,9 @@ function selectProduct(p) {
     _refreshNexradSiteStyles();
   }
 
-  if (p === 'cc' || p === 'zdr') {
+  if (p === 'cc' || p === 'zdr' || p === 'hc' || p === 'accum') {
     if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
     if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
-    try { _refreshPlayButtonsEnabled(); } catch(e) {}
     activeLayers.nexrad = false;
     _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
     radarLayer = null;
@@ -18207,7 +18204,7 @@ function selectProduct(p) {
     if (velocityLayer) { try { map.removeLayer(velocityLayer); } catch(e){} velocityLayer = null; }
     _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _dpLayerPool = []; _dpPoolLoaded = [];
-    loadL3Data(p);
+    loadDualPolData(p);
   } else if (p === 'vel') {
     if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').textContent = '▶'; document.getElementById('play-btn').classList.remove('active'); }
     if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').textContent = '◀'; }
