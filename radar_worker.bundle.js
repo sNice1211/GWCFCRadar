@@ -1,10 +1,18 @@
-var RadarWorkerNS = (() => {
+(() => {
   var __create = Object.create;
   var __defProp = Object.defineProperty;
   var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
   var __getProtoOf = Object.getPrototypeOf;
   var __hasOwnProp = Object.prototype.hasOwnProperty;
+  var __esm = (fn, res, err) => function __init() {
+    if (err) throw err[0];
+    try {
+      return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+    } catch (e) {
+      throw err = [e], e;
+    }
+  };
   var __commonJS = (cb, mod) => function __require() {
     try {
       return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
@@ -33,6 +41,7 @@ var RadarWorkerNS = (() => {
   var require_base64_js = __commonJS({
     "node_modules/base64-js/index.js"(exports) {
       "use strict";
+      init_inject_buffer();
       exports.byteLength = byteLength;
       exports.toByteArray = toByteArray;
       exports.fromByteArray = fromByteArray;
@@ -133,6 +142,7 @@ var RadarWorkerNS = (() => {
   // node_modules/ieee754/index.js
   var require_ieee754 = __commonJS({
     "node_modules/ieee754/index.js"(exports) {
+      init_inject_buffer();
       exports.read = function(buffer, offset, isLE, mLen, nBytes) {
         var e, m;
         var eLen = nBytes * 8 - mLen - 1;
@@ -217,16 +227,17 @@ var RadarWorkerNS = (() => {
   var require_buffer = __commonJS({
     "node_modules/buffer/index.js"(exports) {
       "use strict";
+      init_inject_buffer();
       var base64 = require_base64_js();
       var ieee754 = require_ieee754();
       var customInspectSymbol = typeof Symbol === "function" && typeof Symbol["for"] === "function" ? Symbol["for"]("nodejs.util.inspect.custom") : null;
-      exports.Buffer = Buffer3;
+      exports.Buffer = Buffer4;
       exports.SlowBuffer = SlowBuffer;
       exports.INSPECT_MAX_BYTES = 50;
       var K_MAX_LENGTH = 2147483647;
       exports.kMaxLength = K_MAX_LENGTH;
-      Buffer3.TYPED_ARRAY_SUPPORT = typedArraySupport();
-      if (!Buffer3.TYPED_ARRAY_SUPPORT && typeof console !== "undefined" && typeof console.error === "function") {
+      Buffer4.TYPED_ARRAY_SUPPORT = typedArraySupport();
+      if (!Buffer4.TYPED_ARRAY_SUPPORT && typeof console !== "undefined" && typeof console.error === "function") {
         console.error(
           "This browser lacks typed array (Uint8Array) support which is required by `buffer` v5.x. Use `buffer` v4.x if you require old browser support."
         );
@@ -244,17 +255,17 @@ var RadarWorkerNS = (() => {
           return false;
         }
       }
-      Object.defineProperty(Buffer3.prototype, "parent", {
+      Object.defineProperty(Buffer4.prototype, "parent", {
         enumerable: true,
         get: function() {
-          if (!Buffer3.isBuffer(this)) return void 0;
+          if (!Buffer4.isBuffer(this)) return void 0;
           return this.buffer;
         }
       });
-      Object.defineProperty(Buffer3.prototype, "offset", {
+      Object.defineProperty(Buffer4.prototype, "offset", {
         enumerable: true,
         get: function() {
-          if (!Buffer3.isBuffer(this)) return void 0;
+          if (!Buffer4.isBuffer(this)) return void 0;
           return this.byteOffset;
         }
       });
@@ -263,10 +274,10 @@ var RadarWorkerNS = (() => {
           throw new RangeError('The value "' + length + '" is invalid for option "size"');
         }
         const buf = new Uint8Array(length);
-        Object.setPrototypeOf(buf, Buffer3.prototype);
+        Object.setPrototypeOf(buf, Buffer4.prototype);
         return buf;
       }
-      function Buffer3(arg, encodingOrOffset, length) {
+      function Buffer4(arg, encodingOrOffset, length) {
         if (typeof arg === "number") {
           if (typeof encodingOrOffset === "string") {
             throw new TypeError(
@@ -277,7 +288,7 @@ var RadarWorkerNS = (() => {
         }
         return from(arg, encodingOrOffset, length);
       }
-      Buffer3.poolSize = 8192;
+      Buffer4.poolSize = 8192;
       function from(value, encodingOrOffset, length) {
         if (typeof value === "string") {
           return fromString(value, encodingOrOffset);
@@ -303,22 +314,22 @@ var RadarWorkerNS = (() => {
         }
         const valueOf = value.valueOf && value.valueOf();
         if (valueOf != null && valueOf !== value) {
-          return Buffer3.from(valueOf, encodingOrOffset, length);
+          return Buffer4.from(valueOf, encodingOrOffset, length);
         }
         const b = fromObject(value);
         if (b) return b;
         if (typeof Symbol !== "undefined" && Symbol.toPrimitive != null && typeof value[Symbol.toPrimitive] === "function") {
-          return Buffer3.from(value[Symbol.toPrimitive]("string"), encodingOrOffset, length);
+          return Buffer4.from(value[Symbol.toPrimitive]("string"), encodingOrOffset, length);
         }
         throw new TypeError(
           "The first argument must be one of type string, Buffer, ArrayBuffer, Array, or Array-like Object. Received type " + typeof value
         );
       }
-      Buffer3.from = function(value, encodingOrOffset, length) {
+      Buffer4.from = function(value, encodingOrOffset, length) {
         return from(value, encodingOrOffset, length);
       };
-      Object.setPrototypeOf(Buffer3.prototype, Uint8Array.prototype);
-      Object.setPrototypeOf(Buffer3, Uint8Array);
+      Object.setPrototypeOf(Buffer4.prototype, Uint8Array.prototype);
+      Object.setPrototypeOf(Buffer4, Uint8Array);
       function assertSize(size) {
         if (typeof size !== "number") {
           throw new TypeError('"size" argument must be of type number');
@@ -336,24 +347,24 @@ var RadarWorkerNS = (() => {
         }
         return createBuffer(size);
       }
-      Buffer3.alloc = function(size, fill, encoding) {
+      Buffer4.alloc = function(size, fill, encoding) {
         return alloc(size, fill, encoding);
       };
       function allocUnsafe(size) {
         assertSize(size);
         return createBuffer(size < 0 ? 0 : checked(size) | 0);
       }
-      Buffer3.allocUnsafe = function(size) {
+      Buffer4.allocUnsafe = function(size) {
         return allocUnsafe(size);
       };
-      Buffer3.allocUnsafeSlow = function(size) {
+      Buffer4.allocUnsafeSlow = function(size) {
         return allocUnsafe(size);
       };
       function fromString(string, encoding) {
         if (typeof encoding !== "string" || encoding === "") {
           encoding = "utf8";
         }
-        if (!Buffer3.isEncoding(encoding)) {
+        if (!Buffer4.isEncoding(encoding)) {
           throw new TypeError("Unknown encoding: " + encoding);
         }
         const length = byteLength(string, encoding) | 0;
@@ -394,11 +405,11 @@ var RadarWorkerNS = (() => {
         } else {
           buf = new Uint8Array(array, byteOffset, length);
         }
-        Object.setPrototypeOf(buf, Buffer3.prototype);
+        Object.setPrototypeOf(buf, Buffer4.prototype);
         return buf;
       }
       function fromObject(obj) {
-        if (Buffer3.isBuffer(obj)) {
+        if (Buffer4.isBuffer(obj)) {
           const len = checked(obj.length) | 0;
           const buf = createBuffer(len);
           if (buf.length === 0) {
@@ -427,15 +438,15 @@ var RadarWorkerNS = (() => {
         if (+length != length) {
           length = 0;
         }
-        return Buffer3.alloc(+length);
+        return Buffer4.alloc(+length);
       }
-      Buffer3.isBuffer = function isBuffer(b) {
-        return b != null && b._isBuffer === true && b !== Buffer3.prototype;
+      Buffer4.isBuffer = function isBuffer(b) {
+        return b != null && b._isBuffer === true && b !== Buffer4.prototype;
       };
-      Buffer3.compare = function compare(a, b) {
-        if (isInstance(a, Uint8Array)) a = Buffer3.from(a, a.offset, a.byteLength);
-        if (isInstance(b, Uint8Array)) b = Buffer3.from(b, b.offset, b.byteLength);
-        if (!Buffer3.isBuffer(a) || !Buffer3.isBuffer(b)) {
+      Buffer4.compare = function compare(a, b) {
+        if (isInstance(a, Uint8Array)) a = Buffer4.from(a, a.offset, a.byteLength);
+        if (isInstance(b, Uint8Array)) b = Buffer4.from(b, b.offset, b.byteLength);
+        if (!Buffer4.isBuffer(a) || !Buffer4.isBuffer(b)) {
           throw new TypeError(
             'The "buf1", "buf2" arguments must be one of type Buffer or Uint8Array'
           );
@@ -454,7 +465,7 @@ var RadarWorkerNS = (() => {
         if (y < x) return 1;
         return 0;
       };
-      Buffer3.isEncoding = function isEncoding(encoding) {
+      Buffer4.isEncoding = function isEncoding(encoding) {
         switch (String(encoding).toLowerCase()) {
           case "hex":
           case "utf8":
@@ -472,12 +483,12 @@ var RadarWorkerNS = (() => {
             return false;
         }
       };
-      Buffer3.concat = function concat(list, length) {
+      Buffer4.concat = function concat(list, length) {
         if (!Array.isArray(list)) {
           throw new TypeError('"list" argument must be an Array of Buffers');
         }
         if (list.length === 0) {
-          return Buffer3.alloc(0);
+          return Buffer4.alloc(0);
         }
         let i;
         if (length === void 0) {
@@ -486,13 +497,13 @@ var RadarWorkerNS = (() => {
             length += list[i].length;
           }
         }
-        const buffer = Buffer3.allocUnsafe(length);
+        const buffer = Buffer4.allocUnsafe(length);
         let pos = 0;
         for (i = 0; i < list.length; ++i) {
           let buf = list[i];
           if (isInstance(buf, Uint8Array)) {
             if (pos + buf.length > buffer.length) {
-              if (!Buffer3.isBuffer(buf)) buf = Buffer3.from(buf);
+              if (!Buffer4.isBuffer(buf)) buf = Buffer4.from(buf);
               buf.copy(buffer, pos);
             } else {
               Uint8Array.prototype.set.call(
@@ -501,7 +512,7 @@ var RadarWorkerNS = (() => {
                 pos
               );
             }
-          } else if (!Buffer3.isBuffer(buf)) {
+          } else if (!Buffer4.isBuffer(buf)) {
             throw new TypeError('"list" argument must be an Array of Buffers');
           } else {
             buf.copy(buffer, pos);
@@ -511,7 +522,7 @@ var RadarWorkerNS = (() => {
         return buffer;
       };
       function byteLength(string, encoding) {
-        if (Buffer3.isBuffer(string)) {
+        if (Buffer4.isBuffer(string)) {
           return string.length;
         }
         if (ArrayBuffer.isView(string) || isInstance(string, ArrayBuffer)) {
@@ -553,7 +564,7 @@ var RadarWorkerNS = (() => {
           }
         }
       }
-      Buffer3.byteLength = byteLength;
+      Buffer4.byteLength = byteLength;
       function slowToString(encoding, start, end) {
         let loweredCase = false;
         if (start === void 0 || start < 0) {
@@ -600,13 +611,13 @@ var RadarWorkerNS = (() => {
           }
         }
       }
-      Buffer3.prototype._isBuffer = true;
+      Buffer4.prototype._isBuffer = true;
       function swap(b, n, m) {
         const i = b[n];
         b[n] = b[m];
         b[m] = i;
       }
-      Buffer3.prototype.swap16 = function swap16() {
+      Buffer4.prototype.swap16 = function swap16() {
         const len = this.length;
         if (len % 2 !== 0) {
           throw new RangeError("Buffer size must be a multiple of 16-bits");
@@ -616,7 +627,7 @@ var RadarWorkerNS = (() => {
         }
         return this;
       };
-      Buffer3.prototype.swap32 = function swap32() {
+      Buffer4.prototype.swap32 = function swap32() {
         const len = this.length;
         if (len % 4 !== 0) {
           throw new RangeError("Buffer size must be a multiple of 32-bits");
@@ -627,7 +638,7 @@ var RadarWorkerNS = (() => {
         }
         return this;
       };
-      Buffer3.prototype.swap64 = function swap64() {
+      Buffer4.prototype.swap64 = function swap64() {
         const len = this.length;
         if (len % 8 !== 0) {
           throw new RangeError("Buffer size must be a multiple of 64-bits");
@@ -640,19 +651,19 @@ var RadarWorkerNS = (() => {
         }
         return this;
       };
-      Buffer3.prototype.toString = function toString() {
+      Buffer4.prototype.toString = function toString() {
         const length = this.length;
         if (length === 0) return "";
         if (arguments.length === 0) return utf8Slice(this, 0, length);
         return slowToString.apply(this, arguments);
       };
-      Buffer3.prototype.toLocaleString = Buffer3.prototype.toString;
-      Buffer3.prototype.equals = function equals(b) {
-        if (!Buffer3.isBuffer(b)) throw new TypeError("Argument must be a Buffer");
+      Buffer4.prototype.toLocaleString = Buffer4.prototype.toString;
+      Buffer4.prototype.equals = function equals(b) {
+        if (!Buffer4.isBuffer(b)) throw new TypeError("Argument must be a Buffer");
         if (this === b) return true;
-        return Buffer3.compare(this, b) === 0;
+        return Buffer4.compare(this, b) === 0;
       };
-      Buffer3.prototype.inspect = function inspect() {
+      Buffer4.prototype.inspect = function inspect() {
         let str = "";
         const max2 = exports.INSPECT_MAX_BYTES;
         str = this.toString("hex", 0, max2).replace(/(.{2})/g, "$1 ").trim();
@@ -660,13 +671,13 @@ var RadarWorkerNS = (() => {
         return "<Buffer " + str + ">";
       };
       if (customInspectSymbol) {
-        Buffer3.prototype[customInspectSymbol] = Buffer3.prototype.inspect;
+        Buffer4.prototype[customInspectSymbol] = Buffer4.prototype.inspect;
       }
-      Buffer3.prototype.compare = function compare(target, start, end, thisStart, thisEnd) {
+      Buffer4.prototype.compare = function compare(target, start, end, thisStart, thisEnd) {
         if (isInstance(target, Uint8Array)) {
-          target = Buffer3.from(target, target.offset, target.byteLength);
+          target = Buffer4.from(target, target.offset, target.byteLength);
         }
-        if (!Buffer3.isBuffer(target)) {
+        if (!Buffer4.isBuffer(target)) {
           throw new TypeError(
             'The "target" argument must be one of type Buffer or Uint8Array. Received type ' + typeof target
           );
@@ -739,9 +750,9 @@ var RadarWorkerNS = (() => {
           else return -1;
         }
         if (typeof val === "string") {
-          val = Buffer3.from(val, encoding);
+          val = Buffer4.from(val, encoding);
         }
-        if (Buffer3.isBuffer(val)) {
+        if (Buffer4.isBuffer(val)) {
           if (val.length === 0) {
             return -1;
           }
@@ -809,13 +820,13 @@ var RadarWorkerNS = (() => {
         }
         return -1;
       }
-      Buffer3.prototype.includes = function includes(val, byteOffset, encoding) {
+      Buffer4.prototype.includes = function includes(val, byteOffset, encoding) {
         return this.indexOf(val, byteOffset, encoding) !== -1;
       };
-      Buffer3.prototype.indexOf = function indexOf(val, byteOffset, encoding) {
+      Buffer4.prototype.indexOf = function indexOf(val, byteOffset, encoding) {
         return bidirectionalIndexOf(this, val, byteOffset, encoding, true);
       };
-      Buffer3.prototype.lastIndexOf = function lastIndexOf(val, byteOffset, encoding) {
+      Buffer4.prototype.lastIndexOf = function lastIndexOf(val, byteOffset, encoding) {
         return bidirectionalIndexOf(this, val, byteOffset, encoding, false);
       };
       function hexWrite(buf, string, offset, length) {
@@ -853,7 +864,7 @@ var RadarWorkerNS = (() => {
       function ucs2Write(buf, string, offset, length) {
         return blitBuffer(utf16leToBytes(string, buf.length - offset), buf, offset, length);
       }
-      Buffer3.prototype.write = function write(string, offset, length, encoding) {
+      Buffer4.prototype.write = function write(string, offset, length, encoding) {
         if (offset === void 0) {
           encoding = "utf8";
           length = this.length;
@@ -908,7 +919,7 @@ var RadarWorkerNS = (() => {
           }
         }
       };
-      Buffer3.prototype.toJSON = function toJSON() {
+      Buffer4.prototype.toJSON = function toJSON() {
         return {
           type: "Buffer",
           data: Array.prototype.slice.call(this._arr || this, 0)
@@ -1031,7 +1042,7 @@ var RadarWorkerNS = (() => {
         }
         return res;
       }
-      Buffer3.prototype.slice = function slice(start, end) {
+      Buffer4.prototype.slice = function slice(start, end) {
         const len = this.length;
         start = ~~start;
         end = end === void 0 ? len : ~~end;
@@ -1049,14 +1060,14 @@ var RadarWorkerNS = (() => {
         }
         if (end < start) end = start;
         const newBuf = this.subarray(start, end);
-        Object.setPrototypeOf(newBuf, Buffer3.prototype);
+        Object.setPrototypeOf(newBuf, Buffer4.prototype);
         return newBuf;
       };
       function checkOffset(offset, ext, length) {
         if (offset % 1 !== 0 || offset < 0) throw new RangeError("offset is not uint");
         if (offset + ext > length) throw new RangeError("Trying to access beyond buffer length");
       }
-      Buffer3.prototype.readUintLE = Buffer3.prototype.readUIntLE = function readUIntLE(offset, byteLength2, noAssert) {
+      Buffer4.prototype.readUintLE = Buffer4.prototype.readUIntLE = function readUIntLE(offset, byteLength2, noAssert) {
         offset = offset >>> 0;
         byteLength2 = byteLength2 >>> 0;
         if (!noAssert) checkOffset(offset, byteLength2, this.length);
@@ -1068,7 +1079,7 @@ var RadarWorkerNS = (() => {
         }
         return val;
       };
-      Buffer3.prototype.readUintBE = Buffer3.prototype.readUIntBE = function readUIntBE(offset, byteLength2, noAssert) {
+      Buffer4.prototype.readUintBE = Buffer4.prototype.readUIntBE = function readUIntBE(offset, byteLength2, noAssert) {
         offset = offset >>> 0;
         byteLength2 = byteLength2 >>> 0;
         if (!noAssert) {
@@ -1081,32 +1092,32 @@ var RadarWorkerNS = (() => {
         }
         return val;
       };
-      Buffer3.prototype.readUint8 = Buffer3.prototype.readUInt8 = function readUInt8(offset, noAssert) {
+      Buffer4.prototype.readUint8 = Buffer4.prototype.readUInt8 = function readUInt8(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 1, this.length);
         return this[offset];
       };
-      Buffer3.prototype.readUint16LE = Buffer3.prototype.readUInt16LE = function readUInt16LE(offset, noAssert) {
+      Buffer4.prototype.readUint16LE = Buffer4.prototype.readUInt16LE = function readUInt16LE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 2, this.length);
         return this[offset] | this[offset + 1] << 8;
       };
-      Buffer3.prototype.readUint16BE = Buffer3.prototype.readUInt16BE = function readUInt16BE(offset, noAssert) {
+      Buffer4.prototype.readUint16BE = Buffer4.prototype.readUInt16BE = function readUInt16BE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 2, this.length);
         return this[offset] << 8 | this[offset + 1];
       };
-      Buffer3.prototype.readUint32LE = Buffer3.prototype.readUInt32LE = function readUInt32LE(offset, noAssert) {
+      Buffer4.prototype.readUint32LE = Buffer4.prototype.readUInt32LE = function readUInt32LE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 4, this.length);
         return (this[offset] | this[offset + 1] << 8 | this[offset + 2] << 16) + this[offset + 3] * 16777216;
       };
-      Buffer3.prototype.readUint32BE = Buffer3.prototype.readUInt32BE = function readUInt32BE(offset, noAssert) {
+      Buffer4.prototype.readUint32BE = Buffer4.prototype.readUInt32BE = function readUInt32BE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 4, this.length);
         return this[offset] * 16777216 + (this[offset + 1] << 16 | this[offset + 2] << 8 | this[offset + 3]);
       };
-      Buffer3.prototype.readBigUInt64LE = defineBigIntMethod(function readBigUInt64LE(offset) {
+      Buffer4.prototype.readBigUInt64LE = defineBigIntMethod(function readBigUInt64LE(offset) {
         offset = offset >>> 0;
         validateNumber(offset, "offset");
         const first = this[offset];
@@ -1118,7 +1129,7 @@ var RadarWorkerNS = (() => {
         const hi = this[++offset] + this[++offset] * 2 ** 8 + this[++offset] * 2 ** 16 + last * 2 ** 24;
         return BigInt(lo) + (BigInt(hi) << BigInt(32));
       });
-      Buffer3.prototype.readBigUInt64BE = defineBigIntMethod(function readBigUInt64BE(offset) {
+      Buffer4.prototype.readBigUInt64BE = defineBigIntMethod(function readBigUInt64BE(offset) {
         offset = offset >>> 0;
         validateNumber(offset, "offset");
         const first = this[offset];
@@ -1130,7 +1141,7 @@ var RadarWorkerNS = (() => {
         const lo = this[++offset] * 2 ** 24 + this[++offset] * 2 ** 16 + this[++offset] * 2 ** 8 + last;
         return (BigInt(hi) << BigInt(32)) + BigInt(lo);
       });
-      Buffer3.prototype.readIntLE = function readIntLE(offset, byteLength2, noAssert) {
+      Buffer4.prototype.readIntLE = function readIntLE(offset, byteLength2, noAssert) {
         offset = offset >>> 0;
         byteLength2 = byteLength2 >>> 0;
         if (!noAssert) checkOffset(offset, byteLength2, this.length);
@@ -1144,7 +1155,7 @@ var RadarWorkerNS = (() => {
         if (val >= mul) val -= Math.pow(2, 8 * byteLength2);
         return val;
       };
-      Buffer3.prototype.readIntBE = function readIntBE(offset, byteLength2, noAssert) {
+      Buffer4.prototype.readIntBE = function readIntBE(offset, byteLength2, noAssert) {
         offset = offset >>> 0;
         byteLength2 = byteLength2 >>> 0;
         if (!noAssert) checkOffset(offset, byteLength2, this.length);
@@ -1158,35 +1169,35 @@ var RadarWorkerNS = (() => {
         if (val >= mul) val -= Math.pow(2, 8 * byteLength2);
         return val;
       };
-      Buffer3.prototype.readInt8 = function readInt8(offset, noAssert) {
+      Buffer4.prototype.readInt8 = function readInt8(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 1, this.length);
         if (!(this[offset] & 128)) return this[offset];
         return (255 - this[offset] + 1) * -1;
       };
-      Buffer3.prototype.readInt16LE = function readInt16LE(offset, noAssert) {
+      Buffer4.prototype.readInt16LE = function readInt16LE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 2, this.length);
         const val = this[offset] | this[offset + 1] << 8;
         return val & 32768 ? val | 4294901760 : val;
       };
-      Buffer3.prototype.readInt16BE = function readInt16BE(offset, noAssert) {
+      Buffer4.prototype.readInt16BE = function readInt16BE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 2, this.length);
         const val = this[offset + 1] | this[offset] << 8;
         return val & 32768 ? val | 4294901760 : val;
       };
-      Buffer3.prototype.readInt32LE = function readInt32LE(offset, noAssert) {
+      Buffer4.prototype.readInt32LE = function readInt32LE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 4, this.length);
         return this[offset] | this[offset + 1] << 8 | this[offset + 2] << 16 | this[offset + 3] << 24;
       };
-      Buffer3.prototype.readInt32BE = function readInt32BE(offset, noAssert) {
+      Buffer4.prototype.readInt32BE = function readInt32BE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 4, this.length);
         return this[offset] << 24 | this[offset + 1] << 16 | this[offset + 2] << 8 | this[offset + 3];
       };
-      Buffer3.prototype.readBigInt64LE = defineBigIntMethod(function readBigInt64LE(offset) {
+      Buffer4.prototype.readBigInt64LE = defineBigIntMethod(function readBigInt64LE(offset) {
         offset = offset >>> 0;
         validateNumber(offset, "offset");
         const first = this[offset];
@@ -1197,7 +1208,7 @@ var RadarWorkerNS = (() => {
         const val = this[offset + 4] + this[offset + 5] * 2 ** 8 + this[offset + 6] * 2 ** 16 + (last << 24);
         return (BigInt(val) << BigInt(32)) + BigInt(first + this[++offset] * 2 ** 8 + this[++offset] * 2 ** 16 + this[++offset] * 2 ** 24);
       });
-      Buffer3.prototype.readBigInt64BE = defineBigIntMethod(function readBigInt64BE(offset) {
+      Buffer4.prototype.readBigInt64BE = defineBigIntMethod(function readBigInt64BE(offset) {
         offset = offset >>> 0;
         validateNumber(offset, "offset");
         const first = this[offset];
@@ -1209,32 +1220,32 @@ var RadarWorkerNS = (() => {
         this[++offset] * 2 ** 16 + this[++offset] * 2 ** 8 + this[++offset];
         return (BigInt(val) << BigInt(32)) + BigInt(this[++offset] * 2 ** 24 + this[++offset] * 2 ** 16 + this[++offset] * 2 ** 8 + last);
       });
-      Buffer3.prototype.readFloatLE = function readFloatLE(offset, noAssert) {
+      Buffer4.prototype.readFloatLE = function readFloatLE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 4, this.length);
         return ieee754.read(this, offset, true, 23, 4);
       };
-      Buffer3.prototype.readFloatBE = function readFloatBE(offset, noAssert) {
+      Buffer4.prototype.readFloatBE = function readFloatBE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 4, this.length);
         return ieee754.read(this, offset, false, 23, 4);
       };
-      Buffer3.prototype.readDoubleLE = function readDoubleLE(offset, noAssert) {
+      Buffer4.prototype.readDoubleLE = function readDoubleLE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 8, this.length);
         return ieee754.read(this, offset, true, 52, 8);
       };
-      Buffer3.prototype.readDoubleBE = function readDoubleBE(offset, noAssert) {
+      Buffer4.prototype.readDoubleBE = function readDoubleBE(offset, noAssert) {
         offset = offset >>> 0;
         if (!noAssert) checkOffset(offset, 8, this.length);
         return ieee754.read(this, offset, false, 52, 8);
       };
       function checkInt(buf, value, offset, ext, max2, min) {
-        if (!Buffer3.isBuffer(buf)) throw new TypeError('"buffer" argument must be a Buffer instance');
+        if (!Buffer4.isBuffer(buf)) throw new TypeError('"buffer" argument must be a Buffer instance');
         if (value > max2 || value < min) throw new RangeError('"value" argument is out of bounds');
         if (offset + ext > buf.length) throw new RangeError("Index out of range");
       }
-      Buffer3.prototype.writeUintLE = Buffer3.prototype.writeUIntLE = function writeUIntLE(value, offset, byteLength2, noAssert) {
+      Buffer4.prototype.writeUintLE = Buffer4.prototype.writeUIntLE = function writeUIntLE(value, offset, byteLength2, noAssert) {
         value = +value;
         offset = offset >>> 0;
         byteLength2 = byteLength2 >>> 0;
@@ -1250,7 +1261,7 @@ var RadarWorkerNS = (() => {
         }
         return offset + byteLength2;
       };
-      Buffer3.prototype.writeUintBE = Buffer3.prototype.writeUIntBE = function writeUIntBE(value, offset, byteLength2, noAssert) {
+      Buffer4.prototype.writeUintBE = Buffer4.prototype.writeUIntBE = function writeUIntBE(value, offset, byteLength2, noAssert) {
         value = +value;
         offset = offset >>> 0;
         byteLength2 = byteLength2 >>> 0;
@@ -1266,14 +1277,14 @@ var RadarWorkerNS = (() => {
         }
         return offset + byteLength2;
       };
-      Buffer3.prototype.writeUint8 = Buffer3.prototype.writeUInt8 = function writeUInt8(value, offset, noAssert) {
+      Buffer4.prototype.writeUint8 = Buffer4.prototype.writeUInt8 = function writeUInt8(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 1, 255, 0);
         this[offset] = value & 255;
         return offset + 1;
       };
-      Buffer3.prototype.writeUint16LE = Buffer3.prototype.writeUInt16LE = function writeUInt16LE(value, offset, noAssert) {
+      Buffer4.prototype.writeUint16LE = Buffer4.prototype.writeUInt16LE = function writeUInt16LE(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 2, 65535, 0);
@@ -1281,7 +1292,7 @@ var RadarWorkerNS = (() => {
         this[offset + 1] = value >>> 8;
         return offset + 2;
       };
-      Buffer3.prototype.writeUint16BE = Buffer3.prototype.writeUInt16BE = function writeUInt16BE(value, offset, noAssert) {
+      Buffer4.prototype.writeUint16BE = Buffer4.prototype.writeUInt16BE = function writeUInt16BE(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 2, 65535, 0);
@@ -1289,7 +1300,7 @@ var RadarWorkerNS = (() => {
         this[offset + 1] = value & 255;
         return offset + 2;
       };
-      Buffer3.prototype.writeUint32LE = Buffer3.prototype.writeUInt32LE = function writeUInt32LE(value, offset, noAssert) {
+      Buffer4.prototype.writeUint32LE = Buffer4.prototype.writeUInt32LE = function writeUInt32LE(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 4, 4294967295, 0);
@@ -1299,7 +1310,7 @@ var RadarWorkerNS = (() => {
         this[offset] = value & 255;
         return offset + 4;
       };
-      Buffer3.prototype.writeUint32BE = Buffer3.prototype.writeUInt32BE = function writeUInt32BE(value, offset, noAssert) {
+      Buffer4.prototype.writeUint32BE = Buffer4.prototype.writeUInt32BE = function writeUInt32BE(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 4, 4294967295, 0);
@@ -1349,13 +1360,13 @@ var RadarWorkerNS = (() => {
         buf[offset] = hi;
         return offset + 8;
       }
-      Buffer3.prototype.writeBigUInt64LE = defineBigIntMethod(function writeBigUInt64LE(value, offset = 0) {
+      Buffer4.prototype.writeBigUInt64LE = defineBigIntMethod(function writeBigUInt64LE(value, offset = 0) {
         return wrtBigUInt64LE(this, value, offset, BigInt(0), BigInt("0xffffffffffffffff"));
       });
-      Buffer3.prototype.writeBigUInt64BE = defineBigIntMethod(function writeBigUInt64BE(value, offset = 0) {
+      Buffer4.prototype.writeBigUInt64BE = defineBigIntMethod(function writeBigUInt64BE(value, offset = 0) {
         return wrtBigUInt64BE(this, value, offset, BigInt(0), BigInt("0xffffffffffffffff"));
       });
-      Buffer3.prototype.writeIntLE = function writeIntLE(value, offset, byteLength2, noAssert) {
+      Buffer4.prototype.writeIntLE = function writeIntLE(value, offset, byteLength2, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) {
@@ -1374,7 +1385,7 @@ var RadarWorkerNS = (() => {
         }
         return offset + byteLength2;
       };
-      Buffer3.prototype.writeIntBE = function writeIntBE(value, offset, byteLength2, noAssert) {
+      Buffer4.prototype.writeIntBE = function writeIntBE(value, offset, byteLength2, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) {
@@ -1393,7 +1404,7 @@ var RadarWorkerNS = (() => {
         }
         return offset + byteLength2;
       };
-      Buffer3.prototype.writeInt8 = function writeInt8(value, offset, noAssert) {
+      Buffer4.prototype.writeInt8 = function writeInt8(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 1, 127, -128);
@@ -1401,7 +1412,7 @@ var RadarWorkerNS = (() => {
         this[offset] = value & 255;
         return offset + 1;
       };
-      Buffer3.prototype.writeInt16LE = function writeInt16LE(value, offset, noAssert) {
+      Buffer4.prototype.writeInt16LE = function writeInt16LE(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 2, 32767, -32768);
@@ -1409,7 +1420,7 @@ var RadarWorkerNS = (() => {
         this[offset + 1] = value >>> 8;
         return offset + 2;
       };
-      Buffer3.prototype.writeInt16BE = function writeInt16BE(value, offset, noAssert) {
+      Buffer4.prototype.writeInt16BE = function writeInt16BE(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 2, 32767, -32768);
@@ -1417,7 +1428,7 @@ var RadarWorkerNS = (() => {
         this[offset + 1] = value & 255;
         return offset + 2;
       };
-      Buffer3.prototype.writeInt32LE = function writeInt32LE(value, offset, noAssert) {
+      Buffer4.prototype.writeInt32LE = function writeInt32LE(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 4, 2147483647, -2147483648);
@@ -1427,7 +1438,7 @@ var RadarWorkerNS = (() => {
         this[offset + 3] = value >>> 24;
         return offset + 4;
       };
-      Buffer3.prototype.writeInt32BE = function writeInt32BE(value, offset, noAssert) {
+      Buffer4.prototype.writeInt32BE = function writeInt32BE(value, offset, noAssert) {
         value = +value;
         offset = offset >>> 0;
         if (!noAssert) checkInt(this, value, offset, 4, 2147483647, -2147483648);
@@ -1438,10 +1449,10 @@ var RadarWorkerNS = (() => {
         this[offset + 3] = value & 255;
         return offset + 4;
       };
-      Buffer3.prototype.writeBigInt64LE = defineBigIntMethod(function writeBigInt64LE(value, offset = 0) {
+      Buffer4.prototype.writeBigInt64LE = defineBigIntMethod(function writeBigInt64LE(value, offset = 0) {
         return wrtBigUInt64LE(this, value, offset, -BigInt("0x8000000000000000"), BigInt("0x7fffffffffffffff"));
       });
-      Buffer3.prototype.writeBigInt64BE = defineBigIntMethod(function writeBigInt64BE(value, offset = 0) {
+      Buffer4.prototype.writeBigInt64BE = defineBigIntMethod(function writeBigInt64BE(value, offset = 0) {
         return wrtBigUInt64BE(this, value, offset, -BigInt("0x8000000000000000"), BigInt("0x7fffffffffffffff"));
       });
       function checkIEEE754(buf, value, offset, ext, max2, min) {
@@ -1457,10 +1468,10 @@ var RadarWorkerNS = (() => {
         ieee754.write(buf, value, offset, littleEndian, 23, 4);
         return offset + 4;
       }
-      Buffer3.prototype.writeFloatLE = function writeFloatLE(value, offset, noAssert) {
+      Buffer4.prototype.writeFloatLE = function writeFloatLE(value, offset, noAssert) {
         return writeFloat(this, value, offset, true, noAssert);
       };
-      Buffer3.prototype.writeFloatBE = function writeFloatBE(value, offset, noAssert) {
+      Buffer4.prototype.writeFloatBE = function writeFloatBE(value, offset, noAssert) {
         return writeFloat(this, value, offset, false, noAssert);
       };
       function writeDouble(buf, value, offset, littleEndian, noAssert) {
@@ -1472,14 +1483,14 @@ var RadarWorkerNS = (() => {
         ieee754.write(buf, value, offset, littleEndian, 52, 8);
         return offset + 8;
       }
-      Buffer3.prototype.writeDoubleLE = function writeDoubleLE(value, offset, noAssert) {
+      Buffer4.prototype.writeDoubleLE = function writeDoubleLE(value, offset, noAssert) {
         return writeDouble(this, value, offset, true, noAssert);
       };
-      Buffer3.prototype.writeDoubleBE = function writeDoubleBE(value, offset, noAssert) {
+      Buffer4.prototype.writeDoubleBE = function writeDoubleBE(value, offset, noAssert) {
         return writeDouble(this, value, offset, false, noAssert);
       };
-      Buffer3.prototype.copy = function copy2(target, targetStart, start, end) {
-        if (!Buffer3.isBuffer(target)) throw new TypeError("argument should be a Buffer");
+      Buffer4.prototype.copy = function copy2(target, targetStart, start, end) {
+        if (!Buffer4.isBuffer(target)) throw new TypeError("argument should be a Buffer");
         if (!start) start = 0;
         if (!end && end !== 0) end = this.length;
         if (targetStart >= target.length) targetStart = target.length;
@@ -1508,7 +1519,7 @@ var RadarWorkerNS = (() => {
         }
         return len;
       };
-      Buffer3.prototype.fill = function fill(val, start, end, encoding) {
+      Buffer4.prototype.fill = function fill(val, start, end, encoding) {
         if (typeof val === "string") {
           if (typeof start === "string") {
             encoding = start;
@@ -1521,7 +1532,7 @@ var RadarWorkerNS = (() => {
           if (encoding !== void 0 && typeof encoding !== "string") {
             throw new TypeError("encoding must be a string");
           }
-          if (typeof encoding === "string" && !Buffer3.isEncoding(encoding)) {
+          if (typeof encoding === "string" && !Buffer4.isEncoding(encoding)) {
             throw new TypeError("Unknown encoding: " + encoding);
           }
           if (val.length === 1) {
@@ -1550,7 +1561,7 @@ var RadarWorkerNS = (() => {
             this[i] = val;
           }
         } else {
-          const bytes = Buffer3.isBuffer(val) ? val : Buffer3.from(val, encoding);
+          const bytes = Buffer4.isBuffer(val) ? val : Buffer4.from(val, encoding);
           const len = bytes.length;
           if (len === 0) {
             throw new TypeError('The value "' + val + '" is invalid for argument "value"');
@@ -1805,9 +1816,19 @@ var RadarWorkerNS = (() => {
     }
   });
 
+  // inject-buffer.js
+  var import_buffer;
+  var init_inject_buffer = __esm({
+    "inject-buffer.js"() {
+      import_buffer = __toESM(require_buffer(), 1);
+      globalThis.Buffer = import_buffer.Buffer;
+    }
+  });
+
   // node_modules/nexrad-level-2-data/src/classes/RandomAccessFile.js
   var require_RandomAccessFile = __commonJS({
     "node_modules/nexrad-level-2-data/src/classes/RandomAccessFile.js"(exports, module) {
+      init_inject_buffer();
       var BIG_ENDIAN = 0;
       var LITTLE_ENDIAN = 1;
       var RandomAccessFile = class {
@@ -1978,6 +1999,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/constants.js
   var require_constants = __commonJS({
     "node_modules/nexrad-level-2-data/src/constants.js"(exports, module) {
+      init_inject_buffer();
       var FILE_HEADER_SIZE = 24;
       var RADAR_DATA_SIZE = 2432;
       var CTM_HEADER_SIZE = 12;
@@ -1994,6 +2016,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/classes/Level2Record-1.js
   var require_Level2Record_1 = __commonJS({
     "node_modules/nexrad-level-2-data/src/classes/Level2Record-1.js"(exports, module) {
+      init_inject_buffer();
       module.exports = (raf, message, options) => {
         const startingOffset = raf.getPos();
         message.record = {
@@ -2077,6 +2100,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/classes/Level2Record-2.js
   var require_Level2Record_2 = __commonJS({
     "node_modules/nexrad-level-2-data/src/classes/Level2Record-2.js"(exports, module) {
+      init_inject_buffer();
       module.exports = (raf, message) => {
         message.record = {
           rdaStatus: raf.readShort(),
@@ -2129,6 +2153,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/classes/Level2Record-31.js
   var require_Level2Record_31 = __commonJS({
     "node_modules/nexrad-level-2-data/src/classes/Level2Record-31.js"(exports, module) {
+      init_inject_buffer();
       var { MESSAGE_HEADER_SIZE } = require_constants();
       module.exports = (raf, message, offset, options) => {
         const record = {
@@ -2308,6 +2333,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/classes/Level2Record-5-7.js
   var require_Level2Record_5_7 = __commonJS({
     "node_modules/nexrad-level-2-data/src/classes/Level2Record-5-7.js"(exports, module) {
+      init_inject_buffer();
       module.exports = (raf, message) => {
         message.record = {
           message_size: raf.readShort(),
@@ -2428,6 +2454,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/classes/Level2RecordSearch.js
   var require_Level2RecordSearch = __commonJS({
     "node_modules/nexrad-level-2-data/src/classes/Level2RecordSearch.js"(exports, module) {
+      init_inject_buffer();
       var level2RecordSearch = (raf, startPos, julianDate, options) => {
         if (julianDate === void 0) return false;
         raf.seek(startPos);
@@ -2463,6 +2490,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/classes/Level2Record.js
   var require_Level2Record = __commonJS({
     "node_modules/nexrad-level-2-data/src/classes/Level2Record.js"(exports, module) {
+      init_inject_buffer();
       var {
         FILE_HEADER_SIZE,
         RADAR_DATA_SIZE,
@@ -2521,6 +2549,7 @@ var RadarWorkerNS = (() => {
   // node_modules/seek-bzip/lib/bitreader.js
   var require_bitreader = __commonJS({
     "node_modules/seek-bzip/lib/bitreader.js"(exports, module) {
+      init_inject_buffer();
       var BITMASK = [0, 1, 3, 7, 15, 31, 63, 127, 255];
       var BitReader = function(stream) {
         this.stream = stream;
@@ -2576,6 +2605,7 @@ var RadarWorkerNS = (() => {
   // node_modules/seek-bzip/lib/stream.js
   var require_stream = __commonJS({
     "node_modules/seek-bzip/lib/stream.js"(exports, module) {
+      init_inject_buffer();
       var Stream = function() {
       };
       Stream.prototype.readByte = function() {
@@ -2615,6 +2645,7 @@ var RadarWorkerNS = (() => {
   // node_modules/seek-bzip/lib/crc32.js
   var require_crc32 = __commonJS({
     "node_modules/seek-bzip/lib/crc32.js"(exports, module) {
+      init_inject_buffer();
       module.exports = (function() {
         var crc32Lookup = new Uint32Array([
           0,
@@ -2936,6 +2967,7 @@ var RadarWorkerNS = (() => {
   // node_modules/seek-bzip/lib/index.js
   var require_lib = __commonJS({
     "node_modules/seek-bzip/lib/index.js"(exports, module) {
+      init_inject_buffer();
       var BitReader = require_bitreader();
       var Stream = require_stream();
       var CRC32 = require_crc32();
@@ -3374,6 +3406,7 @@ var RadarWorkerNS = (() => {
   var require_trees = __commonJS({
     "node_modules/pako/lib/zlib/trees.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var Z_FIXED = 4;
       var Z_BINARY = 0;
       var Z_TEXT = 1;
@@ -4012,6 +4045,7 @@ var RadarWorkerNS = (() => {
   var require_adler32 = __commonJS({
     "node_modules/pako/lib/zlib/adler32.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var adler32 = (adler, buf, len, pos) => {
         let s1 = adler & 65535 | 0, s2 = adler >>> 16 & 65535 | 0, n = 0;
         while (len !== 0) {
@@ -4034,6 +4068,7 @@ var RadarWorkerNS = (() => {
   var require_crc322 = __commonJS({
     "node_modules/pako/lib/zlib/crc32.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var makeTable = () => {
         let c, table = [];
         for (var n = 0; n < 256; n++) {
@@ -4063,6 +4098,7 @@ var RadarWorkerNS = (() => {
   var require_messages = __commonJS({
     "node_modules/pako/lib/zlib/messages.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       module.exports = {
         2: "need dictionary",
         /* Z_NEED_DICT       2  */
@@ -4090,6 +4126,7 @@ var RadarWorkerNS = (() => {
   var require_constants2 = __commonJS({
     "node_modules/pako/lib/zlib/constants.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       module.exports = {
         /* Allowed flush values; see deflate() and inflate() below for details */
         Z_NO_FLUSH: 0,
@@ -4137,6 +4174,7 @@ var RadarWorkerNS = (() => {
   var require_deflate = __commonJS({
     "node_modules/pako/lib/zlib/deflate.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var { _tr_init, _tr_stored_block, _tr_flush_block, _tr_tally, _tr_align } = require_trees();
       var adler32 = require_adler32();
       var crc32 = require_crc322();
@@ -5277,6 +5315,7 @@ var RadarWorkerNS = (() => {
   var require_common = __commonJS({
     "node_modules/pako/lib/utils/common.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var _has = (obj, key) => {
         return Object.prototype.hasOwnProperty.call(obj, key);
       };
@@ -5318,6 +5357,7 @@ var RadarWorkerNS = (() => {
   var require_strings = __commonJS({
     "node_modules/pako/lib/utils/strings.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var STR_APPLY_UIA_OK = true;
       try {
         String.fromCharCode.apply(null, new Uint8Array(1));
@@ -5447,6 +5487,7 @@ var RadarWorkerNS = (() => {
   var require_zstream = __commonJS({
     "node_modules/pako/lib/zlib/zstream.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       function ZStream() {
         this.input = null;
         this.next_in = 0;
@@ -5469,6 +5510,7 @@ var RadarWorkerNS = (() => {
   var require_deflate2 = __commonJS({
     "node_modules/pako/lib/deflate.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var zlib_deflate = require_deflate();
       var utils = require_common();
       var strings = require_strings();
@@ -5630,6 +5672,7 @@ var RadarWorkerNS = (() => {
   var require_inffast = __commonJS({
     "node_modules/pako/lib/zlib/inffast.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var BAD = 16209;
       var TYPE = 16191;
       module.exports = function inflate_fast(strm, start) {
@@ -5858,6 +5901,7 @@ var RadarWorkerNS = (() => {
   var require_inftrees = __commonJS({
     "node_modules/pako/lib/zlib/inftrees.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var MAXBITS = 15;
       var ENOUGH_LENS = 852;
       var ENOUGH_DISTS = 592;
@@ -6170,6 +6214,7 @@ var RadarWorkerNS = (() => {
   var require_inflate = __commonJS({
     "node_modules/pako/lib/zlib/inflate.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var adler32 = require_adler32();
       var crc32 = require_crc322();
       var inflate_fast = require_inffast();
@@ -7421,6 +7466,7 @@ var RadarWorkerNS = (() => {
   var require_gzheader = __commonJS({
     "node_modules/pako/lib/zlib/gzheader.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       function GZheader() {
         this.text = 0;
         this.time = 0;
@@ -7441,6 +7487,7 @@ var RadarWorkerNS = (() => {
   var require_inflate2 = __commonJS({
     "node_modules/pako/lib/inflate.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var zlib_inflate = require_inflate();
       var utils = require_common();
       var strings = require_strings();
@@ -7616,6 +7663,7 @@ var RadarWorkerNS = (() => {
   var require_pako = __commonJS({
     "node_modules/pako/index.js"(exports, module) {
       "use strict";
+      init_inject_buffer();
       var { Deflate, deflate, deflateRaw, gzip } = require_deflate2();
       var { Inflate, inflate, inflateRaw, ungzip } = require_inflate2();
       var constants = require_constants2();
@@ -7634,6 +7682,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/gzipdecompress.js
   var require_gzipdecompress = __commonJS({
     "node_modules/nexrad-level-2-data/src/gzipdecompress.js"(exports, module) {
+      init_inject_buffer();
       var pako = require_pako();
       var { RandomAccessFile, BIG_ENDIAN } = require_RandomAccessFile();
       module.exports = (raf) => {
@@ -7646,6 +7695,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/decompress.js
   var require_decompress = __commonJS({
     "node_modules/nexrad-level-2-data/src/decompress.js"(exports, module) {
+      init_inject_buffer();
       var bzip = require_lib();
       var gzipDecompress = require_gzipdecompress();
       var { RandomAccessFile, BIG_ENDIAN } = require_RandomAccessFile();
@@ -7698,6 +7748,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/parseheader.js
   var require_parseheader = __commonJS({
     "node_modules/nexrad-level-2-data/src/parseheader.js"(exports, module) {
+      init_inject_buffer();
       var { FILE_HEADER_SIZE } = require_constants();
       var parse = (raf) => {
         const identifier = raf.readString(6);
@@ -7722,6 +7773,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/parsedata.js
   var require_parsedata = __commonJS({
     "node_modules/nexrad-level-2-data/src/parsedata.js"(exports, module) {
+      init_inject_buffer();
       var { RandomAccessFile, BIG_ENDIAN } = require_RandomAccessFile();
       var { Level2Record } = require_Level2Record();
       var { RADAR_DATA_SIZE } = require_constants();
@@ -7788,6 +7840,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/combinedata.js
   var require_combinedata = __commonJS({
     "node_modules/nexrad-level-2-data/src/combinedata.js"(exports, module) {
+      init_inject_buffer();
       var combine = (...args) => {
         const rawData = args.flat(50);
         const output = {
@@ -7819,6 +7872,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-2-data/src/index.js
   var require_src = __commonJS({
     "node_modules/nexrad-level-2-data/src/index.js"(exports, module) {
+      init_inject_buffer();
       var parseData = require_parsedata();
       var combineData = require_combinedata();
       var Level2Radar2 = class _Level2Radar {
@@ -8063,6 +8117,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/randomaccessfile/index.js
   var require_randomaccessfile = __commonJS({
     "node_modules/nexrad-level-3-data/src/randomaccessfile/index.js"(exports, module) {
+      init_inject_buffer();
       var BIG_ENDIAN = 0;
       var LITTLE_ENDIAN = 1;
       var RandomAccessFile = class {
@@ -8158,6 +8213,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/text.js
   var require_text = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/text.js"(exports, module) {
+      init_inject_buffer();
       var parse = (raf) => {
         const text = {};
         text.fileType = raf.readString(6);
@@ -8178,6 +8234,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/message.js
   var require_message = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/message.js"(exports, module) {
+      init_inject_buffer();
       var parse = (raf) => ({
         code: raf.readShort(),
         julianDate: raf.readShort(),
@@ -8194,6 +8251,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/productdescription.js
   var require_productdescription = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/productdescription.js"(exports, module) {
+      init_inject_buffer();
       var MODE_MAINTENANCE = 0;
       var MODE_CLEAN_AIR = 1;
       var MODE_PRECIPITATION = 2;
@@ -8241,6 +8299,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/symbologytext.js
   var require_symbologytext = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/symbologytext.js"(exports, module) {
+      init_inject_buffer();
       var parse = (raf) => {
         const pages = [];
         let lines = [];
@@ -8268,6 +8327,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/symbology.js
   var require_symbology = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/symbology.js"(exports, module) {
+      init_inject_buffer();
       var symbologyText = require_symbologytext();
       var textSymbologies = [3, 4, 5, 6, 7];
       var parse = (raf) => {
@@ -8290,6 +8350,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/tabular.js
   var require_tabular = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/tabular.js"(exports, module) {
+      init_inject_buffer();
       var parseMessageHeader = require_message();
       var { parse: parseProductDescription } = require_productdescription();
       var parse = (raf, product) => {
@@ -8341,6 +8402,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/1.js
   var require__ = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/1.js"(exports, module) {
+      init_inject_buffer();
       var code = 1;
       var description = "Text and Special Symbol Packets";
       var parser = (raf) => {
@@ -8366,6 +8428,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/2.js
   var require__2 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/2.js"(exports, module) {
+      init_inject_buffer();
       var code = 2;
       var description = "Text and Special Symbol Packets";
       var parser = (raf) => {
@@ -8391,6 +8454,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/6.js
   var require__3 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/6.js"(exports, module) {
+      init_inject_buffer();
       var code = 6;
       var description = "Linked Vector Packet";
       var parser = (raf) => {
@@ -8423,6 +8487,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/8.js
   var require__4 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/8.js"(exports, module) {
+      init_inject_buffer();
       var code = 8;
       var description = "Text and Special Symbol Packets";
       var parser = (raf) => {
@@ -8448,6 +8513,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/10.js
   var require__5 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/10.js"(exports, module) {
+      init_inject_buffer();
       var code = 16;
       var description = "Digital Radial Data Array Packet";
       var parser = (raf, productDescription) => {
@@ -8517,6 +8583,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/13.js
   var require__6 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/13.js"(exports, module) {
+      init_inject_buffer();
       var code = 19;
       var description = "Special Graphic Symbol Packet";
       var featureKey = {
@@ -8566,6 +8633,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/14.js
   var require__7 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/14.js"(exports, module) {
+      init_inject_buffer();
       var code = 20;
       var description = "Special Graphic Symbol Packet";
       var featureKey = {
@@ -8615,6 +8683,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/utilities/ij.js
   var require_ij = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/utilities/ij.js"(exports, module) {
+      init_inject_buffer();
       var ijToAzDeg = (i, j, rawScale = 8, conversion = 0.539957) => {
         const nm = Math.sqrt(i ** 2 + j ** 2) / rawScale * conversion;
         let deg = 0;
@@ -8636,6 +8705,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/15.js
   var require__8 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/15.js"(exports, module) {
+      init_inject_buffer();
       var code = 21;
       var description = "Special Graphic Symbol Packet";
       var { ijToAzDeg } = require_ij();
@@ -8714,6 +8784,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/16.js
   var require__9 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/16.js"(exports, module) {
+      init_inject_buffer();
       var code = 22;
       var description = "Cell Trend Data Packet";
       var parser = (raf) => {
@@ -8741,6 +8812,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/17.js
   var require__10 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/17.js"(exports, module) {
+      init_inject_buffer();
       var code = 23;
       var description = "Special Graphic Symbol Packet";
       var parser = (raf) => {
@@ -8768,6 +8840,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/18.js
   var require__11 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/18.js"(exports, module) {
+      init_inject_buffer();
       var code = 24;
       var description = "Special Graphic Symbol Packet";
       var { parser } = require__10();
@@ -8782,6 +8855,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/19.js
   var require__12 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/19.js"(exports, module) {
+      init_inject_buffer();
       var code = 25;
       var description = "Special Graphic Symbol Packet";
       var { parser } = require__10();
@@ -8796,6 +8870,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/32.js
   var require__13 = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/32.js"(exports, module) {
+      init_inject_buffer();
       var code = 32;
       var description = "Special Graphic Symbol Packet";
       var featureKey = {
@@ -8845,6 +8920,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/a.js
   var require_a = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/a.js"(exports, module) {
+      init_inject_buffer();
       var code = 10;
       var description = "Unlinked Vector Packet";
       var parser = (raf) => {
@@ -8882,6 +8958,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/utilities/rle.js
   var require_rle = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/utilities/rle.js"(exports, module) {
+      init_inject_buffer();
       var expand4_4 = (byte) => {
         const run = byte >> 4;
         const value = byte & 15;
@@ -8900,6 +8977,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/af1f.js
   var require_af1f = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/af1f.js"(exports, module) {
+      init_inject_buffer();
       var code = 44831;
       var description = "Radial Data Packet (16 Data Levels)";
       var rle = require_rle();
@@ -8942,6 +9020,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/c.js
   var require_c = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/c.js"(exports, module) {
+      init_inject_buffer();
       var code = 12;
       var description = "Tornado Vortex Signautre";
       var parser = (raf) => {
@@ -8975,6 +9054,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/f.js
   var require_f = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/f.js"(exports, module) {
+      init_inject_buffer();
       var code = 15;
       var description = "Special Graphic Symbol Packet";
       var parser = (raf) => {
@@ -9005,6 +9085,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/packets/index.js
   var require_packets = __commonJS({
     "node_modules/nexrad-level-3-data/src/packets/index.js"(exports, module) {
+      init_inject_buffer();
       var packetsRaw = [
         require__(),
         require__2(),
@@ -9047,6 +9128,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/graphic22.js
   var require_graphic22 = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/graphic22.js"(exports, module) {
+      init_inject_buffer();
       var { parser } = require_packets();
       var parse22 = (raf) => {
         let result = {
@@ -9070,6 +9152,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/graphic.js
   var require_graphic = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/graphic.js"(exports, module) {
+      init_inject_buffer();
       var { parser } = require_packets();
       var graphic22 = require_graphic22();
       var parse = (raf) => {
@@ -9105,6 +9188,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/headers/radialpackets.js
   var require_radialpackets = __commonJS({
     "node_modules/nexrad-level-3-data/src/headers/radialpackets.js"(exports, module) {
+      init_inject_buffer();
       var { parser } = require_packets();
       var parse = (raf, productDescription, layerCount, options) => {
         const layers = [];
@@ -9139,6 +9223,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/56/index.js
   var require__14 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/56/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 56;
       var abbreviation = ["N0S", "N1S", "N2S", "N3S"];
       var description = "Storm relative velocity";
@@ -9175,6 +9260,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/58/formatter.js
   var require_formatter = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/58/formatter.js"(exports, module) {
+      init_inject_buffer();
       module.exports = (data) => {
         const pages = data?.tabular?.pages;
         if (!pages) return {};
@@ -9220,6 +9306,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/58/index.js
   var require__15 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/58/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 58;
       var abbreviation = ["NST"];
       var description = "Storm Tracking Information";
@@ -9258,6 +9345,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/59/formatter.js
   var require_formatter2 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/59/formatter.js"(exports, module) {
+      init_inject_buffer();
       module.exports = (data) => {
         const pages = data?.tabular?.pages;
         if (!pages) return {};
@@ -9284,6 +9372,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/59/index.js
   var require__16 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/59/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 59;
       var abbreviation = ["NHI"];
       var description = "Hail Index";
@@ -9301,6 +9390,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/61/formatter.js
   var require_formatter3 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/61/formatter.js"(exports, module) {
+      init_inject_buffer();
       module.exports = (data) => {
         const pages = data?.tabular?.pages;
         if (!pages) return {};
@@ -9336,6 +9426,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/61/index.js
   var require__17 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/61/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 61;
       var abbreviation = ["NTV"];
       var description = "Tornadic Vortex Signature";
@@ -9353,6 +9444,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/62/index.js
   var require__18 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/62/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 62;
       var abbreviation = ["NSS"];
       var description = "Storm Structure";
@@ -9368,6 +9460,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/78/index.js
   var require__19 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/78/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 78;
       var abbreviation = "N1P";
       var description = "One-hour precipitation";
@@ -9400,6 +9493,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/80/index.js
   var require__20 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/80/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 80;
       var abbreviation = "NTP";
       var description = "Storm Total Rainfall Accumulation";
@@ -9434,6 +9528,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/94/index.js
   var require__21 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/94/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 94;
       var abbreviation = ["NXQ", "NYQ", "NZQ", "N0Q", "NAQ", "N1Q", "NBQ", "N2Q", "N3Q"];
       var description = "Digital Base Reflectivity";
@@ -9476,6 +9571,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/141/formatter.js
   var require_formatter4 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/141/formatter.js"(exports, module) {
+      init_inject_buffer();
       module.exports = (data) => {
         const pages = data?.tabular?.pages;
         if (!pages) return {};
@@ -9526,6 +9622,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/141/index.js
   var require__22 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/141/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 141;
       var abbreviation = ["NMD"];
       var description = "Mesocyclone";
@@ -9560,6 +9657,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/165/index.js
   var require__23 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/165/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 165;
       var abbreviation = ["N0H", "N1H", "N2H", "N3H"];
       var description = "Hydrometeor Classification";
@@ -9617,6 +9715,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/170/index.js
   var require__24 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/170/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 170;
       var abbreviation = "DAA";
       var description = "Digital One Hour Accumulation";
@@ -9703,6 +9802,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/172/index.js
   var require__25 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/172/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 172;
       var abbreviation = "DTA";
       var description = "Storm Total Precipitation";
@@ -9789,6 +9889,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/177/index.js
   var require__26 = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/177/index.js"(exports, module) {
+      init_inject_buffer();
       var code = 177;
       var abbreviation = "HHC";
       var description = "Hybrid Hydrometeor Classification";
@@ -9826,6 +9927,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/products/index.js
   var require_products = __commonJS({
     "node_modules/nexrad-level-3-data/src/products/index.js"(exports, module) {
+      init_inject_buffer();
       var productsRaw = [
         require__14(),
         require__15(),
@@ -9856,6 +9958,7 @@ var RadarWorkerNS = (() => {
   // node_modules/nexrad-level-3-data/src/index.js
   var require_src2 = __commonJS({
     "node_modules/nexrad-level-3-data/src/index.js"(exports, module) {
+      init_inject_buffer();
       var bzip = require_lib();
       var { RandomAccessFile } = require_randomaccessfile();
       var textHeader = require_text();
@@ -9956,11 +10059,13 @@ var RadarWorkerNS = (() => {
   });
 
   // radar_worker.js
-  var import_buffer = __toESM(require_buffer(), 1);
+  init_inject_buffer();
+  var import_buffer2 = __toESM(require_buffer(), 1);
   var import_nexrad_level_2_data = __toESM(require_src(), 1);
   var import_nexrad_level_3_data = __toESM(require_src2(), 1);
 
   // dealias.js
+  init_inject_buffer();
   var np = {
     linspace(startValue, stopValue, cardinality) {
       const arr = [];
@@ -11169,7 +11274,7 @@ var RadarWorkerNS = (() => {
         const parserStartMs = toEpochMs(performance.now());
         const requestedMoment = getLevel2MomentForLayer(chunkLayer);
         const parsedChunks = rawBuffers.map(
-          (buf) => new import_nexrad_level_2_data.Level2Radar(import_buffer.Buffer.from(buf), requestedMoment ? { includeMoments: [requestedMoment] } : void 0)
+          (buf) => new import_nexrad_level_2_data.Level2Radar(import_buffer2.Buffer.from(buf), requestedMoment ? { includeMoments: [requestedMoment] } : void 0)
         );
         const radar = import_nexrad_level_2_data.Level2Radar.combineData(...parsedChunks);
         const parserEndMs = toEpochMs(performance.now());
@@ -11206,7 +11311,7 @@ var RadarWorkerNS = (() => {
       let meshEndMs = null;
       const upperLayer = typeof layer === "string" ? layer.toUpperCase() : "";
       const isLevel2Product = ["REF", "VEL", "CC", "KDP", "SW", "ZDR"].includes(upperLayer);
-      const buffer = import_buffer.Buffer.from(arrayBuffer);
+      const buffer = import_buffer2.Buffer.from(arrayBuffer);
       if (!isLevel2Product) {
         const requestedParseMode = typeof options?.level3ParseMode === "string" ? options.level3ParseMode.toLowerCase() : null;
         const level3ParseMode = requestedParseMode === "full" ? "full" : LEVEL3_PARSE_MODE;
