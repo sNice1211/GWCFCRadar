@@ -8269,7 +8269,7 @@ const _LTG_TZ = { UTC:0,GMT:0,EDT:-240,EST:-300,CDT:-300,CST:-360,MDT:-360,MST:-
 
 let lightningActive   = false;
 let lightningInterval = null;  // compat stub
-lightningFlash = [];    // compat — reset on init (declared earlier at global scope)
+lightningFlash.length = 0;    // compat — reset on init (declared earlier at global scope)
 let _ltgMarkers       = new Map(); // key → { marker, ts }
 let _ltgData          = null;
 let _ltgRefreshTimer  = null;
@@ -8646,7 +8646,7 @@ function toggleLayer(id) {
     if (activeLayers.radio) loadNWRStations();
     else { if (_nwrLayer) { map.removeLayer(_nwrLayer); } }
   }
-  if (['spc1','spc2','spc3'].includes(id) && activeLayers[id]) loadSPCOutlook(id);
+  if (['spc1','spc2','spc3'].includes(id) && activeLayers[id]) loadSPCOutlook(parseInt(id.replace('spc',''), 10));
   if (id === 'spcrpts' && activeLayers[id]) loadStormReports();
   if (id === 'nhc' && activeLayers[id]) loadTropical();
   if (id === 'models') updateModelInfo(currentModel);
@@ -8818,9 +8818,9 @@ function _applyPolyFilterNow() {
   if (alertsLayer || activeLayers.tornado || activeLayers.tstm || activeLayers.flood) loadAlerts(true);
   if (_metarActive)           _loadMetarTemp();
   if (activeLayers.forecasts && cityMarkersLayer) _polyFilterCityMarkers();
-  if (activeLayers.spc1)      loadSPCOutlook('spc1');
-  if (activeLayers.spc2)      loadSPCOutlook('spc2');
-  if (activeLayers.spc3)      loadSPCOutlook('spc3');
+  if (activeLayers.spc1)      loadSPCOutlook(1);
+  if (activeLayers.spc2)      loadSPCOutlook(2);
+  if (activeLayers.spc3)      loadSPCOutlook(3);
   if (activeLayers.radio) { _nwrLoaded = false; if (_nwrLayer) { map.removeLayer(_nwrLayer); _nwrLayer = null; } loadNWRStations(); }
   _applyRadarPolyMask();
 }
@@ -10647,21 +10647,16 @@ function toggleRadarSub() {
       (b.id === 'velocity'     && currentProduct === 'vel') ||
       (b.id === 'hc'           && currentProduct === 'hc') ||
       (b.id === 'accum'        && currentProduct === 'accum') ||
+      (b.id === 'boha'         && currentProduct === 'boha') ||
       (b.id === 'cc'           && currentProduct === 'cc') ||
       (b.id === 'zdr'          && currentProduct === 'zdr');
-    const isFutureBubble = b.id === 'future';
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
     el.id = 'sub-' + b.id;
-    const fcCount = radarFrames.filter(f => f.forecast).length;
-    const label = (isFutureBubble && fcCount) ? `${b.label} (${fcCount})` : b.label;
-    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${label}`;
-    if (isFutureBubble && !fcCount) el.style.opacity = '0.45';
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
     el.onclick = () => {
-      if (!isFutureBubble) {
-        document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-cc,#sub-zdr').forEach(s=>s.classList.remove('active'));
-        el.classList.add('active');
-      }
+      document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr').forEach(s=>s.classList.remove('active'));
+      el.classList.add('active');
       b.action();
     };
     wrap.appendChild(el);
@@ -11139,7 +11134,7 @@ async function init() {
   clearTimeout(safetyTimer);
   updateLoadStatus('Ready.');
   dismissLoading();
-  (window.requestIdleCallback || setTimeout)(initCityMarkers, { timeout: 500 });
+  if (window.requestIdleCallback) { requestIdleCallback(initCityMarkers, { timeout: 500 }); } else { setTimeout(initCityMarkers, 500); }
   // Pre-warm lamejs so the first Rec click is instant
   setTimeout(() => _loadLameJs().catch(() => {}), 3000);
 
@@ -13459,7 +13454,7 @@ function _rafTick(ts) {
     if (activeLayers.satellite && goesFrames.length) {
       goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
       showGoesFrame(goesCurrentFrame);
-    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') {
+    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') {
       if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
     } else if (currentProduct === 'vel') {
       velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
@@ -13499,7 +13494,7 @@ function _animationReady() {
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
   if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') return _dpFrames.length > 0;
-  if (currentProduct === 'cc' || currentProduct === 'zdr') return false;
+  if (currentProduct === 'cc' || currentProduct === 'zdr') return _dpFrames.length > 0;
   if (currentProduct === 'ref' && _refStation) return true;
   if (!radarFrames.length) return false;
   // Need at least 2 frames so animation has somewhere to step
