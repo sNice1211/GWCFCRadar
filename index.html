@@ -2951,6 +2951,11 @@ body {
   box-shadow: 0 0 10px rgba(232,184,0,0.9);
 }
 .nexrad-label {
+  position: absolute;
+  left: 0; top: 0;
+  /* Center the pill exactly on the station point no matter how wide the text is */
+  transform: translate(-50%, -50%);
+  transform-origin: center center;
   background: #00c8c8;
   border: 1.5px solid rgba(0,0,0,0.55);
   color: #001418;
@@ -2966,7 +2971,7 @@ body {
   transition: transform 0.15s, box-shadow 0.15s;
 }
 .nexrad-label:hover {
-  transform: scale(1.2);
+  transform: translate(-50%, -50%) scale(1.2);
   box-shadow: 0 0 12px rgba(0,200,200,1);
   z-index: 1000;
 }
@@ -10353,6 +10358,10 @@ const DWD_LAYERS = {
 // Pressure level (hPa) for each upper-air product. DWD's pl layers expose the
 // levels 250/500/700/850/925 hPa via the WMS ELEVATION dimension.
 const DWD_ELEVATION = { gh500: '500', t850: '850', rh700: '700', wind250: '250', omega700: '700' };
+// First forecast frame (3h steps) that actually has data: a 6h/24h accumulation
+// doesn't exist at analysis time, so we open these products at F+06 / F+24 rather
+// than F+00 (which would just show a blank "no work" tile).
+const DWD_MIN_FRAME = { precip6: 2, precip24: 8 };
 
 function _sevRenderDWD(body) {
   const layerName = DWD_LAYERS[_sevVar];
@@ -10453,15 +10462,20 @@ function _sevSetSection(s){
   _sevVar=SEV_DEFAULT_VAR[s]||(SEV_PRODUCTS[s]||SEV_PRODUCTS.hrrr)[0].v;
   _sevUpdateProducts();
   _sevPopulateRuns();
-  _sevFrame=0;
+  _sevFrame=_sevStartFrame();
   _sevBuildFrameGrid();
   _sevRender();
 }
+// Some products (6h/24h precip accumulation) have no data until a later frame.
+function _sevStartFrame() {
+  if (_sevSection === 'dwd' && DWD_MIN_FRAME[_sevVar]) return DWD_MIN_FRAME[_sevVar];
+  return 0;
+}
 function _sevSetVar(v){
   _sevVar=v;const el=document.getElementById('sev-var-sel');if(el&&el.value!==v)el.value=v;
-  _sevFrame=0;_sevBuildFrameGrid();_sevRender();
+  _sevFrame=_sevStartFrame();_sevBuildFrameGrid();_sevRender();
 }
-function _sevSetRun(v){_sevRun=v;_sevFrame=0;_sevBuildFrameGrid();_sevRender();}
+function _sevSetRun(v){_sevRun=v;_sevFrame=_sevStartFrame();_sevBuildFrameGrid();_sevRender();}
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -13794,8 +13808,10 @@ function _nearestStation(lat, lon) {
 
 // Fetch real timestamps from NWS GeoServer GetCapabilities XML
 async function _fetchVelTimestamps(station) {
-  const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities`;
-  const res  = await fetch(url, { signal: _abortSignal(8000) });
+  // Cache-bust + no-store so we always read the latest scan times (a cached
+  // GetCapabilities is what makes radar show stale data on re-open).
+  const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities&_=${Date.now()}`;
+  const res  = await fetch(url, { cache: 'no-store', signal: _abortSignal(8000) });
   const text = await res.text();
   const parser = new DOMParser();
   const xml  = parser.parseFromString(text, 'text/xml');
@@ -13968,8 +13984,9 @@ function _dpAlert(html) {
   document.body.appendChild(d);
 }
 async function _fetchDpTimestamps(station, layerSuffix) {
-  const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities`;
-  const res  = await fetch(url, { signal: _abortSignal(10000) });
+  // Cache-bust + no-store so dual-pol/accum products read the latest scan times.
+  const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities&_=${Date.now()}`;
+  const res  = await fetch(url, { cache: 'no-store', signal: _abortSignal(10000) });
   const xml  = new DOMParser().parseFromString(await res.text(), 'text/xml');
   const target = `${station}_${layerSuffix}`.toLowerCase();
   const allNames = [...xml.querySelectorAll('Layer > Name')].map(n=>n.textContent.trim()).filter(Boolean);
@@ -14305,10 +14322,10 @@ function _buildNexradSiteMarkers() {
   NEXRAD_STATIONS.forEach(s => {
     // Single pill marker , the label IS the radar site indicator.
     const labelIcon = L.divIcon({
-      className: '',
+      className: 'nexrad-label-marker',
       html: `<div class="nexrad-label" id="nxlbl-${s.id}">${s.id.toUpperCase()}</div>`,
-      iconSize: [36, 14],
-      iconAnchor: [18, 7]   // center the pill on the station coords
+      iconSize: [0, 0],
+      iconAnchor: [0, 0]   // 0×0 box at the station point; the pill self-centers via CSS transform
     });
     const label = L.marker([s.lat, s.lon], { icon: labelIcon, zIndexOffset: 300 });
 
@@ -14432,8 +14449,10 @@ function _syncNexradSites() {
 // Falls back to IEM ridge.cgi N0Q if opengeo is unavailable for this station.
 
 async function _fetchRefTimestamps(station) {
-  const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities`;
-  const res  = await fetch(url, { signal: _abortSignal(8000) });
+  // Cache-bust + no-store so we always read the latest scan times (a cached
+  // GetCapabilities is what makes radar show stale data on re-open).
+  const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities&_=${Date.now()}`;
+  const res  = await fetch(url, { cache: 'no-store', signal: _abortSignal(8000) });
   const xml  = new DOMParser().parseFromString(await res.text(), 'text/xml');
   let timeStr = '';
   for (const lyr of xml.querySelectorAll('Layer')) {
@@ -14517,7 +14536,7 @@ async function _loadSingleSiteRef(stationId) {
         layers: isLatest ? 'single' : 'single-archive',
         format: 'image/png', transparent: true, version: '1.1.1',
         sector, prod: 'N0Q',
-        ...(isLatest ? {} : { year: yr, month: mo, day: dy, time: hhmm }),
+        ...(isLatest ? { _cb: Date.now() } : { year: yr, month: mo, day: dy, time: hhmm }),
         opacity: 0, zIndex: 12, pane: 'radarPane',
         crossOrigin: 'anonymous', noWrap: true,
         keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
