@@ -10340,7 +10340,7 @@ function _sevRenderDWD(body) {
   let timeISO = null;
   if (_sevRun && _sevRun.length >= 10) {
     const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
-    timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString().replace('.000Z','Z');
+    timeISO = new Date(runMs + _sevFrame * 3 * 3600000).toISOString().replace('.000Z','Z');
   }
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
   const opts = { layers: layerName, format: 'image/png', transparent: true, version: '1.3.0', crs: L.CRS.EPSG4326, opacity: 0.8, zIndex: 6 };
@@ -10350,15 +10350,14 @@ function _sevRenderDWD(body) {
   return true;
 }
 
-// ── GFS via UCAR THREDDS ncWMS2 ──
-// Publicly accessible, no auth. Covers 0–240h at 3h intervals.
-// TIME must be exact valid time (run + frame*6h).
-const THREDDS_GFS_WMS = 'https://thredds.ucar.edu/thredds/wms/grib/NCEP/GFS/Global_0p25deg/Best';
+// ── GFS via NOAA NOMADS THREDDS ncWMS2 ──
+// Per-file approach: each forecast hour is its own GRIB2 file, so no TIME param needed.
+// Files available: f000, f006, f012, ... f240 (6-hourly).
 const GFS_WMS_LAYERS = {
   t2m:   'Temperature_height_above_ground',
   mslp:  'Pressure_reduced_to_MSL_msl',
   cape:  'Convective_available_potential_energy_surface',
-  cloud: 'Total_cloud_cover_entire_atmosphere_Mixed_intervals_Average',
+  cloud: 'Total_cloud_cover_entire_atmosphere',
   wind:  'Wind_speed_gust_surface',
 };
 
@@ -10368,25 +10367,27 @@ function _sevRenderGFS(body) {
     if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Pick a GFS product.</div>`;
     return false;
   }
-  let timeISO = null;
-  if (_sevRun && _sevRun.length >= 10) {
-    const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
-    timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString().replace('.000Z','Z');
+  if (!_sevRun || _sevRun.length < 10) {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Select a GFS run first.</div>`;
+    return false;
   }
+  const date = _sevRun.slice(0, 8); // YYYYMMDD
+  const runHH = _sevRun.slice(8, 10); // HH
+  const fhr = String(_sevFrame * 6).padStart(3, '0'); // 000, 006, 012, ...
+  const gfsUrl = `https://nomads.ncep.noaa.gov/thredds/wms/gfs_0p25/gfs${date}/gfs.t${runHH}z.pgrb2.0p25.f${fhr}`;
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
   const opts = {
     layers: layerName,
     format: 'image/png',
     transparent: true,
-    version: '1.1.1',
+    version: '1.3.0',
     crs: L.CRS.EPSG4326,
     opacity: 0.8,
     zIndex: 6,
   };
-  if (timeISO) opts.TIME = timeISO;
-  const wmsLayer = L.tileLayer.wms(THREDDS_GFS_WMS, opts).addTo(map);
+  const wmsLayer = L.tileLayer.wms(gfsUrl, opts).addTo(map);
   wmsLayer.once('tileerror', () => {
-    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">GFS tiles failed to load. Try a different run or product.</div>`;
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">GFS tiles failed. This run may not be available yet or has been purged. Try the latest run.</div>`;
   });
   _iemModelLayer = wmsLayer;
   if (body) body.innerHTML = '';
