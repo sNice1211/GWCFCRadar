@@ -5786,12 +5786,10 @@ body.clean-mode #clean-hint { opacity: 1; }
           <div class="sev-dd-wrap">
             <label class="sev-dd-label">Model</label>
             <select id="sev-model-sel" onchange="_sevSetSection(this.value)">
-              <option value="hrrr">HRRR</option>
+              <option value="hrrr">HRRR (18h)</option>
+              <option value="gfs">GFS (10-day)</option>
               <option value="ecmwf">ECMWF IFS</option>
               <option value="dwd">DWD ICON</option>
-              <option value="nam">NAM</option>
-              <option value="sref">SREF (GFS)</option>
-              <option value="href">HREF (GFS)</option>
             </select>
           </div>
           <div class="sev-dd-wrap">
@@ -5872,6 +5870,8 @@ body.clean-mode #clean-hint { opacity: 1; }
               <select id="mag-model-sel" class="fnv3-select" onchange="_magUpdate()">
                 <option value="gfs">GFS</option>
                 <option value="nam">NAM</option>
+                <option value="hwrf">HWRF</option>
+                <option value="hafs-a">HAFS-A</option>
               </select>
             </div>
             <div>
@@ -5886,8 +5886,10 @@ body.clean-mode #clean-hint { opacity: 1; }
             <div>
               <div class="fnv3-label">Region</div>
               <select id="mag-region-sel" class="fnv3-select" onchange="_magUpdate()">
+                <option value="namer">N. America</option>
                 <option value="tropatl">Trop Atl</option>
                 <option value="epac">E. Pacific</option>
+                <option value="nhem">N. Hemisphere</option>
               </select>
             </div>
           </div>
@@ -5897,6 +5899,8 @@ body.clean-mode #clean-hint { opacity: 1; }
             <div class="trop-stab" data-pkg="200wind" onclick="_magSetPkg('200wind')">250mb</div>
             <div class="trop-stab" data-pkg="wind_shear" onclick="_magSetPkg('wind_shear')">Shear</div>
             <div class="trop-stab" data-pkg="precip_water" onclick="_magSetPkg('precip_water')">PW</div>
+            <div class="trop-stab" data-pkg="z500_vort" onclick="_magSetPkg('z500_vort')">500mb</div>
+            <div class="trop-stab" data-pkg="t2m" onclick="_magSetPkg('t2m')">Temp</div>
           </div>
           <div id="mag-fh-row">
             <span class="fnv3-label">Hour:</span>
@@ -9944,15 +9948,18 @@ const pad3 = n => String(n).padStart(3,'0');
 
 // Models , frame step in hours, max frame index, which sources to try
 const TT_MODELS = {
-  gfs:        { label: 'GFS',         step: 6, maxFrame: 41, lag: 4 },
-  ecmwf:      { label: 'ECMWF (Euro)', step: 6, maxFrame: 41, lag: 7 },
-  'gefs-avg': { label: 'GEFS-Avg',    step: 6, maxFrame: 41, lag: 5 },
-  cmc:        { label: 'CMC (Canadian)', step: 6, maxFrame: 41, lag: 7 },
-  icon:       { label: 'ICON (German)', step: 6, maxFrame: 31, lag: 5 },
-  nam:        { label: 'NAM',         step: 3, maxFrame: 29, lag: 3 },
-  hwrf:       { label: 'HWRF',        step: 3, maxFrame: 43, lag: 5 },
-  'hafs-a':   { label: 'HAFS-A',      step: 3, maxFrame: 43, lag: 5 },
-  'hafs-b':   { label: 'HAFS-B',      step: 3, maxFrame: 43, lag: 5 }
+  gfs:        { label: 'GFS',            step: 6,  maxFrame: 41, lag: 4 },
+  ecmwf:      { label: 'ECMWF (Euro)',   step: 6,  maxFrame: 41, lag: 7 },
+  'gefs-avg': { label: 'GEFS Mean',      step: 6,  maxFrame: 41, lag: 5 },
+  cmc:        { label: 'CMC (Canadian)', step: 6,  maxFrame: 41, lag: 7 },
+  icon:       { label: 'ICON (German)',  step: 6,  maxFrame: 31, lag: 5 },
+  nam:        { label: 'NAM',            step: 3,  maxFrame: 29, lag: 3 },
+  rap:        { label: 'RAP',            step: 1,  maxFrame: 21, lag: 2 },
+  hwrf:       { label: 'HWRF',           step: 3,  maxFrame: 43, lag: 5 },
+  'hafs-a':   { label: 'HAFS-A',         step: 3,  maxFrame: 43, lag: 5 },
+  'hafs-b':   { label: 'HAFS-B',         step: 3,  maxFrame: 43, lag: 5 },
+  ukmet:      { label: 'UKMET',          step: 6,  maxFrame: 41, lag: 8 },
+  'aifs':     { label: 'ECMWF AIFS',     step: 6,  maxFrame: 41, lag: 8 },
 };
 
 const TT_REGIONS = [
@@ -9973,8 +9980,15 @@ const TT_PARAMS_DEFAULT = [
   { id: 'uv200',     label: '200mb Wind (Jet)' },
   { id: 'uv850',     label: '850mb Wind' },
   { id: 'T2m',       label: '2m Temperature' },
+  { id: 'td2m',      label: '2m Dew Point' },
+  { id: 'sfcwind',   label: 'Surface Wind' },
+  { id: 'cape_cin',  label: 'CAPE / CIN' },
   { id: 'prec_t',    label: 'Total Precip' },
-  { id: 'tcwv',      label: 'Precipitable Water' }
+  { id: 'prec_acc',  label: '24h Precip Accum' },
+  { id: 'tcwv',      label: 'Precipitable Water' },
+  { id: 'temp_850',  label: '850mb Temperature' },
+  { id: 'rh_700',    label: '700mb Rel. Humidity' },
+  { id: 'snowfall',  label: 'Snow Accumulation' },
 ];
 
 // ECMWF parameter naming differs slightly
@@ -9982,9 +9996,29 @@ const TT_PARAMS_ECMWF = [
   { id: 'mslp_uv850', label: 'MSLP + 850mb Wind' },
   { id: 'z500_vort',  label: '500mb Vort + Hgt' },
   { id: 'uv200',      label: '200mb Wind (Jet)' },
+  { id: 'uv850',      label: '850mb Wind' },
   { id: 'T2m',        label: '2m Temperature' },
+  { id: 'td2m',       label: '2m Dew Point' },
+  { id: 'sfcwind',    label: 'Surface Wind' },
+  { id: 'cape_cin',   label: 'CAPE / CIN' },
   { id: 'prec_t',     label: 'Total Precip' },
-  { id: 'tcwv',       label: 'Precipitable Water' }
+  { id: 'tcwv',       label: 'Precipitable Water' },
+  { id: 'temp_850',   label: '850mb Temperature' },
+];
+
+// NAM-specific param list (3h steps, 84h range)
+const TT_PARAMS_NAM = [
+  { id: 'mslp_pcpn', label: 'MSLP + 6h Precip' },
+  { id: 'z500_vort', label: '500mb Vort + Hgt' },
+  { id: 'uv850',     label: '850mb Wind' },
+  { id: 'T2m',       label: '2m Temperature' },
+  { id: 'td2m',      label: '2m Dew Point' },
+  { id: 'sfcwind',   label: 'Surface Wind' },
+  { id: 'cape_cin',  label: 'CAPE / CIN' },
+  { id: 'prec_t',    label: 'Total Precip' },
+  { id: 'tcwv',      label: 'Precipitable Water' },
+  { id: 'temp_850',  label: '850mb Temperature' },
+  { id: 'snowfall',  label: 'Snow Accumulation' },
 ];
 
 let _ttModel  = 'gfs';
@@ -9997,7 +10031,9 @@ let _ttPlayTimer = null;
 let _ttLoadToken = 0;
 
 function _ttGetParams() {
-  return _ttModel === 'ecmwf' ? TT_PARAMS_ECMWF : TT_PARAMS_DEFAULT;
+  if (_ttModel === 'ecmwf' || _ttModel === 'aifs') return TT_PARAMS_ECMWF;
+  if (_ttModel === 'nam' || _ttModel === 'rap') return TT_PARAMS_NAM;
+  return TT_PARAMS_DEFAULT;
 }
 
 function _ttGenerateRuns() {
@@ -10030,7 +10066,7 @@ function _ttBuildUrls() {
   });
 
   // 2. NCEP MAG / NOMADS (fallback , only certain models & params)
-  const magModel = ({ gfs: 'gfs', 'gefs-avg': 'gefs', nam: 'nam' })[m];
+  const magModel = ({ gfs: 'gfs', 'gefs-avg': 'gefs', nam: 'nam', rap: 'rap' })[m];
   const magParam = ({
     mslp_pcpn:  'mslp_thk_precip',
     mslp_uv850: '850_wind',
@@ -10038,8 +10074,15 @@ function _ttBuildUrls() {
     uv200:      '250_wind',
     uv850:      '850_wind',
     T2m:        '2m_temp',
+    td2m:       '2m_dewpt',
+    sfcwind:    'sfc_wind',
+    cape_cin:   'cape_cin',
     prec_t:     'total_precip',
-    tcwv:       'pwat'
+    prec_acc:   '24hr_precip',
+    tcwv:       'pwat',
+    temp_850:   '850_temp',
+    rh_700:     '700_rh',
+    snowfall:   'snowfall',
   })[p];
   const magRegion = ({
     natl:   'tatl',
@@ -10301,6 +10344,12 @@ const ECCHARTS_WMS = 'https://eccharts.ecmwf.int/wms/?token=public';
 const ECMWF_LAYERS = {
   z500:  'z500_public',
   mslp:  'msl_mean_public',
+  t2m:   '2t_public',
+  td2m:  '2d_public',
+  wind:  '10uv_public',
+  cloud: 'tcc_public',
+  cape:  'cape_public',
+  tp:    'tp_public',
   co:    'composition_co_surface',
   uvi:   'composition_uvindex_clearsky',
   pm25:  'composition_pm2p5',
@@ -10372,6 +10421,48 @@ function _sevRenderDWD(body) {
   return true;
 }
 
+// ── GFS via UCAR THREDDS ncWMS2 ──
+// Publicly accessible, no auth. Covers 0–240h at 3h intervals.
+// TIME must be exact valid time (run + frame*6h).
+const THREDDS_GFS_WMS = 'https://thredds.ucar.edu/thredds/wms/grib/NCEP/GFS/Global_0p25deg/Best';
+const GFS_WMS_LAYERS = {
+  t2m:    { name: 'Temperature_height_above_ground',                                          range: '243,313'   },
+  mslp:   { name: 'Pressure_reduced_to_MSL_msl',                                             range: '96000,106000' },
+  cape:   { name: 'Convective_available_potential_energy_surface',                            range: '0,5000'    },
+  precip: { name: 'Total_precipitation_surface_Mixed_intervals_Accumulation',                 range: '0,100'     },
+  cloud:  { name: 'Total_cloud_cover_entire_atmosphere_Mixed_intervals_Average',              range: '0,100'     },
+  wind:   { name: 'Wind_speed_gust_surface',                                                  range: '0,30'      },
+};
+
+function _sevRenderGFS(body) {
+  const layer = GFS_WMS_LAYERS[_sevVar];
+  if (!layer) {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Pick a GFS product.</div>`;
+    return false;
+  }
+  let timeISO = null;
+  if (_sevRun && _sevRun.length >= 10) {
+    const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
+    timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString().replace('.000Z','Z');
+  }
+  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
+  const opts = {
+    layers: layer.name,
+    format: 'image/png',
+    transparent: true,
+    version: '1.3.0',
+    crs: L.CRS.EPSG4326,
+    STYLES: 'boxfill/rainbow',
+    COLORSCALERANGE: layer.range,
+    opacity: 0.8,
+    zIndex: 6,
+  };
+  if (timeISO) opts.TIME = timeISO;
+  _iemModelLayer = L.tileLayer.wms(THREDDS_GFS_WMS, opts).addTo(map);
+  if (body) body.innerHTML = '';
+  return true;
+}
+
 // ── SEVERE MODEL ENGINE ──
 let _sevSection = 'hrrr', _sevVar = 'precip', _sevRun = '', _sevFrame = 0;
 let _sevOverlayLayer = null;
@@ -10379,6 +10470,7 @@ let _sevOverlayLayer = null;
 function _sevMaxFrame() {
   if (_sevSection === 'ecmwf') return 40;
   if (_sevSection === 'dwd')   return 30;
+  if (_sevSection === 'gfs')   return 40; // 40 × 6h = 240h
   return 6;
 }
 
@@ -10388,10 +10480,7 @@ function _sevRender() {
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
   if(_sevSection === 'ecmwf') { _sevRenderECMWF(body); return; }
   if(_sevSection === 'dwd')   { _sevRenderDWD(body);   return; }
-  if(_sevSection !== 'hrrr'){
-    if(body) body.innerHTML=`<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">${_sevSection.toUpperCase()} not available yet.<br>Switch to <b>HRRR</b>, <b>ECMWF</b>, or <b>DWD ICON</b>.</div>`;
-    return;
-  }
+  if(_sevSection === 'gfs')   { _sevRenderGFS(body);   return; }
   const ok = _sevRenderIEM(body);
   if(!ok && body && body.innerHTML.includes('⟳')) body.innerHTML=`<div class="trop-model-err">Nothing loaded for this one.</div>`;
 }
@@ -10400,13 +10489,11 @@ let _sevPlaying = false, _sevPlayTimer = null;
 
 const SEV_PRODUCTS = {
   hrrr:  [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip Type'}],
-  ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'co',l:'CO Surface'},{v:'uvi',l:'UV Index'},{v:'pm25',l:'PM2.5'},{v:'pm10',l:'PM10'},{v:'no2',l:'NO₂ Surface'},{v:'dust',l:'Dust AOD'}],
+  gfs:   [{v:'t2m',l:'2m Temperature'},{v:'mslp',l:'MSLP'},{v:'cape',l:'CAPE'},{v:'precip',l:'Total Precip'},{v:'cloud',l:'Cloud Cover'},{v:'wind',l:'Wind Gust'}],
+  ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'wind',l:'10m Wind'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'tp',l:'Total Precip'},{v:'co',l:'CO Surface'},{v:'uvi',l:'UV Index'},{v:'pm25',l:'PM2.5'},{v:'pm10',l:'PM10'},{v:'no2',l:'NO₂ Surface'},{v:'dust',l:'Dust AOD'}],
   dwd:   [{v:'radar',l:'Radar'},{v:'t2m',l:'2m Temp'},{v:'td2m',l:'Dew Point'},{v:'pmsl',l:'Sea Level Pres'},{v:'precip6',l:'6hr Precip'},{v:'precip24',l:'24hr Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'snow',l:'Snow Depth'}],
-  nam:   [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip'},{v:'cape',l:'CAPE'},{v:'temp',l:'Temperature'}],
-  sref:  [{v:'cape',l:'CAPE'},{v:'shear',l:'Shear'},{v:'srh',l:'Helicity'}],
-  href:  [{v:'refc',l:'Reflectivity'},{v:'cape',l:'CAPE'},{v:'shear',l:'Shear'}],
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'z500', dwd:'radar', nam:'refc', sref:'cape', href:'refc'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', gfs:'t2m', ecmwf:'z500', dwd:'radar'};
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -10426,7 +10513,7 @@ function _sevPopulateRuns() {
   // Run frequency per model (UTC hours)
   const hours = _sevSection==='hrrr'
     ? [23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0]
-    : _sevSection==='ecmwf'?[12,0]:[18,12,6,0];
+    : _sevSection==='ecmwf'?[12,0]:[18,12,6,0]; // gfs/dwd both use 00/06/12/18z
   for(let d=0;d<7;d++)for(const h of hours){
     const t=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()-d,h));
     if(t.getTime()>nowUTC)continue;
@@ -10458,7 +10545,7 @@ const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov',
 
 function _sevFcastDateTime(frame) {
   if (!_sevRun || _sevRun.length < 10) return { date: '—', flbl: 'F+000' };
-  const step = _sevSection === 'ecmwf' ? 6 : 3;
+  const step = (_sevSection === 'ecmwf' || _sevSection === 'gfs') ? 6 : 3;
   const hrs = frame * step;
   const runMs = Date.UTC(
     parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1,
@@ -10484,7 +10571,7 @@ function _sevBuildFrameGrid() {
   const cols = Math.ceil(Math.sqrt(total));
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   grid.innerHTML = '';
-  const step = _sevSection === 'ecmwf' ? 6 : 3;
+  const step = (_sevSection === 'ecmwf' || _sevSection === 'gfs') ? 6 : 3;
   for (let i = 0; i <= max; i++) {
     const hrs = i * step;
     const btn = document.createElement('button');
@@ -11184,8 +11271,10 @@ const MAG_PKG = {
   '200wind':    '250_wind',
   wind_shear:   '200_850_shear',
   precip_water: 'pwat',
+  z500_vort:    '500_vort_ht',
+  t2m:          '2m_temp',
 };
-const MAG_REGION = { tropatl: 'tatl', epac: 'tpac' };
+const MAG_REGION = { namer: 'namer', tropatl: 'tatl', epac: 'tpac', nhem: 'nhem' };
 
 let _magCurrentPkg    = 'mslp_precip';
 let _magCurrentModel  = 'gfs';
