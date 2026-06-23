@@ -10318,7 +10318,6 @@ function _sevRenderECMWF(body) {
     zIndex: 6,
     noWrap: true,
     tileSize: 256,
-    crossOrigin: 'anonymous',
   };
   if (timeISO) opts.TIME = timeISO;
   const wmsLayer = L.tileLayer.wms(ECCHARTS_WMS, opts).addTo(map);
@@ -10331,21 +10330,19 @@ function _sevRenderECMWF(body) {
 // ── DWD ICON ──
 // Free public WMS, no auth. 6h steps, 00/06/12/18z runs. ~180h fcst range.
 const DWD_WMS = 'https://maps.dwd.de/geoserver/dwd/wms';
-// Deterministic ICON global (reg025) surface fields. GeoServer strips the
-// underscores from the GRIB short names (T_2M -> T2M, TOT_PREC -> TOTPREC,
-// CAPE_CON -> CAPECON, etc.). The 6h/24h accumulation windows live in the
-// separate ensemble workspace (Icon-eps_*), so deterministic precip is the
-// single accumulated TOTPREC field.
+// Deterministic ICON global (reg025) single-level fields ACTUALLY published by
+// DWD's GeoServer (verified against its live GetCapabilities). The global ICON
+// WMS exposes only these surface fields (plus pressure-level layers); there is
+// no cloud, CAPE, snow, dew-point or gust layer in this dataset, so listing them
+// just produces blank tiles. We expose the ones that exist, including the 6h and
+// 24h precipitation accumulation windows.
 const DWD_LAYERS = {
-  t2m:     'dwd:Icon_reg025_fd_sl_T2M',
-  td2m:    'dwd:Icon_reg025_fd_sl_TD2M',
-  pmsl:    'dwd:Icon_reg025_fd_sl_PMSL',
-  precip:  'dwd:Icon_reg025_fd_sl_TOTPREC',
-  wind:    'dwd:Icon_reg025_fd_sl_UV10M',
-  gust:    'dwd:Icon_reg025_fd_sl_VMAX10M',
-  cloud:   'dwd:Icon_reg025_fd_sl_CLCT',
-  cape:    'dwd:Icon_reg025_fd_sl_CAPECON',
-  snow:    'dwd:Icon_reg025_fd_sl_HSNOW',
+  t2m:      'dwd:Icon_reg025_fd_sl_T2M',
+  pmsl:     'dwd:Icon_reg025_fd_sl_PMSL',
+  precip:   'dwd:Icon_reg025_fd_sl_TOTPREC',
+  precip6:  'dwd:Icon_reg025_fd_sl_TOTPREC06H',
+  precip24: 'dwd:Icon_reg025_fd_sl_TOTPREC24H',
+  wind:     'dwd:Icon_reg025_fd_sl_UV10M',
 };
 
 function _sevRenderDWD(body) {
@@ -10360,7 +10357,7 @@ function _sevRenderDWD(body) {
     timeISO = new Date(runMs + _sevFrame * 3 * 3600000).toISOString().replace('.000Z','Z');
   }
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
-  const opts = { layers: layerName, format: 'image/png', transparent: true, version: '1.1.1', opacity: 0.8, zIndex: 6, noWrap: true, tileSize: 256, crossOrigin: 'anonymous' };
+  const opts = { layers: layerName, format: 'image/png', transparent: true, version: '1.1.1', opacity: 0.8, zIndex: 6, noWrap: true, tileSize: 256 };
   if (timeISO) opts.TIME = timeISO;
   const wmsLayer = L.tileLayer.wms(DWD_WMS, opts).addTo(map);
   _sevAttachTileFeedback(wmsLayer, body, 'DWD ICON');
@@ -10371,9 +10368,11 @@ function _sevRenderDWD(body) {
 
 // ── GFS via UCAR/Unidata THREDDS ncWMS2 ──
 // thredds.ucar.edu serves the GFS 0.25° "Best" time-series aggregation over WMS.
-// It is public and CORS-free for <img> tiles, and (unlike NOMADS, which throttles
-// and blocks tiled requests) it is reliable. The single dataset is stepped by a
-// TIME dimension, so we pick the valid time = run + frame*6h.
+// It's public and reliable for <img> tiles (unlike NOMADS, which throttles and
+// blocks tiled requests). The dataset is stepped by a TIME dimension, so we pick
+// the valid time = run + frame*6h.
+// IMPORTANT: THREDDS does NOT send CORS headers, so we must NOT set crossOrigin
+// on the tile layer — otherwise the browser blocks every tile and nothing shows.
 const THREDDS_GFS_WMS = 'https://thredds.ucar.edu/thredds/wms/grib/NCEP/GFS/Global_0p25deg/Best';
 const GFS_WMS_LAYERS = {
   t2m:   'Temperature_height_above_ground',
@@ -10382,6 +10381,9 @@ const GFS_WMS_LAYERS = {
   cloud: 'Total_cloud_cover_entire_atmosphere_Mixed_intervals_Average',
   wind:  'Wind_speed_gust_surface',
 };
+// Layers with a vertical axis need an explicit level (metres) or ncWMS may pick
+// an unexpected one. Only 2m temperature has a height dimension here.
+const GFS_WMS_ELEVATION = { t2m: '2' };
 
 function _sevRenderGFS(body) {
   const layerName = GFS_WMS_LAYERS[_sevVar];
@@ -10394,7 +10396,7 @@ function _sevRenderGFS(body) {
     return false;
   }
   const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
-  const timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString().replace('.000Z','Z');
+  const timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString(); // keep .000Z form ncWMS expects
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
   const opts = {
     layers: layerName,
@@ -10405,9 +10407,9 @@ function _sevRenderGFS(body) {
     zIndex: 6,
     noWrap: true,
     tileSize: 256,
-    crossOrigin: 'anonymous',
     TIME: timeISO,
   };
+  if (GFS_WMS_ELEVATION[_sevVar]) opts.ELEVATION = GFS_WMS_ELEVATION[_sevVar];
   const wmsLayer = L.tileLayer.wms(THREDDS_GFS_WMS, opts).addTo(map);
   _sevAttachTileFeedback(wmsLayer, body, 'GFS');
   _iemModelLayer = wmsLayer;
@@ -10443,7 +10445,7 @@ const SEV_PRODUCTS = {
   hrrr:  [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip Type'}],
   gfs:   [{v:'t2m',l:'2m Temperature'},{v:'mslp',l:'MSLP'},{v:'cape',l:'CAPE'},{v:'cloud',l:'Cloud Cover'},{v:'wind',l:'Wind Gust'}],
   ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'tp',l:'Total Precip'},{v:'co',l:'CO Surface'},{v:'uvi',l:'UV Index'},{v:'pm25',l:'PM2.5'},{v:'pm10',l:'PM10'},{v:'no2',l:'NO₂ Surface'},{v:'dust',l:'Dust AOD'}],
-  dwd:   [{v:'t2m',l:'2m Temp'},{v:'td2m',l:'Dew Point'},{v:'pmsl',l:'Sea Level Pres'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'snow',l:'Snow Depth'}],
+  dwd:   [{v:'t2m',l:'2m Temp'},{v:'pmsl',l:'Sea Level Pres'},{v:'precip',l:'Total Precip'},{v:'precip6',l:'6h Precip'},{v:'precip24',l:'24h Precip'},{v:'wind',l:'10m Wind'}],
 };
 const SEV_DEFAULT_VAR = {hrrr:'refc', gfs:'t2m', ecmwf:'t2m', dwd:'t2m'};
 
