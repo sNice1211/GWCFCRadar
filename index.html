@@ -10234,6 +10234,16 @@ function _sevValidTimeISO() {
   return new Date(runMs + _sevFrame * 3 * 3600000).toISOString().replace('.000Z','Z');
 }
 
+// Show a gentle, visible hint when WMS tiles fail to load (run not yet
+// published, product/step purged, or an upstream hiccup) instead of leaving
+// the user staring at a silently blank map.
+function _sevAttachTileFeedback(layer, body, label) {
+  if (!layer || !body) return;
+  layer.once('tileerror', () => {
+    body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.7);font-size:9px;padding:6px;line-height:1.45;">${label} tiles didn't load for this selection.<br>This run may not be published yet, or this product/step isn't available - try the <b>Latest</b> run or another product.</div>`;
+  });
+}
+
 // Render IEM HRRR WMS overlay. Returns true on success.
 function _sevRenderIEM(body) {
   const fhrMin = Math.min(_sevFrame * 3, 18) * 60;
@@ -10303,13 +10313,17 @@ function _sevRenderECMWF(body) {
     layers: layerName,
     format: 'image/png',
     transparent: true,
-    version: '1.3.0',
-    crs: L.CRS.EPSG4326,
+    version: '1.1.1',
     opacity: 0.8,
     zIndex: 6,
+    noWrap: true,
+    tileSize: 256,
+    crossOrigin: 'anonymous',
   };
   if (timeISO) opts.TIME = timeISO;
-  _iemModelLayer = L.tileLayer.wms(ECCHARTS_WMS, opts).addTo(map);
+  const wmsLayer = L.tileLayer.wms(ECCHARTS_WMS, opts).addTo(map);
+  _sevAttachTileFeedback(wmsLayer, body, 'ECMWF');
+  _iemModelLayer = wmsLayer;
   if (body) body.innerHTML = '';
   return true;
 }
@@ -10317,13 +10331,16 @@ function _sevRenderECMWF(body) {
 // ── DWD ICON ──
 // Free public WMS, no auth. 6h steps, 00/06/12/18z runs. ~180h fcst range.
 const DWD_WMS = 'https://maps.dwd.de/geoserver/dwd/wms';
+// Deterministic ICON global (reg025) surface fields. GeoServer strips the
+// underscores from the GRIB short names (T_2M -> T2M, TOT_PREC -> TOTPREC,
+// CAPE_CON -> CAPECON, etc.). The 6h/24h accumulation windows live in the
+// separate ensemble workspace (Icon-eps_*), so deterministic precip is the
+// single accumulated TOTPREC field.
 const DWD_LAYERS = {
-  radar:   'dwd:RX-Produkt',
   t2m:     'dwd:Icon_reg025_fd_sl_T2M',
   td2m:    'dwd:Icon_reg025_fd_sl_TD2M',
   pmsl:    'dwd:Icon_reg025_fd_sl_PMSL',
-  precip6: 'dwd:Icon_reg025_fd_sl_TOTPREC06H',
-  precip24:'dwd:Icon_reg025_fd_sl_TOTPREC24H',
+  precip:  'dwd:Icon_reg025_fd_sl_TOTPREC',
   wind:    'dwd:Icon_reg025_fd_sl_UV10M',
   gust:    'dwd:Icon_reg025_fd_sl_VMAX10M',
   cloud:   'dwd:Icon_reg025_fd_sl_CLCT',
@@ -10343,21 +10360,26 @@ function _sevRenderDWD(body) {
     timeISO = new Date(runMs + _sevFrame * 3 * 3600000).toISOString().replace('.000Z','Z');
   }
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
-  const opts = { layers: layerName, format: 'image/png', transparent: true, version: '1.3.0', crs: L.CRS.EPSG4326, opacity: 0.8, zIndex: 6 };
+  const opts = { layers: layerName, format: 'image/png', transparent: true, version: '1.1.1', opacity: 0.8, zIndex: 6, noWrap: true, tileSize: 256, crossOrigin: 'anonymous' };
   if (timeISO) opts.TIME = timeISO;
-  _iemModelLayer = L.tileLayer.wms(DWD_WMS, opts).addTo(map);
+  const wmsLayer = L.tileLayer.wms(DWD_WMS, opts).addTo(map);
+  _sevAttachTileFeedback(wmsLayer, body, 'DWD ICON');
+  _iemModelLayer = wmsLayer;
   if (body) body.innerHTML = '';
   return true;
 }
 
-// ── GFS via NOAA NOMADS THREDDS ncWMS2 ──
-// Per-file approach: each forecast hour is its own GRIB2 file, so no TIME param needed.
-// Files available: f000, f006, f012, ... f240 (6-hourly).
+// ── GFS via UCAR/Unidata THREDDS ncWMS2 ──
+// thredds.ucar.edu serves the GFS 0.25° "Best" time-series aggregation over WMS.
+// It is public and CORS-free for <img> tiles, and (unlike NOMADS, which throttles
+// and blocks tiled requests) it is reliable. The single dataset is stepped by a
+// TIME dimension, so we pick the valid time = run + frame*6h.
+const THREDDS_GFS_WMS = 'https://thredds.ucar.edu/thredds/wms/grib/NCEP/GFS/Global_0p25deg/Best';
 const GFS_WMS_LAYERS = {
   t2m:   'Temperature_height_above_ground',
   mslp:  'Pressure_reduced_to_MSL_msl',
   cape:  'Convective_available_potential_energy_surface',
-  cloud: 'Total_cloud_cover_entire_atmosphere',
+  cloud: 'Total_cloud_cover_entire_atmosphere_Mixed_intervals_Average',
   wind:  'Wind_speed_gust_surface',
 };
 
@@ -10371,24 +10393,23 @@ function _sevRenderGFS(body) {
     if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Select a GFS run first.</div>`;
     return false;
   }
-  const date = _sevRun.slice(0, 8); // YYYYMMDD
-  const runHH = _sevRun.slice(8, 10); // HH
-  const fhr = String(_sevFrame * 6).padStart(3, '0'); // 000, 006, 012, ...
-  const gfsUrl = `https://nomads.ncep.noaa.gov/thredds/wms/gfs_0p25/gfs${date}/gfs.t${runHH}z.pgrb2.0p25.f${fhr}`;
+  const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
+  const timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString().replace('.000Z','Z');
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
   const opts = {
     layers: layerName,
     format: 'image/png',
     transparent: true,
-    version: '1.3.0',
-    crs: L.CRS.EPSG4326,
+    version: '1.1.1',
     opacity: 0.8,
     zIndex: 6,
+    noWrap: true,
+    tileSize: 256,
+    crossOrigin: 'anonymous',
+    TIME: timeISO,
   };
-  const wmsLayer = L.tileLayer.wms(gfsUrl, opts).addTo(map);
-  wmsLayer.once('tileerror', () => {
-    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">GFS tiles failed. This run may not be available yet or has been purged. Try the latest run.</div>`;
-  });
+  const wmsLayer = L.tileLayer.wms(THREDDS_GFS_WMS, opts).addTo(map);
+  _sevAttachTileFeedback(wmsLayer, body, 'GFS');
   _iemModelLayer = wmsLayer;
   if (body) body.innerHTML = '';
   return true;
@@ -10422,9 +10443,9 @@ const SEV_PRODUCTS = {
   hrrr:  [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip Type'}],
   gfs:   [{v:'t2m',l:'2m Temperature'},{v:'mslp',l:'MSLP'},{v:'cape',l:'CAPE'},{v:'cloud',l:'Cloud Cover'},{v:'wind',l:'Wind Gust'}],
   ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'tp',l:'Total Precip'},{v:'co',l:'CO Surface'},{v:'uvi',l:'UV Index'},{v:'pm25',l:'PM2.5'},{v:'pm10',l:'PM10'},{v:'no2',l:'NO₂ Surface'},{v:'dust',l:'Dust AOD'}],
-  dwd:   [{v:'radar',l:'Radar'},{v:'t2m',l:'2m Temp'},{v:'td2m',l:'Dew Point'},{v:'pmsl',l:'Sea Level Pres'},{v:'precip6',l:'6hr Precip'},{v:'precip24',l:'24hr Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'snow',l:'Snow Depth'}],
+  dwd:   [{v:'t2m',l:'2m Temp'},{v:'td2m',l:'Dew Point'},{v:'pmsl',l:'Sea Level Pres'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'snow',l:'Snow Depth'}],
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', gfs:'t2m', ecmwf:'z500', dwd:'radar'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', gfs:'t2m', ecmwf:'t2m', dwd:'t2m'};
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -10436,24 +10457,35 @@ function _sevUpdateProducts() {
   sel.value=_sevVar;
 }
 
+// Per-model run availability. These free services publish each cycle on a delay
+// (lagH) and only keep a limited window of recent runs - older runs simply return
+// blank tiles. So we offer only runs that realistically have data: snap "now"
+// back by the publish lag to the most recent finished cycle, then list a handful
+// of cycles back from there. The first entry ("Latest") is always published.
+const SEV_RUN_CFG = {
+  hrrr:  { cycleH: 1,  lagH: 2,   maxRuns: 18 }, // hourly; IEM keeps a long archive
+  gfs:   { cycleH: 6,  lagH: 4,   maxRuns: 4  }, // 00/06/12/18z; UCAR "Best" tracks recent runs
+  ecmwf: { cycleH: 12, lagH: 7,   maxRuns: 2  }, // 00/12z only; eccharts serves the latest run
+  dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
+};
+
 function _sevPopulateRuns() {
   const sel=document.getElementById('sev-run-sel');if(!sel)return;
   sel.innerHTML='';_sevRun='';
-  const now=new Date(),nowUTC=now.getTime();
   const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  // Run frequency per model (UTC hours)
-  const hours = _sevSection==='hrrr'
-    ? [23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0]
-    : _sevSection==='ecmwf'?[12,0]:[18,12,6,0]; // gfs/dwd both use 00/06/12/18z
-  for(let d=0;d<7;d++)for(const h of hours){
-    const t=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()-d,h));
-    if(t.getTime()>nowUTC)continue;
-    const val=`${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(h)}`;
-    const mon=MONTHS[t.getUTCMonth()];
-    const day=t.getUTCDate();
-    const opt=document.createElement('option');opt.value=val;
-    opt.textContent=`${mon} ${day} - ${pad(h)}z`;
-    sel.appendChild(opt);if(!_sevRun)_sevRun=val;
+  const cfg = SEV_RUN_CFG[_sevSection] || SEV_RUN_CFG.gfs;
+  // Most recent cycle that has finished publishing (now shifted back by the lag).
+  const lagged = new Date(Date.now() - cfg.lagH * 3600000);
+  const snappedH = lagged.getUTCHours() - (lagged.getUTCHours() % cfg.cycleH);
+  const latest = new Date(Date.UTC(lagged.getUTCFullYear(), lagged.getUTCMonth(), lagged.getUTCDate(), snappedH));
+  for (let i = 0; i < cfg.maxRuns; i++) {
+    const t = new Date(latest.getTime() - i * cfg.cycleH * 3600000);
+    const val = `${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(t.getUTCHours())}`;
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = (i === 0 ? 'Latest · ' : '') + `${MONTHS[t.getUTCMonth()]} ${t.getUTCDate()} - ${pad(t.getUTCHours())}z`;
+    sel.appendChild(opt);
+    if (!_sevRun) _sevRun = val;
   }
 }
 function _sevSetSection(s){
