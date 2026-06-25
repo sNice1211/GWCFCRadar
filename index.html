@@ -1815,18 +1815,26 @@ body {
   background: rgba(0,200,200,0.12); border: 1px solid rgba(0,200,200,0.35);
   border-radius: 4px; color: #00c8c8; cursor: pointer; flex-shrink: 0;
 }
+#sev-speed-btn {
+  font-family: 'Comfortaa', sans-serif; font-size: 10px; font-weight: 700;
+  padding: 3px 7px; min-width: 32px; flex-shrink: 0;
+  background: rgba(232,184,0,0.12); border: 1px solid rgba(232,184,0,0.35);
+  border-radius: 4px; color: #e8b800; cursor: pointer;
+}
 #sev-playbar-track {
-  flex: 1; height: 4px; background: rgba(0,200,255,0.15);
-  border-radius: 2px; position: relative; cursor: pointer;
+  flex: 1; height: 8px; background: rgba(0,200,255,0.15);
+  border-radius: 4px; position: relative; cursor: pointer;
+  touch-action: none;   /* let us drag without the panel scrolling */
 }
 #sev-playbar-fill {
-  height: 100%; background: #00c8c8; border-radius: 2px;
-  transition: width 0.2s linear; width: 0%;
+  height: 100%; background: #00c8c8; border-radius: 4px;
+  transition: width 0.1s linear; width: 0%;
 }
 #sev-playbar-thumb {
   position: absolute; top: 50%; transform: translate(-50%,-50%);
-  width: 12px; height: 12px; border-radius: 50%;
+  width: 14px; height: 14px; border-radius: 50%;
   background: #00c8c8; left: 0%; pointer-events: none;
+  box-shadow: 0 0 4px rgba(0,0,0,0.5);
 }
 .trop-model-img-wrap {
   position: relative;
@@ -5141,7 +5149,7 @@ body.gwcfc-crosshair #map::after {
   z-index: 900;
   display: none;
   flex-direction: column;
-  font-family: var(--display);
+  font-family: 'Comfortaa', sans-serif;
   font-size: 10px;
   color: rgba(255,230,200,0.85);
 }
@@ -5181,6 +5189,29 @@ body.gwcfc-crosshair #map::after {
   transition: background 0.15s, color 0.15s;
 }
 #models-close-btn:hover { background: rgba(200,0,0,0.55); color: #fff; border-color: rgba(255,80,80,0.5); }
+.models-hdr-btns { display: flex; gap: 6px; align-items: center; }
+#models-hide-btn {
+  background: none;
+  border: 1px solid rgba(255,255,255,0.15);
+  color: rgba(255,220,180,0.6);
+  width: 26px; height: 26px;
+  border-radius: 6px; cursor: pointer;
+  font-size: 16px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Comfortaa', sans-serif;
+  transition: background 0.15s, color 0.15s;
+}
+#models-hide-btn:hover { background: rgba(0,150,200,0.45); color: #fff; border-color: rgba(80,180,255,0.5); }
+#models-restore-btn {
+  position: fixed; top: 62px; left: 184px; z-index: 901;
+  display: none; align-items: center; gap: 6px;
+  background: rgb(8,4,4); border: 1px solid rgba(180,0,0,0.45);
+  color: #e8b800; font-family: 'Comfortaa', sans-serif;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  padding: 7px 12px; border-radius: 10px; cursor: pointer;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.7);
+}
+#models-restore-btn:hover { border-color: rgba(232,184,0,0.6); color: #fff; }
 /* Pill toggle: Severe | Tropical */
 .models-pill-row {
   display: flex;
@@ -5770,13 +5801,19 @@ body.clean-mode #clean-hint { opacity: 1; }
       <div class="mi-row"><span>Fcst</span><span class="mi-val" id="mi-fcst">F+000</span></div>
     </div>
 
+    <!-- Restore button (shown only while the panel is hidden) -->
+    <button id="models-restore-btn" onclick="showModelsPanel()" title="Show models panel">📊 Models</button>
+
     <!-- Unified Models Panel -->
     <div id="models-panel">
       <!-- Header -->
       <div id="models-panel-header">
         <div id="models-drag" class="dtb-drag" style="flex-direction:row;gap:3px;align-items:center;" title="Drag to move"><span></span><span></span><span></span></div>
         <div id="models-panel-title">📊 Models</div>
-        <button id="models-close-btn" onclick="closeModelsPanel()">×</button>
+        <div class="models-hdr-btns">
+          <button id="models-hide-btn" onclick="hideModelsPanel()" title="Hide panel (overlay stays on map)">▾</button>
+          <button id="models-close-btn" onclick="closeModelsPanel()">×</button>
+        </div>
       </div>
 
       <!-- Pill toggle: Severe | Tropical -->
@@ -5792,10 +5829,8 @@ body.clean-mode #clean-hint { opacity: 1; }
             <label class="sev-dd-label">Model</label>
             <select id="sev-model-sel" onchange="_sevSetSection(this.value)">
               <option value="dwd">DWD ICON (Global)</option>
-              <option value="gdps">GDPS (Global)</option>
               <option value="ecmwf">ECMWF IFS (Global)</option>
-              <option value="rdps">RDPS (N. America)</option>
-              <option value="hrdps">HRDPS (Hi-Res)</option>
+              <option value="hrdps">HRDPS (Hi-Res N. America)</option>
               <option value="hrrr">HRRR (18h)</option>
             </select>
           </div>
@@ -5810,7 +5845,8 @@ body.clean-mode #clean-hint { opacity: 1; }
         </div>
         <div id="sev-playbar-row">
           <button id="sev-play-btn2" onclick="_sevTogglePlay()">▶</button>
-          <div id="sev-playbar-track" onclick="_sevPlaybarClick(event)">
+          <button id="sev-speed-btn" onclick="_sevCycleSpeed()" title="Playback speed">1×</button>
+          <div id="sev-playbar-track" onpointerdown="_sevPlaybarDown(event)">
             <div id="sev-playbar-fill"></div>
             <div id="sev-playbar-thumb"></div>
           </div>
@@ -10341,10 +10377,10 @@ const DWD_WMS = 'https://maps.dwd.de/geoserver/dwd/wms';
 // (reg025) dataset, verified against its GetCapabilities:
 //   • 6 single-level (surface) fields: T2M, PMSL, TOTPREC, TOTPREC06H,
 //     TOTPREC24H, UV10M
-//   • 5 pressure-level (upper-air) fields: GH, T, RELHUM, UV, OMEGA — these
+//   • 5 pressure-level (upper-air) fields: GH, T, RELHUM, UV, OMEGA - these
 //     share one layer each and select the level via the ELEVATION param (hPa).
 // (There is deliberately no cloud/CAPE/snow/dew-point/gust layer in the global
-// ICON WMS, so we don't list any — they would only ever return blank tiles.)
+// ICON WMS, so we don't list any - they would only ever return blank tiles.)
 const DWD_LAYERS = {
   t2m:      'dwd:Icon_reg025_fd_sl_T2M',
   pmsl:     'dwd:Icon_reg025_fd_sl_PMSL',
@@ -10389,16 +10425,12 @@ function _sevRenderDWD(body) {
 }
 
 // ── Environment Canada GeoMet (MSC) ──
-// geo.weather.gc.ca/geomet : free, CORS-enabled, very reliable WMS. Three
-// deterministic models, all 3-hourly and TIME-stepped. Layer names verified
-// against ECCC's own geomet-data-registry (the authoritative source):
-//   gdps  Global        15 km  to +240h
-//   rdps  N. America    10 km  to +84h
-//   hrdps Continental   2.5 km to +48h
+// geo.weather.gc.ca/geomet : free, CORS-enabled, very reliable WMS, 3-hourly
+// and TIME-stepped. Only HRDPS (hi-res continental, 2.5 km, to +48h) is wired
+// up: its CONTINENTAL_* layers render correctly here. The GDPS/RDPS ETA_*
+// layers did not render in this setup, so they are intentionally left out.
 const GEOMET_WMS = 'https://geo.weather.gc.ca/geomet';
 const GEOMET_LAYERS = {
-  gdps:  { temp:'GDPS.ETA_TT',  precip:'GDPS.ETA_PR',  wind:'GDPS.ETA_WSPD',  pmsl:'GDPS.ETA_PN',  rh:'GDPS.ETA_HR',  cloud:'GDPS.ETA_NT' },
-  rdps:  { temp:'RDPS.ETA_TT',  precip:'RDPS.ETA_PR',  wind:'RDPS.ETA_WSPD',  pmsl:'RDPS.ETA_PN',  rh:'RDPS.ETA_HR',  cloud:'RDPS.ETA_NT' },
   hrdps: { temp:'HRDPS.CONTINENTAL_TT', precip:'HRDPS.CONTINENTAL_PR', wind:'HRDPS.CONTINENTAL_WSPD', pmsl:'HRDPS.CONTINENTAL_PN', rh:'HRDPS.CONTINENTAL_HR', cloud:'HRDPS.CONTINENTAL_NT' },
 };
 
@@ -10431,8 +10463,6 @@ let _sevOverlayLayer = null;
 function _sevMaxFrame() {
   if (_sevSection === 'ecmwf') return 40;
   if (_sevSection === 'dwd')   return 30;
-  if (_sevSection === 'gdps')  return 40; // 40 x 3h = 120h
-  if (_sevSection === 'rdps')  return 28; // 28 x 3h = 84h
   if (_sevSection === 'hrdps') return 16; // 16 x 3h = 48h
   return 6;
 }
@@ -10453,15 +10483,13 @@ let _sevPlaying = false, _sevPlayTimer = null;
 const SEV_PRODUCTS = {
   hrrr:  [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip Type'}],
   ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'tp',l:'Total Precip'},{v:'co',l:'CO Surface'},{v:'uvi',l:'UV Index'},{v:'pm25',l:'PM2.5'},{v:'pm10',l:'PM10'},{v:'no2',l:'NO₂ Surface'},{v:'dust',l:'Dust AOD'}],
-  // DWD ICON global — every product the GeoServer publishes for this dataset:
+  // DWD ICON global - every product the GeoServer publishes for this dataset:
   // 6 surface fields + 5 pressure-level (upper-air) fields.
   dwd:   [{v:'t2m',l:'2m Temp'},{v:'pmsl',l:'MSL Pressure'},{v:'precip',l:'Total Precip'},{v:'precip6',l:'6h Precip'},{v:'precip24',l:'24h Precip'},{v:'wind',l:'10m Wind'},{v:'gh500',l:'500mb Height'},{v:'t850',l:'850mb Temp'},{v:'rh700',l:'700mb Humidity'},{v:'wind250',l:'250mb Wind (Jet)'},{v:'omega700',l:'700mb Vert. Motion'}],
-  // Environment Canada GeoMet models — identical surface product set on each.
-  gdps:  [{v:'temp',l:'2m Temp'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'}],
-  rdps:  [{v:'temp',l:'2m Temp'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'}],
+  // Environment Canada GeoMet - HRDPS only (hi-res continental).
   hrdps: [{v:'temp',l:'2m Temp'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'}],
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', gdps:'temp', rdps:'temp', hrdps:'temp'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp'};
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -10482,9 +10510,7 @@ const SEV_RUN_CFG = {
   hrrr:  { cycleH: 1,  lagH: 2,   maxRuns: 18 }, // hourly; IEM keeps a long archive
   ecmwf: { cycleH: 12, lagH: 7,   maxRuns: 2  }, // 00/12z only; eccharts serves the latest run
   dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
-  gdps:  { cycleH: 12, lagH: 6,   maxRuns: 2  }, // 00/12z; GeoMet serves the latest run
-  rdps:  { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z
-  hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z
+  hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; GeoMet serves the latest run
 };
 
 function _sevPopulateRuns() {
@@ -10589,12 +10615,57 @@ function _sevUpdatePlaybar() {
   if (thumb) thumb.style.left  = pct + '%';
 }
 
-function _sevPlaybarClick(e) {
+// ── Draggable scrubber ──
+// Pointer events cover mouse + touch. While dragging we update the thumb/labels
+// live but debounce the (network-heavy) WMS render so a fast drag doesn't fire a
+// burst of tile loads; a final render always runs on release.
+let _sevDragging = false, _sevDragRenderTimer = null;
+
+function _sevPlaybarPct(clientX) {
   const track = document.getElementById('sev-playbar-track');
-  if (!track) return;
+  if (!track) return null;
   const rect = track.getBoundingClientRect();
-  const pct  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  _sevSetFrame(Math.round(pct * _sevMaxFrame()));
+  return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+}
+
+// Visual-only frame update (no WMS render) - used during a drag.
+function _sevSetFrameVisual(frame) {
+  _sevFrame = frame;
+  document.querySelectorAll('.sev-fhr-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.frame) === _sevFrame);
+  });
+  _sevUpdatePlaybar();
+  _sevUpdateFcastHeader();
+}
+
+function _sevPlaybarSeek(clientX) {
+  const pct = _sevPlaybarPct(clientX);
+  if (pct === null) return;
+  const frame = Math.round(pct * _sevMaxFrame());
+  if (frame === _sevFrame) return;
+  _sevSetFrameVisual(frame);
+  clearTimeout(_sevDragRenderTimer);
+  _sevDragRenderTimer = setTimeout(_sevRender, 130);
+}
+
+function _sevPlaybarDown(e) {
+  e.preventDefault();
+  if (_sevPlaying) _sevTogglePlay();   // pause while scrubbing
+  _sevDragging = true;
+  _sevPlaybarSeek(e.clientX);
+  window.addEventListener('pointermove',   _sevPlaybarMove);
+  window.addEventListener('pointerup',     _sevPlaybarUp);
+  window.addEventListener('pointercancel', _sevPlaybarUp);
+}
+function _sevPlaybarMove(e) { if (_sevDragging) _sevPlaybarSeek(e.clientX); }
+function _sevPlaybarUp() {
+  if (!_sevDragging) return;
+  _sevDragging = false;
+  window.removeEventListener('pointermove',   _sevPlaybarMove);
+  window.removeEventListener('pointerup',     _sevPlaybarUp);
+  window.removeEventListener('pointercancel', _sevPlaybarUp);
+  clearTimeout(_sevDragRenderTimer);
+  _sevRender();   // render the frame we landed on
 }
 
 function _sevSetFrame(v){
@@ -10611,15 +10682,27 @@ function _sevSetFrame(v){
   _sevRender();
 }
 
+// Playback speed: multiplies the base 700ms/frame step. Cycle with the speed button.
+let _sevSpeed = 1;
+const SEV_SPEEDS = [0.5, 1, 2, 4];
+function _sevPlayDelay(){ return Math.round(700 / _sevSpeed); }
+function _sevPlayTick(){
+  const max=_sevMaxFrame();
+  _sevSetFrame(_sevFrame>=max?0:_sevFrame+1);
+}
+function _sevCycleSpeed(){
+  const i = SEV_SPEEDS.indexOf(_sevSpeed);
+  _sevSpeed = SEV_SPEEDS[(i+1) % SEV_SPEEDS.length];
+  const btn = document.getElementById('sev-speed-btn');
+  if (btn) btn.textContent = _sevSpeed + '×';
+  if (_sevPlaying){ clearInterval(_sevPlayTimer); _sevPlayTimer = setInterval(_sevPlayTick, _sevPlayDelay()); }
+}
 function _sevTogglePlay(){
   _sevPlaying=!_sevPlaying;
   const btn=document.getElementById('sev-play-btn2');
   if(btn)btn.textContent=_sevPlaying?'■':'▶';
   if(_sevPlaying){
-    _sevPlayTimer=setInterval(()=>{
-      const max=_sevMaxFrame();
-      _sevSetFrame(_sevFrame>=max?0:_sevFrame+1);
-    },700);
+    _sevPlayTimer=setInterval(_sevPlayTick, _sevPlayDelay());
   } else {
     clearInterval(_sevPlayTimer);_sevPlayTimer=null;
   }
@@ -11370,6 +11453,7 @@ function openModelsPanel() {
   const panel = document.getElementById('models-panel');
   if (!panel) return;
   panel.style.display = 'flex';
+  const r = document.getElementById('models-restore-btn'); if (r) r.style.display = 'none';
   activeBubbles['models'] = true;
   const btn = document.getElementById('sub-models');
   if (btn) btn.classList.add('active');
@@ -11379,12 +11463,26 @@ function openModelsPanel() {
 function closeModelsPanel() {
   const panel = document.getElementById('models-panel');
   if (panel) panel.style.display = 'none';
+  const r = document.getElementById('models-restore-btn'); if (r) r.style.display = 'none';
   activeBubbles['models'] = false;
   const btn = document.getElementById('sub-models');
   if (btn) btn.classList.remove('active');
   if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
   _clearTropTrackLayers();
+}
+
+// Hide just the panel UI but keep the model overlay on the map; a small restore
+// button brings it back without re-initialising (so the current frame is kept).
+function hideModelsPanel() {
+  const panel = document.getElementById('models-panel');
+  if (panel) panel.style.display = 'none';
+  const r = document.getElementById('models-restore-btn'); if (r) r.style.display = 'flex';
+}
+function showModelsPanel() {
+  const panel = document.getElementById('models-panel');
+  if (panel) panel.style.display = 'flex';
+  const r = document.getElementById('models-restore-btn'); if (r) r.style.display = 'none';
 }
 
 function toggleModelsPanel() {
