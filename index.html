@@ -5189,29 +5189,6 @@ body.gwcfc-crosshair #map::after {
   transition: background 0.15s, color 0.15s;
 }
 #models-close-btn:hover { background: rgba(200,0,0,0.55); color: #fff; border-color: rgba(255,80,80,0.5); }
-.models-hdr-btns { display: flex; gap: 6px; align-items: center; }
-#models-hide-btn {
-  background: none;
-  border: 1px solid rgba(255,255,255,0.15);
-  color: rgba(255,220,180,0.6);
-  width: 26px; height: 26px;
-  border-radius: 6px; cursor: pointer;
-  font-size: 16px; line-height: 1;
-  display: flex; align-items: center; justify-content: center;
-  font-family: 'Comfortaa', sans-serif;
-  transition: background 0.15s, color 0.15s;
-}
-#models-hide-btn:hover { background: rgba(0,150,200,0.45); color: #fff; border-color: rgba(80,180,255,0.5); }
-#models-restore-btn {
-  position: fixed; top: 62px; left: 184px; z-index: 901;
-  display: none; align-items: center; gap: 6px;
-  background: rgb(8,4,4); border: 1px solid rgba(180,0,0,0.45);
-  color: #e8b800; font-family: 'Comfortaa', sans-serif;
-  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
-  padding: 7px 12px; border-radius: 10px; cursor: pointer;
-  box-shadow: 0 4px 18px rgba(0,0,0,0.7);
-}
-#models-restore-btn:hover { border-color: rgba(232,184,0,0.6); color: #fff; }
 /* Pill toggle: Severe | Tropical */
 .models-pill-row {
   display: flex;
@@ -5801,19 +5778,13 @@ body.clean-mode #clean-hint { opacity: 1; }
       <div class="mi-row"><span>Fcst</span><span class="mi-val" id="mi-fcst">F+000</span></div>
     </div>
 
-    <!-- Restore button (shown only while the panel is hidden) -->
-    <button id="models-restore-btn" onclick="showModelsPanel()" title="Show models panel">📊 Models</button>
-
     <!-- Unified Models Panel -->
     <div id="models-panel">
       <!-- Header -->
       <div id="models-panel-header">
         <div id="models-drag" class="dtb-drag" style="flex-direction:row;gap:3px;align-items:center;" title="Drag to move"><span></span><span></span><span></span></div>
         <div id="models-panel-title">📊 Models</div>
-        <div class="models-hdr-btns">
-          <button id="models-hide-btn" onclick="hideModelsPanel()" title="Hide panel (overlay stays on map)">▾</button>
-          <button id="models-close-btn" onclick="closeModelsPanel()">×</button>
-        </div>
+        <button id="models-close-btn" onclick="collapseModelsPanel()" title="Close panel (model overlay stays on the map)">×</button>
       </div>
 
       <!-- Pill toggle: Severe | Tropical -->
@@ -6765,7 +6736,7 @@ function _generateL3Frames(count) {
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const frames = _generateL3Frames(12);
+    const frames = _generateL3Frames(_isIOS ? 8 : 12);
     console.log(`[Radar] NOAA L3 (IEM computed): ${frames.length} frames`);
     radarFrames = frames;
     lastPastIdx = radarFrames.length - 1;
@@ -6965,7 +6936,7 @@ function _switchSlotToWms(i) {
     version: '1.1.1', TIME: frame.iso,
     opacity: 0, zIndex: 10, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 256,
-    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: false, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: _isIOS, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
@@ -7062,7 +7033,7 @@ function _ensureNexradLayer(i) {
     opacity: 0, zIndex: 10, pane: 'radarPane',
     noWrap: true, tileSize: 256,
     maxNativeZoom: 9,
-    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: false, updateWhenZooming: false,
+    keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: _isIOS, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
 
@@ -9526,7 +9497,7 @@ function _makeGoesLayer(timeStr, opacity) {
     noWrap:            true,
     TIME:              timeStr,
     keepBuffer:        _isIOS ? 1 : 2,
-    updateWhenIdle:    false,
+    updateWhenIdle:    _isIOS,
     updateWhenZooming: false,
   }).addTo(map);
 }
@@ -10431,7 +10402,7 @@ function _sevRenderDWD(body) {
 // layers did not render in this setup, so they are intentionally left out.
 const GEOMET_WMS = 'https://geo.weather.gc.ca/geomet';
 const GEOMET_LAYERS = {
-  hrdps: { temp:'HRDPS.CONTINENTAL_TT', precip:'HRDPS.CONTINENTAL_PR', wind:'HRDPS.CONTINENTAL_WSPD', pmsl:'HRDPS.CONTINENTAL_PN', rh:'HRDPS.CONTINENTAL_HR', cloud:'HRDPS.CONTINENTAL_NT' },
+  hrdps: { temp:'HRDPS.CONTINENTAL_TT', td:'HRDPS.CONTINENTAL_TD', precip:'HRDPS.CONTINENTAL_PR', wind:'HRDPS.CONTINENTAL_WSPD', gust:'HRDPS.CONTINENTAL_WGX', pmsl:'HRDPS.CONTINENTAL_PN', rh:'HRDPS.CONTINENTAL_HR', cloud:'HRDPS.CONTINENTAL_NT', snow:'HRDPS.CONTINENTAL_SD' },
 };
 
 function _sevRenderGeoMet(body) {
@@ -10487,7 +10458,7 @@ const SEV_PRODUCTS = {
   // 6 surface fields + 5 pressure-level (upper-air) fields.
   dwd:   [{v:'t2m',l:'2m Temp'},{v:'pmsl',l:'MSL Pressure'},{v:'precip',l:'Total Precip'},{v:'precip6',l:'6h Precip'},{v:'precip24',l:'24h Precip'},{v:'wind',l:'10m Wind'},{v:'gh500',l:'500mb Height'},{v:'t850',l:'850mb Temp'},{v:'rh700',l:'700mb Humidity'},{v:'wind250',l:'250mb Wind (Jet)'},{v:'omega700',l:'700mb Vert. Motion'}],
   // Environment Canada GeoMet - HRDPS only (hi-res continental).
-  hrdps: [{v:'temp',l:'2m Temp'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'}],
+  hrdps: [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'},{v:'snow',l:'Snow Depth'}],
 };
 const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp'};
 
@@ -11453,17 +11424,24 @@ function openModelsPanel() {
   const panel = document.getElementById('models-panel');
   if (!panel) return;
   panel.style.display = 'flex';
-  const r = document.getElementById('models-restore-btn'); if (r) r.style.display = 'none';
   activeBubbles['models'] = true;
   const btn = document.getElementById('sub-models');
   if (btn) btn.classList.add('active');
   _modelsSetType(_modelsType);
 }
 
+// X button: close the panel UI but LEAVE the model overlay on the map, so you can
+// see the forecast full-screen. The model bubble stays lit to show it's still on.
+function collapseModelsPanel() {
+  const panel = document.getElementById('models-panel');
+  if (panel) panel.style.display = 'none';
+  // _iemModelLayer is intentionally kept on the map.
+}
+
+// Full off: close the panel AND remove the overlay (used to turn models off).
 function closeModelsPanel() {
   const panel = document.getElementById('models-panel');
   if (panel) panel.style.display = 'none';
-  const r = document.getElementById('models-restore-btn'); if (r) r.style.display = 'none';
   activeBubbles['models'] = false;
   const btn = document.getElementById('sub-models');
   if (btn) btn.classList.remove('active');
@@ -11472,24 +11450,17 @@ function closeModelsPanel() {
   _clearTropTrackLayers();
 }
 
-// Hide just the panel UI but keep the model overlay on the map; a small restore
-// button brings it back without re-initialising (so the current frame is kept).
-function hideModelsPanel() {
-  const panel = document.getElementById('models-panel');
-  if (panel) panel.style.display = 'none';
-  const r = document.getElementById('models-restore-btn'); if (r) r.style.display = 'flex';
-}
-function showModelsPanel() {
-  const panel = document.getElementById('models-panel');
-  if (panel) panel.style.display = 'flex';
-  const r = document.getElementById('models-restore-btn'); if (r) r.style.display = 'none';
-}
-
 function toggleModelsPanel() {
   const panel = document.getElementById('models-panel');
   if (!panel) return;
-  if (panel.style.display !== 'none' && panel.style.display !== '') closeModelsPanel();
-  else openModelsPanel();
+  const open = panel.style.display !== 'none' && panel.style.display !== '';
+  if (open) {
+    collapseModelsPanel();                 // panel open -> close it, keep overlay
+  } else if (_iemModelLayer || _sevOverlayLayer) {
+    closeModelsPanel();                    // collapsed with overlay -> turn models off
+  } else {
+    openModelsPanel();                     // nothing active -> open
+  }
 }
 
 function _modelsSetType(type) {
@@ -14007,7 +13978,7 @@ function _buildVelPool(station, frames) {
       crossOrigin: 'anonymous',
       noWrap:      true,
       keepBuffer:  2,
-      updateWhenIdle: false,
+      updateWhenIdle: _isIOS,
       updateWhenZooming: false,
     });
     _velPoolLoaded[i] = false;
@@ -14179,7 +14150,7 @@ function _buildDpPool(station, frames, layerSuffix) {
         }),
         opacity: 0, zIndex: 10, pane: 'radarPane',
         crossOrigin: 'anonymous', noWrap: true,
-        keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
+        keepBuffer: 2, updateWhenIdle: _isIOS, updateWhenZooming: false,
       });
       _dpPoolLoaded[i] = false;
       l.on('tileload', () => { _dpPoolLoaded[i] = true; });
@@ -14194,7 +14165,7 @@ function _buildDpPool(station, frames, layerSuffix) {
         layers: layerNm, format: 'image/png', transparent: true,
         version: '1.3.0', TIME: frame.iso, opacity: 0, zIndex: 10,
         pane: 'radarPane', crossOrigin: 'anonymous', noWrap: true,
-        keepBuffer: 2, updateWhenIdle: false, updateWhenZooming: false,
+        keepBuffer: 2, updateWhenIdle: _isIOS, updateWhenZooming: false,
       });
       _dpPoolLoaded[i] = false;
       l.on('tileload', () => { _dpPoolLoaded[i] = true; });
@@ -14659,7 +14630,7 @@ async function _loadSingleSiteRef(stationId) {
         version: '1.3.0', TIME: frame.iso,
         opacity: 0, zIndex: 12, pane: 'radarPane',
         crossOrigin: 'anonymous', noWrap: true,
-        keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
+        keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: _isIOS, updateWhenZooming: false,
         attribution: `${stationId.toUpperCase()} SR_BREF © NOAA Level III`,
       });
       _refSiteLoaded[i] = false;
@@ -14688,7 +14659,7 @@ async function _loadSingleSiteRef(stationId) {
         ...(isLatest ? { _cb: Date.now() } : { year: yr, month: mo, day: dy, time: hhmm }),
         opacity: 0, zIndex: 12, pane: 'radarPane',
         crossOrigin: 'anonymous', noWrap: true,
-        keepBuffer: 4, updateWhenIdle: false, updateWhenZooming: false,
+        keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: _isIOS, updateWhenZooming: false,
         attribution: `${stationId.toUpperCase()} N0Q © NOAA via IEM`,
       });
       _refSiteLoaded[i] = false;
