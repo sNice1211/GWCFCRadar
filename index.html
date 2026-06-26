@@ -5802,6 +5802,7 @@ body.clean-mode #clean-hint { opacity: 1; }
               <option value="dwd">DWD ICON (Global)</option>
               <option value="ecmwf">ECMWF IFS (Global)</option>
               <option value="hrdps">HRDPS (Hi-Res N. America)</option>
+              <option value="ndfd">NWS NDFD (US Forecast)</option>
               <option value="hrrr">HRRR (18h)</option>
             </select>
           </div>
@@ -10427,6 +10428,51 @@ function _sevRenderGeoMet(body) {
   return true;
 }
 
+// ── NWS NDFD (US official forecast) via digital.weather.gov ──
+// The National Digital Forecast Database: NWS forecasters' gridded forecast,
+// CONUS, ~2.5 km. Free, no key. Standard WMS EXCEPT the valid-time dimension is
+// VTIT (not TIME), formatted YYYY-MM-DDTHH:00 in UTC. The server nearest-matches,
+// so a computed valid time renders. Loaded as <img> tiles, so no CORS needed.
+const NDFD_WMS = 'https://digital.weather.gov/ndfd.conus/wms';
+const NDFD_LAYERS = {
+  temp:  'ndfd.conus.temp',
+  maxt:  'ndfd.conus.maxt',
+  mint:  'ndfd.conus.mint',
+  wind:  'ndfd.conus.windspd',
+  sky:   'ndfd.conus.sky',
+  pop12: 'ndfd.conus.pop12',
+  qpf:   'ndfd.conus.qpf',
+  snow:  'ndfd.conus.snow',
+  wx:    'ndfd.conus.wx',
+};
+
+function _sevRenderNDFD(body) {
+  const layerName = NDFD_LAYERS[_sevVar];
+  if (!layerName) {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Pick an NDFD product.</div>`;
+    return false;
+  }
+  if (!_sevRun || _sevRun.length < 10) {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Select a time first.</div>`;
+    return false;
+  }
+  const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
+  const vt = new Date(runMs + _sevFrame * 3 * 3600000);
+  const p2 = n => String(n).padStart(2,'0');
+  const vtit = `${vt.getUTCFullYear()}-${p2(vt.getUTCMonth()+1)}-${p2(vt.getUTCDate())}T${p2(vt.getUTCHours())}:00`;
+  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
+  const opts = {
+    layers: layerName, format: 'image/png', transparent: true,
+    version: '1.3.0', opacity: 0.8, zIndex: 6, noWrap: true, tileSize: 256,
+    VTIT: vtit,
+  };
+  const wmsLayer = L.tileLayer.wms(NDFD_WMS, opts).addTo(map);
+  _sevAttachTileFeedback(wmsLayer, body, 'NDFD');
+  _iemModelLayer = wmsLayer;
+  if (body) body.innerHTML = '';
+  return true;
+}
+
 // ── SEVERE MODEL ENGINE ──
 let _sevSection = 'dwd', _sevVar = 't2m', _sevRun = '', _sevFrame = 0;
 let _sevOverlayLayer = null;
@@ -10435,6 +10481,7 @@ function _sevMaxFrame() {
   if (_sevSection === 'ecmwf') return 40;
   if (_sevSection === 'dwd')   return 30;
   if (_sevSection === 'hrdps') return 16; // 16 x 3h = 48h
+  if (_sevSection === 'ndfd')  return 32; // 32 x 3h = 96h (NDFD goes ~7 days)
   return 6;
 }
 
@@ -10445,6 +10492,7 @@ function _sevRender() {
   if(_sevSection === 'ecmwf') { _sevRenderECMWF(body); return; }
   if(_sevSection === 'dwd')   { _sevRenderDWD(body);   return; }
   if(GEOMET_LAYERS[_sevSection]) { _sevRenderGeoMet(body); return; }
+  if(_sevSection === 'ndfd')  { _sevRenderNDFD(body);  return; }
   const ok = _sevRenderIEM(body);
   if(!ok && body && body.innerHTML.includes('⟳')) body.innerHTML=`<div class="trop-model-err">Nothing loaded for this one.</div>`;
 }
@@ -10459,8 +10507,10 @@ const SEV_PRODUCTS = {
   dwd:   [{v:'t2m',l:'2m Temp'},{v:'pmsl',l:'MSL Pressure'},{v:'precip',l:'Total Precip'},{v:'precip6',l:'6h Precip'},{v:'precip24',l:'24h Precip'},{v:'wind',l:'10m Wind'},{v:'gh500',l:'500mb Height'},{v:'t850',l:'850mb Temp'},{v:'rh700',l:'700mb Humidity'},{v:'wind250',l:'250mb Wind (Jet)'},{v:'omega700',l:'700mb Vert. Motion'}],
   // Environment Canada GeoMet - HRDPS only (hi-res continental).
   hrdps: [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'},{v:'snow',l:'Snow Depth'}],
+  // NWS NDFD - the official US forecast grid (CONUS).
+  ndfd:  [{v:'temp',l:'Temperature'},{v:'maxt',l:'Max Temp'},{v:'mint',l:'Min Temp'},{v:'wind',l:'Wind Speed'},{v:'sky',l:'Sky Cover'},{v:'pop12',l:'Precip Chance'},{v:'qpf',l:'Precip Amount'},{v:'snow',l:'Snow Amount'},{v:'wx',l:'Weather Type'}],
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp'};
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -10482,6 +10532,7 @@ const SEV_RUN_CFG = {
   ecmwf: { cycleH: 12, lagH: 7,   maxRuns: 2  }, // 00/12z only; eccharts serves the latest run
   dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
   hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; GeoMet serves the latest run
+  ndfd:  { cycleH: 1,  lagH: 1,   maxRuns: 1  }, // continuously updated; anchor to the current hour
 };
 
 function _sevPopulateRuns() {
