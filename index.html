@@ -5802,6 +5802,7 @@ body.clean-mode #clean-hint { opacity: 1; }
               <option value="dwd">DWD ICON (Global)</option>
               <option value="ecmwf">ECMWF IFS (Global)</option>
               <option value="aifs">ECMWF AIFS (AI Model)</option>
+              <option value="gfs">GFS 0.25° (Global)</option>
               <option value="nam">NAM 12km (CONUS)</option>
               <option value="hrdps">HRDPS (Hi-Res N. America)</option>
               <option value="ndfd">NWS NDFD (US Forecast)</option>
@@ -10467,24 +10468,46 @@ function _sevRenderGeoMet(body) {
   return true;
 }
 
+// ── UCAR THREDDS ncWMS helper ─────────────────────────────────────────────────
+// THREDDS uses ncWMS under the hood. Unlike GeoServer/ecCharts, ncWMS returns
+// red error tiles if STYLES and COLORSCALERANGE are not explicitly supplied.
+// csRange is in native GRIB2 units: K for temperature, Pa for pressure, m/s
+// for wind, kg/m² (= mm) for precip, gpm for geopotential height, % for RH, m for snow.
+function _buildThreddsOpts(meta, timeISO) {
+  const opts = {
+    layers:         meta.layer,
+    styles:         'boxfill/rainbow',
+    colorscalerange: meta.csRange,
+    abovemaxcolor:  'extend',
+    belowmincolor:  'extend',
+    numcolorbands:  20,
+    format:         'image/png',
+    transparent:    true,
+    version:        '1.1.1',
+    opacity:        0.8,
+    zIndex:         6,
+    noWrap:         true,
+    tileSize:       256,
+  };
+  if (timeISO)   opts.TIME      = timeISO;
+  if (meta.elev) opts.ELEVATION = meta.elev;
+  return opts;
+}
+
 // ── NAM 12km CONUS via UCAR THREDDS ──────────────────────────────────────────
-// UCAR THREDDS Best-dataset WMS — same server/protocol as proven working.
-// No auth required; tiles load via <img> tags so no CORS issue.
 // Runs 4×/day: 00/06/12/18z; 3h steps; forecast range ~84h.
-// Elevation values use native GRIB units: metres AGL for surface fields,
-// Pascals for isobaric levels (500 hPa = 50000 Pa, 850 hPa = 85000 Pa).
 const NAM_WMS = 'https://thredds.ucar.edu/thredds/wms/grib/NCEP/NAM/CONUS_12km/Best';
 const NAM_LAYERS = {
-  t2m:    { layer: 'Temperature_height_above_ground',              elev: '2'     },
-  td2m:   { layer: 'Dew_point_temperature_height_above_ground',    elev: '2'     },
-  wind:   { layer: 'Wind_speed_gust_surface',                      elev: null    },
-  mslp:   { layer: 'Pressure_reduced_to_MSL_msl',                  elev: null    },
-  precip: { layer: 'Total_precipitation_surface_Mixed_intervals_Accumulation', elev: null },
-  cape:   { layer: 'Convective_available_potential_energy_surface', elev: null    },
-  rh:     { layer: 'Relative_humidity_height_above_ground',        elev: '2'     },
-  snow:   { layer: 'Snow_depth_surface',                           elev: null    },
-  gh500:  { layer: 'Geopotential_height_isobaric',                 elev: '50000' },
-  t850:   { layer: 'Temperature_isobaric',                         elev: '85000' },
+  t2m:    { layer: 'Temperature_height_above_ground',              elev: '2',     csRange: '250,310' },
+  td2m:   { layer: 'Dew_point_temperature_height_above_ground',   elev: '2',     csRange: '245,305' },
+  wind:   { layer: 'Wind_speed_gust_surface',                      elev: null,    csRange: '0,25'    },
+  mslp:   { layer: 'Pressure_reduced_to_MSL_msl',                 elev: null,    csRange: '96000,105000' },
+  precip: { layer: 'Total_precipitation_surface_Mixed_intervals_Accumulation', elev: null, csRange: '0,100' },
+  cape:   { layer: 'Convective_available_potential_energy_surface', elev: null,   csRange: '0,4000'  },
+  rh:     { layer: 'Relative_humidity_height_above_ground',        elev: '2',     csRange: '0,100'   },
+  snow:   { layer: 'Snow_depth_surface',                           elev: null,    csRange: '0,2'     },
+  gh500:  { layer: 'Geopotential_height_isobaric',                 elev: '50000', csRange: '5000,6000' },
+  t850:   { layer: 'Temperature_isobaric',                         elev: '85000', csRange: '265,310' },
 };
 
 function _sevRenderNAM(body) {
@@ -10499,20 +10522,43 @@ function _sevRenderNAM(body) {
     timeISO = new Date(runMs + _sevFrame * 3 * 3600000).toISOString().replace('.000Z','Z');
   }
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
-  const opts = {
-    layers:      meta.layer,
-    format:      'image/png',
-    transparent: true,
-    version:     '1.1.1',
-    opacity:     0.8,
-    zIndex:      6,
-    noWrap:      true,
-    tileSize:    256,
-  };
-  if (timeISO) opts.TIME = timeISO;
-  if (meta.elev) opts.ELEVATION = meta.elev;
-  const wmsLayer = L.tileLayer.wms(NAM_WMS, opts).addTo(map);
+  const wmsLayer = L.tileLayer.wms(NAM_WMS, _buildThreddsOpts(meta, timeISO)).addTo(map);
   _sevAttachTileFeedback(wmsLayer, body, 'NAM');
+  _iemModelLayer = wmsLayer;
+  if (body) body.innerHTML = '';
+  return true;
+}
+
+// ── GFS 0.25° Global via UCAR THREDDS ────────────────────────────────────────
+// Global Forecast System, 0.25° global grid. Same THREDDS server as NAM.
+// Runs 4×/day: 00/06/12/18z; 6h steps shown; forecast range 240h.
+const GFS_THREDDS_WMS = 'https://thredds.ucar.edu/thredds/wms/grib/NCEP/GFS/Global_0p25deg/Best';
+const GFS_THREDDS_LAYERS = {
+  t2m:    { layer: 'Temperature_height_above_ground',              elev: '2',     csRange: '210,320' },
+  td2m:   { layer: 'Dew_point_temperature_height_above_ground',   elev: '2',     csRange: '200,310' },
+  wind:   { layer: 'Wind_speed_gust_surface',                      elev: null,    csRange: '0,40'    },
+  mslp:   { layer: 'Pressure_reduced_to_MSL_msl',                 elev: null,    csRange: '95000,105500' },
+  precip: { layer: 'Total_precipitation_surface_Mixed_intervals_Accumulation', elev: null, csRange: '0,200' },
+  cape:   { layer: 'Convective_available_potential_energy_surface', elev: null,   csRange: '0,5000'  },
+  rh:     { layer: 'Relative_humidity_height_above_ground',        elev: '2',     csRange: '0,100'   },
+  gh500:  { layer: 'Geopotential_height_isobaric',                 elev: '50000', csRange: '4800,6200' },
+  t850:   { layer: 'Temperature_isobaric',                         elev: '85000', csRange: '248,318' },
+};
+
+function _sevRenderGFSThredds(body) {
+  const meta = GFS_THREDDS_LAYERS[_sevVar];
+  if (!meta) {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Pick a GFS product.</div>`;
+    return false;
+  }
+  let timeISO = null;
+  if (_sevRun && _sevRun.length >= 10) {
+    const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
+    timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString().replace('.000Z','Z');
+  }
+  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
+  const wmsLayer = L.tileLayer.wms(GFS_THREDDS_WMS, _buildThreddsOpts(meta, timeISO)).addTo(map);
+  _sevAttachTileFeedback(wmsLayer, body, 'GFS');
   _iemModelLayer = wmsLayer;
   if (body) body.innerHTML = '';
   return true;
@@ -10570,7 +10616,8 @@ let _sevOverlayLayer = null;
 
 function _sevMaxFrame() {
   if (_sevSection === 'ecmwf') return 40; // 40 × 6h = 240h
-  if (_sevSection === 'aifs')  return 40; // 40 × 6h = 240h (AIFS goes to 360h but cap at 240)
+  if (_sevSection === 'aifs')  return 40; // 40 × 6h = 240h
+  if (_sevSection === 'gfs')   return 40; // 40 × 6h = 240h
   if (_sevSection === 'nam')   return 28; // 28 × 3h = 84h
   if (_sevSection === 'dwd')   return 30;
   if (_sevSection === 'hrdps') return 16; // 16 × 3h = 48h
@@ -10583,8 +10630,9 @@ function _sevRender() {
   if(_iemModelLayer){map.removeLayer(_iemModelLayer);_iemModelLayer=null;}
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
   if(_sevSection === 'ecmwf') { _sevRenderECMWF(body); return; }
-  if(_sevSection === 'aifs')  { _sevRenderAIFS(body);  return; }
-  if(_sevSection === 'nam')   { _sevRenderNAM(body);   return; }
+  if(_sevSection === 'aifs')  { _sevRenderAIFS(body);        return; }
+  if(_sevSection === 'gfs')   { _sevRenderGFSThredds(body);  return; }
+  if(_sevSection === 'nam')   { _sevRenderNAM(body);         return; }
   if(_sevSection === 'dwd')   { _sevRenderDWD(body);   return; }
   if(GEOMET_LAYERS[_sevSection]) { _sevRenderGeoMet(body); return; }
   if(_sevSection === 'ndfd')  { _sevRenderNDFD(body);  return; }
@@ -10598,8 +10646,10 @@ const SEV_PRODUCTS = {
   hrrr:  [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip Type'}],
   ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'wind10',l:'10m Wind Speed'},{v:'tcwv',l:'Precipitable Water'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'tp',l:'Total Precip'},{v:'co',l:'CO Surface'},{v:'uvi',l:'UV Index'},{v:'pm25',l:'PM2.5'},{v:'pm10',l:'PM10'},{v:'no2',l:'NO₂ Surface'},{v:'dust',l:'Dust AOD'}],
   // ECMWF AIFS (AI model) - same physical products as IFS (no air quality layers).
-  // AIFS only outputs core dynamics fields — no cloud, CAPE, or dew point.
-  aifs: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'wind10',l:'10m Wind Speed'},{v:'tcwv',l:'Precipitable Water'},{v:'tp',l:'Total Precip'}],
+  // AIFS: neural-net model; only outputs core dynamics (no cloud/CAPE/dew point).
+  aifs: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'tp',l:'Total Precip'}],
+  // GFS 0.25° global - UCAR THREDDS Best dataset (proven working endpoint).
+  gfs:  [{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'wind',l:'Wind Gust'},{v:'mslp',l:'MSL Pressure'},{v:'precip',l:'Total Precip'},{v:'cape',l:'CAPE'},{v:'rh',l:'2m Rel. Humidity'},{v:'gh500',l:'500mb Height'},{v:'t850',l:'850mb Temperature'}],
   // NAM 12km CONUS - UCAR THREDDS Best dataset.
   nam:  [{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'wind',l:'Wind Gust'},{v:'mslp',l:'MSL Pressure'},{v:'precip',l:'Total Precip'},{v:'cape',l:'CAPE'},{v:'rh',l:'2m Rel. Humidity'},{v:'snow',l:'Snow Depth'},{v:'gh500',l:'500mb Height'},{v:'t850',l:'850mb Temperature'}],
   // DWD ICON global - every product the GeoServer publishes for this dataset:
@@ -10610,7 +10660,7 @@ const SEV_PRODUCTS = {
   // NWS NDFD - the official US forecast grid (CONUS).
   ndfd:  [{v:'temp',l:'Temperature'},{v:'maxt',l:'Max Temp'},{v:'td',l:'Dew Point'},{v:'wind',l:'Wind Speed'},{v:'wdir',l:'Wind Direction'},{v:'sky',l:'Sky Cover'},{v:'pop12',l:'Precip Chance'},{v:'qpf',l:'Precip Amount'},{v:'snow',l:'Snow Amount'},{v:'wx',l:'Weather Type'}],
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', aifs:'t2m', nam:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', aifs:'t2m', gfs:'t2m', nam:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp'};
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -10631,6 +10681,7 @@ const SEV_RUN_CFG = {
   hrrr:  { cycleH: 1,  lagH: 2,   maxRuns: 18 }, // hourly; IEM keeps a long archive
   ecmwf: { cycleH: 12, lagH: 7,   maxRuns: 2  }, // 00/12z only; eccharts serves the latest run
   aifs:  { cycleH: 12, lagH: 8,   maxRuns: 2  }, // 00/12z; AIFS takes slightly longer to publish
+  gfs:   { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; THREDDS Best - proven working
   nam:   { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; THREDDS Best serves latest run
   dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
   hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; GeoMet serves the latest run
