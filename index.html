@@ -5801,6 +5801,8 @@ body.clean-mode #clean-hint { opacity: 1; }
             <select id="sev-model-sel" onchange="_sevSetSection(this.value)">
               <option value="dwd">DWD ICON (Global)</option>
               <option value="ecmwf">ECMWF IFS (Global)</option>
+              <option value="aifs">ECMWF AIFS (AI Model)</option>
+              <option value="nam">NAM 12km (CONUS)</option>
               <option value="hrdps">HRDPS (Hi-Res N. America)</option>
               <option value="ndfd">NWS NDFD (US Forecast)</option>
               <option value="hrrr">HRRR (18h)</option>
@@ -10297,19 +10299,21 @@ function _sevRenderIEM(body) {
 
 const ECCHARTS_WMS = 'https://eccharts.ecmwf.int/wms/?token=public';
 const ECMWF_LAYERS = {
-  z500:  'z500_public',
-  mslp:  'msl_mean_public',
-  t2m:   '2t_public',
-  td2m:  '2d_public',
-  cloud: 'tcc_public',
-  cape:  'cape_public',
-  tp:    'tp_public',
-  co:    'composition_co_surface',
-  uvi:   'composition_uvindex_clearsky',
-  pm25:  'composition_pm2p5',
-  pm10:  'composition_pm10',
-  no2:   'composition_no2_surface',
-  dust:  'composition_dust_aod550',
+  z500:   'z500_public',
+  mslp:   'msl_mean_public',
+  t2m:    '2t_public',
+  td2m:   '2d_public',
+  wind10: '10si_public',      // 10m wind speed magnitude
+  tcwv:   'tcwv_public',      // total column water vapour (precipitable water)
+  cloud:  'tcc_public',
+  cape:   'cape_public',
+  tp:     'tp_public',
+  co:     'composition_co_surface',
+  uvi:    'composition_uvindex_clearsky',
+  pm25:   'composition_pm2p5',
+  pm10:   'composition_pm10',
+  no2:    'composition_no2_surface',
+  dust:   'composition_dust_aod550',
 };
 
 function _sevRenderECMWF(body) {
@@ -10337,6 +10341,41 @@ function _sevRenderECMWF(body) {
   if (timeISO) opts.TIME = timeISO;
   const wmsLayer = L.tileLayer.wms(ECCHARTS_WMS, opts).addTo(map);
   _sevAttachTileFeedback(wmsLayer, body, 'ECMWF');
+  _iemModelLayer = wmsLayer;
+  if (body) body.innerHTML = '';
+  return true;
+}
+
+// ── ECMWF AIFS (AI Forecasting System) ───────────────────────────────────────
+// Same ecCharts WMS endpoint as IFS, but with model=aifs to select the AI run.
+// AIFS runs 00/12z; same layer names as IFS (same physical parameters).
+// Steps: 6h out to 360h, but we cap at 240h (40 frames) matching IFS display.
+function _sevRenderAIFS(body) {
+  const layerName = ECMWF_LAYERS[_sevVar];
+  if (!layerName || layerName.startsWith('composition_')) {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Pick an AIFS product.</div>`;
+    return false;
+  }
+  let timeISO = null;
+  if (_sevRun && _sevRun.length >= 10) {
+    const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
+    timeISO = new Date(runMs + _sevFrame * 6 * 3600000).toISOString().replace('.000Z','Z');
+  }
+  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
+  const opts = {
+    layers:      layerName,
+    model:       'aifs',
+    format:      'image/png',
+    transparent: true,
+    version:     '1.1.1',
+    opacity:     0.8,
+    zIndex:      6,
+    noWrap:      true,
+    tileSize:    256,
+  };
+  if (timeISO) opts.TIME = timeISO;
+  const wmsLayer = L.tileLayer.wms(ECCHARTS_WMS, opts).addTo(map);
+  _sevAttachTileFeedback(wmsLayer, body, 'AIFS');
   _iemModelLayer = wmsLayer;
   if (body) body.innerHTML = '';
   return true;
@@ -10428,6 +10467,57 @@ function _sevRenderGeoMet(body) {
   return true;
 }
 
+// ── NAM 12km CONUS via UCAR THREDDS ──────────────────────────────────────────
+// UCAR THREDDS Best-dataset WMS — same server/protocol as proven working.
+// No auth required; tiles load via <img> tags so no CORS issue.
+// Runs 4×/day: 00/06/12/18z; 3h steps; forecast range ~84h.
+// Elevation values use native GRIB units: metres AGL for surface fields,
+// Pascals for isobaric levels (500 hPa = 50000 Pa, 850 hPa = 85000 Pa).
+const NAM_WMS = 'https://thredds.ucar.edu/thredds/wms/grib/NCEP/NAM/CONUS_12km/Best';
+const NAM_LAYERS = {
+  t2m:    { layer: 'Temperature_height_above_ground',              elev: '2'     },
+  td2m:   { layer: 'Dewpoint_temperature_height_above_ground',     elev: '2'     },
+  wind:   { layer: 'Wind_speed_gust_surface',                      elev: null    },
+  mslp:   { layer: 'Pressure_reduced_to_MSL_msl',                  elev: null    },
+  precip: { layer: 'Total_precipitation_surface',                  elev: null    },
+  cape:   { layer: 'Convective_available_potential_energy_surface', elev: null    },
+  rh:     { layer: 'Relative_humidity_height_above_ground',        elev: '2'     },
+  snow:   { layer: 'Snow_depth_surface',                           elev: null    },
+  gh500:  { layer: 'Geopotential_height_isobaric',                 elev: '50000' },
+  t850:   { layer: 'Temperature_isobaric',                         elev: '85000' },
+};
+
+function _sevRenderNAM(body) {
+  const meta = NAM_LAYERS[_sevVar];
+  if (!meta) {
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Pick a NAM product.</div>`;
+    return false;
+  }
+  let timeISO = null;
+  if (_sevRun && _sevRun.length >= 10) {
+    const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
+    timeISO = new Date(runMs + _sevFrame * 3 * 3600000).toISOString().replace('.000Z','Z');
+  }
+  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
+  const opts = {
+    layers:      meta.layer,
+    format:      'image/png',
+    transparent: true,
+    version:     '1.1.1',
+    opacity:     0.8,
+    zIndex:      6,
+    noWrap:      true,
+    tileSize:    256,
+  };
+  if (timeISO) opts.TIME = timeISO;
+  if (meta.elev) opts.ELEVATION = meta.elev;
+  const wmsLayer = L.tileLayer.wms(NAM_WMS, opts).addTo(map);
+  _sevAttachTileFeedback(wmsLayer, body, 'NAM');
+  _iemModelLayer = wmsLayer;
+  if (body) body.innerHTML = '';
+  return true;
+}
+
 // ── NWS NDFD (US official forecast) via digital.weather.gov ──
 // The National Digital Forecast Database: NWS forecasters' gridded forecast,
 // CONUS, ~2.5 km. Free, no key. Standard WMS EXCEPT the valid-time dimension is
@@ -10479,10 +10569,12 @@ let _sevSection = 'dwd', _sevVar = 't2m', _sevRun = '', _sevFrame = 0;
 let _sevOverlayLayer = null;
 
 function _sevMaxFrame() {
-  if (_sevSection === 'ecmwf') return 40;
+  if (_sevSection === 'ecmwf') return 40; // 40 × 6h = 240h
+  if (_sevSection === 'aifs')  return 40; // 40 × 6h = 240h (AIFS goes to 360h but cap at 240)
+  if (_sevSection === 'nam')   return 28; // 28 × 3h = 84h
   if (_sevSection === 'dwd')   return 30;
-  if (_sevSection === 'hrdps') return 16; // 16 x 3h = 48h
-  if (_sevSection === 'ndfd')  return 32; // 32 x 3h = 96h (NDFD goes ~7 days)
+  if (_sevSection === 'hrdps') return 16; // 16 × 3h = 48h
+  if (_sevSection === 'ndfd')  return 32; // 32 × 3h = 96h
   return 6;
 }
 
@@ -10491,6 +10583,8 @@ function _sevRender() {
   if(_iemModelLayer){map.removeLayer(_iemModelLayer);_iemModelLayer=null;}
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
   if(_sevSection === 'ecmwf') { _sevRenderECMWF(body); return; }
+  if(_sevSection === 'aifs')  { _sevRenderAIFS(body);  return; }
+  if(_sevSection === 'nam')   { _sevRenderNAM(body);   return; }
   if(_sevSection === 'dwd')   { _sevRenderDWD(body);   return; }
   if(GEOMET_LAYERS[_sevSection]) { _sevRenderGeoMet(body); return; }
   if(_sevSection === 'ndfd')  { _sevRenderNDFD(body);  return; }
@@ -10502,7 +10596,11 @@ let _sevPlaying = false, _sevPlayTimer = null;
 
 const SEV_PRODUCTS = {
   hrrr:  [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip Type'}],
-  ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'tp',l:'Total Precip'},{v:'co',l:'CO Surface'},{v:'uvi',l:'UV Index'},{v:'pm25',l:'PM2.5'},{v:'pm10',l:'PM10'},{v:'no2',l:'NO₂ Surface'},{v:'dust',l:'Dust AOD'}],
+  ecmwf: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'wind10',l:'10m Wind Speed'},{v:'tcwv',l:'Precipitable Water'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'tp',l:'Total Precip'},{v:'co',l:'CO Surface'},{v:'uvi',l:'UV Index'},{v:'pm25',l:'PM2.5'},{v:'pm10',l:'PM10'},{v:'no2',l:'NO₂ Surface'},{v:'dust',l:'Dust AOD'}],
+  // ECMWF AIFS (AI model) - same physical products as IFS (no air quality layers).
+  aifs: [{v:'z500',l:'500mb Heights'},{v:'mslp',l:'MSLP'},{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'wind10',l:'10m Wind Speed'},{v:'tcwv',l:'Precipitable Water'},{v:'cloud',l:'Cloud Cover'},{v:'cape',l:'CAPE'},{v:'tp',l:'Total Precip'}],
+  // NAM 12km CONUS - UCAR THREDDS Best dataset.
+  nam:  [{v:'t2m',l:'2m Temperature'},{v:'td2m',l:'2m Dew Point'},{v:'wind',l:'Wind Gust'},{v:'mslp',l:'MSL Pressure'},{v:'precip',l:'Total Precip'},{v:'cape',l:'CAPE'},{v:'rh',l:'2m Rel. Humidity'},{v:'snow',l:'Snow Depth'},{v:'gh500',l:'500mb Height'},{v:'t850',l:'850mb Temperature'}],
   // DWD ICON global - every product the GeoServer publishes for this dataset:
   // 6 surface fields + 5 pressure-level (upper-air) fields.
   dwd:   [{v:'t2m',l:'2m Temp'},{v:'pmsl',l:'MSL Pressure'},{v:'precip',l:'Total Precip'},{v:'precip6',l:'6h Precip'},{v:'precip24',l:'24h Precip'},{v:'wind',l:'10m Wind'},{v:'gh500',l:'500mb Height'},{v:'t850',l:'850mb Temp'},{v:'rh700',l:'700mb Humidity'},{v:'wind250',l:'250mb Wind (Jet)'},{v:'omega700',l:'700mb Vert. Motion'}],
@@ -10511,7 +10609,7 @@ const SEV_PRODUCTS = {
   // NWS NDFD - the official US forecast grid (CONUS).
   ndfd:  [{v:'temp',l:'Temperature'},{v:'maxt',l:'Max Temp'},{v:'td',l:'Dew Point'},{v:'wind',l:'Wind Speed'},{v:'wdir',l:'Wind Direction'},{v:'sky',l:'Sky Cover'},{v:'pop12',l:'Precip Chance'},{v:'qpf',l:'Precip Amount'},{v:'snow',l:'Snow Amount'},{v:'wx',l:'Weather Type'}],
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', aifs:'t2m', nam:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp'};
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -10531,6 +10629,8 @@ function _sevUpdateProducts() {
 const SEV_RUN_CFG = {
   hrrr:  { cycleH: 1,  lagH: 2,   maxRuns: 18 }, // hourly; IEM keeps a long archive
   ecmwf: { cycleH: 12, lagH: 7,   maxRuns: 2  }, // 00/12z only; eccharts serves the latest run
+  aifs:  { cycleH: 12, lagH: 8,   maxRuns: 2  }, // 00/12z; AIFS takes slightly longer to publish
+  nam:   { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; THREDDS Best serves latest run
   dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
   hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; GeoMet serves the latest run
   ndfd:  { cycleH: 1,  lagH: 1,   maxRuns: 1  }, // continuously updated; anchor to the current hour
