@@ -5802,7 +5802,6 @@ body.clean-mode #clean-hint { opacity: 1; }
               <option value="dwd">DWD ICON (Global)</option>
               <option value="ecmwf">ECMWF IFS (Global)</option>
               <option value="hrdps">HRDPS (Hi-Res N. America)</option>
-              <option value="crad">CA Weather Radar</option>
               <option value="ndfd">NWS NDFD (US Forecast)</option>
               <option value="hrrr">HRRR (18h)</option>
             </select>
@@ -10431,36 +10430,6 @@ function _sevRenderGeoMet(body) {
   return true;
 }
 
-// ── Environment Canada Weather Radar composite (GeoMet) ──
-// RADAR_1KM_RRAI = national 1km rain-rate composite; RADAR_1KM_RSNO = snow.
-// Near-real-time (10-min updates, ~3h archive) with WMS TIME support.
-// Confirmed in official ECCC-MSC/open-data repo; uses same GeoMet endpoint as HRDPS.
-const RADAR_LAYER = { rrai: 'RADAR_1KM_RRAI', rsno: 'RADAR_1KM_RSNO' };
-
-function _sevRenderRadar(body) {
-  const layerName = RADAR_LAYER[_sevVar];
-  if (!layerName) {
-    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.6);font-size:9px;padding:6px;">Pick a radar product.</div>`;
-    return false;
-  }
-  if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
-  const now = Date.now();
-  const rounded = Math.floor(now / 600000) * 600000; // snap to nearest 10-min boundary
-  // Frame 0 = 2h ago (oldest); Frame 12 = now (latest)
-  const frameMs = rounded - (12 - _sevFrame) * 600000;
-  const timeISO = new Date(frameMs).toISOString().replace('.000Z', 'Z');
-  const opts = {
-    layers: layerName, format: 'image/png', transparent: true,
-    version: '1.3.0', opacity: 0.85, zIndex: 6, noWrap: true, tileSize: 256,
-    TIME: timeISO,
-  };
-  const wmsLayer = L.tileLayer.wms(GEOMET_WMS, opts).addTo(map);
-  _sevAttachTileFeedback(wmsLayer, body, 'CA Radar');
-  _iemModelLayer = wmsLayer;
-  if (body) body.innerHTML = '';
-  return true;
-}
-
 // ── NWS NDFD (US official forecast) via digital.weather.gov ──
 // The National Digital Forecast Database: NWS forecasters' gridded forecast,
 // CONUS, ~2.5 km. Free, no key. Standard WMS EXCEPT the valid-time dimension is
@@ -10516,7 +10485,6 @@ function _sevMaxFrame() {
   if (_sevSection === 'dwd')   return 30;
   if (_sevSection === 'hrdps') return 16; // 16 × 3h = 48h
   if (_sevSection === 'ndfd')  return 32; // 32 × 3h = 96h
-  if (_sevSection === 'crad')  return 12; // 12 × 10min = 2h radar loop
   return 6;
 }
 
@@ -10526,7 +10494,6 @@ function _sevRender() {
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
   if(_sevSection === 'ecmwf') { _sevRenderECMWF(body); return; }
   if(_sevSection === 'dwd')   { _sevRenderDWD(body);   return; }
-  if(_sevSection === 'crad')  { _sevRenderRadar(body); return; }
   if(GEOMET_LAYERS[_sevSection]) { _sevRenderGeoMet(body); return; }
   if(_sevSection === 'ndfd')  { _sevRenderNDFD(body);  return; }
   const ok = _sevRenderIEM(body);
@@ -10545,10 +10512,8 @@ const SEV_PRODUCTS = {
   hrdps: [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'},{v:'snow',l:'Snow Depth'}],
   // NWS NDFD - the official US forecast grid (CONUS).
   ndfd:  [{v:'temp',l:'Temperature'},{v:'maxt',l:'Max Temp'},{v:'td',l:'Dew Point'},{v:'wind',l:'Wind Speed'},{v:'wdir',l:'Wind Direction'},{v:'sky',l:'Sky Cover'},{v:'pop12',l:'Precip Chance'},{v:'qpf',l:'Precip Amount'},{v:'snow',l:'Snow Amount'},{v:'wx',l:'Weather Type'}],
-  // Environment Canada national radar composite via GeoMet (confirmed working in ECCC-MSC official docs).
-  crad:  [{v:'rrai',l:'Rain Composite'},{v:'rsno',l:'Snow Composite'}],
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp', crad:'rrai'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp'};
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -10576,10 +10541,6 @@ const SEV_RUN_CFG = {
 function _sevPopulateRuns() {
   const sel=document.getElementById('sev-run-sel');if(!sel)return;
   sel.innerHTML='';_sevRun='';
-  if (_sevSection === 'crad') {
-    const opt=document.createElement('option');opt.value='radar_live';opt.textContent='Latest · 2h loop';
-    sel.appendChild(opt);_sevRun='radar_live';return;
-  }
   const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const cfg = SEV_RUN_CFG[_sevSection] || SEV_RUN_CFG.dwd;
   // Most recent cycle that has finished publishing (now shifted back by the lag).
@@ -10608,7 +10569,6 @@ function _sevSetSection(s){
 }
 // Some products (6h/24h precip accumulation) have no data until a later frame.
 function _sevStartFrame() {
-  if (_sevSection === 'crad') return _sevMaxFrame(); // open at latest (current radar) frame
   if (_sevSection === 'dwd' && DWD_MIN_FRAME[_sevVar]) return DWD_MIN_FRAME[_sevVar];
   if (GEOMET_LAYERS[_sevSection] && _sevVar === 'precip') return 1; // ETA_PR starts at F+03
   return 0;
@@ -10622,14 +10582,6 @@ const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 function _sevFcastDateTime(frame) {
-  if (_sevSection === 'crad') {
-    const minBack = (12 - frame) * 10;
-    const ms = Math.floor(Date.now() / 600000) * 600000 - (12 - frame) * 600000;
-    const t = new Date(ms);
-    const hr = String(t.getUTCHours()).padStart(2,'0');
-    const mn = String(t.getUTCMinutes()).padStart(2,'0');
-    return { date: `${hr}:${mn}z`, flbl: minBack === 0 ? 'Live' : `T-${minBack}m` };
-  }
   if (!_sevRun || _sevRun.length < 10) return { date: '-', flbl: 'F+000' };
   const step = _sevSection === 'ecmwf' ? 6 : 3;
   const hrs = frame * step;
@@ -10657,28 +10609,15 @@ function _sevBuildFrameGrid() {
   const cols = Math.ceil(Math.sqrt(total));
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   grid.innerHTML = '';
-  if (_sevSection === 'crad') {
-    for (let i = 0; i <= max; i++) {
-      const minBack = (max - i) * 10;
-      const h = Math.floor(minBack / 60), m = minBack % 60;
-      const btn = document.createElement('button');
-      btn.className = 'sev-fhr-btn' + (i === _sevFrame ? ' active' : '');
-      btn.textContent = minBack === 0 ? 'Live' : (h > 0 ? `${h}h${m ? String(m).padStart(2,'0') : ''}` : `${m}m`);
-      btn.dataset.frame = i;
-      btn.onclick = () => _sevSetFrame(i);
-      grid.appendChild(btn);
-    }
-  } else {
-    const step = _sevSection === 'ecmwf' ? 6 : 3;
-    for (let i = 0; i <= max; i++) {
-      const hrs = i * step;
-      const btn = document.createElement('button');
-      btn.className = 'sev-fhr-btn' + (i === _sevFrame ? ' active' : '');
-      btn.textContent = 'F+' + String(hrs).padStart(3,'0');
-      btn.dataset.frame = i;
-      btn.onclick = () => _sevSetFrame(i);
-      grid.appendChild(btn);
-    }
+  const step = _sevSection === 'ecmwf' ? 6 : 3;
+  for (let i = 0; i <= max; i++) {
+    const hrs = i * step;
+    const btn = document.createElement('button');
+    btn.className = 'sev-fhr-btn' + (i === _sevFrame ? ' active' : '');
+    btn.textContent = 'F+' + String(hrs).padStart(3,'0');
+    btn.dataset.frame = i;
+    btn.onclick = () => _sevSetFrame(i);
+    grid.appendChild(btn);
   }
   _sevUpdatePlaybar();
   _sevUpdateFcastHeader();
