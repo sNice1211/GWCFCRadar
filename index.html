@@ -86,7 +86,7 @@ setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.tra
 #tutorial-modal-inner, #radar-color-editor,
 #alerts-panel, #eas-panel, #fnv3-panel,
 #severe-model-panel, #tropical-model-panel,
-#gwcfc-auth-modal, #track-toolbar, #draw-toolbar, #text-toolbar, #stormcone-toolbar, #stormcone-panel,
+#gwcfc-auth-modal, #track-toolbar, #draw-toolbar, #text-toolbar, #stormcone-panel,
 .leaflet-popup-content-wrapper { contain: layout style; }
 .sa-sym { background: none !important; border: none !important; }
 
@@ -2960,29 +2960,22 @@ body {
 .dtb-lm-font:hover { background: rgba(0,160,255,0.14); border-color: rgba(0,200,255,0.3); }
 .dtb-lm-font.active { background: rgba(0,140,255,0.22); border-color: #4af; color: #fff; }
 
-/* ── STORM CONE TOOLBAR (same look as draw-toolbar) ── */
-#stormcone-toolbar {
-  display: none;
-  position: absolute;
-  bottom: calc(90px + env(safe-area-inset-bottom, 0px));
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 1100;
-  background: rgb(14,18,24);
-  border: 1px solid rgba(220,0,0,0.35);
-  border-radius: 12px;
-  padding: 6px 10px;
+/* ── STORM CONE PANEL (same look as models-panel) ──
+   Controls (speed, new cone) and the results table live in one
+   connected panel instead of a separate floating toolbar. */
+#stormcone-controls {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.7);
-  white-space: nowrap;
-  flex-wrap: nowrap;
-  user-select: none;
-  max-width: calc(100vw - 16px);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
 }
-#stormcone-toolbar.visible { display: flex; }
+#stormcone-controls label {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: rgba(255,230,200,0.5);
+  letter-spacing: 1px;
+}
 #sc-speed-input {
   width: 48px;
   background: rgba(255,255,255,0.07);
@@ -2995,44 +2988,22 @@ body {
   padding: 5px 2px;
 }
 #sc-new-btn {
+  margin-left: auto;
   width: auto;
-  padding: 0 12px;
+  padding: 5px 12px;
+  background: rgba(200,0,0,0.35);
+  border: 1px solid rgba(220,0,0,0.4);
+  border-radius: 6px;
+  color: #fff;
   font-family: var(--display);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: background 0.15s;
 }
-#stormcone-status {
-  position: absolute;
-  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
-  left: 50%;
-  transform: translateX(-50%);
-  font-family: var(--mono);
-  font-size: 9px;
-  color: rgba(255,255,255,0.35);
-  letter-spacing: 0.08em;
-  pointer-events: none;
-  display: none;
-  white-space: nowrap;
-  z-index: 1099;
-}
-#stormcone-status.visible { display: block; }
-#stormcone-close {
-  width:30px; height:30px;
-  border-radius:8px;
-  border:none;
-  background:#aa0000;
-  color:#fff;
-  font-size:15px;
-  cursor:pointer;
-  display:flex; align-items:center; justify-content:center;
-  flex-shrink:0;
-  transition:background 0.15s;
-  -webkit-tap-highlight-color: transparent;
-}
-#stormcone-close:active { background:#cc0000; }
+#sc-new-btn:hover { background: rgba(220,0,0,0.55); }
 
-/* ── STORM CONE RESULTS PANEL (same look as models-panel) ── */
 #stormcone-panel {
   position: fixed;
   top: 130px;
@@ -5796,7 +5767,6 @@ body.clean-mode #map-compass,
 body.clean-mode #map-reset-bearing,
 body.clean-mode #draw-toolbar,
 body.clean-mode #text-toolbar,
-body.clean-mode #stormcone-toolbar,
 body.clean-mode #track-toolbar,
 body.clean-mode #radius-toolbar,
 body.clean-mode #dist-toolbar,
@@ -5809,7 +5779,7 @@ body.clean-mode #poly-toolbar {
 #right-menu, #sub-bubbles, #float-search-btn,
 #overlay-launcher, #overlay-toggle-btn, #statusbar,
 #map-compass, #map-reset-bearing,
-#draw-toolbar, #text-toolbar, #stormcone-toolbar, #track-toolbar, #radius-toolbar, #dist-toolbar, #poly-toolbar {
+#draw-toolbar, #text-toolbar, #track-toolbar, #radius-toolbar, #dist-toolbar, #poly-toolbar {
   transition: opacity 0.35s ease;
 }
 /* Tiny restore hint visible only in clean mode */
@@ -12603,7 +12573,7 @@ deactivateTool = function() {
   _origDeactivate();
   _dtbShowToolbar(false);
   _txtShowToolbar(false);
-  _scShowToolbar(false);
+  if (!_scTrack) _scShowPanel(false);
   _scDrawing = false;
   if (_eraserHoverActive) { map.off('mousemove', _dtbEraserHover); _eraserHoverActive = false; }
   _hideEraserCursor();
@@ -13196,9 +13166,8 @@ function toggleStormConeTool() {
   activeTool = 'stormcone';
   _setBtn('tool-stormcone');
   _showHint('');
-  document.getElementById('stormcone-toolbar')?.classList.add('visible');
-  document.getElementById('stormcone-status')?.classList.add('visible');
-  _scSetStatus('Click and drag on the map to draw a storm cone');
+  _scShowPanel(true);
+  if (!_scTrack) _scSetStatus('Click and drag on the map to draw a storm cone.');
   map.dragging.disable();
   map.on('mousedown', _onScDown);
   map.on('contextmenu', _onRightClick);
@@ -13206,7 +13175,7 @@ function toggleStormConeTool() {
 }
 
 function _scSetStatus(msg) {
-  const st = document.getElementById('stormcone-status');
+  const st = document.getElementById('sc-summary');
   if (st) st.textContent = msg;
 }
 
@@ -13275,13 +13244,13 @@ function _onScTouchEnd(e) {
 }
 
 function _scFinishDrag() {
+  _scShowPanel(true);
   if (!_scTrack || _scTrack.distanceMiles < SC_MIN_TRACK_MILES) {
     _scTrack = null;
     _scRenderCone();
-    _scSetStatus('Track too short , drag farther to draw a cone');
+    _scSetStatus('Track too short , drag farther to draw a cone.');
     return;
   }
-  _scSetStatus('Adjust storm speed, or drag again to redraw the cone');
   _scComputeAndShowResults();
 }
 
@@ -13330,10 +13299,11 @@ function _scRenderResults(matches, speed) {
 }
 
 function _scNew() {
+  if (activeTool !== 'stormcone') toggleStormConeTool();
   _scTrack = null;
   _scRenderCone();
-  _scClosePanel();
-  _scSetStatus('Click and drag on the map to draw a storm cone');
+  _scShowPanel(true);
+  _scSetStatus('Click and drag on the map to draw a storm cone.');
 }
 
 function _scClosePanel() {
@@ -13341,9 +13311,9 @@ function _scClosePanel() {
   if (panel) panel.style.display = 'none';
 }
 
-function _scShowToolbar(show) {
-  document.getElementById('stormcone-toolbar')?.classList.toggle('visible', show);
-  document.getElementById('stormcone-status')?.classList.toggle('visible', show);
+function _scShowPanel(show) {
+  const panel = document.getElementById('stormcone-panel');
+  if (panel) panel.style.display = show ? 'flex' : 'none';
 }
 
 
@@ -23050,7 +23020,6 @@ document.addEventListener('DOMContentLoaded', () => {
   _makeDraggable(document.getElementById('radar-color-editor'),  document.getElementById('rce-drag-grip'));
   _makeDraggable(document.getElementById('draw-toolbar'),        document.getElementById('draw-drag'));
   _makeDraggable(document.getElementById('text-toolbar'),        document.getElementById('text-drag'));
-  _makeDraggable(document.getElementById('stormcone-toolbar'),   document.getElementById('stormcone-drag'));
   _makeDraggable(document.getElementById('stormcone-panel'),     document.getElementById('stormcone-panel-header'));
   _makeDraggable(document.getElementById('track-toolbar'),       document.getElementById('track-drag'));
   _makeDraggable(document.getElementById('radius-toolbar'),      document.getElementById('radius-drag'));
@@ -23397,31 +23366,20 @@ document.addEventListener('DOMContentLoaded', () => {
 </div>
 <div id="txt-palette"><!-- swatches injected by JS --></div>
 
-<!-- STORM CONE TOOLBAR -->
-<div id="stormcone-toolbar">
-  <div class="dtb-drag" id="stormcone-drag" title="Drag to move"><span></span><span></span><span></span></div>
-  <span class="dtb-label">
-    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 L5 19 A8 8 0 0 0 19 19 Z"/></svg>
-    STORM CONE
-  </span>
-  <div class="dtb-sep"></div>
-  <label for="sc-speed-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">MPH</label>
-  <input type="number" id="sc-speed-input" min="1" step="1" value="35" oninput="_scOnSpeedChange()">
-  <div class="dtb-sep"></div>
-  <button class="dtb-btn" id="sc-new-btn" onclick="_scNew()" title="Start a new cone">+ New</button>
-  <!-- Close -->
-  <button id="stormcone-close" onclick="deactivateTool()" title="Exit storm cone mode">✕</button>
-</div>
-<div id="stormcone-status">Click and drag on the map to draw a storm cone</div>
-
-<!-- STORM CONE RESULTS PANEL -->
+<!-- STORM CONE PANEL: controls (speed, new cone) and the city results
+     table live in one connected panel instead of a separate toolbar. -->
 <div id="stormcone-panel">
   <div id="stormcone-panel-header">
     <div class="dtb-drag" id="stormcone-panel-drag" title="Drag to move"><span></span><span></span><span></span></div>
     <div id="stormcone-panel-title">🌀 Storm Cone</div>
     <button id="stormcone-panel-close" onclick="_scClosePanel()" title="Close">×</button>
   </div>
-  <div class="sc-summary" id="sc-summary">No storm cone drawn yet.</div>
+  <div id="stormcone-controls">
+    <label for="sc-speed-input">MPH</label>
+    <input type="number" id="sc-speed-input" min="1" step="1" value="35" oninput="_scOnSpeedChange()">
+    <button id="sc-new-btn" onclick="_scNew()" title="Start a new cone">+ New</button>
+  </div>
+  <div class="sc-summary" id="sc-summary">Click and drag on the map to draw a storm cone.</div>
   <div class="sc-results-wrap">
     <table class="sc-table">
       <thead>
