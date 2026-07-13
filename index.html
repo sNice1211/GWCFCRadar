@@ -1022,7 +1022,20 @@ body {
   /* Sub bubbles and right menu , tighter vertical stack */
   #sub-bubbles { bottom: 78px; gap: 4px; }
   #right-menu { bottom: 78px; gap: 4px; }
-  .sub-bubble, .right-bubble { padding: 4px 9px; font-size: 10px; letter-spacing: 0.5px; }
+  .right-bubble { padding: 4px 9px; font-size: 10px; letter-spacing: 0.5px; }
+
+  /* Main left menu bubbles (Radar/Satellite/Alerts/Models) , icon-only on
+     phones to free up map/scrolling room. Sub-menu bubbles (e.g. radar
+     products, alert types) keep their text since some share an icon. */
+  .sub-bubble-main {
+    padding: 8px;
+    width: 34px;
+    height: 34px;
+    justify-content: center;
+    border-radius: 50%;
+  }
+  .sub-bubble-main .sb-label { display: none; }
+  .sub-bubble-main .sb-icon { font-size: 15px; }
 
   /* Float buttons , tighter on tiny screens */
   #float-search-btn { bottom: 80px; width: 40px; height: 40px; }
@@ -1280,7 +1293,7 @@ body {
   text-transform: uppercase;
   color: rgba(255,255,255,0.6);
   background: rgb(90,0,0);
-  border: 1px solid rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,215,0,0.65);
   border-radius: 20px;
   cursor: pointer;
   backdrop-filter: blur(4px);
@@ -1291,13 +1304,13 @@ body {
 .sub-bubble:hover {
   color: #fff;
   background: rgb(120,0,0);
-  border-color: rgba(255,255,255,0.3);
+  border-color: rgba(255,215,0,0.85);
   transform: translateY(-2px);
 }
 .sub-bubble.active {
   color: #fff;
   background: rgb(133,0,0);
-  border-color: var(--accent2);
+  border-color: #ffd700;
   box-shadow: 0 0 10px rgba(0,200,200,0.3);
   transform: translateY(-2px);
 }
@@ -9671,7 +9684,7 @@ function toggleSatelliteSub() {
 
   const back = document.createElement('div');
   back.className = 'sub-bubble';
-  back.innerHTML = `<span class="sb-icon">←</span>Back`;
+  back.innerHTML = `<span class="sb-icon">←</span><span class="sb-label">Back</span>`;
   back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('satellite'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
 
@@ -10764,14 +10777,14 @@ function toggleAlertSub() {
   wrap.innerHTML = '';
   const back = document.createElement('div');
   back.className = 'sub-bubble';
-  back.innerHTML = `<span class="sb-icon">←</span>Back`;
+  back.innerHTML = `<span class="sb-icon">←</span><span class="sb-label">Back</span>`;
   back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('alerts'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
   ALERT_SUB_BUBBLES.forEach(b => {
     const el = document.createElement('div');
     el.className = 'sub-bubble';
     el.id = 'sub-' + b.id;
-    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => { b.action(); el.classList.toggle('active'); _syncParentBubble('alerts'); };
     wrap.appendChild(el);
   });
@@ -10817,7 +10830,7 @@ function toggleRadarSub() {
   wrap.innerHTML = '';
   const back = document.createElement('div');
   back.className = 'sub-bubble';
-  back.innerHTML = `<span class="sb-icon">←</span>Back`;
+  back.innerHTML = `<span class="sb-icon">←</span><span class="sb-label">Back</span>`;
   back.onclick = () => {
     if (!activeLayers.nexrad) _disableRadar();
     _syncParentBubble('radar');
@@ -10836,7 +10849,7 @@ function toggleRadarSub() {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
     el.id = 'sub-' + b.id;
-    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
       document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr').forEach(s=>s.classList.remove('active'));
       el.classList.add('active');
@@ -10859,9 +10872,9 @@ function renderSubBubbles(tab) {
   bubbles.forEach(b => {
     const el = document.createElement('div');
     const isActive = _getBubbleActive(b.id);
-    el.className = 'sub-bubble' + (isActive ? ' active' : '');
+    el.className = 'sub-bubble sub-bubble-main' + (isActive ? ' active' : '');
     el.id = 'sub-' + b.id;
-    el.innerHTML = `<span class="sb-icon">${b.icon}</span>${b.label}`;
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
       if (b.id !== 'forecasts') {
         activeBubbles[b.id] = !activeBubbles[b.id];
