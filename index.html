@@ -941,7 +941,7 @@ body {
   .sub-bubble .sb-icon { font-size: 12px; }
 
   /* Right menu tool buttons , tighten */
-  #right-menu { top: auto; bottom: 82px; right: 8px; gap: 5px; max-height: 38vh; }
+  #right-menu { top: auto; bottom: 82px; right: 8px; gap: 3px; max-height: 38vh; }
   .right-bubble { padding: 5px 10px; font-size: 11px; gap: 4px; }
 
   /* Float buttons , drop to just above animbar so sub-bubble/right-menu columns don't overlap */
@@ -1020,7 +1020,7 @@ body {
 
   /* Sub bubbles and right menu , tighter vertical stack */
   #sub-bubbles { gap: 4px; }
-  #right-menu { gap: 4px; }
+  #right-menu { gap: 3px; }
   .right-bubble { padding: 4px 9px; font-size: 10px; letter-spacing: 0.5px; }
 
   /* Main left menu bubbles (Radar/Satellite/Alerts/Models) , icon-only on
@@ -1386,7 +1386,7 @@ body {
   right: 12px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 3px;
   z-index: 800;
   max-height: calc(100vh - 120px);
   overflow-y: auto;
@@ -2222,7 +2222,7 @@ body {
   display:flex;
   align-items:center;
   justify-content:center;
-  margin:4px 0;
+  flex-shrink:0;
   transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
 }
 .tool-btn svg { width: 16px; height: 16px; }
@@ -2233,6 +2233,51 @@ body {
   color:var(--accent2);
   box-shadow:0 0 10px rgba(0,200,200,0.3);
 }
+/* Inspector is an independent overlay (works alongside any tool), so it
+   uses its own "on" class instead of .active - which _setBtn() clears
+   every time an exclusive tool (Draw, Polygon, etc) is activated. */
+.tool-btn.insp-on{
+  background:rgba(0,200,200,0.18);
+  border-color:var(--accent2);
+  color:var(--accent2);
+  box-shadow:0 0 10px rgba(0,200,200,0.3);
+}
+#inspector-crosshair {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.9);
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6), 0 0 10px rgba(0,0,0,0.5);
+  background: rgba(120,120,120,0.5);
+  pointer-events: none;
+  z-index: 850;
+  transition: background 0.1s;
+}
+#inspector-crosshair::before, #inspector-crosshair::after {
+  content: ''; position: absolute; background: rgba(255,255,255,0.9);
+}
+#inspector-crosshair::before { left: 50%; top: -10px; width: 1px; height: 8px; transform: translateX(-50%); }
+#inspector-crosshair::after  { top: 50%; left: -10px; height: 1px; width: 8px; transform: translateY(-50%); }
+#inspector-readout {
+  position: fixed;
+  top: calc(50% + 22px); left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 850;
+  background: rgba(8,12,16,0.88);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #fff;
+  white-space: nowrap;
+  text-align: center;
+}
+#inspector-readout .insp-value { font-weight: 700; }
+#inspector-readout .insp-unit { margin-left: 3px; opacity: 0.7; font-size: 9px; }
 #tool-hint { display:none !important; }
 .tool-label {
   background: rgba(8,12,16,0.88) !important;
@@ -6413,6 +6458,17 @@ body.clean-mode #clean-hint { opacity: 1; }
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <path d="M12 3 L5 19 A8 8 0 0 0 19 19 Z"/>
       <circle cx="12" cy="3" r="1.3" fill="currentColor" stroke="none"/>
+    </svg>
+  </button>
+
+  <!-- Inspector , shows the radar value at the center of the map, updates as you pan -->
+  <button class="tool-btn" id="tool-inspector" onclick="toggleInspector()" title="Inspector , shows the radar value at the center of the map">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+      <circle cx="12" cy="12" r="7"/>
+      <line x1="12" y1="1" x2="12" y2="5"/>
+      <line x1="12" y1="19" x2="12" y2="23"/>
+      <line x1="1" y1="12" x2="5" y2="12"/>
+      <line x1="19" y1="12" x2="23" y2="12"/>
     </svg>
   </button>
 
@@ -13211,6 +13267,147 @@ function _scClosePanel() {
   document.addEventListener('touchstart', outside, { passive: true });
 })();
 
+// ── INSPECTOR TOOL ──────────────────────────────────────────────────────
+// A fixed crosshair sits at the center of the screen; as you pan the map
+// underneath it, it reads the real radar value there (dBZ/velocity/CC/ZDR)
+// from the same value mesh used to render single-site Level-2 products.
+// For layers with no queryable value data (MRMS mosaic, satellite, etc)
+// it falls back to a best-effort read of the rendered pixel color - which
+// browsers will usually block for cross-origin tiles, in which case it
+// just reports "no data" instead of throwing.
+let _inspEnabled = false;
+let _inspEl = null, _inspLabelEl = null, _inspRafPending = false;
+const INSP_UNITS = { ref: 'dBZ', vel: 'mph', cc: '', zdr: 'dB' };
+
+function _inspQuadContains(mesh, k, lon, lat) {
+  let inside = false;
+  const xs = [mesh[k], mesh[k + 2], mesh[k + 4], mesh[k + 6]];
+  const ys = [mesh[k + 1], mesh[k + 3], mesh[k + 5], mesh[k + 7]];
+  for (let a = 0, b = 3; a < 4; b = a++) {
+    if (((ys[a] > lat) !== (ys[b] > lat))
+      && (lon < (xs[b] - xs[a]) * (lat - ys[a]) / (ys[b] - ys[a]) + xs[a])) inside = !inside;
+  }
+  return inside;
+}
+
+function _inspFindMeshValue(lon, lat) {
+  if (!_lastMeshData || !_lastMeshBounds) return null;
+  const minLon = _lastMeshBounds[0], minLat = _lastMeshBounds[1];
+  const maxLon = _lastMeshBounds[2], maxLat = _lastMeshBounds[3];
+  if (lon < minLon || lon > maxLon || lat < minLat || lat > maxLat) return null;
+  const mesh = _lastMeshData;
+  for (let i = 0; i < mesh.length; i += 9) {
+    if (_inspQuadContains(mesh, i, lon, lat)) return mesh[i + 8];
+  }
+  return null;
+}
+
+function _inspFormatValue(product, value) {
+  if (product === 'vel') return (value * 2.23694).toFixed(1); // m/s -> mph
+  return value.toFixed(1);
+}
+
+// Best-effort pixel sample for image-only layers (no real value data).
+// Cross-origin tiles (most WMS/tile sources) will make getImageData
+// throw a SecurityError - caught below, falls back to "no data".
+function _inspSamplePixel(clientX, clientY) {
+  try {
+    const el = document.elementFromPoint(clientX, clientY);
+    if (!el) return null;
+    if (el.tagName === 'CANVAS') {
+      const rect = el.getBoundingClientRect();
+      const ctx = el.getContext('2d');
+      const x = Math.round((clientX - rect.left) * (el.width / rect.width));
+      const y = Math.round((clientY - rect.top) * (el.height / rect.height));
+      const d = ctx.getImageData(x, y, 1, 1).data;
+      return d[3] === 0 ? null : `rgb(${d[0]},${d[1]},${d[2]})`;
+    }
+    const img = el.tagName === 'IMG' ? el : el.closest?.('img');
+    if (!img) return null;
+    const rect = img.getBoundingClientRect();
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || rect.width;
+    canvas.height = img.naturalHeight || rect.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const x = Math.round((clientX - rect.left) / rect.width * canvas.width);
+    const y = Math.round((clientY - rect.top) / rect.height * canvas.height);
+    const d = ctx.getImageData(x, y, 1, 1).data;
+    return d[3] === 0 ? null : `rgb(${d[0]},${d[1]},${d[2]})`;
+  } catch (e) {
+    return null; // tainted canvas - cross-origin tile, can't read pixels
+  }
+}
+
+function _inspSetReadout(value, unit, color) {
+  if (!_inspLabelEl) return;
+  _inspLabelEl.querySelector('.insp-value').textContent = value;
+  _inspLabelEl.querySelector('.insp-unit').textContent = unit;
+  if (_inspEl) _inspEl.style.background = color;
+}
+
+function _inspUpdate() {
+  _inspRafPending = false;
+  if (!_inspEnabled || typeof map === 'undefined') return;
+  const center = map.getCenter();
+  const meshOk = _lastMeshData && _lastMeshProduct
+    && typeof activeLayers !== 'undefined' && activeLayers.nexrad
+    && currentProduct === _lastMeshProduct && _l3Overlay && map.hasLayer(_l3Overlay);
+
+  if (meshOk) {
+    const value = _inspFindMeshValue(center.lng, center.lat);
+    if (value == null || value !== value) { // null or NaN (range fold)
+      _inspSetReadout('No data', '', 'rgba(120,120,120,0.5)');
+      return;
+    }
+    const unit = INSP_UNITS[_lastMeshProduct] || '';
+    const color = _meshColorFn(_lastMeshProduct)(value) || 'rgba(120,120,120,0.5)';
+    _inspSetReadout(_inspFormatValue(_lastMeshProduct, value), unit, color);
+    return;
+  }
+
+  const rect = map.getContainer().getBoundingClientRect();
+  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
+  const px = _inspSamplePixel(cx, cy);
+  if (px) _inspSetReadout('~approx', px, px);
+  else _inspSetReadout('No data', 'for this layer', 'rgba(120,120,120,0.5)');
+}
+
+function _inspScheduleUpdate() {
+  if (_inspRafPending) return;
+  _inspRafPending = true;
+  requestAnimationFrame(_inspUpdate);
+}
+
+function toggleInspector() {
+  if (_inspEnabled) _inspDisable(); else _inspEnable();
+}
+
+function _inspEnable() {
+  _inspEnabled = true;
+  document.getElementById('tool-inspector')?.classList.add('insp-on');
+
+  _inspEl = document.createElement('div');
+  _inspEl.id = 'inspector-crosshair';
+  document.body.appendChild(_inspEl);
+
+  _inspLabelEl = document.createElement('div');
+  _inspLabelEl.id = 'inspector-readout';
+  _inspLabelEl.innerHTML = '<span class="insp-value">--</span><span class="insp-unit"></span>';
+  document.body.appendChild(_inspLabelEl);
+
+  map.on('move', _inspScheduleUpdate);
+  _inspUpdate();
+}
+
+function _inspDisable() {
+  _inspEnabled = false;
+  document.getElementById('tool-inspector')?.classList.remove('insp-on');
+  map.off('move', _inspScheduleUpdate);
+  if (_inspEl) { _inspEl.remove(); _inspEl = null; }
+  if (_inspLabelEl) { _inspLabelEl.remove(); _inspLabelEl = null; }
+}
+
 function _scRenderCone() {
   if (_scPolygon) { map.removeLayer(_scPolygon); _scPolygon = null; }
   if (!_scTrack) return;
@@ -14556,6 +14753,7 @@ let _l3Product  = null;
 let _l3Station  = null;
 let _l3Overlay  = null;   // L.imageOverlay on the map
 let _l3Canvas   = null;   // offscreen HTMLCanvasElement
+let _lastMeshData = null, _lastMeshBounds = null, _lastMeshProduct = null;
 
 // ── Radar Web Worker (radar_worker.bundle.js parses L2 binary) ──
 let _radarWebWorker   = null;
@@ -15062,6 +15260,12 @@ function _renderMesh(result, product, station) {
     _dpAlert('❌ No data returned for ' + product.toUpperCase());
     return;
   }
+
+  // Keep the raw value mesh around so the Inspector tool can read real
+  // dBZ/velocity/etc values at a point, not just the rendered color.
+  _lastMeshData = meshData;
+  _lastMeshBounds = bounds;
+  _lastMeshProduct = product;
 
   var minLon = bounds[0], minLat = bounds[1], maxLon = bounds[2], maxLat = bounds[3];
   var lonRange = maxLon - minLon;
