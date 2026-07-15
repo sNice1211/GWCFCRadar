@@ -13408,7 +13408,7 @@ function _scClosePanel() {
 // browsers will usually block for cross-origin tiles, in which case it
 // just reports "no data" instead of throwing.
 let _inspEnabled = false;
-let _inspEl = null, _inspLabelEl = null, _inspRafPending = false;
+let _inspEl = null, _inspLabelEl = null, _inspRafPending = false, _inspInterval = null;
 const INSP_UNITS = { ref: 'dBZ', vel: 'mph', cc: '', zdr: 'dB' };
 
 function _inspQuadContains(mesh, k, lon, lat) {
@@ -13439,36 +13439,67 @@ function _inspFormatValue(product, value) {
   return value.toFixed(1);
 }
 
-// Best-effort pixel sample for image-only layers (no real value data).
-// Cross-origin tiles (most WMS/tile sources) will make getImageData
-// throw a SecurityError - caught below, falls back to "no data".
-function _inspSamplePixel(clientX, clientY) {
-  try {
-    const el = document.elementFromPoint(clientX, clientY);
-    if (!el) return null;
-    if (el.tagName === 'CANVAS') {
-      const rect = el.getBoundingClientRect();
-      const ctx = el.getContext('2d');
-      const x = Math.round((clientX - rect.left) * (el.width / rect.width));
-      const y = Math.round((clientY - rect.top) * (el.height / rect.height));
-      const d = ctx.getImageData(x, y, 1, 1).data;
-      return d[3] === 0 ? null : `rgb(${d[0]},${d[1]},${d[2]})`;
-    }
-    const img = el.tagName === 'IMG' ? el : el.closest?.('img');
-    if (!img) return null;
+// Sample the actual displayed color of the radar layer at a screen point.
+// The radar tiles live in `radarPane`, which has pointer-events:none, so
+// elementFromPoint() can't see them - instead we scan the radar tile <img>s
+// directly and find the visible one covering the point. Returns {r,g,b},
+// {transparent:true} (no echo there), or null (can't read / no tile).
+function _inspSampleRadarColor(cx, cy) {
+  if (typeof map === 'undefined' || !map) return null;
+  const pane = map.getPane('radarPane');
+  if (!pane) return null;
+  const imgs = pane.querySelectorAll('img');
+  let found = null;
+  // DOM order = paint order, so the LAST covering+visible tile is on top.
+  imgs.forEach(img => {
+    if (!img.complete || !img.naturalWidth) return;
+    const layer = img.closest('.leaflet-layer');
+    const op = layer ? parseFloat(getComputedStyle(layer).opacity || '1') : 1;
+    if (op < 0.05) return; // hidden pool frame
     const rect = img.getBoundingClientRect();
+    if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return;
+    found = img;
+  });
+  if (!found) return null;
+  try {
+    const rect = found.getBoundingClientRect();
     const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth || rect.width;
-    canvas.height = img.naturalHeight || rect.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    const x = Math.round((clientX - rect.left) / rect.width * canvas.width);
-    const y = Math.round((clientY - rect.top) / rect.height * canvas.height);
+    canvas.width = found.naturalWidth;
+    canvas.height = found.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(found, 0, 0);
+    let x = Math.round((cx - rect.left) / rect.width * found.naturalWidth);
+    let y = Math.round((cy - rect.top) / rect.height * found.naturalHeight);
+    x = Math.max(0, Math.min(canvas.width - 1, x));
+    y = Math.max(0, Math.min(canvas.height - 1, y));
     const d = ctx.getImageData(x, y, 1, 1).data;
-    return d[3] === 0 ? null : `rgb(${d[0]},${d[1]},${d[2]})`;
+    if (d[3] < 10) return { transparent: true };
+    return { r: d[0], g: d[1], b: d[2] };
   } catch (e) {
-    return null; // tainted canvas - cross-origin tile, can't read pixels
+    return null; // CORS-tainted (e.g. iOS Safari) - can't read pixels
   }
+}
+
+// Map a displayed RGB color to the nearest NWS reflectivity step, returning
+// its { dbz, hex, label }. Matches against the custom palette when the user
+// has customized colors, otherwise against the standard NWS N0Q source colors.
+function _inspColorToDbz(r, g, b) {
+  let best = -1, bestD = Infinity;
+  if (_customRadarColors) {
+    for (let j = 0; j < _customRadarColors.length; j++) {
+      const c = _hexToRgb(_customRadarColors[j]);
+      const d = (r-c[0])*(r-c[0]) + (g-c[1])*(g-c[1]) + (b-c[2])*(b-c[2]);
+      if (d < bestD) { bestD = d; best = j; }
+    }
+  } else {
+    for (let j = 0; j < NWS_SOURCE_COLORS.length; j++) {
+      const s = NWS_SOURCE_COLORS[j];
+      const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
+      if (d < bestD) { bestD = d; best = j; }
+    }
+  }
+  if (best < 0 || bestD > 6000) return null; // too far from any radar color
+  return NWS_DBZ_META[best];
 }
 
 function _inspSetReadout(value, unit, color) {
@@ -13482,10 +13513,18 @@ function _inspUpdate() {
   _inspRafPending = false;
   if (!_inspEnabled || typeof map === 'undefined') return;
   const center = map.getCenter();
-  const meshOk = _lastMeshData && _lastMeshProduct
-    && typeof activeLayers !== 'undefined' && activeLayers.nexrad
-    && currentProduct === _lastMeshProduct && _l3Overlay && map.hasLayer(_l3Overlay);
+  const rect = map.getContainer().getBoundingClientRect();
+  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
 
+  const radarOn = (typeof activeLayers !== 'undefined' && activeLayers.nexrad);
+  if (!radarOn) {
+    _inspSetReadout('Radar off', '', 'rgba(120,120,120,0.5)');
+    return;
+  }
+
+  // 1) Exact values from the raw mesh (L3 canvas products: CC / ZDR)
+  const meshOk = _lastMeshData && _lastMeshProduct
+    && currentProduct === _lastMeshProduct && _l3Overlay && map.hasLayer(_l3Overlay);
   if (meshOk) {
     const value = _inspFindMeshValue(center.lng, center.lat);
     if (value == null || value !== value) { // null or NaN (range fold)
@@ -13498,11 +13537,26 @@ function _inspUpdate() {
     return;
   }
 
-  const rect = map.getContainer().getBoundingClientRect();
-  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
-  const px = _inspSamplePixel(cx, cy);
-  if (px) _inspSetReadout('~approx', px, px);
-  else _inspSetReadout('No data', 'for this layer', 'rgba(120,120,120,0.5)');
+  // 2) Reflectivity: read the displayed pixel color, map to NWS dBZ + intensity
+  const isRef = (currentProduct === 'ref' || currentProduct === undefined || currentProduct === null || currentProduct === '');
+  const s = _inspSampleRadarColor(cx, cy);
+  if (!s) {
+    _inspSetReadout('No data', 'for this layer', 'rgba(120,120,120,0.5)');
+    return;
+  }
+  if (s.transparent) {
+    _inspSetReadout('No echo', '', 'rgba(120,120,120,0.35)');
+    return;
+  }
+  if (isRef) {
+    const meta = _inspColorToDbz(s.r, s.g, s.b);
+    if (meta) { _inspSetReadout(meta.dbz + ' dBZ', '· ' + meta.label, meta.hex); return; }
+    // A color that isn't part of the reflectivity ramp
+    _inspSetReadout('No echo', '', `rgb(${s.r},${s.g},${s.b})`);
+    return;
+  }
+  // 3) Other image layers (velocity/dual-pol tiles): show the raw color
+  _inspSetReadout('~ color', `rgb(${s.r},${s.g},${s.b})`, `rgb(${s.r},${s.g},${s.b})`);
 }
 
 function _inspScheduleUpdate() {
@@ -13529,6 +13583,9 @@ function _inspEnable() {
   document.body.appendChild(_inspLabelEl);
 
   map.on('move', _inspScheduleUpdate);
+  // Refresh periodically too, so the value tracks animation frames and newly
+  // loaded tiles even when the map isn't moving.
+  _inspInterval = setInterval(_inspScheduleUpdate, 400);
   _inspUpdate();
 }
 
@@ -13536,6 +13593,7 @@ function _inspDisable() {
   _inspEnabled = false;
   document.getElementById('tool-inspector')?.classList.remove('insp-on');
   map.off('move', _inspScheduleUpdate);
+  if (_inspInterval) { clearInterval(_inspInterval); _inspInterval = null; }
   if (_inspEl) { _inspEl.remove(); _inspEl = null; }
   if (_inspLabelEl) { _inspLabelEl.remove(); _inspLabelEl = null; }
 }
