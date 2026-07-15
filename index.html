@@ -13267,10 +13267,16 @@ function _scBuildTrack(start, end) {
   for (const p of cap) ring.push(p);
   for (let i = N; i >= 0; i--) ring.push(rightEdges[i]);
 
-  // 4) Offset storm-center line: the centerline shifted sideways by offset% of cap radius
-  const offsetMiles = (offset / 100) * capRadiusMiles;
-  const centerLine = center.map((c, i) =>
-    offsetMiles === 0 ? c : _scDestinationPoint(c, localHeading[i] + 90, offsetMiles));
+  // 4) Offset storm-center line: shifted sideways by offset% of the LOCAL cone
+  //    half-width so it always stays inside the cone (apex has zero width, so the
+  //    line starts at the apex and fans out no further than the edge). Max |offset|
+  //    is 50%, so the line never reaches the wall.
+  const offsetFrac = offset / 100;
+  const centerLine = center.map((c, i) => {
+    const halfWidth = capRadiusMiles * (i / N); // same growth as the edges
+    const offMiles = offsetFrac * halfWidth;
+    return offMiles === 0 ? c : _scDestinationPoint(c, localHeading[i] + 90, offMiles);
+  });
 
   return { start, end, heading, distanceMiles, capRadiusMiles, ring,
            center, centerLine, leftEdges, rightEdges };
