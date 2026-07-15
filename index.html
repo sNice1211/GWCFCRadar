@@ -12405,6 +12405,7 @@ function clearAllDrawings() {
   if (_trackPreview) { map.removeLayer(_trackPreview); _trackPreview = null; }
   _dtbClearAll();
   _txtClear();
+  if (typeof _scClearAll === 'function') _scClearAll(); // remove all storm cones
   // Clear polygon spatial filter
   if (_polyFilter && _polyFilter.active) _clearPolyFilter();
   deactivateTool();
@@ -13183,6 +13184,8 @@ let _scCenterLine = null; // L.polyline for the offset storm-center line
 let _scDotLayer = null;  // L.layerGroup of edge dots
 let _scDrawing  = false;
 let _scStartLatLng = null;
+let _scDragPath = [];    // latlngs captured during the current drag
+let _scCones    = [];    // committed cones that stay on the map: {track,polygon,centerLine,dotLayer}
 
 function _scBearingDegrees(a, b) {
   const lat1 = a.lat * Math.PI / 180, lat2 = b.lat * Math.PI / 180;
@@ -13209,44 +13212,77 @@ function _scDestinationPoint(origin, bearingDeg, distanceMiles) {
   return L.latLng(lat2 * 180 / Math.PI, ((lng2 * 180 / Math.PI + 540) % 360) - 180);
 }
 
-function _scBuildTrack(start, end) {
-  const distanceMiles = map.distance(start, end) / 1609.344;
-  const heading = _scBearingDegrees(start, end);
-  const capRadiusMiles = Math.max(SC_MIN_CAP_RADIUS_MILES, distanceMiles * 0.22);
+// Linear interpolation between two latlngs (fine for the short segments of a drag)
+function _scInterpLatLng(a, b, f) {
+  return L.latLng(a.lat + (b.lat - a.lat) * f, a.lng + (b.lng - a.lng) * f);
+}
 
-  // Read live toolbar params (curvature bends the path, offset shifts the centerline)
-  const curve  = (typeof _scGetCurve  === 'function') ? _scGetCurve()  : 0;
-  const offset = (typeof _scGetOffset === 'function') ? _scGetOffset() : 0;
+// Build a cone that follows the ACTUAL drawn path, so different sections can curve
+// differently. `path` is the array of latlngs the pointer travelled through.
+function _scBuildTrack(path) {
+  if (!path || path.length === 0) return null;
 
-  // Number of samples along the centerline (more when curved for a smooth bend)
-  const N = SC_ARC_SEGMENTS;
-
-  // Peak sideways bulge of the path, in miles. curve is -10..10.
-  const bulgeMiles = (curve / 10) * distanceMiles * 0.6;
-
-  // 1) Build the curved centerline: straight base point + perpendicular bulge that
-  //    peaks in the middle (sin curve) so the apex and cap stay anchored.
-  const center = [];
-  for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const base = _scDestinationPoint(start, heading, distanceMiles * t);
-    const bulge = bulgeMiles * Math.sin(Math.PI * t);
-    center.push(bulge === 0 ? base : _scDestinationPoint(base, heading + 90, bulge));
+  // Drop near-duplicate consecutive points so the geometry is stable
+  const pts = [path[0]];
+  for (let i = 1; i < path.length; i++) {
+    if (map.distance(path[i], pts[pts.length - 1]) > 1) pts.push(path[i]);
   }
 
-  // Local heading at each centerline sample (follow the bend)
+  const start = pts[0];
+  const end   = pts[pts.length - 1];
+
+  // Cumulative distance along the drawn path
+  const cum = [0];
+  let totalMeters = 0;
+  for (let i = 1; i < pts.length; i++) {
+    totalMeters += map.distance(pts[i - 1], pts[i]);
+    cum.push(totalMeters);
+  }
+  const distanceMiles = totalMeters / 1609.344;
+  const heading = pts.length > 1 ? _scBearingDegrees(start, end) : 0;
+  const capRadiusMiles = Math.max(SC_MIN_CAP_RADIUS_MILES, distanceMiles * 0.22);
+
+  const curve  = (typeof _scGetCurve  === 'function') ? _scGetCurve()  : 0;
+  const offset = (typeof _scGetOffset === 'function') ? _scGetOffset() : 0;
+  const N = SC_ARC_SEGMENTS;
+
+  // 1) Resample the drawn path into N+1 evenly-spaced center points (arc-length),
+  //    which both smooths the input and lets the cone follow every bend you drew.
+  const center = [];
+  if (pts.length === 1 || totalMeters === 0) {
+    for (let i = 0; i <= N; i++) center.push(start);
+  } else {
+    let seg = 0;
+    for (let i = 0; i <= N; i++) {
+      const target = totalMeters * (i / N);
+      while (seg < pts.length - 2 && cum[seg + 1] < target) seg++;
+      const segLen = (cum[seg + 1] - cum[seg]) || 1;
+      const f = Math.max(0, Math.min(1, (target - cum[seg]) / segLen));
+      center.push(_scInterpLatLng(pts[seg], pts[seg + 1], f));
+    }
+  }
+
+  // 1b) Optional uniform CURVE bulge layered on top (sine, anchored at both ends)
+  const bulgeMiles = (curve / 10) * distanceMiles * 0.6;
+  if (bulgeMiles !== 0) {
+    for (let i = 0; i <= N; i++) {
+      const b = bulgeMiles * Math.sin(Math.PI * (i / N));
+      if (b !== 0) center[i] = _scDestinationPoint(center[i], heading + 90, b);
+    }
+  }
+
+  // Local heading at each sample (follows the bends)
   const localHeading = [];
   for (let i = 0; i <= N; i++) {
     const a = center[Math.max(0, i - 1)];
     const b = center[Math.min(N, i + 1)];
-    localHeading.push(_scBearingDegrees(a, b));
+    localHeading.push(map.distance(a, b) < 1 ? heading : _scBearingDegrees(a, b));
   }
 
-  // 2) Left/right edges: half-width grows linearly from 0 at the apex to cap radius.
+  // 2) Left/right edges: half-width grows from 0 at the apex to cap radius
   const leftEdges = [], rightEdges = [];
   for (let i = 0; i <= N; i++) {
-    const t = i / N;
-    const halfWidth = capRadiusMiles * t;
+    const halfWidth = capRadiusMiles * (i / N);
     const hd = localHeading[i];
     leftEdges.push(halfWidth === 0 ? center[i] : _scDestinationPoint(center[i], hd - 90, halfWidth));
     rightEdges.push(halfWidth === 0 ? center[i] : _scDestinationPoint(center[i], hd + 90, halfWidth));
@@ -13257,29 +13293,26 @@ function _scBuildTrack(start, end) {
   const cap = [];
   for (let i = 1; i < SC_ARC_SEGMENTS; i++) {
     const ratio = i / SC_ARC_SEGMENTS;
-    const arcBearing = (capHeading - 90) + (180 * ratio);
-    cap.push(_scDestinationPoint(center[N], arcBearing, capRadiusMiles));
+    cap.push(_scDestinationPoint(center[N], (capHeading - 90) + (180 * ratio), capRadiusMiles));
   }
 
-  // Assemble the outline ring: up the left edge, around the cap, down the right edge
+  // Assemble the outline ring
   const ring = [];
   for (let i = 0; i <= N; i++) ring.push(leftEdges[i]);
   for (const p of cap) ring.push(p);
   for (let i = N; i >= 0; i--) ring.push(rightEdges[i]);
 
-  // 4) Offset storm-center line: shifted sideways by offset% of the LOCAL cone
-  //    half-width so it always stays inside the cone (apex has zero width, so the
-  //    line starts at the apex and fans out no further than the edge). Max |offset|
-  //    is 50%, so the line never reaches the wall.
+  // 4) Offset storm-center line: shifted by offset% of the LOCAL half-width so it
+  //    always stays inside the cone.
   const offsetFrac = offset / 100;
   const centerLine = center.map((c, i) => {
-    const halfWidth = capRadiusMiles * (i / N); // same growth as the edges
+    const halfWidth = capRadiusMiles * (i / N);
     const offMiles = offsetFrac * halfWidth;
     return offMiles === 0 ? c : _scDestinationPoint(c, localHeading[i] + 90, offMiles);
   });
 
   return { start, end, heading, distanceMiles, capRadiusMiles, ring,
-           center, centerLine, leftEdges, rightEdges };
+           center, centerLine, leftEdges, rightEdges, path: pts };
 }
 
 function _scFormatEta(hours) {
@@ -13552,15 +13585,17 @@ function _onScDown(e) {
   if (activeTool !== 'stormcone') return;
   _scDrawing = true;
   _scStartLatLng = e.latlng;
-  _scTrack = _scBuildTrack(e.latlng, e.latlng);
+  _scDragPath = [e.latlng];
+  _scTrack = _scBuildTrack(_scDragPath);
   _scRenderCone();
-  _scSetStatus('Drag to set storm direction and spread…');
+  _scSetStatus('Drag along the storm path — curve it however you like…');
   map.on('mousemove', _onScMove);
   map.on('mouseup', _onScUp);
 }
 function _onScMove(e) {
   if (!_scDrawing) return;
-  _scTrack = _scBuildTrack(_scStartLatLng, e.latlng);
+  _scDragPath.push(e.latlng);
+  _scTrack = _scBuildTrack(_scDragPath);
   _scRenderCone();
 }
 function _onScUp() {
@@ -13579,9 +13614,10 @@ function _onScTouchStart(e) {
   const latlng = map.containerPointToLatLng(containerPt);
   _scDrawing = true;
   _scStartLatLng = latlng;
-  _scTrack = _scBuildTrack(latlng, latlng);
+  _scDragPath = [latlng];
+  _scTrack = _scBuildTrack(_scDragPath);
   _scRenderCone();
-  _scSetStatus('Drag to set storm direction and spread…');
+  _scSetStatus('Drag along the storm path — curve it however you like…');
   map.getContainer().addEventListener('touchmove', _onScTouchMove, { passive: false });
   map.getContainer().addEventListener('touchend', _onScTouchEnd, { passive: false });
 }
@@ -13590,7 +13626,8 @@ function _onScTouchMove(e) {
   if (!_scDrawing) return;
   const touch = e.touches[0];
   const containerPt = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
-  _scTrack = _scBuildTrack(_scStartLatLng, map.containerPointToLatLng(containerPt));
+  _scDragPath.push(map.containerPointToLatLng(containerPt));
+  _scTrack = _scBuildTrack(_scDragPath);
   _scRenderCone();
 }
 function _onScTouchEnd(e) {
@@ -13618,8 +13655,8 @@ function _scOnSpeedChange() {
 }
 
 function _scOnCurveChange() {
-  // Curvature reshapes the cone, so rebuild geometry from the same drag endpoints.
-  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.start, _scTrack.end); _scRenderCone(); _scComputeAndShowResults(); }
+  // Curvature reshapes the cone, so rebuild geometry from the same drawn path.
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path); _scRenderCone(); _scComputeAndShowResults(); }
 }
 
 function _scOnDotsChange() {
@@ -13629,7 +13666,7 @@ function _scOnDotsChange() {
 
 function _scOnOffsetChange() {
   // Offset moves the center line, rebuild + re-render.
-  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.start, _scTrack.end); _scRenderCone(); }
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path); _scRenderCone(); }
 }
 
 function _scGetCurve() {
@@ -13686,12 +13723,29 @@ function _scRenderResults(matches, speed) {
   `).join('');
 }
 
+// Freeze the active cone in place (keeps its layers on the map) so a new one
+// can be drawn on top without erasing it.
+function _scCommitCurrent() {
+  if (!_scTrack) return;
+  _scCones.push({ track: _scTrack, polygon: _scPolygon, centerLine: _scCenterLine, dotLayer: _scDotLayer });
+  // Detach references so _scRenderCone() won't remove these committed layers
+  _scTrack = null; _scPolygon = null; _scCenterLine = null; _scDotLayer = null;
+}
+
 function _scNew() {
   if (activeTool !== 'stormcone') toggleStormConeTool();
+  _scCommitCurrent(); // previous cone stays on the map
+  _scClosePanel();
+  _scSetStatus('Click and drag on the map to draw a new storm cone.');
+}
+
+// Remove every cone (active + committed) — used by "Clear all drawings"
+function _scClearAll() {
+  _scCones.forEach(c => [c.polygon, c.centerLine, c.dotLayer].forEach(l => { if (l) { try { map.removeLayer(l); } catch(e){} } }));
+  _scCones = [];
   _scTrack = null;
   _scRenderCone();
   _scClosePanel();
-  _scSetStatus('Click and drag on the map to draw a storm cone.');
 }
 
 
