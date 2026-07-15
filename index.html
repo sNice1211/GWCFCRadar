@@ -510,21 +510,43 @@ body {
 #anim-time-display {
   font-family: var(--display); font-weight: 700; font-size: 11px; color: var(--accent2);
   min-width: 85px; text-align: center; flex-shrink: 0;
+  cursor: grab; user-select: none;
 }
 .animbar-sep {
   width: 1px; height: 24px; background: var(--border2); margin: 0 4px; flex-shrink: 0;
 }
 #zoom-controls {
-  display: flex; gap: 2px; flex-shrink: 0;
+  display: flex; flex-direction: column; gap: 2px; flex-shrink: 0;
 }
 .zoom-btn {
   background: none; border: 1px solid var(--border2); color: var(--text);
-  font-family: var(--display); font-weight: 700; width: 24px; height: 24px;
-  border-radius: 4px; cursor: pointer; font-size: 11px;
+  font-family: var(--display); font-weight: 700; width: 24px; height: 13px;
+  border-radius: 4px; cursor: pointer; font-size: 11px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
   transition: background 0.1s;
 }
 .zoom-btn:hover { background: rgba(26,143,255,0.15); border-color: var(--accent); }
+
+/* Timezone popover - hold down on time display to open */
+#tz-popover {
+  display: none; position: fixed;
+  background: rgb(8,12,16); border: 1px solid var(--border2);
+  border-radius: 10px; z-index: 1000; min-width: 200px;
+  max-height: 400px; overflow-y: auto;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+#tz-popover.visible { display: block; }
+.tz-option {
+  padding: 10px 12px; border-bottom: 1px solid var(--border);
+  cursor: pointer; display: flex; justify-content: space-between;
+  align-items: center; transition: background 0.1s;
+  font-family: var(--display); font-weight: 700; font-size: 11px; color: var(--text);
+}
+.tz-option:last-child { border-bottom: none; }
+.tz-option:hover { background: rgba(26,143,255,0.15); }
+.tz-option.active { background: rgba(26,143,255,0.2); color: var(--accent2); }
+.tz-option-name { flex: 1; }
+.tz-option-time { color: var(--muted); font-family: var(--mono); font-size: 10px; margin-left: 12px; }
 
 /* ── MAP CONTROLS ── */
 #map-controls {
@@ -6408,9 +6430,10 @@ body.clean-mode #clean-hint { opacity: 1; }
         </div>
         <div id="timeline-labels"></div>
       </div>
-      <div id="anim-time-display">--:-- --- --</div>
+      <div id="anim-time-display" title="Hold to change timezone">--:-- --- --</div>
       <button id="play-btn" onclick="togglePlay()" title="Play Forward">▶</button>
     </div>
+    <div id="tz-popover"></div>
 
 
 
@@ -13154,8 +13177,10 @@ const SC_MIN_TRACK_MILES = 1;
 const SC_DEFAULT_SPEED_MPH = 35;
 const SC_MIN_CAP_RADIUS_MILES = 5;
 
-let _scTrack    = null;  // { start, end, heading, distanceMiles, capRadiusMiles, ring }
+let _scTrack    = null;  // { start, end, heading, distanceMiles, capRadiusMiles, ring, ... }
 let _scPolygon  = null;  // L.polygon layer for the current cone
+let _scCenterLine = null; // L.polyline for the offset storm-center line
+let _scDotLayer = null;  // L.layerGroup of edge dots
 let _scDrawing  = false;
 let _scStartLatLng = null;
 
@@ -13189,19 +13214,66 @@ function _scBuildTrack(start, end) {
   const heading = _scBearingDegrees(start, end);
   const capRadiusMiles = Math.max(SC_MIN_CAP_RADIUS_MILES, distanceMiles * 0.22);
 
-  const leftEdge  = _scDestinationPoint(end, heading - 90, capRadiusMiles);
-  const rightEdge = _scDestinationPoint(end, heading + 90, capRadiusMiles);
+  // Read live toolbar params (curvature bends the path, offset shifts the centerline)
+  const curve  = (typeof _scGetCurve  === 'function') ? _scGetCurve()  : 0;
+  const offset = (typeof _scGetOffset === 'function') ? _scGetOffset() : 0;
 
-  const ring = [start, leftEdge];
+  // Number of samples along the centerline (more when curved for a smooth bend)
+  const N = SC_ARC_SEGMENTS;
+
+  // Peak sideways bulge of the path, in miles. curve is -10..10.
+  const bulgeMiles = (curve / 10) * distanceMiles * 0.6;
+
+  // 1) Build the curved centerline: straight base point + perpendicular bulge that
+  //    peaks in the middle (sin curve) so the apex and cap stay anchored.
+  const center = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const base = _scDestinationPoint(start, heading, distanceMiles * t);
+    const bulge = bulgeMiles * Math.sin(Math.PI * t);
+    center.push(bulge === 0 ? base : _scDestinationPoint(base, heading + 90, bulge));
+  }
+
+  // Local heading at each centerline sample (follow the bend)
+  const localHeading = [];
+  for (let i = 0; i <= N; i++) {
+    const a = center[Math.max(0, i - 1)];
+    const b = center[Math.min(N, i + 1)];
+    localHeading.push(_scBearingDegrees(a, b));
+  }
+
+  // 2) Left/right edges: half-width grows linearly from 0 at the apex to cap radius.
+  const leftEdges = [], rightEdges = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const halfWidth = capRadiusMiles * t;
+    const hd = localHeading[i];
+    leftEdges.push(halfWidth === 0 ? center[i] : _scDestinationPoint(center[i], hd - 90, halfWidth));
+    rightEdges.push(halfWidth === 0 ? center[i] : _scDestinationPoint(center[i], hd + 90, halfWidth));
+  }
+
+  // 3) Rounded cap arc across the wide end
+  const capHeading = localHeading[N];
+  const cap = [];
   for (let i = 1; i < SC_ARC_SEGMENTS; i++) {
     const ratio = i / SC_ARC_SEGMENTS;
-    const arcBearing = (heading - 90) + (180 * ratio);
-    ring.push(_scDestinationPoint(end, arcBearing, capRadiusMiles));
+    const arcBearing = (capHeading - 90) + (180 * ratio);
+    cap.push(_scDestinationPoint(center[N], arcBearing, capRadiusMiles));
   }
-  ring.push(rightEdge);
-  ring.push(start);
 
-  return { start, end, heading, distanceMiles, capRadiusMiles, ring };
+  // Assemble the outline ring: up the left edge, around the cap, down the right edge
+  const ring = [];
+  for (let i = 0; i <= N; i++) ring.push(leftEdges[i]);
+  for (const p of cap) ring.push(p);
+  for (let i = N; i >= 0; i--) ring.push(rightEdges[i]);
+
+  // 4) Offset storm-center line: the centerline shifted sideways by offset% of cap radius
+  const offsetMiles = (offset / 100) * capRadiusMiles;
+  const centerLine = center.map((c, i) =>
+    offsetMiles === 0 ? c : _scDestinationPoint(c, localHeading[i] + 90, offsetMiles));
+
+  return { start, end, heading, distanceMiles, capRadiusMiles, ring,
+           center, centerLine, leftEdges, rightEdges };
 }
 
 function _scFormatEta(hours) {
@@ -13430,13 +13502,44 @@ function _inspDisable() {
 }
 
 function _scRenderCone() {
+  // Clear previous cone + decorations
   if (_scPolygon) { map.removeLayer(_scPolygon); _scPolygon = null; }
+  if (_scCenterLine) { map.removeLayer(_scCenterLine); _scCenterLine = null; }
+  if (_scDotLayer) { map.removeLayer(_scDotLayer); _scDotLayer = null; }
   if (!_scTrack) return;
+
+  // Main cone shape
   _scPolygon = L.polygon(_scTrack.ring, {
     color: '#ffb347', weight: 2, opacity: 0.95,
     fillColor: '#ff7a18', fillOpacity: 0.25,
     interactive: false,
   }).addTo(map);
+
+  // Offset storm-center line down the middle
+  if (_scTrack.centerLine && _scTrack.centerLine.length > 1) {
+    _scCenterLine = L.polyline(_scTrack.centerLine, {
+      color: '#ffe066', weight: 2, opacity: 0.9, dashArray: '6 5',
+      interactive: false,
+    }).addTo(map);
+  }
+
+  // Dots along the two edges
+  const dots = (typeof _scGetDots === 'function') ? _scGetDots() : 0;
+  if (dots > 0 && _scTrack.leftEdges && _scTrack.rightEdges) {
+    const markers = [];
+    const N = _scTrack.leftEdges.length - 1;
+    for (let d = 1; d <= dots; d++) {
+      const t = d / (dots + 1);
+      const i = Math.round(t * N);
+      [_scTrack.leftEdges[i], _scTrack.rightEdges[i]].forEach(pt => {
+        if (pt) markers.push(L.circleMarker(pt, {
+          radius: 3, color: '#ffb347', weight: 1,
+          fillColor: '#fff', fillOpacity: 0.95, interactive: false,
+        }));
+      });
+    }
+    if (markers.length) _scDotLayer = L.layerGroup(markers).addTo(map);
+  }
 }
 
 function _onScDown(e) {
@@ -13509,15 +13612,18 @@ function _scOnSpeedChange() {
 }
 
 function _scOnCurveChange() {
-  if (_scTrack) _scComputeAndShowResults();
+  // Curvature reshapes the cone, so rebuild geometry from the same drag endpoints.
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.start, _scTrack.end); _scRenderCone(); _scComputeAndShowResults(); }
 }
 
 function _scOnDotsChange() {
-  if (_scTrack) _scComputeAndShowResults();
+  // Dots are purely visual, just re-render.
+  if (_scTrack) _scRenderCone();
 }
 
 function _scOnOffsetChange() {
-  if (_scTrack) _scComputeAndShowResults();
+  // Offset moves the center line, rebuild + re-render.
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.start, _scTrack.end); _scRenderCone(); }
 }
 
 function _scGetCurve() {
@@ -20775,10 +20881,12 @@ function lqmSetTZ(tz) {
   // Rebuild timeline labels immediately
   if (typeof buildVelLabels === 'function' && velFrames && velFrames.length) buildVelLabels();
   if (typeof buildTimelineLabels === 'function') buildTimelineLabels();
-  // Re-render current frame label
-  if (typeof updateFrameLabel === 'function' && typeof currentFrameIdx !== 'undefined' && radarFrames && radarFrames[currentFrameIdx]) {
-    updateFrameLabel(currentFrameIdx);
+  // Re-render current frame label (currentFrame is the global frame index)
+  if (typeof updateFrameLabel === 'function' && typeof currentFrame !== 'undefined' && radarFrames && radarFrames[currentFrame]) {
+    updateFrameLabel(currentFrame);
   }
+  // Refresh the new AM/PM + timezone display too
+  if (typeof _updateTimeDisplay === 'function') _updateTimeDisplay();
 }
 </script>
 
@@ -23781,23 +23889,28 @@ function _zoomTimeline(dir) {
   if (typeof buildTimelineLabels === 'function') buildTimelineLabels();
 }
 
-function _updateTimeDisplay() {
+function _updateTimeDisplay(idx) {
   const el = document.getElementById('anim-time-display');
-  if (!el || !radarFrames || !radarFrames[currentFrameIdx]) {
+  // Fall back to the global currentFrame if no index was passed in.
+  const i = (typeof idx === 'number') ? idx : (typeof currentFrame === 'number' ? currentFrame : 0);
+  if (!el || !radarFrames || !radarFrames[i]) {
     if (el) el.textContent = '--:-- --- --';
     return;
   }
 
-  const d = new Date(radarFrames[currentFrameIdx].time * 1000);
+  const d = new Date(radarFrames[i].time * 1000);
   const tz = _appTZ === 'local' ? Intl.DateTimeFormat().resolvedOptions().timeZone : (_appTZ || 'utc');
+  const useUTC = (_appTZ === 'utc' || !_appTZ);
 
   try {
-    const t = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: tz }).formatToParts(d);
+    const opts = { hour: '2-digit', minute: '2-digit', hour12: true };
+    if (!useUTC) opts.timeZone = tz; else opts.timeZone = 'UTC';
+    const t = new Intl.DateTimeFormat('en-US', opts).formatToParts(d);
     const h = t.find(p => p.type === 'hour')?.value || '00';
     const m = t.find(p => p.type === 'minute')?.value || '00';
     const p = t.find(p => p.type === 'dayPeriod')?.value || 'AM';
-    const abbr = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short', timeZone: tz }).formatToParts(d).find(p => p.type === 'timeZoneName')?.value || 'UTC';
-    const dow = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(d).substring(0, 3).toUpperCase();
+    const abbr = useUTC ? 'UTC' : (new Intl.DateTimeFormat('en-US', { timeZoneName: 'short', timeZone: tz }).formatToParts(d).find(p => p.type === 'timeZoneName')?.value || 'UTC');
+    const dow = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: useUTC ? 'UTC' : tz }).format(d).substring(0, 3).toUpperCase();
     el.textContent = `${h}:${m} ${p} ${abbr} ${dow}`;
   } catch(e) {
     el.textContent = '--:-- --- --';
@@ -23807,8 +23920,119 @@ function _updateTimeDisplay() {
 const _origUpdateFrameLabel = window.updateFrameLabel;
 window.updateFrameLabel = function(idx) {
   if (_origUpdateFrameLabel) _origUpdateFrameLabel.call(this, idx);
-  _updateTimeDisplay();
+  _updateTimeDisplay(idx);
 };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TIMEZONE POPOVER: Hold down on animbar time to pick a timezone
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const TZ_ZONES = [
+  { tz: 'utc', label: 'UTC' },
+  { tz: 'local', label: 'Local (auto)' },
+  { tz: 'America/New_York', label: 'Eastern (ET)' },
+  { tz: 'America/Chicago', label: 'Central (CT)' },
+  { tz: 'America/Denver', label: 'Mountain (MT)' },
+  { tz: 'America/Los_Angeles', label: 'Pacific (PT)' },
+  { tz: 'America/Anchorage', label: 'Alaska (AKT)' },
+  { tz: 'Pacific/Honolulu', label: 'Hawaii (HST)' },
+  { tz: 'Europe/London', label: 'London (GMT/BST)' },
+  { tz: 'Europe/Berlin', label: 'Central Europe' },
+  { tz: 'Asia/Tokyo', label: 'Japan (JST)' },
+  { tz: 'Australia/Sydney', label: 'Australia East' },
+];
+
+function _formatTimeInTZ(dateObj, tzId) {
+  try {
+    const useUTC = (tzId === 'utc');
+    const tz = tzId === 'local' ? Intl.DateTimeFormat().resolvedOptions().timeZone : (useUTC ? 'UTC' : tzId);
+    const pts = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', timeZone: tz, hour12: false }).formatToParts(dateObj);
+    const h = pts.find(p => p.type === 'hour')?.value || '00';
+    const m = pts.find(p => p.type === 'minute')?.value || '00';
+    return `${h}:${m}`;
+  } catch (e) { return '--:--'; }
+}
+
+function _openTZPopover() {
+  const popover = document.getElementById('tz-popover');
+  const anchor = document.getElementById('anim-time-display');
+  if (!popover || !anchor) return;
+
+  let currentTime = null;
+  const i = (typeof currentFrame === 'number') ? currentFrame : 0;
+  if (radarFrames && radarFrames[i]) currentTime = new Date(radarFrames[i].time * 1000);
+  else currentTime = new Date();
+
+  let html = '';
+  TZ_ZONES.forEach(({ tz, label }) => {
+    const isActive = tz === _appTZ;
+    const timeStr = _formatTimeInTZ(currentTime, tz);
+    html += `<div class="tz-option ${isActive ? 'active' : ''}" onclick="_selectTZandClose('${tz}');">`
+      + `<span class="tz-option-name">${label}</span>`
+      + `<span class="tz-option-time">${timeStr}</span></div>`;
+  });
+  popover.innerHTML = html;
+  popover.classList.add('visible');
+
+  // Position above the time display
+  const rect = anchor.getBoundingClientRect();
+  popover.style.left = Math.max(8, rect.left + rect.width / 2 - popover.offsetWidth / 2) + 'px';
+  popover.style.top = (rect.top - popover.offsetHeight - 8) + 'px';
+
+  setTimeout(() => { document.addEventListener('mousedown', _closeTZPopoverOnClick); }, 0);
+}
+
+function _closeTZPopover() {
+  const popover = document.getElementById('tz-popover');
+  if (popover) popover.classList.remove('visible');
+  document.removeEventListener('mousedown', _closeTZPopoverOnClick);
+}
+
+function _closeTZPopoverOnClick(e) {
+  const popover = document.getElementById('tz-popover');
+  const anchor = document.getElementById('anim-time-display');
+  if (popover && !popover.contains(e.target) && e.target !== anchor) _closeTZPopover();
+}
+
+function _selectTimezone(tz) {
+  try { lqmSetTZ(tz); }
+  catch(e) { _appTZ = tz; try { localStorage.setItem('gwcfc_tz', tz); } catch(e2){} }
+  const tzSel = document.getElementById('lqm-set-tz');
+  if (tzSel) tzSel.value = tz;
+  _updateTimeDisplay();
+}
+
+function _selectTZandClose(tz) {
+  _selectTimezone(tz);
+  _closeTZPopover();
+}
+
+// Hold-down detection on the time display
+(function _wireTZHold() {
+  let holdTimer = null, sx = 0, sy = 0;
+  function start(e) {
+    const el = document.getElementById('anim-time-display');
+    if (!el) return;
+    sx = e.clientX; sy = e.clientY;
+    holdTimer = setTimeout(_openTZPopover, 400);
+  }
+  function move(e) {
+    if (holdTimer && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) {
+      clearTimeout(holdTimer); holdTimer = null;
+    }
+  }
+  function end() { clearTimeout(holdTimer); holdTimer = null; }
+  function attach() {
+    const el = document.getElementById('anim-time-display');
+    if (!el) { setTimeout(attach, 300); return; }
+    el.addEventListener('pointerdown', start, { passive: true });
+    el.addEventListener('pointermove', move, { passive: true });
+    el.addEventListener('pointerup', end, { passive: true });
+    el.addEventListener('pointercancel', end, { passive: true });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);
+  else attach();
+})();
 
 function buildTimelineLabels() {
   const wrap = document.getElementById('timeline-labels');
