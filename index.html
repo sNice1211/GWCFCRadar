@@ -505,7 +505,26 @@ body {
 #anim-time {
   font-family: var(--display); font-weight: 700; font-size: 11px; color: var(--accent2);
   min-width: 75px; text-align: right; flex-shrink: 0;
+  display: none;
 }
+#anim-time-display {
+  font-family: var(--display); font-weight: 700; font-size: 11px; color: var(--accent2);
+  min-width: 85px; text-align: center; flex-shrink: 0;
+}
+.animbar-sep {
+  width: 1px; height: 24px; background: var(--border2); margin: 0 4px; flex-shrink: 0;
+}
+#zoom-controls {
+  display: flex; gap: 2px; flex-shrink: 0;
+}
+.zoom-btn {
+  background: none; border: 1px solid var(--border2); color: var(--text);
+  font-family: var(--display); font-weight: 700; width: 24px; height: 24px;
+  border-radius: 4px; cursor: pointer; font-size: 11px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.1s;
+}
+.zoom-btn:hover { background: rgba(26,143,255,0.15); border-color: var(--accent); }
 
 /* ── MAP CONTROLS ── */
 #map-controls {
@@ -6368,8 +6387,13 @@ body.clean-mode #clean-hint { opacity: 1; }
     <!-- Animation Bar -->
     <div id="recenter-float" onclick="recenterMap()" style="display:none">🎯 Tap to recenter</div>
     <div id="animbar">
-      <!-- LEFT: play backwards + speed input -->
       <button id="play-back-btn" onclick="togglePlayBack()" title="Play Backwards">◀</button>
+      <div class="animbar-sep"></div>
+      <div id="zoom-controls">
+        <button class="zoom-btn" id="zoom-out-btn" onclick="_zoomTimeline(-1)" title="Zoom Out">−</button>
+        <button class="zoom-btn" id="zoom-in-btn" onclick="_zoomTimeline(1)" title="Zoom In">+</button>
+      </div>
+      <div class="animbar-sep"></div>
       <div id="speed-wrap" title="Playback speed multiplier">
         <input type="number" id="speed-input" value="1.5" min="0.01" step="any"
                placeholder="1"
@@ -6377,8 +6401,6 @@ body.clean-mode #clean-hint { opacity: 1; }
                onkeydown="if(event.key==='Enter')this.blur()"/>
         <span id="speed-unit">×</span>
       </div>
-
-      <!-- CENTER: timeline -->
       <div id="timeline-wrap">
         <div id="timeline-row">
           <input type="range" id="timeline" min="0" value="0" oninput="seekFrame(parseInt(this.value))">
@@ -6386,8 +6408,7 @@ body.clean-mode #clean-hint { opacity: 1; }
         </div>
         <div id="timeline-labels"></div>
       </div>
-
-      <!-- RIGHT: play forward -->
+      <div id="anim-time-display">--:-- --- --</div>
       <button id="play-btn" onclick="togglePlay()" title="Play Forward">▶</button>
     </div>
 
@@ -23712,6 +23733,76 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('pointerup',     onUp,    { passive: true });
   document.addEventListener('pointercancel', onUp,    { passive: true });
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ANIMBAR ENHANCEMENTS: Zoom + Time Display
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _timelineZoom = 0;
+
+function _zoomTimeline(dir) {
+  _timelineZoom = Math.max(-2, Math.min(2, _timelineZoom + dir));
+  if (typeof buildTimelineLabels === 'function') buildTimelineLabels();
+}
+
+function _updateTimeDisplay() {
+  const el = document.getElementById('anim-time-display');
+  if (!el || !radarFrames || !radarFrames[currentFrameIdx]) {
+    if (el) el.textContent = '--:-- --- --';
+    return;
+  }
+
+  const d = new Date(radarFrames[currentFrameIdx].time * 1000);
+  const tz = _appTZ === 'local' ? Intl.DateTimeFormat().resolvedOptions().timeZone : (_appTZ || 'utc');
+
+  try {
+    const t = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: tz }).formatToParts(d);
+    const h = t.find(p => p.type === 'hour')?.value || '00';
+    const m = t.find(p => p.type === 'minute')?.value || '00';
+    const p = t.find(p => p.type === 'dayPeriod')?.value || 'AM';
+    const abbr = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short', timeZone: tz }).formatToParts(d).find(p => p.type === 'timeZoneName')?.value || 'UTC';
+    const dow = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: tz }).format(d).substring(0, 3).toUpperCase();
+    el.textContent = `${h}:${m} ${p} ${abbr} ${dow}`;
+  } catch(e) {
+    el.textContent = '--:-- --- --';
+  }
+}
+
+const _origUpdateFrameLabel = window.updateFrameLabel;
+window.updateFrameLabel = function(idx) {
+  if (_origUpdateFrameLabel) _origUpdateFrameLabel.call(this, idx);
+  _updateTimeDisplay();
+};
+
+function buildTimelineLabels() {
+  const wrap = document.getElementById('timeline-labels');
+  if (!wrap) return;
+  const counts = [2, 3, 5, 8, 12];
+  const cnt = counts[Math.max(0, Math.min(4, _timelineZoom + 2))];
+  if (activeLayers.satellite && goesFrames.length) {
+    const n = goesFrames.length;
+    const step = Math.max(1, Math.floor(n / cnt));
+    let html = '';
+    for (let i = 0; i < n; i += step) {
+      const d = goesFrames[i].time;
+      const label = _fmtHHMMshort(d);
+      html += `<span>${label}</span>`;
+    }
+    wrap.innerHTML = html;
+  } else {
+    if (!radarFrames.length) return;
+    const start = _firstValidFrame || 0;
+    const end = radarFrames.length - 1;
+    const count = end - start + 1;
+    const step = Math.max(1, Math.floor(count / cnt));
+    let html = '';
+    for (let i = start; i <= end; i += step) {
+      const d = new Date(radarFrames[i].time * 1000);
+      html += `<span>${_fmtHHMMshort(d)}</span>`;
+    }
+    wrap.innerHTML = html;
+  }
+}
 </script>
 </body>
 </html>
