@@ -6603,6 +6603,7 @@ const NWS_DBZ_META = [
 
 // null = NWS defaults (no remapping). Set to array of 15 hex strings for custom.
 let _customRadarColors = null;
+let _inspForcedWms = false; // Inspector forces CORS-readable WMS tiles when on
 let _radarContrast   = 100; // %
 let _radarBrightness = 100; // %
 let _rceDebounce     = null;
@@ -7180,8 +7181,9 @@ let   _canadaPoolBuilt = false;
 const _canadaLayerLoaded = [];
 
 function _buildRadarPool() {
-  // If custom colors are active, skip tile cache (needs crossOrigin/canvas) and go straight to WMS
-  _nexradCacheFailed = !!_customRadarColors;
+  // If custom colors are active, skip tile cache (needs crossOrigin/canvas) and go straight to WMS.
+  // The Inspector also forces WMS so it can read tile pixels for color->dBZ lookup.
+  _nexradCacheFailed = !!_customRadarColors || _inspForcedWms;
   // Cancel any stale wait-loop pointing at layers we're about to remove
   if (_showFrameTick) { clearInterval(_showFrameTick); _showFrameTick = null; }
   _radarLayerPool.forEach(l => { try { if (l) map.removeLayer(l); } catch(e){} });
@@ -13476,8 +13478,26 @@ function _inspSampleRadarColor(cx, cy) {
     if (d[3] < 10) return { transparent: true };
     return { r: d[0], g: d[1], b: d[2] };
   } catch (e) {
-    return null; // CORS-tainted (e.g. iOS Safari) - can't read pixels
+    return { tainted: true }; // CORS-tainted canvas - can't read these pixels
   }
+}
+
+// The default IEM tile-CACHE does not send CORS headers, so its pixels can't be
+// read from a canvas. When the Inspector hits a tainted tile, switch reflectivity
+// to the CORS-enabled WMS tiles (the same ones the palette editor uses) so the
+// colors become readable. _buildRadarPool() honours _inspForcedWms. Restored
+// when the Inspector is turned off. (_inspForcedWms is declared near the top.)
+function _inspEnsureReadableTiles() {
+  if (_inspForcedWms) return;
+  if (typeof activeLayers === 'undefined' || !activeLayers.nexrad) return;
+  if (_customRadarColors) return;   // already WMS + same-origin data URLs
+  _inspForcedWms = true;
+  try { _buildRadarPool(); showFrame(currentFrame); } catch (e) {}
+}
+function _inspRestoreTiles() {
+  if (!_inspForcedWms) return;
+  _inspForcedWms = false;
+  try { _buildRadarPool(); showFrame(currentFrame); } catch (e) {}
 }
 
 // Map a displayed RGB color to the nearest NWS reflectivity step, returning
@@ -13540,6 +13560,12 @@ function _inspUpdate() {
   // 2) Reflectivity: read the displayed pixel color, map to NWS dBZ + intensity
   const isRef = (currentProduct === 'ref' || currentProduct === undefined || currentProduct === null || currentProduct === '');
   const s = _inspSampleRadarColor(cx, cy);
+  if (s && s.tainted) {
+    // Cache tiles aren't CORS-readable - switch to WMS, then the next tick reads fine
+    _inspEnsureReadableTiles();
+    _inspSetReadout('reading…', '', 'rgba(120,120,120,0.5)');
+    return;
+  }
   if (!s) {
     _inspSetReadout('No data', 'for this layer', 'rgba(120,120,120,0.5)');
     return;
@@ -13596,6 +13622,7 @@ function _inspDisable() {
   if (_inspInterval) { clearInterval(_inspInterval); _inspInterval = null; }
   if (_inspEl) { _inspEl.remove(); _inspEl = null; }
   if (_inspLabelEl) { _inspLabelEl.remove(); _inspLabelEl = null; }
+  _inspRestoreTiles(); // put reflectivity back on the fast tile cache
 }
 
 function _scRenderCone() {
