@@ -12368,6 +12368,7 @@ function _clearListeners() {
   map.off('mousedown',   _onScDown);
   map.off('mousemove',   _onScMove);
   map.off('mouseup',     _onScUp);
+  map.off('click',       _onScClick);
   map.off('contextmenu', _onRightClick);
   // Clean up touch handlers for draw tool
   const mc = map.getContainer();
@@ -13180,7 +13181,7 @@ const SC_MIN_TRACK_MILES = 1;
 const SC_DEFAULT_SPEED_MPH = 35;
 const SC_MIN_CAP_RADIUS_MILES = 5;
 
-let _scTrack    = null;  // { start, end, heading, distanceMiles, capRadiusMiles, ring, ... }
+let _scTrack    = null;  // { start, end, heading, distanceMiles, capRadiusMiles, ring, ..., pointCurves }
 let _scPolygon  = null;  // L.polygon layer for the current cone
 let _scCenterLine = null; // L.polyline for the offset storm-center line
 let _scDotLayer = null;  // L.layerGroup of edge dots
@@ -13188,6 +13189,7 @@ let _scDrawing  = false;
 let _scStartLatLng = null;
 let _scDragPath = [];    // latlngs captured during the current drag
 let _scCones    = [];    // committed cones that stay on the map: {track,polygon,centerLine,dotLayer}
+let _scEditingPointIdx = null; // index of center point being edited
 
 function _scBearingDegrees(a, b) {
   const lat1 = a.lat * Math.PI / 180, lat2 = b.lat * Math.PI / 180;
@@ -13221,7 +13223,8 @@ function _scInterpLatLng(a, b, f) {
 
 // Build a cone that follows the ACTUAL drawn path, so different sections can curve
 // differently. `path` is the array of latlngs the pointer travelled through.
-function _scBuildTrack(path) {
+// `existingPointCurves` preserves per-point curvatures from previous builds.
+function _scBuildTrack(path, existingPointCurves) {
   if (!path || path.length === 0) return null;
 
   // Drop near-duplicate consecutive points so the geometry is stable
@@ -13248,6 +13251,15 @@ function _scBuildTrack(path) {
   const offset = (typeof _scGetOffset === 'function') ? _scGetOffset() : 0;
   const N = SC_ARC_SEGMENTS;
 
+  // Initialize or preserve per-point curvatures (independent from global CURVE slider)
+  let pointCurves = [];
+  if (existingPointCurves && existingPointCurves.length === N + 1) {
+    pointCurves = [...existingPointCurves];
+  } else {
+    // First-time initialization: all zeros
+    for (let i = 0; i <= N; i++) pointCurves.push(0);
+  }
+
   // 1) Resample the drawn path into N+1 evenly-spaced center points (arc-length),
   //    which both smooths the input and lets the cone follow every bend you drew.
   const center = [];
@@ -13264,12 +13276,26 @@ function _scBuildTrack(path) {
     }
   }
 
-  // 1b) Optional uniform CURVE bulge layered on top (sine, anchored at both ends)
+  // 1b) Apply global CURVE bulge (sine, anchored at both ends)
   const bulgeMiles = (curve / 10) * distanceMiles * 0.6;
   if (bulgeMiles !== 0) {
     for (let i = 0; i <= N; i++) {
       const b = bulgeMiles * Math.sin(Math.PI * (i / N));
       if (b !== 0) center[i] = _scDestinationPoint(center[i], heading + 90, b);
+    }
+  }
+
+  // 1c) Apply per-point curvatures with smooth blending (independent from global CURVE)
+  if (pointCurves && pointCurves.length > 0) {
+    for (let i = 0; i <= N; i++) {
+      const pCurve = pointCurves[i] || 0;
+      if (pCurve !== 0) {
+        const pBulgeMiles = (pCurve / 10) * distanceMiles * 0.6;
+        // Blend: use this point's curvature, but attenuated near cone ends
+        const taper = Math.sin(Math.PI * (i / N));
+        const b = pBulgeMiles * taper;
+        if (b !== 0) center[i] = _scDestinationPoint(center[i], heading + 90, b);
+      }
     }
   }
 
@@ -13314,7 +13340,7 @@ function _scBuildTrack(path) {
   });
 
   return { start, end, heading, distanceMiles, capRadiusMiles, ring,
-           center, centerLine, leftEdges, rightEdges, path: pts };
+           center, centerLine, leftEdges, rightEdges, path: pts, pointCurves };
 }
 
 function _scFormatEta(hours) {
@@ -13351,6 +13377,7 @@ function toggleStormConeTool() {
   _scSetStatus('Click and drag on the map to draw a storm cone.');
   map.dragging.disable();
   map.on('mousedown', _onScDown);
+  map.on('click', _onScClick);
   map.on('contextmenu', _onRightClick);
   map.getContainer().addEventListener('touchstart', _onScTouchStart, { passive: false });
 }
@@ -13632,7 +13659,7 @@ function _scRenderCone() {
   if (_scDotLayer) { map.removeLayer(_scDotLayer); _scDotLayer = null; }
   if (!_scTrack) return;
 
-  // Main cone shape
+  // Main cone shape (non-interactive so clicks don't interfere with map dragging)
   _scPolygon = L.polygon(_scTrack.ring, {
     color: '#ffb347', weight: 2, opacity: 0.95,
     fillColor: '#ff7a18', fillOpacity: 0.25,
@@ -13691,6 +13718,25 @@ function _onScUp() {
   _scFinishDrag();
 }
 
+function _onScClick(e) {
+  // Only handle clicks when NOT drawing and when there's an active track to edit
+  if (_scDrawing || !_scTrack || !_scTrack.center || !activeTool === 'stormcone') return;
+
+  const clickedLatLng = e.latlng;
+  let minDist = Infinity, closestIdx = -1;
+
+  // Find closest center point (within 100 meters)
+  for (let i = 0; i < _scTrack.center.length; i++) {
+    const d = map.distance(clickedLatLng, _scTrack.center[i]);
+    if (d < minDist) { minDist = d; closestIdx = i; }
+  }
+
+  if (closestIdx !== -1 && minDist < 100) {
+    e.originalEvent?.preventDefault?.();
+    _scShowPointCurveDialog(closestIdx);
+  }
+}
+
 function _onScTouchStart(e) {
   if (activeTool !== 'stormcone') return;
   e.preventDefault();
@@ -13741,7 +13787,8 @@ function _scOnSpeedChange() {
 
 function _scOnCurveChange() {
   // Curvature reshapes the cone, so rebuild geometry from the same drawn path.
-  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path); _scRenderCone(); _scComputeAndShowResults(); }
+  // Preserve per-point curvatures so they don't get reset.
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path, _scTrack.pointCurves); _scRenderCone(); _scComputeAndShowResults(); }
 }
 
 function _scOnDotsChange() {
@@ -13751,7 +13798,8 @@ function _scOnDotsChange() {
 
 function _scOnOffsetChange() {
   // Offset moves the center line, rebuild + re-render.
-  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path); _scRenderCone(); }
+  // Preserve per-point curvatures.
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path, _scTrack.pointCurves); _scRenderCone(); }
 }
 
 function _scGetCurve() {
@@ -13767,6 +13815,26 @@ function _scGetDots() {
 function _scGetOffset() {
   const v = Number(document.getElementById('sc-offset-input')?.value);
   return Number.isFinite(v) ? v : 0;
+}
+
+function _scShowPointCurveDialog(pointIdx) {
+  if (!_scTrack || !_scTrack.pointCurves || pointIdx < 0 || pointIdx >= _scTrack.pointCurves.length) return;
+
+  const currentValue = _scTrack.pointCurves[pointIdx] || 0;
+  const prompt = `Curvature at point ${pointIdx + 1}/${_scTrack.pointCurves.length}\n\nEnter value (-10 to 10):`;
+  const input = window.prompt(prompt, currentValue.toString());
+
+  if (input !== null) {
+    const value = Number(input);
+    if (Number.isFinite(value)) {
+      const clamped = Math.max(-10, Math.min(10, value));
+      _scTrack.pointCurves[pointIdx] = clamped;
+      // Rebuild cone with new point curvature, preserving all point curvatures
+      _scTrack = _scBuildTrack(_scTrack.path, _scTrack.pointCurves);
+      _scRenderCone();
+      _scComputeAndShowResults();
+    }
+  }
 }
 
 function _scComputeAndShowResults() {
