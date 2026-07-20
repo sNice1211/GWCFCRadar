@@ -12668,6 +12668,8 @@ deactivateTool = function() {
   _txtShowToolbar(false);
   _scShowToolbar(false);
   _scDrawing = false;
+  _scFirstPoint = null;
+  _scWarningShown = false;
   if (_eraserHoverActive) { map.off('mousemove', _dtbEraserHover); _eraserHoverActive = false; }
   _hideEraserCursor();
   _erasing = false;
@@ -13189,6 +13191,8 @@ let _scStartLatLng = null;
 let _scDragPath = [];    // latlngs captured during the current drag
 let _scCones    = [];    // committed cones that stay on the map: {track,polygon,centerLine,dotLayer}
 let _scEditingPointIdx = null; // index of center point being edited
+let _scFirstPoint = null; // first clicked point for click-to-point mode
+let _scWarningShown = false; // track if mouse tracking warning shown
 
 function _scBearingDegrees(a, b) {
   const lat1 = a.lat * Math.PI / 180, lat2 = b.lat * Math.PI / 180;
@@ -13373,10 +13377,12 @@ function toggleStormConeTool() {
   _showHint('');
   document.getElementById('stormcone-toolbar')?.classList.add('visible');
   document.getElementById('stormcone-status')?.classList.add('visible');
-  _scSetStatus('Click and drag on the map to draw a storm cone.');
+  _scSetStatus('Click first point to start.');
+  _scFirstPoint = null;
+  _scWarningShown = false;
   map.dragging.disable();
-  map.on('mousedown', _onScDown);
   map.on('click', _onScClick);
+  map.on('mousemove', _onScMove);
   map.on('contextmenu', _onRightClick);
   map.getContainer().addEventListener('touchstart', _onScTouchStart, { passive: false });
 }
@@ -13704,9 +13710,14 @@ function _onScDown(e) {
   map.on('mouseup', _onScUp);
 }
 function _onScMove(e) {
-  if (!_scDrawing) return;
-  _scDragPath.push(e.latlng);
-  // Don't render - only show final cone on mouseup
+  if (!_scFirstPoint) return;
+  if (_scDragPath.length < 2) {
+    _scDragPath.push(e.latlng);
+  } else {
+    _scDragPath[_scDragPath.length - 1] = e.latlng;
+  }
+  _scTrack = _scBuildTrack(_scDragPath);
+  _scRenderCone();
 }
 function _onScUp() {
   if (!_scDrawing) return;
@@ -13718,7 +13729,29 @@ function _onScUp() {
 }
 
 function _onScClick(e) {
-  // Point editing dialogs disabled - use global curve slider only
+  if (activeTool !== 'stormcone') return;
+  e.originalEvent?.preventDefault?.();
+
+  if (!_scFirstPoint) {
+    // First click - set start point
+    _scFirstPoint = e.latlng;
+    _scWarningShown = false;
+    _scDragPath = [_scFirstPoint];
+    _scSetStatus('Now click second point OR move mouse to preview. ⚠️ MOUSE TRACKING ON');
+    // Show warning popup
+    const msg = document.createElement('div');
+    msg.textContent = '⚠️ Mouse position is being tracked. Move to preview cone.';
+    msg.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(255,100,100,0.9);color:white;padding:10px 16px;border-radius:6px;font-size:12px;z-index:2000;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,0.3)';
+    document.body.appendChild(msg);
+    setTimeout(() => msg.remove(), 4000);
+  } else {
+    // Second click - finalize cone
+    _scDragPath.push(e.latlng);
+    _scTrack = _scBuildTrack(_scDragPath);
+    _scFinishDrag();
+    _scFirstPoint = null;
+    map.off('mousemove', _onScMove);
+  }
 }
 
 function _onScTouchStart(e) {
