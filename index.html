@@ -13385,6 +13385,7 @@ function toggleStormConeTool() {
   map.on('mousemove', _onScMove);
   map.on('contextmenu', _onRightClick);
   map.getContainer().addEventListener('touchstart', _onScTouchStart, { passive: false });
+  map.getContainer().addEventListener('touchmove', _onScTouchMove, { passive: false });
 }
 
 function _scSetStatus(msg) {
@@ -13698,17 +13699,6 @@ function _scRenderCone() {
   }
 }
 
-function _onScDown(e) {
-  if (activeTool !== 'stormcone') return;
-  _scDrawing = true;
-  _scStartLatLng = e.latlng;
-  _scDragPath = [e.latlng];
-  _scTrack = _scBuildTrack(_scDragPath);
-  _scRenderCone();
-  _scSetStatus('Drag along the storm path — curve it however you like…');
-  map.on('mousemove', _onScMove);
-  map.on('mouseup', _onScUp);
-}
 function _onScMove(e) {
   if (!_scFirstPoint) return;
   if (_scDragPath.length < 2) {
@@ -13718,14 +13708,6 @@ function _onScMove(e) {
   }
   _scTrack = _scBuildTrack(_scDragPath);
   _scRenderCone();
-}
-function _onScUp() {
-  if (!_scDrawing) return;
-  _scDrawing = false;
-  map.off('mousemove', _onScMove);
-  map.off('mouseup', _onScUp);
-  _scTrack = _scBuildTrack(_scDragPath);
-  _scFinishDrag();
 }
 
 function _onScClick(e) {
@@ -13760,21 +13742,29 @@ function _onScTouchStart(e) {
   const touch = e.touches[0];
   const containerPt = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
   const latlng = map.containerPointToLatLng(containerPt);
-  _scDrawing = true;
-  _scStartLatLng = latlng;
-  _scDragPath = [latlng];
-  _scTrack = _scBuildTrack(_scDragPath);
-  _scRenderCone();
-  _scSetStatus('Drag along the storm path — curve it however you like…');
-  map.getContainer().addEventListener('touchmove', _onScTouchMove, { passive: false });
-  map.getContainer().addEventListener('touchend', _onScTouchEnd, { passive: false });
+
+  if (!_scFirstPoint) {
+    _scFirstPoint = latlng;
+    _scDragPath = [_scFirstPoint];
+    _scSetStatus('Now touch second point OR move to preview. ⚠️ TOUCH TRACKING ON');
+  } else {
+    _scDragPath.push(latlng);
+    _scTrack = _scBuildTrack(_scDragPath);
+    _scFinishDrag();
+    _scFirstPoint = null;
+    map.getContainer().removeEventListener('touchmove', _onScTouchMove);
+  }
 }
 function _onScTouchMove(e) {
   e.preventDefault();
-  if (!_scDrawing) return;
+  if (!_scFirstPoint || _scDragPath.length < 1) return;
   const touch = e.touches[0];
   const containerPt = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
-  _scDragPath.push(map.containerPointToLatLng(containerPt));
+  if (_scDragPath.length < 2) {
+    _scDragPath.push(map.containerPointToLatLng(containerPt));
+  } else {
+    _scDragPath[_scDragPath.length - 1] = map.containerPointToLatLng(containerPt);
+  }
   _scTrack = _scBuildTrack(_scDragPath);
   _scRenderCone();
 }
@@ -13782,9 +13772,6 @@ function _onScTouchEnd(e) {
   e.preventDefault();
   map.getContainer().removeEventListener('touchmove', _onScTouchMove);
   map.getContainer().removeEventListener('touchend', _onScTouchEnd);
-  if (!_scDrawing) return;
-  _scDrawing = false;
-  _scFinishDrag();
 }
 
 function _scFinishDrag() {
@@ -13832,26 +13819,6 @@ function _scGetDots() {
 function _scGetOffset() {
   const v = Number(document.getElementById('sc-offset-input')?.value);
   return Number.isFinite(v) ? v : 0;
-}
-
-function _scShowPointCurveDialog(pointIdx) {
-  if (!_scTrack || !_scTrack.pointCurves || pointIdx < 0 || pointIdx >= _scTrack.pointCurves.length) return;
-
-  const currentValue = _scTrack.pointCurves[pointIdx] || 0;
-  const prompt = `Curvature at point ${pointIdx + 1}/${_scTrack.pointCurves.length}\n\nEnter value (-10 to 10):`;
-  const input = window.prompt(prompt, currentValue.toString());
-
-  if (input !== null) {
-    const value = Number(input);
-    if (Number.isFinite(value)) {
-      const clamped = Math.max(-10, Math.min(10, value));
-      _scTrack.pointCurves[pointIdx] = clamped;
-      // Rebuild cone with new point curvature, preserving all point curvatures
-      _scTrack = _scBuildTrack(_scTrack.path, _scTrack.pointCurves);
-      _scRenderCone();
-      _scComputeAndShowResults();
-    }
-  }
 }
 
 function _scComputeAndShowResults() {
