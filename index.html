@@ -550,11 +550,21 @@ body {
 #tz-popover {
   display: none; position: fixed;
   background: rgb(8,12,16); border: 1px solid var(--border2);
-  border-radius: 10px; z-index: 1000; min-width: 200px;
+  border-radius: 10px; z-index: 1000; min-width: 240px;
   max-height: 400px; overflow-y: auto;
   box-shadow: 0 4px 12px rgba(0,0,0,0.5);
 }
 #tz-popover.visible { display: block; }
+.tz-search {
+  position: sticky; top: 0; z-index: 1;
+  width: 100%; box-sizing: border-box;
+  background: rgb(8,12,16); border: none; border-bottom: 1px solid var(--border);
+  border-radius: 10px 10px 0 0;
+  color: var(--text); font-family: var(--display); font-weight: 700; font-size: 12px;
+  padding: 9px 12px; outline: none;
+}
+.tz-search::placeholder { color: var(--muted); font-weight: 400; }
+.tz-option-off { color: var(--muted); font-family: var(--mono); font-size: 9px; margin-left: 6px; }
 .tz-option {
   padding: 10px 12px; border-bottom: 1px solid var(--border);
   cursor: pointer; display: flex; justify-content: space-between;
@@ -6086,7 +6096,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v1.4 · #AA0000 · 2026-07-23</div>
+    <div id="build-stamp">v1.5 · all timezones · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -24145,20 +24155,39 @@ window.updateFrameLabel = function(idx) {
 // TIMEZONE POPOVER: Hold down on animbar time to pick a timezone
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const TZ_ZONES = [
+// Quick-pick zones pinned to the top of the list
+const TZ_PINNED = [
   { tz: 'utc', label: 'UTC' },
   { tz: 'local', label: 'Local (auto)' },
-  { tz: 'America/New_York', label: 'Eastern (ET)' },
-  { tz: 'America/Chicago', label: 'Central (CT)' },
-  { tz: 'America/Denver', label: 'Mountain (MT)' },
-  { tz: 'America/Los_Angeles', label: 'Pacific (PT)' },
-  { tz: 'America/Anchorage', label: 'Alaska (AKT)' },
-  { tz: 'Pacific/Honolulu', label: 'Hawaii (HST)' },
-  { tz: 'Europe/London', label: 'London (GMT/BST)' },
-  { tz: 'Europe/Berlin', label: 'Central Europe' },
-  { tz: 'Asia/Tokyo', label: 'Japan (JST)' },
-  { tz: 'Australia/Sydney', label: 'Australia East' },
 ];
+
+// Current UTC offset (in minutes) for an IANA zone — used for sorting + labels
+function _tzOffsetMinutes(tz, date) {
+  try {
+    const part = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'shortOffset' })
+      .formatToParts(date).find(p => p.type === 'timeZoneName')?.value || 'GMT+0';
+    const m = part.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+    if (!m) return 0;
+    return (m[1] === '-' ? -1 : 1) * (parseInt(m[2], 10) * 60 + (m[3] ? parseInt(m[3], 10) : 0));
+  } catch (e) { return 0; }
+}
+
+// "UTC+05:30" style offset label from minutes
+function _tzOffsetLabel(mins) {
+  const sign = mins < 0 ? '−' : '+';
+  const a = Math.abs(mins);
+  return `UTC${sign}${String(Math.floor(a / 60)).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`;
+}
+
+// Every IANA time zone on Earth, sorted west→east by current offset (built once on load)
+const TZ_ALL_ZONES = (() => {
+  let ids = [];
+  try { ids = Intl.supportedValuesOf('timeZone'); } catch (e) { ids = []; }
+  const now = new Date();
+  return ids
+    .map(tz => ({ tz, label: tz.replace(/_/g, ' '), off: _tzOffsetMinutes(tz, now) }))
+    .sort((a, b) => a.off - b.off || a.label.localeCompare(b.label));
+})();
 
 function _formatTimeInTZ(dateObj, tzId) {
   try {
@@ -24181,23 +24210,40 @@ function _openTZPopover() {
   if (radarFrames && radarFrames[i]) currentTime = new Date(radarFrames[i].time * 1000);
   else currentTime = new Date();
 
-  let html = '';
-  TZ_ZONES.forEach(({ tz, label }) => {
+  const row = ({ tz, label, off }) => {
     const isActive = tz === _appTZ;
     const timeStr = _formatTimeInTZ(currentTime, tz);
-    html += `<div class="tz-option ${isActive ? 'active' : ''}" onclick="_selectTZandClose('${tz}');">`
-      + `<span class="tz-option-name">${label}</span>`
+    const offStr = (off === undefined) ? '' : ` <span class="tz-option-off">${_tzOffsetLabel(off)}</span>`;
+    return `<div class="tz-option ${isActive ? 'active' : ''}" onclick="_selectTZandClose('${tz}');">`
+      + `<span class="tz-option-name">${label}${offStr}</span>`
       + `<span class="tz-option-time">${timeStr}</span></div>`;
-  });
+  };
+
+  let html = '<input class="tz-search" type="text" placeholder="Search timezone…" oninput="_filterTZ(this.value)" autocomplete="off" spellcheck="false">';
+  html += '<div class="tz-list">';
+  html += TZ_PINNED.map(row).join('');
+  html += TZ_ALL_ZONES.map(row).join('');
+  html += '</div>';
   popover.innerHTML = html;
   popover.classList.add('visible');
 
-  // Position above the time display
+  // Position above the time display (clamped so it never runs off the top)
   const rect = anchor.getBoundingClientRect();
   popover.style.left = Math.max(8, rect.left + rect.width / 2 - popover.offsetWidth / 2) + 'px';
-  popover.style.top = (rect.top - popover.offsetHeight - 8) + 'px';
+  popover.style.top = Math.max(8, rect.top - popover.offsetHeight - 8) + 'px';
 
   setTimeout(() => { document.addEventListener('mousedown', _closeTZPopoverOnClick); }, 0);
+}
+
+// Live-filter the timezone list as the user types
+function _filterTZ(q) {
+  q = (q || '').toLowerCase().trim();
+  const popover = document.getElementById('tz-popover');
+  if (!popover) return;
+  popover.querySelectorAll('.tz-option').forEach(el => {
+    const name = (el.querySelector('.tz-option-name')?.textContent || '').toLowerCase();
+    el.style.display = (!q || name.includes(q)) ? '' : 'none';
+  });
 }
 
 function _closeTZPopover() {
