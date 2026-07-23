@@ -535,6 +535,45 @@ body {
 }
 .zoom-btn:hover { background: rgba(170,0,0,0.3); border-color: #AA0000; }
 
+/* Zoom step popover — hover the zoom buttons to set how much each click zooms */
+#zoom-wrap { position: relative; display: flex; flex-shrink: 0; }
+#zoom-step-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  background: rgba(0,153,204,0.25);
+  border: 3px solid #AA0000;
+  border-radius: 8px;
+  padding: 8px 10px;
+  z-index: 1001;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  white-space: nowrap;
+}
+/* invisible bridge so the mouse can cross the gap without closing the popover */
+#zoom-step-popover::after {
+  content: ''; position: absolute; top: 100%; left: 0; right: 0; height: 10px;
+}
+#zoom-wrap:hover #zoom-step-popover,
+#zoom-step-popover:focus-within { display: flex; }
+.zsp-label {
+  font-family: var(--display); font-weight: 700; font-size: 9px;
+  color: #000; letter-spacing: 0.5px;
+}
+#zoom-step-input {
+  background: rgba(0,153,204,0.35);
+  border: 2px solid #AA0000; border-radius: 6px;
+  color: #000; font-family: var(--mono); font-size: 14px; font-weight: 600;
+  width: 54px; text-align: center; padding: 3px 4px;
+  outline: none; -moz-appearance: textfield;
+}
+#zoom-step-input::-webkit-inner-spin-button,
+#zoom-step-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
 /* Build/version stamp — tiny, non-interactive marker to confirm the live deploy */
 #build-stamp {
   position: fixed;
@@ -6104,7 +6143,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v1.7 · unified blue · 2026-07-23</div>
+    <div id="build-stamp">v1.8 · zoom step · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6450,9 +6489,17 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="recenter-float" onclick="recenterMap()" style="display:none">🎯 Tap to recenter</div>
     <div id="animbar">
       <button id="play-back-btn" onclick="togglePlayBack()" title="Play Backwards">◀</button>
-      <div id="zoom-controls">
-        <button class="zoom-btn" id="zoom-out-btn" onclick="_zoomTimeline(-1)" title="Zoom map out">−</button>
-        <button class="zoom-btn" id="zoom-in-btn" onclick="_zoomTimeline(1)" title="Zoom map in">+</button>
+      <div id="zoom-wrap">
+        <div id="zoom-controls">
+          <button class="zoom-btn" id="zoom-in-btn" onclick="_zoomTimeline(1)" title="Zoom map in">+</button>
+          <button class="zoom-btn" id="zoom-out-btn" onclick="_zoomTimeline(-1)" title="Zoom map out">−</button>
+        </div>
+        <div id="zoom-step-popover">
+          <span class="zsp-label">Zoom / click</span>
+          <input type="number" id="zoom-step-input" value="1" min="0.25" max="5" step="0.25"
+                 oninput="_setZoomStep(this.value)"
+                 onkeydown="if(event.key==='Enter')this.blur()"/>
+        </div>
       </div>
       <div id="speed-wrap" title="Playback speed multiplier">
         <input type="number" id="speed-input" value="1.5" min="0.01" step="any"
@@ -6831,7 +6878,8 @@ function initMap() {
     zoomControl: false,
     attributionControl: true,
     maxBounds: [[-90, -180], [90, 180]],
-    maxBoundsViscosity: 1.0
+    maxBoundsViscosity: 1.0,
+    zoomSnap: 0
   });
 
   // Custom pane for all radar WMS layers , CSS filter applied here for palette switching
@@ -24118,12 +24166,36 @@ document.addEventListener('DOMContentLoaded', () => {
 // ANIMBAR ENHANCEMENTS: Zoom + Time Display
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// The +/- buttons zoom the MAP in and out.
+// How many zoom levels each +/- click applies (adjustable via the hover popover).
+let _zoomStep = (() => {
+  const v = parseFloat(localStorage.getItem('gwcfc_zoomstep'));
+  return (isFinite(v) && v > 0) ? v : 1;
+})();
+
+function _setZoomStep(v) {
+  const n = parseFloat(v);
+  if (!isFinite(n) || n <= 0) return;
+  _zoomStep = Math.min(5, Math.max(0.25, n));
+  try { localStorage.setItem('gwcfc_zoomstep', String(_zoomStep)); } catch (e) {}
+}
+
+// The +/- buttons zoom the MAP in and out by the configured step.
 function _zoomTimeline(dir) {
   if (typeof map === 'undefined' || !map) return;
-  if (dir > 0) map.zoomIn();
-  else map.zoomOut();
+  const step = (_zoomStep > 0) ? _zoomStep : 1;
+  if (dir > 0) map.zoomIn(step);
+  else map.zoomOut(step);
 }
+
+// Reflect the saved step in the popover input once the DOM is ready.
+(function _initZoomStepInput() {
+  function sync() {
+    const el = document.getElementById('zoom-step-input');
+    if (el) el.value = _zoomStep;
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', sync);
+  else sync();
+})();
 
 function _updateTimeDisplay(idx) {
   const el = document.getElementById('anim-time-display');
