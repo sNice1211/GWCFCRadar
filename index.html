@@ -6143,7 +6143,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v1.8 · zoom step · 2026-07-23</div>
+    <div id="build-stamp">v1.9 · thunder tracker · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6847,7 +6847,7 @@ let activeLayers = {
   flood: true, watch: false, meso: false, spc1: false, spc2: false,
   spc3: false, spcrpts: false, nhc: false, invest: false, sst: false,
   models: false, lightning: false, ltg30: false, forecasts: true,
-  radio: false
+  radio: false, thunder: false
 };
 let currentTab = 'radar';
 let lightningFlash = [];
@@ -8847,6 +8847,81 @@ function _ltgStop() {
 let _ltgSocket = null;
 let _ltgReconnectTimer = null;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// THUNDER TRACKER — the audible thunder wavefront spreading out from each strike
+// ───────────────────────────────────────────────────────────────────────────────
+// Physics (kept scientifically accurate):
+//   • Thunder is the acoustic shock wave from the lightning channel (heated to
+//     ~30,000 K). It radiates outward at the local speed of sound in air:
+//         c = 331.3 + 0.606·T(°C)  m/s   →  ≈343 m/s at 20 °C.
+//   • "Flash-to-bang": distance(km) ≈ seconds / 2.9  (≈ seconds / 5 for miles).
+//   • Thunder is generally inaudible beyond ~16 km (~10 mi): in a normal
+//     atmosphere sound refracts upward, so past that range it bends over your
+//     head. We cap the spreading ring there and fade it out.
+//   • The "30-30" lightning-safety rule ≈ a 10 km danger radius (thunder heard
+//     within 30 s of the flash means the storm is within striking distance).
+const THUNDER_TEMP_C        = 20;                                 // assumed near-surface air temperature
+const THUNDER_SPEED_MS      = 331.3 + 0.606 * THUNDER_TEMP_C;     // ≈ 343.4 m/s
+const THUNDER_MAX_AUDIBLE_M = 16000;                             // ~10 mi practical audibility limit
+const THUNDER_LIFETIME_MS   = (THUNDER_MAX_AUDIBLE_M / THUNDER_SPEED_MS) * 1000; // ≈ 46.6 s
+
+let _thunderRings = new Map();  // strikeKey -> { circle }
+let _thunderTimer = null;
+
+// Radius (metres) the thunder wavefront has reached, capped at the audible limit.
+function _thunderRadiusM(elapsedMs) {
+  return Math.min(THUNDER_MAX_AUDIBLE_M, THUNDER_SPEED_MS * (Math.max(0, elapsedMs) / 1000));
+}
+
+// One animation step: grow/fade a sound ring for every recent strike.
+function _thunderTick() {
+  if (typeof map === 'undefined' || !map || !activeLayers.thunder) return;
+  const now  = Date.now();
+  const live = new Set();
+  for (const [key, rec] of _ltgMarkers) {
+    const elapsed = now - rec.ts;
+    if (elapsed < 0 || elapsed > THUNDER_LIFETIME_MS) continue;  // sound has passed the audible limit
+    live.add(key);
+    const radius  = _thunderRadiusM(elapsed);
+    const frac    = radius / THUNDER_MAX_AUDIBLE_M;              // 0 at the flash → 1 at max range
+    const opacity = 0.85 * (1 - frac);                          // wavefront fades as it spreads & weakens
+    let ring = _thunderRings.get(key);
+    if (!ring) {
+      const ll = rec.marker.getLatLng();
+      const circle = L.circle(ll, {
+        radius, color: '#0099CC', weight: 2, opacity,
+        fillColor: '#0099CC', fillOpacity: opacity * 0.12,
+        interactive: false,
+      }).addTo(map);
+      _thunderRings.set(key, { circle });
+    } else {
+      ring.circle.setRadius(radius);
+      ring.circle.setStyle({ opacity, fillOpacity: opacity * 0.12 });
+    }
+  }
+  // Drop rings whose thunder has moved past the audible range or whose strike expired.
+  for (const [key, ring] of _thunderRings) {
+    if (!live.has(key)) {
+      try { map.removeLayer(ring.circle); } catch (_) {}
+      _thunderRings.delete(key);
+    }
+  }
+}
+
+function _thunderStart() {
+  if (_thunderTimer) return;
+  _thunderTimer = setInterval(_thunderTick, 120);  // ~8 fps — smooth outward spread
+  _thunderTick();
+}
+
+function _thunderStop() {
+  clearInterval(_thunderTimer); _thunderTimer = null;
+  for (const ring of _thunderRings.values()) {
+    try { map.removeLayer(ring.circle); } catch (_) {}
+  }
+  _thunderRings.clear();
+}
+
 function updateModelInfo(model) {
   const info = {
     gfs:  { name: 'GFS · NOAA', res: '0.25°' },
@@ -10197,6 +10272,23 @@ function toggleOverlayPill(id) {
     toggleLayer('lightning');
     const pill = document.getElementById('op-lightning');
     if (pill) pill.classList.toggle('active', activeLayers.lightning);
+    // If the strikes go away, the thunder rings have nothing to spread from.
+    if (!activeLayers.lightning && activeLayers.thunder) toggleOverlayPill('thunder');
+  } else if (id === 'thunder') {
+    activeLayers.thunder = !activeLayers.thunder;
+    const pill = document.getElementById('op-thunder');
+    if (pill) pill.classList.toggle('active', activeLayers.thunder);
+    if (activeLayers.thunder) {
+      // Thunder is derived from live lightning strikes — make sure that feed is on.
+      if (!activeLayers.lightning) {
+        toggleLayer('lightning');
+        const lp = document.getElementById('op-lightning');
+        if (lp) lp.classList.toggle('active', activeLayers.lightning);
+      }
+      _thunderStart();
+    } else {
+      _thunderStop();
+    }
   } else if (id === 'radio') {
     toggleLayer('radio');
     const pill = document.getElementById('op-radio');
@@ -24078,6 +24170,10 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-lightning" onclick="toggleOverlayPill('lightning')" title="Lightning">
       <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
       <span class="ov-label">Lightning</span>
+    </div>
+    <div class="ov-pill" id="op-thunder" onclick="toggleOverlayPill('thunder')" title="Thunder Tracker — audible thunder range spreading outward from each strike (speed of sound, capped at ~10 mi)">
+      <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M8.5 8.5a5 5 0 0 0 0 7"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M6 6a9 9 0 0 0 0 12"/><path d="M18 6a9 9 0 0 1 0 12"/></svg></span>
+      <span class="ov-label">Thunder Tracker</span>
     </div>
     <div class="ov-pill" id="op-radio" onclick="toggleOverlayPill('radio')" title="NOAA Radio">
       <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></span>
