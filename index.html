@@ -6243,7 +6243,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v2.9 · thicker alert outline · 2026-07-23</div>
+    <div id="build-stamp">v3.0 · SPC in overlays · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6325,6 +6325,7 @@ body.clean-mode #clean-hint { opacity: 1; }
             <button class="spc-pick-btn active" id="spc-d1" onclick="_spcPickDay(1)">Day 1</button>
             <button class="spc-pick-btn" id="spc-d2" onclick="_spcPickDay(2)">Day 2</button>
             <button class="spc-pick-btn" id="spc-d3" onclick="_spcPickDay(3)">Day 3</button>
+            <button class="spc-pick-btn" id="spc-d48" onclick="_spcPickDay(48)">Day 4-8</button>
           </div>
           <div class="spc-picker-row">
             <button class="spc-pick-btn active" id="spc-hcat" onclick="_spcPickHaz('cat')">Categorical</button>
@@ -8465,9 +8466,13 @@ let _spcDay = 1, _spcHazard = 'cat';
 async function loadSPCOutlook(dayNum, hazard) {
   if (!dayNum) dayNum = _spcDay;
   if (!hazard) hazard = _spcHazard;
-  const haz = (dayNum === 3) ? 'cat' : hazard;
-  const spcUrl = `https://www.spc.noaa.gov/products/outlook/day${dayNum}otlk_${haz}.nolyr.geojson`;
-  updateLoadStatus(`Loading SPC Day ${dayNum} ${haz.toUpperCase()} outlook…`);
+  const isExt = (dayNum === 48);
+  const haz = isExt ? 'prob' : (dayNum === 3) ? 'cat' : hazard;
+  const dayLabel = isExt ? '4-8' : String(dayNum);
+  const spcUrl = isExt
+    ? 'https://www.spc.noaa.gov/products/exper/day4-8/day48prob.nolyr.geojson'
+    : `https://www.spc.noaa.gov/products/outlook/day${dayNum}otlk_${haz}.nolyr.geojson`;
+  updateLoadStatus(`Loading SPC Day ${dayLabel} ${haz.toUpperCase()} outlook…`);
   try {
     let data;
     // 1. Direct (works if SPC sends CORS headers)
@@ -8505,7 +8510,7 @@ async function loadSPCOutlook(dayNum, hazard) {
       },
       onEachFeature: (f, layer) => {
         const label = f.properties.LABEL || f.properties.LABEL2 || f.properties.DN || 'Unknown';
-        layer.bindPopup(`<div class="alert-popup"><b>SPC Day ${dayNum} ${haz.toUpperCase()}</b><br>${label}</div>`);
+        layer.bindPopup(`<div class="alert-popup"><b>SPC Day ${dayLabel} ${haz.toUpperCase()}</b><br>${label}</div>`);
       }
     }).addTo(map);
     const leg = document.getElementById('spc-legend');
@@ -8519,16 +8524,16 @@ async function loadSPCOutlook(dayNum, hazard) {
 
 function _spcPickDay(d) {
   _spcDay = d;
-  [1,2,3].forEach(n => {
+  [1,2,3,48].forEach(n => {
     const b = document.getElementById(`spc-d${n}`);
     if (b) b.classList.toggle('active', n === d);
   });
   const hazBtns = ['torn','wind','hail'];
   hazBtns.forEach(h => {
     const b = document.getElementById(`spc-h${h}`);
-    if (b) { b.disabled = (d === 3); }
+    if (b) { b.disabled = (d === 3 || d === 48); }   // Day 3 + Day 4-8 are categorical/prob only
   });
-  if (d === 3 && _spcHazard !== 'cat') {
+  if ((d === 3 || d === 48) && _spcHazard !== 'cat') {
     _spcHazard = 'cat';
     ['cat','torn','wind','hail'].forEach(h => {
       const b = document.getElementById(`spc-h${h}`);
@@ -10481,6 +10486,16 @@ function toggleOverlayPill(id) {
     } else {
       _thunderStop();
     }
+  } else if (id === 'spc-outlook') {
+    _modelsSPCToggle();
+    const pill = document.getElementById('op-spc-outlook');
+    if (pill) pill.classList.toggle('active', _spcOutlookOn);
+  } else if (id === 'spc-reports') {
+    activeLayers.spcrpts = !activeLayers.spcrpts;
+    const pill = document.getElementById('op-spc-reports');
+    if (pill) pill.classList.toggle('active', activeLayers.spcrpts);
+    if (activeLayers.spcrpts) loadStormReports();
+    else if (stormReportsLayer) { map.removeLayer(stormReportsLayer); stormReportsLayer = null; }
   } else if (id === 'cloudcam') {
     activeLayers.cloudcam = !activeLayers.cloudcam;
     const pill = document.getElementById('op-cloudcam');
@@ -24368,6 +24383,12 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-list-hint">Tap to toggle · drag ⋮ to reorder</div>
     <div class="ov-pill active" id="op-alerts" data-ovid="alerts" title="NWS Warnings &amp; Watches">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('alerts')">Warnings</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-spc-outlook" data-ovid="spc-outlook" title="SPC Convective Outlook (Day 1–3 · Categorical/Tornado/Wind/Hail)">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-outlook')">SPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-spc-reports" data-ovid="spc-reports" title="SPC Storm Reports (tornado/hail/wind LSRs)">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-reports')">SPC Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning</span><span class="ov-drag" title="Drag to reorder">⠿</span>
