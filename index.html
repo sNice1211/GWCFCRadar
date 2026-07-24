@@ -5731,12 +5731,27 @@ body.gwcfc-crosshair #map::after {
 }
 .outlook-tog.on .otog-track { background: rgba(0,100,100,0.75); border-color: rgba(0,140,186,0.45); }
 .outlook-tog.on .otog-thumb { transform: translateX(14px); background: #008CBA; }
-/* SPC day/hazard pickers */
+/* SPC day/hazard pickers — floating control, shown whenever the SPC outlook is on */
 #spc-controls {
-  padding: 4px 14px 0;
+  position: fixed;
+  top: calc(60px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 850;
+  width: 300px;
+  max-width: calc(100vw - 20px);
+  padding: 8px 10px;
   display: none;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
+  background: rgba(8,12,16,0.96);
+  border: 1.5px solid rgba(232,184,0,0.45);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.55);
+}
+.spc-float-title {
+  font-family: var(--display); font-weight: 700; font-size: 10px; letter-spacing: 1px;
+  color: #e8b800; text-align: center; text-transform: uppercase; margin-bottom: 1px;
 }
 .spc-picker-row {
   display: flex;
@@ -6243,7 +6258,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v3.0 · SPC in overlays · 2026-07-23</div>
+    <div id="build-stamp">v3.1 · NHC + SPC switcher in overlays · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6318,20 +6333,6 @@ body.clean-mode #clean-hint { opacity: 1; }
           <div class="outlook-tog" id="nhc-tog-row" onclick="_modelsNHCToggle()">
             <span class="otog-track"><span class="otog-thumb"></span></span>
             <span>🌀 NHC</span>
-          </div>
-        </div>
-        <div id="spc-controls">
-          <div class="spc-picker-row">
-            <button class="spc-pick-btn active" id="spc-d1" onclick="_spcPickDay(1)">Day 1</button>
-            <button class="spc-pick-btn" id="spc-d2" onclick="_spcPickDay(2)">Day 2</button>
-            <button class="spc-pick-btn" id="spc-d3" onclick="_spcPickDay(3)">Day 3</button>
-            <button class="spc-pick-btn" id="spc-d48" onclick="_spcPickDay(48)">Day 4-8</button>
-          </div>
-          <div class="spc-picker-row">
-            <button class="spc-pick-btn active" id="spc-hcat" onclick="_spcPickHaz('cat')">Categorical</button>
-            <button class="spc-pick-btn" id="spc-htorn" onclick="_spcPickHaz('torn')">Tornado</button>
-            <button class="spc-pick-btn" id="spc-hwind" onclick="_spcPickHaz('wind')">Wind</button>
-            <button class="spc-pick-btn" id="spc-hhail" onclick="_spcPickHaz('hail')">Hail</button>
           </div>
         </div>
       </div>
@@ -10496,6 +10497,10 @@ function toggleOverlayPill(id) {
     if (pill) pill.classList.toggle('active', activeLayers.spcrpts);
     if (activeLayers.spcrpts) loadStormReports();
     else if (stormReportsLayer) { map.removeLayer(stormReportsLayer); stormReportsLayer = null; }
+  } else if (id === 'nhc-outlook') {
+    _modelsNHCToggle();
+    const pill = document.getElementById('op-nhc-outlook');
+    if (pill) pill.classList.toggle('active', _nhcOutlookOn);
   } else if (id === 'cloudcam') {
     activeLayers.cloudcam = !activeLayers.cloudcam;
     const pill = document.getElementById('op-cloudcam');
@@ -24390,6 +24395,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-spc-reports" data-ovid="spc-reports" title="SPC Storm Reports (tornado/hail/wind LSRs)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-reports')">SPC Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -24720,6 +24728,23 @@ function buildTimelineLabels() {
   }
 }
 </script>
+<!-- ── SPC OUTLOOK DAY/HAZARD SWITCHER (floating, shared by models + overlays) ── -->
+<div id="spc-controls">
+  <div class="spc-float-title">⚠ SPC Outlook</div>
+  <div class="spc-picker-row">
+    <button class="spc-pick-btn active" id="spc-d1" onclick="_spcPickDay(1)">Day 1</button>
+    <button class="spc-pick-btn" id="spc-d2" onclick="_spcPickDay(2)">Day 2</button>
+    <button class="spc-pick-btn" id="spc-d3" onclick="_spcPickDay(3)">Day 3</button>
+    <button class="spc-pick-btn" id="spc-d48" onclick="_spcPickDay(48)">Day 4-8</button>
+  </div>
+  <div class="spc-picker-row">
+    <button class="spc-pick-btn active" id="spc-hcat" onclick="_spcPickHaz('cat')">Categorical</button>
+    <button class="spc-pick-btn" id="spc-htorn" onclick="_spcPickHaz('torn')">Tornado</button>
+    <button class="spc-pick-btn" id="spc-hwind" onclick="_spcPickHaz('wind')">Wind</button>
+    <button class="spc-pick-btn" id="spc-hhail" onclick="_spcPickHaz('hail')">Hail</button>
+  </div>
+</div>
+
 <!-- ── CLOUD CAPTURE ─────────────────────────────────────────────── -->
 <div id="cc-map-hint">Tap the map where the photo was taken</div>
 <div id="cc-modal-backdrop" onclick="if(event.target===this)_ccClose()">
