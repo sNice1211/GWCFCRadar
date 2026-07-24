@@ -6232,7 +6232,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v2.1 · cloud capture · 2026-07-23</div>
+    <div id="build-stamp">v2.2 · cloud capture shared+AI · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -24628,7 +24628,7 @@ function buildTimelineLabels() {
       <textarea id="cc-caption" placeholder="Optional caption…" maxlength="200"></textarea>
       <div id="cc-verdict-box"></div>
       <button class="cc-btn full" id="cc-submit-btn" onclick="_ccSubmit()" disabled>Submit photo</button>
-      <div style="font-size:9px;color:var(--muted);text-align:center;line-height:1.4">Auto-checked on your device · stored locally on this device for now</div>
+      <div id="cc-mode-note" style="font-size:9px;color:var(--muted);text-align:center;line-height:1.4">Reviewed by AI · shared to the live map</div>
     </div>
     <div class="cc-body" id="cc-review-panel" style="display:none">
       <div id="cc-review-list"></div>
@@ -24661,12 +24661,38 @@ function _ccOpenDB(){
     rq.onerror   = e => rej(e.target.error);
   });
 }
+// Shared backend = the app's existing Firebase/Firestore, when configured.
+function _ccRemote(){ try { return (typeof FIREBASE_READY !== 'undefined' && FIREBASE_READY && typeof _fbDb !== 'undefined' && _fbDb) ? _fbDb.collection('cloudcam') : null; } catch(e){ return null; } }
+
+async function _ccLocalAll(){ try { const db=await _ccOpenDB(); return await new Promise(res=>{ const r=db.transaction('photos').objectStore('photos').getAll(); r.onsuccess=()=>res(r.result||[]); r.onerror=()=>res([]); }); } catch(e){ return []; } }
+function  _ccLocalPut(rec){ return _ccOpenDB().then(db=>new Promise((res,rej)=>{ const tx=db.transaction('photos','readwrite'); tx.objectStore('photos').put(rec); tx.oncomplete=res; tx.onerror=e=>rej(e.target.error); })); }
+function  _ccLocalDelete(id){ return _ccOpenDB().then(db=>new Promise(res=>{ const tx=db.transaction('photos','readwrite'); tx.objectStore('photos').delete(id); tx.oncomplete=res; tx.onerror=res; })); }
+
+// Public data layer — prefers the shared Firestore collection, falls back to
+// device-local IndexedDB if Firebase isn't configured or a call fails.
 async function _ccAll(){
-  try { const db=await _ccOpenDB(); return await new Promise(res=>{ const r=db.transaction('photos').objectStore('photos').getAll(); r.onsuccess=()=>res(r.result||[]); r.onerror=()=>res([]); }); }
-  catch(e){ return []; }
+  const col=_ccRemote();
+  if (col){ try { const snap=await col.orderBy('ts','desc').limit(500).get(); return snap.docs.map(d=>d.data()); } catch(e){ console.warn('[cloudcam] remote read failed, using local:', e.message); } }
+  return _ccLocalAll();
 }
-async function _ccPut(rec){ const db=await _ccOpenDB(); return new Promise((res,rej)=>{ const tx=db.transaction('photos','readwrite'); tx.objectStore('photos').put(rec); tx.oncomplete=res; tx.onerror=e=>rej(e.target.error); }); }
-async function _ccDelete(id){ const db=await _ccOpenDB(); return new Promise(res=>{ const tx=db.transaction('photos','readwrite'); tx.objectStore('photos').delete(id); tx.oncomplete=res; tx.onerror=res; }); }
+async function _ccPut(rec){
+  const col=_ccRemote();
+  if (col){ try { await col.doc(rec.id).set(rec); return; } catch(e){ console.warn('[cloudcam] remote write failed, using local:', e.message); } }
+  return _ccLocalPut(rec);
+}
+async function _ccDelete(id){
+  const col=_ccRemote();
+  if (col){ try { await col.doc(id).delete(); return; } catch(e){ console.warn('[cloudcam] remote delete failed, using local:', e.message); } }
+  return _ccLocalDelete(id);
+}
+
+// Live updates: when the shared collection changes, refresh the map + review list.
+let _ccUnsub=null;
+function _ccWatch(){
+  const col=_ccRemote(); if(!col || _ccUnsub) return;
+  try { _ccUnsub=col.onSnapshot(()=>{ _ccRenderLayer(); const rp=document.getElementById('cc-review-panel'); if(rp && rp.style.display!=='none') _ccRenderReview(); }); }
+  catch(e){ /* onSnapshot unavailable */ }
+}
 
 // ── On-device moderation heuristic (placeholder for a real vision model) ──
 function _ccClassify(imgEl, category){
@@ -24700,8 +24726,30 @@ function _ccClassify(imgEl, category){
   } catch(e){ return { verdict:'pending', reason:'Auto-check unavailable — flagged for manual review.' }; }
 }
 
+// Real AI moderation via the app's existing Gemini worker (vision).
+async function _ccClassifyAI(b64, hintCategory){
+  const prompt =
+    'You moderate crowd-sourced WEATHER photos for a live storm-radar map. '+
+    'Decide if the image genuinely shows an OUTDOOR weather / sky / storm / flooding scene. '+
+    'APPROVE real weather or outdoor-conditions photos. DENY selfies, people close-ups, indoor shots, '+
+    'screenshots, memes, food, documents, or anything not weather-related. '+
+    'Choose exactly one category from: Clouds, Flooding, Hail, Wind, Tornado, Other. '+
+    'The user tagged it "'+hintCategory+'" (use your own judgement for the real category). '+
+    'Respond with ONLY compact JSON, no prose: {"approved":true|false,"category":"<one>","reason":"<max 12 words>"}';
+  const body = { contents: [{ role:'user', parts:[ {text:prompt}, {inline_data:{ mime_type:'image/jpeg', data:b64 }} ] }] };
+  const res = await fetch(_AI_WORKER, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || ('HTTP '+res.status));
+  const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const m = txt.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error('AI returned no JSON');
+  const j = JSON.parse(m[0]);
+  const cat = CC_CATS.includes(j.category) ? j.category : hintCategory;
+  return { verdict: j.approved ? 'approved' : 'denied', category: cat, reason: String(j.reason||'Reviewed by AI').slice(0,140), ai:true };
+}
+
 // ── Photo layer on the map (approved only) ──
-function _ccShowLayer(){ if (typeof map==='undefined'||!map) return; if(!_ccLayer) _ccLayer=L.layerGroup(); _ccLayer.addTo(map); _ccRenderLayer(); }
+function _ccShowLayer(){ if (typeof map==='undefined'||!map) return; if(!_ccLayer) _ccLayer=L.layerGroup(); _ccLayer.addTo(map); _ccRenderLayer(); _ccWatch(); }
 function _ccHideLayer(){ if (_ccLayer && typeof map!=='undefined' && map){ try{ map.removeLayer(_ccLayer); }catch(_){} } }
 async function _ccRenderLayer(){
   if (!_ccLayer) return;
@@ -24734,11 +24782,16 @@ function _ccFile(input){
   reader.onload=e=>{
     const img=new Image();
     img.onload=()=>{
-      const max=900; let w=img.width, h=img.height;
-      if (w>h && w>max){ h=Math.round(h*max/w); w=max; } else if (h>max){ w=Math.round(w*max/h); h=max; }
-      const c=document.createElement('canvas'); c.width=w; c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
-      _ccState.dataUrl=c.toDataURL('image/jpeg',0.72);
-      const pv=document.getElementById('cc-preview'); if(pv){ pv.src=_ccState.dataUrl; pv.style.display='block'; }
+      // Compress so the stored image stays well under Firestore's ~1 MB doc limit.
+      const render=(max,q)=>{ let w=img.width,h=img.height;
+        if (w>h && w>max){ h=Math.round(h*max/w); w=max; } else if (h>max){ w=Math.round(w*max/h); h=max; }
+        const c=document.createElement('canvas'); c.width=w; c.height=h; c.getContext('2d').drawImage(img,0,0,w,h);
+        return c.toDataURL('image/jpeg',q); };
+      let url=render(820,0.62);
+      if (url.length > 820000) url=render(680,0.5);   // still too big → shrink further
+      if (url.length > 820000) url=render(560,0.45);
+      _ccState.dataUrl=url;
+      const pv=document.getElementById('cc-preview'); if(pv){ pv.src=url; pv.style.display='block'; }
       _ccUpdateSubmitEnabled();
     };
     img.src=e.target.result;
@@ -24772,24 +24825,36 @@ function _ccPickOnMap(){
 async function _ccSubmit(){
   if (!(_ccState.dataUrl&&_ccState.category&&_ccState.loc)) return;
   const img=document.getElementById('cc-preview');
-  const cls=_ccClassify(img,_ccState.category);
+  const btn=document.getElementById('cc-submit-btn');
+  const box=document.getElementById('cc-verdict-box');
+  if (btn) btn.disabled=true;
+  if (box){ box.className='cc-verdict review'; box.innerHTML='<b>🤖 AI reviewing…</b>'; }
+
+  // Real AI moderation first; fall back to the on-device heuristic if it fails.
+  let cls;
+  try {
+    cls = await _ccClassifyAI(_ccState.dataUrl.split(',')[1], _ccState.category);
+  } catch(e){
+    cls = _ccClassify(img, _ccState.category);
+    cls.reason = (cls.reason||'') + ' (offline check — AI unavailable)';
+  }
   const status = cls.verdict==='approved' ? 'approved' : cls.verdict==='denied' ? 'denied' : 'pending';
   const rec={
     id:'cc_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
-    img:_ccState.dataUrl, category:_ccState.category,
+    img:_ccState.dataUrl, category: cls.category || _ccState.category,
     lat:_ccState.loc.lat, lng:_ccState.loc.lng,
     caption:(document.getElementById('cc-caption').value||'').trim().slice(0,200),
     ts:Date.now(), status, aiReason:cls.reason,
+    by: (typeof _currentUser!=='undefined' && _currentUser) ? _currentUser.uid : 'guest',
   };
   await _ccPut(rec);
-  const box=document.getElementById('cc-verdict-box');
   if (box){
     box.className='cc-verdict '+(status==='approved'?'approved':status==='denied'?'denied':'review');
-    const head = status==='approved' ? '✅ Approved &amp; posted to the map' : status==='denied' ? '⛔ Denied' : '⏳ Pending manual review';
+    const head = status==='approved' ? '✅ Approved &amp; posted to the map' : status==='denied' ? '⛔ Denied by AI' : '⏳ Pending manual review';
     box.innerHTML=`<b>${head}</b><br>${_ccEsc(cls.reason)}`;
   }
   if (status==='approved') _ccRenderLayer();
-  setTimeout(()=>_ccResetForm(true), 1600);
+  setTimeout(()=>_ccResetForm(true), 1900);
 }
 
 function _ccResetForm(keepVerdict){
@@ -24833,7 +24898,12 @@ function _ccTab(t){
   document.getElementById('cc-review-panel').style.display=s?'none':'';
   if(!s) _ccRenderReview();
 }
-function _ccShowModal(){ const b=document.getElementById('cc-modal-backdrop'); if(b) b.classList.add('visible'); _ccRenderCats(); _ccUpdateLocLabel(); }
+function _ccShowModal(){
+  const b=document.getElementById('cc-modal-backdrop'); if(b) b.classList.add('visible');
+  const note=document.getElementById('cc-mode-note');
+  if (note) note.textContent = _ccRemote() ? 'Reviewed by AI · shared to the live map for everyone' : 'Reviewed by AI · stored on this device (sign in to share)';
+  _ccRenderCats(); _ccUpdateLocLabel();
+}
 function _ccHideModal(){ const b=document.getElementById('cc-modal-backdrop'); if(b) b.classList.remove('visible'); }
 function _ccOpen(){ _ccTab('submit'); _ccResetForm(false); _ccShowModal(); }
 function _ccClose(){ _ccHideModal(); }
