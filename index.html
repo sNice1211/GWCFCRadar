@@ -6243,7 +6243,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v2.5 · cloud capture upload+verify · 2026-07-23</div>
+    <div id="build-stamp">v2.6 · admin-gated review · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -24972,12 +24972,49 @@ function _ccResetForm(keepVerdict){
   _ccRenderCats(); _ccUpdateSubmitEnabled(); _ccGetGPS();
 }
 
+// ── Admin gate for the Review/override panel ──
+// The password is stored as a SHA-256 hash (never in plaintext), so it can't be read
+// from the page source or devtools. Note: a purely client-side gate can still be
+// bypassed by editing JS at runtime — real enforcement needs Firestore admin rules.
+const _CC_ADMIN_HASH = '2a2d1ff14b1493d9c619ebb676c60bf67cd1fc0c7178015775c229331aac390c';
+let _ccAdminUnlocked = false;
+async function _ccSha256Hex(s){
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function _ccAdminUnlock(){
+  const inp=document.getElementById('cc-admin-pass'), err=document.getElementById('cc-admin-err');
+  try {
+    if (await _ccSha256Hex(inp ? inp.value : '') === _CC_ADMIN_HASH){ _ccAdminUnlocked=true; _ccRenderReview(); return; }
+  } catch(e){}
+  if (err) err.textContent='Incorrect password';
+  if (inp){ inp.value=''; inp.focus(); }
+}
+function _ccAdminLock(){ _ccAdminUnlocked=false; _ccRenderReview(); }
+
 // ── Review tab (manual moderation / override) ──
 async function _ccRenderReview(){
   const list=document.getElementById('cc-review-list'); if(!list) return;
+  if (!_ccAdminUnlocked){
+    list.innerHTML =
+      '<div style="padding:18px 8px;text-align:center">'+
+        '<div style="font-size:26px;margin-bottom:6px">🔒</div>'+
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:12px">Admin password required to review &amp; override AI decisions</div>'+
+        '<input type="password" id="cc-admin-pass" placeholder="Password" autocomplete="off" '+
+          'onkeydown="if(event.key===\'Enter\')_ccAdminUnlock()" '+
+          'style="width:100%;box-sizing:border-box;background:rgba(0,0,0,0.25);border:2px solid rgba(0,140,186,0.4);border-radius:8px;padding:10px;color:var(--text);font-family:var(--display);font-size:13px;text-align:center;outline:none">'+
+        '<div id="cc-admin-err" style="color:#ff8888;font-size:11px;min-height:15px;margin:6px 0">'+'</div>'+
+        '<button class="cc-btn full" onclick="_ccAdminUnlock()">Unlock</button>'+
+      '</div>';
+    const inp=document.getElementById('cc-admin-pass'); if(inp) setTimeout(()=>inp.focus(),50);
+    return;
+  }
   const all=(await _ccAll()).sort((a,b)=>b.ts-a.ts);
-  if(!all.length){ list.innerHTML='<div style="text-align:center;color:var(--muted);padding:22px;font-size:12px">No submissions yet.</div>'; return; }
-  list.innerHTML='';
+  const lockBar='<div style="display:flex;align-items:center;justify-content:space-between;padding:2px 2px 8px;border-bottom:1px solid rgba(0,140,186,0.25);margin-bottom:8px">'+
+    '<span style="font-size:11px;font-weight:700;color:#008CBA">🔓 Admin unlocked</span>'+
+    '<button class="cc-btn secondary" style="padding:4px 10px;font-size:11px" onclick="_ccAdminLock()">Lock</button></div>';
+  if(!all.length){ list.innerHTML=lockBar+'<div style="text-align:center;color:var(--muted);padding:22px 0;font-size:12px">No submissions yet.</div>'; return; }
+  list.innerHTML=lockBar;
   all.forEach(rec=>{
     const item=document.createElement('div'); item.className='cc-review-item';
     item.innerHTML=`<img src="${rec.img}" alt="">`+
@@ -25015,7 +25052,7 @@ function _ccShowModal(){
 }
 function _ccHideModal(){ const b=document.getElementById('cc-modal-backdrop'); if(b) b.classList.remove('visible'); }
 function _ccOpen(){ _ccTab('submit'); _ccResetForm(false); _ccShowModal(); }
-function _ccClose(){ _ccHideModal(); }
+function _ccClose(){ _ccHideModal(); _ccAdminUnlocked=false; }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // OVERLAY LIST — drag ⋮ to reorder; order is saved and drives map stacking order.
