@@ -989,7 +989,8 @@ body {
   bottom: 160px;
   right: 12px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-end;
   gap: 8px;
   z-index: 900;
   pointer-events: none;
@@ -1043,65 +1044,73 @@ body {
   box-shadow: 0 0 10px rgba(170,0,0,0.3);
 }
 
+/* Vertical, drag-to-reorder overlay list */
 #overlay-pills-row {
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-  pointer-events: all;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  width: 205px;
+  max-height: 62vh;
+  overflow-y: auto;
+  padding: 7px;
+  background: rgba(8,12,16,0.96);
+  border: 1.5px solid rgba(0,140,186,0.4);
+  border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.55);
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+#overlay-pills-row.open { opacity: 1; transform: none; pointer-events: all; }
+.ov-list-hint {
+  font-family: var(--display); font-weight: 700; font-size: 8px; letter-spacing: 1px;
+  text-transform: uppercase; color: rgba(255,255,255,0.35); text-align: center; padding: 1px 0 3px;
 }
 #overlay-pills-row .ov-pill {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 2px;
-  width: 46px;
-  padding: 5px 4px;
-  background: rgb(8,12,16);
-  border: 1.5px solid rgba(170,0,0,0.25);
-  border-radius: 10px;
-  cursor: pointer;
-  color: rgba(255,255,255,0.55);
-  transition: all 0.18s ease;
+  gap: 9px;
+  width: auto;
+  padding: 8px 9px;
+  background: rgba(0,140,186,0.05);
+  border: 1.5px solid rgba(0,140,186,0.22);
+  border-radius: 9px;
+  cursor: default;
+  color: rgba(255,255,255,0.72);
   user-select: none;
-  opacity: 0;
-  transform: translateX(20px);
-  pointer-events: none;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
-#overlay-pills-row .ov-pill.visible {
-  opacity: 1;
-  transform: translateX(0);
-  pointer-events: all;
-}
-#overlay-pills-row .ov-pill:hover {
-  color: rgba(255,255,255,0.9);
-  background: rgb(100,0,0);
-  border-color: rgba(255,255,255,0.3);
-}
+#overlay-pills-row .ov-pill.dragging { opacity: 0.45; border-style: dashed; }
+#overlay-pills-row .ov-pill.drag-over { box-shadow: 0 -3px 0 -1px var(--accent2); }
 #overlay-pills-row .ov-pill.active {
   color: #fff;
-  background: rgb(0,80,80);
+  background: rgba(0,140,186,0.22);
   border-color: var(--accent2);
-  box-shadow: 0 0 8px rgba(0,140,186,0.35);
+  box-shadow: 0 0 8px rgba(0,140,186,0.3);
 }
-.ov-icon {
-  font-size: 16px;
-  line-height: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.ov-bullet {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  border: 2px solid rgba(255,255,255,0.4); background: transparent; transition: all 0.15s;
 }
-.ov-label {
-  font-family: var(--mono);
-  font-size: 7px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: inherit;
-  opacity: 0.8;
-  text-align: center;
-  white-space: nowrap;
+.ov-pill.active .ov-bullet { background: var(--accent2); border-color: var(--accent2); box-shadow: 0 0 6px var(--accent2); }
+.ov-rowname {
+  flex: 1; min-width: 0;
+  font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: 0.3px;
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.ov-drag {
+  flex-shrink: 0; cursor: grab; touch-action: none;
+  padding: 2px 3px; margin: -4px -2px -4px 0;
+  color: rgba(255,255,255,0.4); font-size: 13px; line-height: 0.7; letter-spacing: 1px;
+  display: flex; align-items: center;
+}
+.ov-drag:hover { color: var(--accent2); }
+.ov-drag:active { cursor: grabbing; }
+.ov-icon { font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.ov-label { font-family: var(--mono); font-size: 7px; letter-spacing: 0.5px; text-transform: uppercase; color: inherit; opacity: 0.8; text-align: center; white-space: nowrap; }
 /* ── RESPONSIVE: TABLET (≤768px) ── */
 @media (max-width: 768px) {
   /* Logo , shrink significantly */
@@ -6232,7 +6241,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v2.2 · cloud capture shared+AI · 2026-07-23</div>
+    <div id="build-stamp">v2.3 · overlay list reorder · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8825,6 +8834,7 @@ function _ltgRenderStrikes(features) {
     if (!_ltgMarkers.has(key)) {
       const marker = L.marker([f.lat, f.lon], {
         icon: _ltgMakeIcon(ageMs), zIndexOffset: 900, interactive: false,
+        pane: (typeof _ovPane==='function' ? _ovPane('lightning') : undefined),
       }).addTo(map);
       _ltgMarkers.set(key, { marker, ts: f.ts });
       lightningFlash.push({ marker, time: f.ts }); // compat
@@ -8980,7 +8990,7 @@ function _thunderTick() {
       const circle = L.circle(ll, {
         radius, color: '#008CBA', weight: 2, opacity,
         fillColor: '#008CBA', fillOpacity: opacity * 0.12,
-        interactive: false,
+        interactive: false, pane: (typeof _ovPane==='function' ? _ovPane('thunder') : undefined),
       }).addTo(map);
       _thunderRings.set(key, { circle });
     } else {
@@ -10344,15 +10354,9 @@ function toggleForecastDots() {
 // ── OVERLAY LAUNCHER ──
 function toggleOverlayLauncher() {
   const btn = document.getElementById('overlay-toggle-btn');
-  const pills = document.querySelectorAll('#overlay-pills-row .ov-pill');
+  const row = document.getElementById('overlay-pills-row');
   const isOpen = btn.classList.toggle('open');
-  pills.forEach((pill, i) => {
-    if (isOpen) {
-      setTimeout(() => pill.classList.add('visible'), i * 60);
-    } else {
-      setTimeout(() => pill.classList.remove('visible'), (pills.length - 1 - i) * 40);
-    }
-  });
+  if (row) row.classList.toggle('open', isOpen);
 }
 
 // ── OVERLAY BAR PILLS (Lightning, Radio, Forecasts) ──
@@ -24262,45 +24266,36 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- Overlay toggle button + fly-out pills -->
 <div id="overlay-launcher">
   <div id="overlay-pills-row">
-    <div class="ov-pill" id="op-lightning" onclick="toggleOverlayPill('lightning')" title="Lightning">
-      <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
-      <span class="ov-label">Lightning</span>
+    <div class="ov-list-hint">Tap to toggle · drag ⋮ to reorder</div>
+    <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-thunder" onclick="toggleOverlayPill('thunder')" title="Thunder Tracker — audible thunder range spreading outward from each strike (speed of sound, capped at ~10 mi)">
-      <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M8.5 8.5a5 5 0 0 0 0 7"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M6 6a9 9 0 0 0 0 12"/><path d="M18 6a9 9 0 0 1 0 12"/></svg></span>
-      <span class="ov-label">Thunder Tracker</span>
+    <div class="ov-pill" id="op-thunder" data-ovid="thunder" title="Thunder Tracker — audible thunder range spreading outward from each strike (speed of sound, capped at ~10 mi)">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('thunder')">Thunder Tracker</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-cloudcam" onclick="toggleOverlayPill('cloudcam')" title="Cloud Capture — submit weather photos to the map">
-      <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 19a4 4 0 0 1 0-8 5.5 5.5 0 0 1 10.6-1.5A3.5 3.5 0 0 1 18 16"/><circle cx="12" cy="14" r="2.4"/><path d="M9.5 14h.01"/></svg></span>
-      <span class="ov-label">Cloud Capture</span>
+    <div class="ov-pill" id="op-cloudcam" data-ovid="cloudcam" title="Cloud Capture — submit weather photos to the map">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('cloudcam')">Cloud Capture</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-radio" onclick="toggleOverlayPill('radio')" title="NOAA Radio">
-      <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></svg></span>
-      <span class="ov-label">Radio</span>
+    <div class="ov-pill" id="op-radio" data-ovid="radio" title="NOAA Radio">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('radio')">Radio</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill active" id="op-forecasts" onclick="toggleOverlayPill('forecasts')" title="Forecasts">
-      <span class="ov-icon">🌥️</span>
-      <span class="ov-label">Forecasts</span>
+    <div class="ov-pill active" id="op-forecasts" data-ovid="forecasts" title="Forecasts">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('forecasts')">Forecasts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-hhunt" onclick="toggleOverlayPill('hhunt')" title="Hurricane Hunters">
-      <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 16v-2l-8-5V3.5C13 2.67 12.33 2 11.5 2S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg></span>
-      <span class="ov-label">Hunters</span>
+    <div class="ov-pill" id="op-hhunt" data-ovid="hhunt" title="Hurricane Hunters">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('hhunt')">Hunters</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-metar-stations" onclick="toggleOverlayPill('metar-stations')" title="METAR Stations">
-      <span class="ov-icon"><svg width="16" height="20" viewBox="-8 -10 16 20" style="display:inline-block"><g transform="rotate(0)"><path d="M 0,-11 L 3,-7 Q 0,-5 -3,-7 Z" fill="#00bcd4"/></g><circle cx="0" cy="0" r="6" fill="#ff7043"/></svg></span>
-      <span class="ov-label">METAR Stations</span>
+    <div class="ov-pill" id="op-metar-stations" data-ovid="metar-stations" title="METAR Stations">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('metar-stations')">METAR Stations</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill active" id="op-fronts" onclick="toggleOverlayPill('fronts')" title="WPC Surface Fronts">
-      <span class="ov-icon"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M2 12 Q6 7 10 12 Q14 17 18 12 Q20 9 22 12" stroke="#ef4444"/><path d="M2 16 Q6 11 10 16 Q14 21 18 16 Q20 13 22 16" stroke="#3b82f6"/></svg></span>
-      <span class="ov-label">Fronts</span>
+    <div class="ov-pill active" id="op-fronts" data-ovid="fronts" title="WPC Surface Fronts">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('fronts')">Fronts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-spotters" onclick="toggleOverlayPill('spotters')" title="SpotterNetwork Positions">
-      <span class="ov-icon">🔭</span>
-      <span class="ov-label">Spotters</span>
+    <div class="ov-pill" id="op-spotters" data-ovid="spotters" title="SpotterNetwork Positions">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotters')">Spotters</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-spotter-reports" onclick="toggleOverlayPill('spotter-reports')" title="SpotterNetwork Reports">
-      <span class="ov-icon">📋</span>
-      <span class="ov-label">Spotter Reports</span>
+    <div class="ov-pill" id="op-spotter-reports" data-ovid="spotter-reports" title="SpotterNetwork Reports">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotter-reports')">Spotter Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
   </div>
   <button id="overlay-toggle-btn" onclick="toggleOverlayLauncher()" title="Toggle overlays" aria-label="Toggle overlays">
@@ -24758,7 +24753,7 @@ async function _ccRenderLayer(){
   for (const rec of all){
     if (rec.status!=='approved' || !isFinite(rec.lat)) continue;
     const icon = L.divIcon({ className:'', html:`<div class="cc-photo-marker" style="background-image:url('${rec.img}')"></div>`, iconSize:[40,40], iconAnchor:[20,40] });
-    const m = L.marker([rec.lat, rec.lng], { icon });
+    const m = L.marker([rec.lat, rec.lng], { icon, pane: (typeof _ovPane==='function' ? _ovPane('cloudcam') : undefined) });
     m.bindPopup(`<div class="cc-popup"><img src="${rec.img}"><div class="cc-pop-cat">${_ccEsc(rec.category)}</div>${rec.caption?`<div class="cc-pop-cap">${_ccEsc(rec.caption)}</div>`:''}<div style="font-size:9px;color:#888;margin-top:3px">${new Date(rec.ts).toLocaleString()}</div></div>`);
     _ccLayer.addLayer(m);
   }
@@ -24907,6 +24902,79 @@ function _ccShowModal(){
 function _ccHideModal(){ const b=document.getElementById('cc-modal-backdrop'); if(b) b.classList.remove('visible'); }
 function _ccOpen(){ _ccTab('submit'); _ccResetForm(false); _ccShowModal(); }
 function _ccClose(){ _ccHideModal(); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OVERLAY LIST — drag ⋮ to reorder; order is saved and drives map stacking order.
+// ───────────────────────────────────────────────────────────────────────────────
+// A dedicated Leaflet pane per overlay carries the stacking z-index derived from
+// the list position (top of list = drawn on top). Overlays wired to these panes
+// (Lightning, Thunder, Cloud Capture) restack live on the map; the rest reorder in
+// the menu and are ready to be wired the same way.
+const OV_ORDER_KEY = 'gwcfc_overlay_order';
+function _ovRows(){ return Array.from(document.querySelectorAll('#overlay-pills-row .ov-pill')); }
+function _ovContainer(){ return document.getElementById('overlay-pills-row'); }
+
+// Lazily create (and return) a stacking pane for an overlay id.
+function _ovPane(id){
+  if (typeof map==='undefined'||!map) return undefined;
+  const name='ovp-'+id;
+  if (!map.getPane(name)){ const p=map.createPane(name); p.style.zIndex=615; }
+  return name;
+}
+function _ovApplyMapOrder(){
+  if (typeof map==='undefined'||!map) return;
+  const ids=_ovRows().map(r=>r.dataset.ovid), n=ids.length;
+  ids.forEach((id,idx)=>{
+    const pane=map.getPane('ovp-'+id);
+    if (pane) pane.style.zIndex = 610 + (n - idx); // top of list → highest z → on top
+  });
+}
+function _ovSaveOrder(){
+  try { localStorage.setItem(OV_ORDER_KEY, JSON.stringify(_ovRows().map(r=>r.dataset.ovid))); } catch(e){}
+  _ovApplyMapOrder();
+}
+function _ovLoadOrder(){
+  let order=[]; try { order=JSON.parse(localStorage.getItem(OV_ORDER_KEY)||'[]'); } catch(e){}
+  const cont=_ovContainer();
+  if (cont && Array.isArray(order)) order.forEach(id=>{ const el=document.getElementById('op-'+id); if(el) cont.appendChild(el); });
+  _ovApplyMapOrder();
+}
+
+(function _ovDragInit(){
+  let drag=null;
+  function onDown(e){
+    const handle=e.target.closest('.ov-drag'); if(!handle) return;
+    const row=handle.closest('.ov-pill'); if(!row) return;
+    e.preventDefault();
+    drag={ row };
+    row.classList.add('dragging');
+    try { handle.setPointerCapture(e.pointerId); } catch(_){}
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp, { once:true });
+    document.addEventListener('pointercancel', onUp, { once:true });
+  }
+  function onMove(e){
+    if(!drag) return;
+    const cont=_ovContainer(); if(!cont) return;
+    const others=_ovRows().filter(r=>r!==drag.row);
+    let placed=false;
+    for(const sib of others){
+      const rect=sib.getBoundingClientRect();
+      if(e.clientY < rect.top + rect.height/2){ cont.insertBefore(drag.row, sib); placed=true; break; }
+    }
+    if(!placed) cont.appendChild(drag.row);
+  }
+  function onUp(){
+    document.removeEventListener('pointermove', onMove);
+    if(drag){ drag.row.classList.remove('dragging'); drag=null; _ovSaveOrder(); }
+  }
+  function attach(){
+    const cont=_ovContainer(); if(!cont){ setTimeout(attach,300); return; }
+    cont.addEventListener('pointerdown', onDown);
+    _ovLoadOrder();
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', attach); else attach();
+})();
 </script>
 </body>
 </html>
