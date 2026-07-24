@@ -6243,7 +6243,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v2.6 · admin-gated review · 2026-07-23</div>
+    <div id="build-stamp">v2.7 · alert layer port · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8256,8 +8256,47 @@ function _buildAlertPopupHTML(p, color) {
 let alertsLayerVisible = true;  // always on
 
 let _lastAlertFeatures = [];
+let _alertFlashRAF = null;
+let _alertNewLayers = [];   // { layer, fillLayer, color, until }
+
+// ── Alert helpers (ported from tgranz alerts.js, adapted to Leaflet + NWS data) ──
+function _alertColorFor(ev){ const info = Object.entries(ALERT_COLORS).find(([k]) => (ev||'').includes(k)); return info ? info[1].color : '#aaaaaa'; }
+function _alertThicknessFor(ev){ return (!/Watch|Advisory/.test(ev||'')) ? 2.5 : 1.5; }
+// Higher priority draws on top: hazard severity + product level (emergency>warning>watch>advisory).
+function _alertPriority(ev){
+  ev = ev || '';
+  let base = /Emergency/.test(ev) ? 100 : /Warning/.test(ev) ? 70 : /Watch/.test(ev) ? 40 : /Advisory/.test(ev) ? 20 : 10;
+  let haz = /Tornado/.test(ev) ? 9 : /Extreme Wind/.test(ev) ? 8 : /Flash Flood/.test(ev) ? 7
+    : /Severe Thunderstorm/.test(ev) ? 6 : /Flood/.test(ev) ? 5 : /Snow Squall|Blizzard|Ice Storm/.test(ev) ? 4
+    : /Winter|Wind/.test(ev) ? 3 : 0;
+  return base + haz;
+}
+function _alertIsNew(p){
+  const t = Date.parse(p.sent || p.effective || p.onset || '');
+  return !!t && (Date.now() - t) >= 0 && (Date.now() - t) < 60000;
+}
+function _hex2rgb(h){ h=(h||'').replace('#',''); if(h.length===3) h=h.split('').map(c=>c+c).join(''); const n=parseInt(h||'888888',16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+function _lerpColor(a,b,t){ const A=_hex2rgb(a),B=_hex2rgb(b); const m=(i)=>Math.round(A[i]+(B[i]-A[i])*t); return `rgb(${m(0)},${m(1)},${m(2)})`; }
+// Parse NWS "TIME...MOT...LOC" storm motion (direction, speed, position) from alert text.
+function _parseMotLoc(desc){
+  if(!desc) return null;
+  const m = desc.match(/TIME\.\.\.MOT\.\.\.LOC\s+\d{3,4}Z\s+(\d{1,3})DEG\s+(\d{1,3})KT\s+([\d\s]+)/i);
+  if(!m) return null;
+  const nums = m[3].trim().split(/\s+/).map(Number).filter(n=>!isNaN(n));
+  const points=[]; for(let i=0;i+1<nums.length;i+=2) points.push({ lat:nums[i]/100, lon:-Math.abs(nums[i+1]/100) });
+  return points.length ? { direction:+m[1], speed:+m[2], points } : null;
+}
+function _destFromBearing(lat, lon, brgDeg, distNm){
+  const Rnm=3440.065, ad=distNm/Rnm, l1=lat*Math.PI/180, o1=lon*Math.PI/180, b=brgDeg*Math.PI/180;
+  const l2=Math.asin(Math.sin(l1)*Math.cos(ad)+Math.cos(l1)*Math.sin(ad)*Math.cos(b));
+  const o2=o1+Math.atan2(Math.sin(b)*Math.sin(ad)*Math.cos(l1), Math.cos(ad)-Math.sin(l1)*Math.sin(l2));
+  return [ l2*180/Math.PI, ((o2*180/Math.PI+540)%360)-180 ];
+}
+
 function renderAlerts(features) {
   _lastAlertFeatures = features;
+  if (_alertFlashRAF) { cancelAnimationFrame(_alertFlashRAF); _alertFlashRAF = null; }
+  _alertNewLayers = [];
   if (alertsLayer) { map.removeLayer(alertsLayer); alertsLayer = null; }
 
   const panel = document.getElementById('alerts-panel');
@@ -8287,38 +8326,38 @@ function renderAlerts(features) {
     return true;
   });
 
-  // Map layer
+  // Priority stacking: draw lowest-priority first so the worst warnings sit on top.
+  filtered.sort((a,b) => _alertPriority(a.properties.event) - _alertPriority(b.properties.event));
+
+  // Black casing layer (drawn first, sits beneath the colored outlines).
+  const casing = L.geoJSON({ type: 'FeatureCollection', features: filtered }, {
+    pane: 'alertsPane', interactive: false,
+    style: f => ({ color: '#000000', weight: _alertThicknessFor(f.properties.event) + 2, fill: false, opacity: 1 })
+  });
+
+  // Main colored outline + translucent fill (keeps the existing click popup).
   const layerMap = {};
-  alertsLayer = L.geoJSON({ type: 'FeatureCollection', features: filtered }, {
+  const main = L.geoJSON({ type: 'FeatureCollection', features: filtered }, {
     pane: 'alertsPane',
     style: f => {
-      const ev = f.properties.event || '';
-      const info = Object.entries(ALERT_COLORS).find(([k]) => ev.includes(k));
-      const color = info ? info[1].color : '#aaaaaa';
-      const isWarning = !ev.includes('Watch') && !ev.includes('Advisory');
-      const isWatch   = ev.includes('Watch');
-      return {
-        color,
-        weight:      isWarning ? 2.5 : 1.5,
-        fillColor:   color,
-        fillOpacity: isWarning ? 0.35 : 0.18,
-        dashArray:   isWatch ? '10,6' : null,
-        opacity:     1
-      };
+      const ev = f.properties.event || '', color = _alertColorFor(ev);
+      const isWarning = !/Watch|Advisory/.test(ev);
+      return { color, weight: _alertThicknessFor(ev), fillColor: color, fillOpacity: isWarning ? 0.35 : 0.18, dashArray: /Watch/.test(ev) ? '10,6' : null, opacity: 1 };
     },
     onEachFeature: (f, layer) => {
       const p = f.properties;
       const fid = p.id || p['@id'] || f.id;
       if (fid) layerMap[fid] = layer;
-      const ev2 = p.event || '';
-      const inf2 = Object.entries(ALERT_COLORS).find(([k]) => ev2.includes(k));
-      const aColor = inf2 ? inf2[1].color : '#aaaaaa';
+      const aColor = _alertColorFor(p.event || '');
+      if (_alertIsNew(p)) {
+        const until = (Date.parse(p.sent || p.effective || p.onset || '') || Date.now()) + 60000;
+        _alertNewLayers.push({ layer, color: aColor, until });
+      }
       layer.on('click', function(ev) {
         L.DomEvent.stop(ev);
         const html = _buildAlertPopupHTML(p, aColor);
         const pop = L.popup({ className: 'ap-popup-container', maxWidth: 340, autoPan: true, closeButton: true })
           .setLatLng(ev.latlng).setContent(html).openOn(map);
-        // Apply dynamic border color after DOM insertion
         setTimeout(() => {
           const el = pop.getElement ? pop.getElement() : null;
           if (!el) return;
@@ -8328,10 +8367,47 @@ function renderAlerts(features) {
       });
     }
   });
-  alertsLayer.addTo(map);
+
+  // Storm-motion vectors (arrows) from TIME...MOT...LOC — warnings only.
+  const motion = L.layerGroup();
+  filtered.forEach(f => {
+    const p = f.properties;
+    if (/Watch|Advisory/.test(p.event || '')) return;
+    const mot = _parseMotLoc(p.description || '');
+    if (!mot || !mot.speed) return;
+    const color = _alertColorFor(p.event || '');
+    const distNm = Math.max(0, mot.speed * 0.25); // ~15-minute projection
+    mot.points.forEach(pt => {
+      if (!isFinite(pt.lat) || !isFinite(pt.lon)) return;
+      const [eLat, eLon] = _destFromBearing(pt.lat, pt.lon, mot.direction, distNm);
+      L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', color:'#000', weight:5, interactive:false }).addTo(motion);
+      L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', color, weight:2.5, interactive:false }).addTo(motion);
+      L.circleMarker([pt.lat, pt.lon], { pane:'alertsPane', radius:4, color:'#000', weight:1.5, fillColor:color, fillOpacity:1, interactive:false }).addTo(motion);
+      L.marker([eLat, eLon], { pane:'alertsPane', interactive:false, icon: L.divIcon({ className:'', html:`<div style="color:${color};text-shadow:0 0 2px #000,0 0 2px #000;font-size:15px;line-height:1;transform:rotate(${mot.direction}deg)">▲</div>`, iconSize:[16,16], iconAnchor:[8,8] }) }).addTo(motion);
+    });
+  });
+
+  alertsLayer = L.layerGroup([casing, main, motion]).addTo(map);
   // Re-apply visibility , addTo can reset pane display
   const _ap = map.getPane('alertsPane');
   if (_ap) _ap.style.display = alertsLayerVisible ? '' : 'none';
+
+  // Flash newly-issued alerts (pulse toward white) for their first minute.
+  if (_alertNewLayers.length) {
+    const start = Date.now();
+    const tick = () => {
+      const now = Date.now();
+      _alertNewLayers = _alertNewLayers.filter(o => {
+        if (now > o.until) { try { o.layer.setStyle({ color:o.color, fillColor:o.color }); } catch(e){} return false; }
+        return true;
+      });
+      if (!_alertNewLayers.length) { _alertFlashRAF = null; return; }
+      const phase = Math.sin(((now - start) % 1000) / 1000 * Math.PI * 2) * 0.5 + 0.5;
+      _alertNewLayers.forEach(({ layer, color }) => { const c = _lerpColor(color, '#ffffff', phase); try { layer.setStyle({ color:c, fillColor:c }); } catch(e){} });
+      _alertFlashRAF = requestAnimationFrame(tick);
+    };
+    tick();
+  }
 
   // Side panel
   filtered.slice(0, 20).forEach(f => {
@@ -24289,6 +24365,9 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="overlay-launcher">
   <div id="overlay-pills-row">
     <div class="ov-list-hint">Tap to toggle · drag ⋮ to reorder</div>
+    <div class="ov-pill active" id="op-alerts" data-ovid="alerts" title="NWS Warnings &amp; Watches">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('alerts')">Warnings</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
