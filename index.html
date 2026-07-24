@@ -6241,7 +6241,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v2.3 · overlay list reorder · 2026-07-23</div>
+    <div id="build-stamp">v2.4 · thunder radius fix · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8962,9 +8962,11 @@ let _ltgReconnectTimer = null;
 const THUNDER_TEMP_C        = 20;                                 // assumed near-surface air temperature
 const THUNDER_SPEED_MS      = 331.3 + 0.606 * THUNDER_TEMP_C;     // ≈ 343.4 m/s
 const THUNDER_MAX_AUDIBLE_M = 16000;                             // ~10 mi practical audibility limit
-const THUNDER_LIFETIME_MS   = (THUNDER_MAX_AUDIBLE_M / THUNDER_SPEED_MS) * 1000; // ≈ 46.6 s
+const THUNDER_SPREAD_MS     = (THUNDER_MAX_AUDIBLE_M / THUNDER_SPEED_MS) * 1000; // ≈ 46.6 s to reach max range
+const THUNDER_DISPLAY_MS    = 180000;                            // keep a strike's radius visible for ~3 min
+const THUNDER_MAX_RINGS     = 220;                               // perf cap: draw the most-recent strikes only
 
-let _thunderRings = new Map();  // strikeKey -> { circle }
+let _thunderRings = new Map();  // strikeKey -> { circle, maxed }
 let _thunderTimer = null;
 
 // Radius (metres) the thunder wavefront has reached, capped at the audible limit.
@@ -8972,33 +8974,51 @@ function _thunderRadiusM(elapsedMs) {
   return Math.min(THUNDER_MAX_AUDIBLE_M, THUNDER_SPEED_MS * (Math.max(0, elapsedMs) / 1000));
 }
 
-// One animation step: grow/fade a sound ring for every recent strike.
+// One animation step: EVERY recent strike gets a radius that spreads out from the
+// flash, holds at the ~10 mi audible limit, and fades over a few minutes. (Real feed
+// strikes arrive already tens of seconds old, so we can't gate on the 47 s wavefront
+// window or nothing would ever show — instead the radius persists as the audible
+// footprint and dims with the strike's age.)
 function _thunderTick() {
   if (typeof map === 'undefined' || !map || !activeLayers.thunder) return;
-  const now  = Date.now();
-  const live = new Set();
+  const now = Date.now();
+
+  // Collect strikes still within the display window, freshest first, capped for perf.
+  const recs = [];
   for (const [key, rec] of _ltgMarkers) {
     const elapsed = now - rec.ts;
-    if (elapsed < 0 || elapsed > THUNDER_LIFETIME_MS) continue;  // sound has passed the audible limit
+    if (elapsed >= -1000 && elapsed <= THUNDER_DISPLAY_MS) recs.push([key, rec, elapsed]);
+  }
+  recs.sort((a, b) => a[2] - b[2]);
+  const show = recs.slice(0, THUNDER_MAX_RINGS);
+
+  const live = new Set();
+  for (const [key, rec, elapsed] of show) {
     live.add(key);
-    const radius  = _thunderRadiusM(elapsed);
-    const frac    = radius / THUNDER_MAX_AUDIBLE_M;              // 0 at the flash → 1 at max range
-    const opacity = 0.85 * (1 - frac);                          // wavefront fades as it spreads & weakens
+    const spreading = elapsed <= THUNDER_SPREAD_MS;
+    const radius = _thunderRadiusM(elapsed);
+    // Bright while the wavefront is still travelling, then fade over the display window.
+    let opacity = spreading
+      ? 0.9 - 0.3 * (radius / THUNDER_MAX_AUDIBLE_M)
+      : 0.6 * (1 - (elapsed - THUNDER_SPREAD_MS) / (THUNDER_DISPLAY_MS - THUNDER_SPREAD_MS));
+    opacity = Math.max(0.07, Math.min(0.9, opacity));
+
     let ring = _thunderRings.get(key);
     if (!ring) {
       const ll = rec.marker.getLatLng();
       const circle = L.circle(ll, {
         radius, color: '#008CBA', weight: 2, opacity,
-        fillColor: '#008CBA', fillOpacity: opacity * 0.12,
-        interactive: false, pane: (typeof _ovPane==='function' ? _ovPane('thunder') : undefined),
+        fillColor: '#008CBA', fillOpacity: opacity * 0.10,
+        interactive: false, pane: (typeof _ovPane === 'function' ? _ovPane('thunder') : undefined),
       }).addTo(map);
-      _thunderRings.set(key, { circle });
+      _thunderRings.set(key, { circle, maxed: !spreading });
     } else {
-      ring.circle.setRadius(radius);
-      ring.circle.setStyle({ opacity, fillOpacity: opacity * 0.12 });
+      if (spreading) ring.circle.setRadius(radius);                       // resize only while moving
+      else if (!ring.maxed) { ring.circle.setRadius(THUNDER_MAX_AUDIBLE_M); ring.maxed = true; }
+      ring.circle.setStyle({ opacity, fillOpacity: opacity * 0.10 });
     }
   }
-  // Drop rings whose thunder has moved past the audible range or whose strike expired.
+  // Remove rings whose strike aged out of the window (or the strike itself expired).
   for (const [key, ring] of _thunderRings) {
     if (!live.has(key)) {
       try { map.removeLayer(ring.circle); } catch (_) {}
