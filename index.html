@@ -6243,7 +6243,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v2.7 · alert layer port · 2026-07-23</div>
+    <div id="build-stamp">v2.8 · alert styles from file · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8261,7 +8261,9 @@ let _alertNewLayers = [];   // { layer, fillLayer, color, until }
 
 // ── Alert helpers (ported from tgranz alerts.js, adapted to Leaflet + NWS data) ──
 function _alertColorFor(ev){ const info = Object.entries(ALERT_COLORS).find(([k]) => (ev||'').includes(k)); return info ? info[1].color : '#aaaaaa'; }
-function _alertThicknessFor(ev){ return (!/Watch|Advisory/.test(ev||'')) ? 2.5 : 1.5; }
+// alerts.js styling: uniform border thickness (default 2); black casing = border + 2.
+const _ALERT_BORDER = 2;
+function _alertThicknessFor(ev){ return _ALERT_BORDER; }
 // Higher priority draws on top: hazard severity + product level (emergency>warning>watch>advisory).
 function _alertPriority(ev){
   ev = ev || '';
@@ -8341,8 +8343,7 @@ function renderAlerts(features) {
     pane: 'alertsPane',
     style: f => {
       const ev = f.properties.event || '', color = _alertColorFor(ev);
-      const isWarning = !/Watch|Advisory/.test(ev);
-      return { color, weight: _alertThicknessFor(ev), fillColor: color, fillOpacity: isWarning ? 0.35 : 0.18, dashArray: /Watch/.test(ev) ? '10,6' : null, opacity: 1 };
+      return { color, weight: _alertThicknessFor(ev), fillColor: color, fillOpacity: 0.4, opacity: 1 };
     },
     onEachFeature: (f, layer) => {
       const p = f.properties;
@@ -8381,8 +8382,8 @@ function renderAlerts(features) {
       if (!isFinite(pt.lat) || !isFinite(pt.lon)) return;
       const [eLat, eLon] = _destFromBearing(pt.lat, pt.lon, mot.direction, distNm);
       L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', color:'#000', weight:5, interactive:false }).addTo(motion);
-      L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', color, weight:2.5, interactive:false }).addTo(motion);
-      L.circleMarker([pt.lat, pt.lon], { pane:'alertsPane', radius:4, color:'#000', weight:1.5, fillColor:color, fillOpacity:1, interactive:false }).addTo(motion);
+      L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', color, weight:2, interactive:false }).addTo(motion);
+      L.circleMarker([pt.lat, pt.lon], { pane:'alertsPane', radius:3, color:'#000', weight:1.5, fillColor:color, fillOpacity:1, interactive:false }).addTo(motion);
       L.marker([eLat, eLon], { pane:'alertsPane', interactive:false, icon: L.divIcon({ className:'', html:`<div style="color:${color};text-shadow:0 0 2px #000,0 0 2px #000;font-size:15px;line-height:1;transform:rotate(${mot.direction}deg)">▲</div>`, iconSize:[16,16], iconAnchor:[8,8] }) }).addTo(motion);
     });
   });
