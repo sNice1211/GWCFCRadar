@@ -6259,7 +6259,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v3.5 · euro sites nexrad bubbles · 2026-07-23</div>
+    <div id="build-stamp">v3.6 · euro radar images · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6956,6 +6956,65 @@ let currentTab = 'radar';
 let lightningFlash = [];
 let nhcLayer = null, spcOutlookLayer = null, stormReportsLayer = null;
 let euroRadarLayer = null;
+let _euroRadarImgLayer = null;   // L.imageOverlay of rendered reflectivity for a clicked site
+
+// dBZ → reflectivity colour (standard NWS-style ramp); null = transparent (no echo)
+function _euroDbzColor(v){
+  if (v==null || !isFinite(v) || v < 5) return null;
+  const stops = [[5,'#04e9e7'],[10,'#019ff4'],[15,'#0300f4'],[20,'#02fd02'],[25,'#01c501'],[30,'#008e00'],[35,'#fdf802'],[40,'#e5bc00'],[45,'#fd9500'],[50,'#fd0000'],[55,'#d40000'],[60,'#bc0000'],[65,'#f800fd'],[70,'#9854c6'],[75,'#fdfdfd']];
+  let c = stops[0][1];
+  for (const [thr,col] of stops){ if (v>=thr) c=col; else break; }
+  return c;
+}
+function _euroHex(h){ h=h.replace('#',''); const n=parseInt(h,16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+
+// Click a Euro site → fetch the OPERA composite reflectivity for a box around it and
+// render it as a real radar image overlay. (Blind to the live API here, so it logs the
+// response structure heavily for first-run debugging.)
+async function _euroLoadRadarImage(lat, lon, name){
+  updateLoadStatus(`Loading ${name} radar…`);
+  const d = 2.5; // ~±280 km box
+  const wkt = `POLYGON((${lon-d} ${lat-d}, ${lon+d} ${lat-d}, ${lon+d} ${lat+d}, ${lon-d} ${lat+d}, ${lon-d} ${lat-d}))`;
+  const url = `https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/area?coords=${encodeURIComponent(wkt)}&parameter-name=${encodeURIComponent('DBZH:comp')}&f=CoverageJSON`;
+  const proxies = [ u=>u, u=>`https://api.codetabs.com/v1/proxy?quest=${u}`, u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` ];
+  let data;
+  for (const mk of proxies){ try { const r = await fetchWithTimeout(mk(url), 15000); if (r.ok){ const j = await r.json(); if (j){ data = j; break; } } } catch(e){} }
+  if (!data){ console.warn('[EuroRadar] no data from', url); updateLoadStatus('Radar data unavailable (see console).'); return; }
+  try {
+    const cov = (data.type === 'CoverageCollection') ? (data.coverages||[])[0] : data;
+    console.log('[EuroRadar] response type:', data.type, '| coverage keys:', cov && Object.keys(cov||{}), '| axes:', cov && cov.domain && Object.keys(cov.domain.axes||{}), '| ranges:', cov && Object.keys(cov.ranges||{}), '| referencing:', cov && cov.domain && cov.domain.referencing);
+    if (!cov || !cov.domain || !cov.ranges){ updateLoadStatus('Radar format not recognised (see console).'); return; }
+    const ax = cov.domain.axes || {};
+    const xs = ax.x && ax.x.values, ys = ax.y && ax.y.values;
+    const rangeKey = Object.keys(cov.ranges)[0];
+    const rng = cov.ranges[rangeKey];
+    if (!xs || !ys || !rng || !rng.values){ console.warn('[EuroRadar] missing axes/values', {ax:Object.keys(ax), rng}); updateLoadStatus('Radar grid not found (see console).'); return; }
+    const nx = xs.length, ny = ys.length;
+    console.log('[EuroRadar] grid', nx+'×'+ny, '| x[0..]', xs[0], xs[nx-1], '| y[0..]', ys[0], ys[ny-1], '| axisNames', rng.axisNames, '| shape', rng.shape, '| nValues', rng.values.length);
+    const geographic = Math.abs(xs[0]) <= 180 && Math.abs(ys[0]) <= 90;
+    if (!geographic){ console.warn('[EuroRadar] grid is PROJECTED (needs reprojection). referencing:', cov.domain.referencing); updateLoadStatus('Radar grid is projected — cannot overlay yet (see console).'); return; }
+    const cv = document.createElement('canvas'); cv.width = nx; cv.height = ny;
+    const ctx = cv.getContext('2d'); const im = ctx.createImageData(nx, ny); const vals = rng.values;
+    const yDesc = ys[0] > ys[ny-1];   // draw north at the top
+    for (let j=0;j<ny;j++){
+      for (let i=0;i<nx;i++){
+        const v = vals[j*nx + i];
+        const col = _euroDbzColor(v);
+        const row = yDesc ? j : (ny-1-j);
+        const p = (row*nx + i)*4;
+        if (col){ const c=_euroHex(col); im.data[p]=c[0]; im.data[p+1]=c[1]; im.data[p+2]=c[2]; im.data[p+3]=205; }
+      }
+    }
+    ctx.putImageData(im, 0, 0);
+    const minLon=Math.min(xs[0],xs[nx-1]), maxLon=Math.max(xs[0],xs[nx-1]);
+    const minLat=Math.min(ys[0],ys[ny-1]), maxLat=Math.max(ys[0],ys[ny-1]);
+    if (_euroRadarImgLayer){ try { map.removeLayer(_euroRadarImgLayer); } catch(e){} _euroRadarImgLayer=null; }
+    _euroRadarImgLayer = L.imageOverlay(cv.toDataURL(), [[minLat,minLon],[maxLat,maxLon]], { opacity:0.72, interactive:false, pane:(typeof _ovPane==='function'?_ovPane('euroradar'):undefined) }).addTo(map);
+    updateLoadStatus('');
+    console.log('[EuroRadar] rendered overlay over', [[minLat,minLon],[maxLat,maxLon]]);
+  } catch(e){ console.warn('[EuroRadar] render error:', e); updateLoadStatus('Radar render failed (see console).'); }
+}
+function _euroClearRadarImage(){ if (_euroRadarImgLayer && typeof map!=='undefined' && map){ try { map.removeLayer(_euroRadarImgLayer); } catch(e){} _euroRadarImgLayer=null; } }
 
 // ── EUROPEAN RADAR SITES (EUMETNET/OPERA via MeteoGate OGC EDR — no API key) ──
 // The API only serves data (CoverageJSON/ODIM), not map tiles, so we plot the radar
@@ -6973,6 +7032,7 @@ function _euroSitesShow(){
 }
 function _euroSitesHide(){
   if (euroRadarLayer && typeof map!=='undefined' && map) { try { map.removeLayer(euroRadarLayer); } catch(e){} }
+  _euroClearRadarImage();
   activeLayers.euroradar = false;
   const pill=document.getElementById('op-euroradar'); if(pill) pill.classList.remove('active');
 }
@@ -7018,7 +7078,7 @@ async function loadEuroRadarSites(){
         icon: L.divIcon({ className:'nexrad-label-marker', html:`<div class="nexrad-label euro-radar-label">${code}</div>`, iconSize:[0,0], iconAnchor:[0,0] })
       });
       m.bindPopup(`<div class="alert-popup"><b>${_euroEsc(name)}</b>${wsi?`<br><span style="opacity:.7;font-family:monospace;font-size:11px">${_euroEsc(wsi)}</span>`:''}<br><span style="opacity:.6;font-size:11px">EUMETNET / OPERA radar</span></div>`);
-      m.on('click', ()=>{ try { map.setView([lat, lon], Math.max(map.getZoom(), 7)); } catch(e){} });
+      m.on('click', ()=>{ try { map.setView([lat, lon], Math.max(map.getZoom(), 7)); } catch(e){} _euroLoadRadarImage(lat, lon, name); });
       markers.push(m);
     }
     euroRadarLayer = L.layerGroup(markers).addTo(map);
