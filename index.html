@@ -6259,7 +6259,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v3.4 · euro sites with radar · 2026-07-23</div>
+    <div id="build-stamp">v3.5 · euro sites nexrad bubbles · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6994,20 +6994,31 @@ async function loadEuroRadarSites(){
     if (euroRadarLayer) { try { map.removeLayer(euroRadarLayer); } catch(e){} euroRadarLayer = null; }
     const feats = (data && (data.features || data.locations)) || [];
     if (!feats.length) { updateLoadStatus('No European radar sites returned.'); return; }
+    const _ringCentroid = ring => { let x=0,y=0,n=0; for(const c of (ring||[])){ if(Array.isArray(c)&&isFinite(+c[0])&&isFinite(+c[1])){ x+=+c[0]; y+=+c[1]; n++; } } return n?[x/n,y/n]:null; };
     const markers = [];
     for (const f of feats) {
       const g = f.geometry || f;
-      if (!g || g.type !== 'Point' || !Array.isArray(g.coordinates)) continue;
-      const lon = +g.coordinates[0], lat = +g.coordinates[1];
+      if (!g || !g.coordinates) continue;
+      let lon, lat;
+      if (g.type === 'Point') { lon=+g.coordinates[0]; lat=+g.coordinates[1]; }
+      else if (g.type === 'MultiPoint') { lon=+g.coordinates[0]?.[0]; lat=+g.coordinates[0]?.[1]; }
+      else if (g.type === 'Polygon') { const c=_ringCentroid(g.coordinates[0]); if(!c) continue; [lon,lat]=c; }
+      else if (g.type === 'MultiPolygon') { const c=_ringCentroid(g.coordinates[0]?.[0]); if(!c) continue; [lon,lat]=c; }
+      else continue;
       if (!isFinite(lon) || !isFinite(lat)) continue;
       const p = f.properties || {};
-      const name = p.name || p.title || p.location || p.locationName || p.platform || (typeof f.id==='string'?f.id:'Radar site');
+      const name = p.name || p.title || p.location || p.locationName || p.platform || (typeof f.id==='string'?f.id:'Radar');
       const wsi  = p.wsi || p.wigos || p.wigosStationIdentifier || (typeof f.id==='string'?f.id:'');
+      // Short pill code like NEXRAD's station id: last WSI segment, else short name
+      let code = (wsi && wsi.indexOf('-')>=0) ? wsi.split('-').pop() : String(name);
+      code = _euroEsc(code.toUpperCase().slice(0,6));
       const m = L.marker([lat, lon], {
+        zIndexOffset: 300,
         pane: (typeof _ovPane==='function' ? _ovPane('euroradar') : undefined),
-        icon: L.divIcon({ className:'', html:'<div class="euro-radar-mk">📡</div>', iconSize:[22,22], iconAnchor:[11,11] })
+        icon: L.divIcon({ className:'nexrad-label-marker', html:`<div class="nexrad-label euro-radar-label">${code}</div>`, iconSize:[0,0], iconAnchor:[0,0] })
       });
       m.bindPopup(`<div class="alert-popup"><b>${_euroEsc(name)}</b>${wsi?`<br><span style="opacity:.7;font-family:monospace;font-size:11px">${_euroEsc(wsi)}</span>`:''}<br><span style="opacity:.6;font-size:11px">EUMETNET / OPERA radar</span></div>`);
+      m.on('click', ()=>{ try { map.setView([lat, lon], Math.max(map.getZoom(), 7)); } catch(e){} });
       markers.push(m);
     }
     euroRadarLayer = L.layerGroup(markers).addTo(map);
