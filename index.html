@@ -6259,7 +6259,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v3.3 · euro radar sites · 2026-07-23</div>
+    <div id="build-stamp">v3.4 · euro sites with radar · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6962,12 +6962,32 @@ let euroRadarLayer = null;
 // STATION locations from /collections/observations/locations as markers.
 const EURO_RADAR_URL = 'https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations?bbox=-32,30,45,73';
 function _euroEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+let _euroSitesLoading = false;
+// Show/hide the euro sites without re-fetching (layer is cached once loaded).
+function _euroSitesShow(){
+  if (typeof map==='undefined' || !map) return;
+  if (euroRadarLayer) { try { euroRadarLayer.addTo(map); } catch(e){} }
+  else if (!_euroSitesLoading) loadEuroRadarSites();
+  activeLayers.euroradar = true;
+  const pill=document.getElementById('op-euroradar'); if(pill) pill.classList.add('active');
+}
+function _euroSitesHide(){
+  if (euroRadarLayer && typeof map!=='undefined' && map) { try { map.removeLayer(euroRadarLayer); } catch(e){} }
+  activeLayers.euroradar = false;
+  const pill=document.getElementById('op-euroradar'); if(pill) pill.classList.remove('active');
+}
 async function loadEuroRadarSites(){
+  _euroSitesLoading = true;
   updateLoadStatus('Loading European radar sites…');
   try {
     let data;
     // Direct first, then CORS proxies (the API may not send CORS headers).
-    const proxies = [ u=>u, u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` ];
+    const proxies = [
+      u=>u,
+      u=>`https://api.codetabs.com/v1/proxy?quest=${u}`,
+      u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+      u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    ];
     for (const mk of proxies) {
       try { const r = await fetchWithTimeout(mk(EURO_RADAR_URL), 9000); if (r.ok) { const j = await r.json(); if (j && (j.features || j.locations)) { data = j; break; } } } catch(e){}
     }
@@ -6994,6 +7014,7 @@ async function loadEuroRadarSites(){
     updateLoadStatus(`European radar sites: ${markers.length}`);
     setTimeout(()=>updateLoadStatus(''), 1500);
   } catch (e) { console.warn('Euro radar sites error:', e); updateLoadStatus('European radar sites load failed.'); }
+  finally { _euroSitesLoading = false; }
 }
 let stormReportLayers = { tor: null, hail: null, wind: null };
 let _rptTorActive = true, _rptHailActive = true, _rptWindActive = true;
@@ -10543,11 +10564,7 @@ function toggleOverlayPill(id) {
     const pill = document.getElementById('op-nhc-outlook');
     if (pill) pill.classList.toggle('active', _nhcOutlookOn);
   } else if (id === 'euroradar') {
-    activeLayers.euroradar = !activeLayers.euroradar;
-    const pill = document.getElementById('op-euroradar');
-    if (pill) pill.classList.toggle('active', activeLayers.euroradar);
-    if (activeLayers.euroradar) loadEuroRadarSites();
-    else if (euroRadarLayer) { try { map.removeLayer(euroRadarLayer); } catch(e){} euroRadarLayer = null; }
+    if (activeLayers.euroradar) _euroSitesHide(); else _euroSitesShow();
   } else if (id === 'cloudcam') {
     activeLayers.cloudcam = !activeLayers.cloudcam;
     const pill = document.getElementById('op-cloudcam');
@@ -16373,8 +16390,8 @@ function hideNexradSites() {
 function _syncNexradSites() {
   // Show markers whenever nexrad layer is ON OR velocity is active
   const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha';
-  if (radarOn) showNexradSites();
-  else         hideNexradSites();
+  if (radarOn) { showNexradSites(); _euroSitesShow(); }
+  else         { hideNexradSites(); _euroSitesHide(); }
 }
 
 // ── SINGLE-SITE REFLECTIVITY , NOAA Level III (opengeo.ncep.noaa.gov SR_BREF) ──
