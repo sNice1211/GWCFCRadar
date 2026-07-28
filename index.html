@@ -6258,7 +6258,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v3.1 · NHC + SPC switcher in overlays · 2026-07-23</div>
+    <div id="build-stamp">v3.2 · cloud capture post fix · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -24817,20 +24817,29 @@ function  _ccLocalDelete(id){ return _ccOpenDB().then(db=>new Promise(res=>{ con
 
 // Public data layer — prefers the shared Firestore collection, falls back to
 // device-local IndexedDB if Firebase isn't configured or a call fails.
+// Read MERGES local + remote (dedup by id) so a photo always shows on the device that
+// saved it, even if the shared write was blocked (e.g. signed out) — and shows everyone's
+// once the shared write succeeds.
 async function _ccAll(){
-  const col=_ccRemote();
-  if (col){ try { const snap=await col.orderBy('ts','desc').limit(500).get(); return snap.docs.map(d=>d.data()); } catch(e){ console.warn('[cloudcam] remote read failed, using local:', e.message); } }
-  return _ccLocalAll();
+  const local = await _ccLocalAll();
+  const col = _ccRemote();
+  let remote = [];
+  if (col){ try { const snap = await col.orderBy('ts','desc').limit(500).get(); remote = snap.docs.map(d=>d.data()); } catch(e){ console.warn('[cloudcam] remote read failed:', e.message); } }
+  const byId = new Map();
+  for (const r of local) if (r && r.id) byId.set(r.id, r);
+  for (const r of remote) if (r && r.id) byId.set(r.id, r);   // shared state wins
+  return [...byId.values()].sort((a,b)=>(b.ts||0)-(a.ts||0));
 }
+// Always cache locally (so it posts here), then best-effort share to the backend.
 async function _ccPut(rec){
-  const col=_ccRemote();
-  if (col){ try { await col.doc(rec.id).set(rec); return; } catch(e){ console.warn('[cloudcam] remote write failed, using local:', e.message); } }
-  return _ccLocalPut(rec);
+  try { await _ccLocalPut(rec); } catch(e){}
+  const col = _ccRemote();
+  if (col){ try { await col.doc(rec.id).set(rec); } catch(e){ console.warn('[cloudcam] remote write failed (kept local):', e.message); } }
 }
 async function _ccDelete(id){
-  const col=_ccRemote();
-  if (col){ try { await col.doc(id).delete(); return; } catch(e){ console.warn('[cloudcam] remote delete failed, using local:', e.message); } }
-  return _ccLocalDelete(id);
+  try { await _ccLocalDelete(id); } catch(e){}
+  const col = _ccRemote();
+  if (col){ try { await col.doc(id).delete(); } catch(e){ console.warn('[cloudcam] remote delete failed:', e.message); } }
 }
 
 // Live updates: when the shared collection changes, refresh the map + review list.
@@ -24952,7 +24961,7 @@ async function _ccClassifyAI(b64, hintCategory, ctx){
     'Respond with ONLY compact JSON, no prose: '+
     '{"approved":true|false,"category":"<one>","aiGenerated":true|false,"consistent":true|false,"reason":"<max 16 words>"}';
   const body = { contents: [{ role:'user', parts:[ {text:prompt}, {inline_data:{ mime_type:'image/jpeg', data:b64 }} ] }] };
-  const res = await fetch(_AI_WORKER, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  const res = await fetch(_AI_WORKER, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal:(typeof _abortSignal==='function'?_abortSignal(15000):undefined) });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error?.message || ('HTTP '+res.status));
   const txt = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
