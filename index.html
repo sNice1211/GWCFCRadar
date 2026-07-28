@@ -534,6 +534,7 @@ body {
   transition: background 0.1s;
 }
 .zoom-btn:hover { background: rgba(170,0,0,0.3); border-color: #AA0000; }
+.euro-radar-mk { font-size: 15px; line-height: 1; filter: drop-shadow(0 0 2px #000) drop-shadow(0 0 3px #008CBA); cursor: pointer; }
 
 /* ── CLOUD CAPTURE ─────────────────────────────────────────────── */
 #cc-modal-backdrop {
@@ -6258,7 +6259,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v3.2 · cloud capture post fix · 2026-07-23</div>
+    <div id="build-stamp">v3.3 · euro radar sites · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6949,11 +6950,51 @@ let activeLayers = {
   flood: true, watch: false, meso: false, spc1: false, spc2: false,
   spc3: false, spcrpts: false, nhc: false, invest: false, sst: false,
   models: false, lightning: false, ltg30: false, forecasts: true,
-  radio: false, thunder: false, cloudcam: false
+  radio: false, thunder: false, cloudcam: false, euroradar: false
 };
 let currentTab = 'radar';
 let lightningFlash = [];
 let nhcLayer = null, spcOutlookLayer = null, stormReportsLayer = null;
+let euroRadarLayer = null;
+
+// ── EUROPEAN RADAR SITES (EUMETNET/OPERA via MeteoGate OGC EDR — no API key) ──
+// The API only serves data (CoverageJSON/ODIM), not map tiles, so we plot the radar
+// STATION locations from /collections/observations/locations as markers.
+const EURO_RADAR_URL = 'https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/locations?bbox=-32,30,45,73';
+function _euroEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+async function loadEuroRadarSites(){
+  updateLoadStatus('Loading European radar sites…');
+  try {
+    let data;
+    // Direct first, then CORS proxies (the API may not send CORS headers).
+    const proxies = [ u=>u, u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` ];
+    for (const mk of proxies) {
+      try { const r = await fetchWithTimeout(mk(EURO_RADAR_URL), 9000); if (r.ok) { const j = await r.json(); if (j && (j.features || j.locations)) { data = j; break; } } } catch(e){}
+    }
+    if (euroRadarLayer) { try { map.removeLayer(euroRadarLayer); } catch(e){} euroRadarLayer = null; }
+    const feats = (data && (data.features || data.locations)) || [];
+    if (!feats.length) { updateLoadStatus('No European radar sites returned.'); return; }
+    const markers = [];
+    for (const f of feats) {
+      const g = f.geometry || f;
+      if (!g || g.type !== 'Point' || !Array.isArray(g.coordinates)) continue;
+      const lon = +g.coordinates[0], lat = +g.coordinates[1];
+      if (!isFinite(lon) || !isFinite(lat)) continue;
+      const p = f.properties || {};
+      const name = p.name || p.title || p.location || p.locationName || p.platform || (typeof f.id==='string'?f.id:'Radar site');
+      const wsi  = p.wsi || p.wigos || p.wigosStationIdentifier || (typeof f.id==='string'?f.id:'');
+      const m = L.marker([lat, lon], {
+        pane: (typeof _ovPane==='function' ? _ovPane('euroradar') : undefined),
+        icon: L.divIcon({ className:'', html:'<div class="euro-radar-mk">📡</div>', iconSize:[22,22], iconAnchor:[11,11] })
+      });
+      m.bindPopup(`<div class="alert-popup"><b>${_euroEsc(name)}</b>${wsi?`<br><span style="opacity:.7;font-family:monospace;font-size:11px">${_euroEsc(wsi)}</span>`:''}<br><span style="opacity:.6;font-size:11px">EUMETNET / OPERA radar</span></div>`);
+      markers.push(m);
+    }
+    euroRadarLayer = L.layerGroup(markers).addTo(map);
+    updateLoadStatus(`European radar sites: ${markers.length}`);
+    setTimeout(()=>updateLoadStatus(''), 1500);
+  } catch (e) { console.warn('Euro radar sites error:', e); updateLoadStatus('European radar sites load failed.'); }
+}
 let stormReportLayers = { tor: null, hail: null, wind: null };
 let _rptTorActive = true, _rptHailActive = true, _rptWindActive = true;
 let _reportsLoaded = false;
@@ -10501,6 +10542,12 @@ function toggleOverlayPill(id) {
     _modelsNHCToggle();
     const pill = document.getElementById('op-nhc-outlook');
     if (pill) pill.classList.toggle('active', _nhcOutlookOn);
+  } else if (id === 'euroradar') {
+    activeLayers.euroradar = !activeLayers.euroradar;
+    const pill = document.getElementById('op-euroradar');
+    if (pill) pill.classList.toggle('active', activeLayers.euroradar);
+    if (activeLayers.euroradar) loadEuroRadarSites();
+    else if (euroRadarLayer) { try { map.removeLayer(euroRadarLayer); } catch(e){} euroRadarLayer = null; }
   } else if (id === 'cloudcam') {
     activeLayers.cloudcam = !activeLayers.cloudcam;
     const pill = document.getElementById('op-cloudcam');
@@ -24397,6 +24444,9 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-euroradar" data-ovid="euroradar" title="European radar sites (EUMETNET/OPERA station network)">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('euroradar')">Euro Radar Sites</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning</span><span class="ov-drag" title="Drag to reorder">⠿</span>
