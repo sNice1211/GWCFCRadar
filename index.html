@@ -6262,7 +6262,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v3.9 · euro radar diagnostics · 2026-07-23</div>
+    <div id="build-stamp">v4.0 · euro radar echo stats · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -7010,22 +7010,25 @@ async function _euroLoadRadarImage(lat, lon, name){
     const cv = document.createElement('canvas'); cv.width = nx; cv.height = ny;
     const ctx = cv.getContext('2d'); const im = ctx.createImageData(nx, ny); const vals = rng.values;
     const yDesc = ys[0] > ys[ny-1];   // draw north at the top
+    let _echo=0, _vmin=Infinity, _vmax=-Infinity, _nvalid=0;
     for (let j=0;j<ny;j++){
       for (let i=0;i<nx;i++){
         const v = vals[j*nx + i];
+        if (v!=null && isFinite(v)){ _nvalid++; if (v<_vmin) _vmin=v; if (v>_vmax) _vmax=v; }
         const col = _euroDbzColor(v);
         const row = yDesc ? j : (ny-1-j);
         const p = (row*nx + i)*4;
-        if (col){ const c=_euroHex(col); im.data[p]=c[0]; im.data[p+1]=c[1]; im.data[p+2]=c[2]; im.data[p+3]=205; }
+        if (col){ const c=_euroHex(col); im.data[p]=c[0]; im.data[p+1]=c[1]; im.data[p+2]=c[2]; im.data[p+3]=205; _echo++; }
       }
     }
     ctx.putImageData(im, 0, 0);
     const minLon=Math.min(xs[0],xs[nx-1]), maxLon=Math.max(xs[0],xs[nx-1]);
     const minLat=Math.min(ys[0],ys[ny-1]), maxLat=Math.max(ys[0],ys[ny-1]);
     if (_euroRadarImgLayer){ try { map.removeLayer(_euroRadarImgLayer); } catch(e){} _euroRadarImgLayer=null; }
-    _euroRadarImgLayer = L.imageOverlay(cv.toDataURL(), [[minLat,minLon],[maxLat,maxLon]], { opacity:0.72, interactive:false, pane:(typeof _ovPane==='function'?_ovPane('euroradar'):undefined) }).addTo(map);
+    _euroRadarImgLayer = L.imageOverlay(cv.toDataURL(), [[minLat,minLon],[maxLat,maxLon]], { opacity:0.85, interactive:false, pane:(typeof _ovPane==='function'?_ovPane('euroradar'):undefined) }).addTo(map);
     updateLoadStatus('');
-    _euroToast(`✅ ${name} radar rendered`, 3000);
+    const vr = isFinite(_vmin) ? `${_vmin.toFixed(1)}…${_vmax.toFixed(1)}` : 'none';
+    _euroToast(_echo>0 ? `✅ ${name}: ${_echo} echo cells drawn (grid ${nx}×${ny}, dBZ ${vr})` : `${name}: grid ${nx}×${ny} but 0 echoes. Values range ${vr} (${_nvalid} valid). Tell me this — means clear skies OR values need scaling.`, 9000);
     console.log('[EuroRadar] rendered overlay over', [[minLat,minLon],[maxLat,maxLon]]);
   } catch(e){ console.warn('[EuroRadar] render error:', e); updateLoadStatus(''); _euroToast('render error: '+(e&&e.message||e)); }
 }
