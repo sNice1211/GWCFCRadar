@@ -6262,7 +6262,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v4.0 · euro radar echo stats · 2026-07-23</div>
+    <div id="build-stamp">v4.1 · euro radar smaller+faster · 2026-07-23</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6986,14 +6986,21 @@ function _euroToast(msg, ms){
 // response structure heavily for first-run debugging.)
 async function _euroLoadRadarImage(lat, lon, name){
   updateLoadStatus(`Loading ${name} radar…`);
-  _euroToast(`fetching ${name} reflectivity…`, 12000);
-  const d = 2.5; // ~±280 km box
+  _euroToast(`fetching ${name} reflectivity…`, 30000);
+  const d = 0.9; // small box (~±90 km) — a big box returns a huge CoverageJSON that stalls
   const wkt = `POLYGON((${lon-d} ${lat-d}, ${lon+d} ${lat-d}, ${lon+d} ${lat+d}, ${lon-d} ${lat+d}, ${lon-d} ${lat-d}))`;
   const url = `https://api.meteogate.eu/eu-eumetnet-weather-radar/collections/observations/area?coords=${encodeURIComponent(wkt)}&parameter-name=${encodeURIComponent('DBZH:comp')}&f=CoverageJSON`;
-  const proxies = [ u=>u, u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`, u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` ];
-  let data;
-  for (const mk of proxies){ try { const r = await fetchWithTimeout(mk(url), 15000); if (r.ok){ const j = await r.json(); if (j){ data = j; break; } } } catch(e){} }
-  if (!data){ console.warn('[EuroRadar] no data from', url); updateLoadStatus(''); _euroToast('no data returned (fetch/CORS failed for all proxies). Tell me this + any console line.'); return; }
+  const proxies = [ u=>`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`, u=>u, u=>`https://corsproxy.io/?url=${encodeURIComponent(u)}`, u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}` ];
+  let data, lastStatus='';
+  for (let pi=0; pi<proxies.length; pi++){
+    _euroToast(`fetching ${name}… (try ${pi+1}/${proxies.length})`, 30000);
+    try {
+      const r = await fetchWithTimeout(proxies[pi](url), 8000);
+      lastStatus = 'HTTP '+r.status;
+      if (r.ok){ const j = await r.json(); if (j){ data = j; break; } }
+    } catch(e){ lastStatus = (e && e.name==='AbortError') ? 'timeout' : (e && e.message || 'error'); }
+  }
+  if (!data){ console.warn('[EuroRadar] no data from', url, lastStatus); updateLoadStatus(''); _euroToast(`no data — all proxies failed (last: ${lastStatus}). Tell me this.`, 10000); return; }
   try {
     const cov = (data.type === 'CoverageCollection') ? (data.coverages||[])[0] : data;
     console.log('[EuroRadar] response type:', data.type, '| coverage keys:', cov && Object.keys(cov||{}), '| axes:', cov && cov.domain && Object.keys(cov.domain.axes||{}), '| ranges:', cov && Object.keys(cov.ranges||{}), '| referencing:', cov && cov.domain && cov.domain.referencing);
