@@ -6283,7 +6283,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v4.7 · WPC ERO + live storm chasers overlays · 2026-07-31</div>
+    <div id="build-stamp">v4.8 · fix live chasers GR parser + WPC ERO URLs · 2026-07-31</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8584,15 +8584,24 @@ function _wpcPickDay(d) {
 
 async function loadWPCOutlook(dayNum) {
   if (!dayNum) dayNum = _wpcDay;
-  // WPC publishes ERO GeoJSON — try several known URL patterns + proxy chain
+  const layerIdx = dayNum - 1; // ArcGIS layer index: Day1=0, Day2=1, Day3=2
+  // WPC ERO GeoJSON — try every known URL pattern then proxy chain
   const urls = [
-    `https://www.wpc.ncep.noaa.gov/exper/ero/geojson/WPC_ERO_Day${dayNum}.geojson`,
+    // WPC experimental ERO endpoint (most authoritative)
     `https://www.wpc.ncep.noaa.gov/exper/ero/geojson/ero_day${dayNum}.geojson`,
+    `https://www.wpc.ncep.noaa.gov/exper/ero/geojson/WPC_ERO_Day${dayNum}.geojson`,
+    `https://www.wpc.ncep.noaa.gov/exper/ero/ero_day${dayNum}.geojson`,
+    // WPC QPF directory
+    `https://www.wpc.ncep.noaa.gov/qpf/ero_day${dayNum}.geojson`,
     `https://www.wpc.ncep.noaa.gov/qpf/ero_d${dayNum}.geojson`,
+    // NOAA IDPGIS ArcGIS REST Feature Service
+    `https://idpgis.ncep.noaa.gov/arcgis/rest/services/NWS_Forecasts_Guidance_Warnings/wpc_ero/MapServer/${layerIdx}/query?where=1%3D1&outFields=*&f=geojson`,
+    // NOAA MapServices ArcGIS REST
+    `https://mapservices.weather.noaa.gov/static/rest/services/ERO/ERO_outlooks/MapServer/${layerIdx}/query?where=1%3D1&outFields=*&f=geojson`,
   ];
   const wrappers = [
     u => u,
-    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   ];
@@ -8602,10 +8611,12 @@ async function loadWPCOutlook(dayNum) {
     for (const wrap of wrappers) {
       try {
         const r = await fetchWithTimeout(wrap(url), 8000);
-        if (!r.ok) continue;
-        const d = await r.json();
+        if (!r.ok) { console.debug(`[wpc] ${r.status} ${url.slice(0, 80)}`); continue; }
+        const txt = await r.text();
+        let d;
+        try { d = JSON.parse(txt); } catch(e) { console.debug('[wpc] non-JSON from', url.slice(0, 80)); continue; }
         if (d?.features?.length) { data = d; break outer; }
-      } catch(e) {}
+      } catch(e) { console.debug('[wpc] error:', e.message); }
     }
   }
   if (_wpcOutlookLayer) { try { map.removeLayer(_wpcOutlookLayer); } catch(e){} _wpcOutlookLayer = null; }
@@ -10685,63 +10696,102 @@ let _chasersActive = false, _chasersLayer = null, _chasersTimer = null;
 
 async function _loadChasers() {
   if (!_chasersActive) return;
-  const url = 'https://www.spotternetwork.org/feeds/gr.txt';
-  const proxies = [
-    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-  ];
-  let text = null;
-  for (const proxy of proxies) {
-    try {
-      const r = await fetchWithTimeout(proxy(url), 8000);
-      if (r.ok) { const t = await r.text(); if (t && t.length > 50) { text = t; break; } }
-    } catch(e) {}
-  }
-  if (!text) { console.warn('[chasers] all proxies failed'); return; }
 
   if (!_chasersLayer) _chasersLayer = L.layerGroup().addTo(map);
   else _chasersLayer.clearLayers();
 
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line.startsWith('Icon:')) continue;
-    const rest = line.slice(5).trim();
-    const quoteIdx = rest.indexOf('"');
-    const coords = (quoteIdx > 0 ? rest.slice(0, quoteIdx) : rest).split(',');
-    if (coords.length < 2) continue;
-    const lat = +coords[0], lon = +coords[1];
-    if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90) continue;
-    const rotation = +coords[2] || 0;
-
-    const tooltipMatch = rest.match(/"([\s\S]*?)"/);
-    const tip = tooltipMatch ? tooltipMatch[1].replace(/\\n/g, '\n').replace(/<br\s*\/?>/gi, '\n') : '';
-    const tipLines = tip.split('\n').map(s => s.trim()).filter(Boolean);
-    const name = tipLines[0] || 'Storm Chaser';
-    const extraRows = tipLines.slice(1).map(s => `<div class="dp-row"><span>${s}</span></div>`).join('');
-
-    const icon = L.divIcon({
-      className: '',
-      iconSize: [26, 26], iconAnchor: [13, 13],
-      html: `<div style="width:26px;height:26px;border-radius:50%;background:rgba(255,140,0,0.9);
-        border:2.5px solid #fff;box-shadow:0 0 8px rgba(255,140,0,0.7);
-        display:flex;align-items:center;justify-content:center;
-        font-size:13px;transform:rotate(${rotation % 360}deg)">🚗</div>`
-    });
-
-    L.marker([lat, lon], { icon, zIndexOffset: 300 })
-      .bindPopup(`<div class="data-popup-inner" style="--dp-accent:#ff8c00">
-        <div class="dp-header">
-          <span class="dp-header-icon">🚗</span>
-          <span class="dp-header-label">${name}</span>
-        </div>
-        <div class="dp-body">
-          ${extraRows}
-          <div class="dp-row"><span>Coords</span><b>${lat.toFixed(3)}°, ${lon.toFixed(3)}°</b></div>
-        </div>
-      </div>`, { className: 'data-popup', maxWidth: 240 })
-      .addTo(_chasersLayer);
+  // Try SpotterNetwork GR placefile first (has heading/speed), fall back to RSS
+  let grText = null;
+  const grUrl = 'https://www.spotternetwork.org/feeds/gr.txt';
+  const grProxies = [
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+  for (const proxy of grProxies) {
+    try {
+      const r = await fetchWithTimeout(proxy(grUrl), 8000);
+      if (r.ok) { const t = await r.text(); if (t && t.length > 50) { grText = t; break; } }
+    } catch(e) {}
   }
+
+  if (grText) {
+    // GR placefile uses Object: lat,lon blocks — Icon: lines inside give rotation/tooltip
+    // Icon: dy,dx,rotation,iconSet,iconNum,"tooltip" — dy/dx are pixel offsets (usually 0,0)
+    const lines = grText.split(/\r?\n/);
+    let objLat = null, objLon = null;
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (line.startsWith('Object:')) {
+        const parts = line.slice(7).trim().split(',');
+        const lt = +parts[0], ln = +parts[1];
+        if (isFinite(lt) && isFinite(ln) && Math.abs(lt) <= 90) { objLat = lt; objLon = ln; }
+        else { objLat = null; objLon = null; }
+      } else if (line.startsWith('Icon:') && objLat !== null) {
+        const parts = line.slice(5).trim().split(',');
+        const rotation = +parts[2] || 0;
+        const tipMatch = line.match(/"([\s\S]*?)"/);
+        const tip = tipMatch ? tipMatch[1].replace(/\\n/g, '\n').replace(/<br\s*\/?>/gi, '\n') : '';
+        const tipLines = tip.split('\n').map(s => s.trim()).filter(Boolean);
+        const name = tipLines[0] || 'Storm Chaser';
+        const extraRows = tipLines.slice(1).map(s => `<div class="dp-row"><span>${s}</span></div>`).join('');
+        const icon = L.divIcon({
+          className: '', iconSize: [26, 26], iconAnchor: [13, 13],
+          html: `<div style="width:26px;height:26px;border-radius:50%;background:rgba(255,100,0,0.92);
+            border:2.5px solid #fff;box-shadow:0 0 8px rgba(255,100,0,0.7);
+            display:flex;align-items:center;justify-content:center;
+            font-size:13px;transform:rotate(${rotation % 360}deg)">🚗</div>`
+        });
+        L.marker([objLat, objLon], { icon, zIndexOffset: 300 })
+          .bindPopup(`<div class="data-popup-inner" style="--dp-accent:#ff6400">
+            <div class="dp-header">
+              <span class="dp-header-icon">🚗</span>
+              <span class="dp-header-label">${name}</span>
+            </div>
+            <div class="dp-body">
+              ${extraRows}
+              <div class="dp-row"><span>Coords</span><b>${objLat.toFixed(3)}°, ${objLon.toFixed(3)}°</b></div>
+            </div>
+          </div>`, { className: 'data-popup', maxWidth: 240 })
+          .addTo(_chasersLayer);
+      } else if (line === 'End:') {
+        objLat = null; objLon = null;
+      }
+    }
+    return;
+  }
+
+  // Fallback: RSS positions feed (same source as Spotters overlay, different icon)
+  try {
+    const text = await _fetchSpotterFeed(SPOTTER_POSITIONS_URL);
+    const xml = new DOMParser().parseFromString(text, 'text/xml');
+    xml.querySelectorAll('item').forEach(item => {
+      const ll = _spotterItemLatLng(item);
+      if (!ll) return;
+      const name = _spotterTag(item, 'title') || 'Storm Chaser';
+      const desc  = _spotterTag(item, 'description');
+      const link  = _spotterTag(item, 'link');
+      const icon = L.divIcon({
+        className: '', iconSize: [26, 26], iconAnchor: [13, 13],
+        html: `<div style="width:26px;height:26px;border-radius:50%;background:rgba(255,100,0,0.92);
+          border:2.5px solid #fff;box-shadow:0 0 8px rgba(255,100,0,0.7);
+          display:flex;align-items:center;justify-content:center;font-size:13px;">🚗</div>`
+      });
+      L.marker(ll, { icon, zIndexOffset: 300 })
+        .bindPopup(`<div class="data-popup-inner" style="--dp-accent:#ff6400">
+          <div class="dp-header">
+            <span class="dp-header-icon">🚗</span>
+            <span class="dp-header-label">${name}</span>
+          </div>
+          <div class="dp-body">
+            ${desc ? `<div class="dp-row"><span>${desc}</span></div>` : ''}
+            <div class="dp-row"><span>Coords</span><b>${ll[0].toFixed(3)}°, ${ll[1].toFixed(3)}°</b></div>
+            ${link ? `<div class="dp-row"><a href="${link}" target="_blank" rel="noopener">SpotterNetwork ↗</a></div>` : ''}
+          </div>
+        </div>`, { className: 'data-popup', maxWidth: 240 })
+        .addTo(_chasersLayer);
+    });
+  } catch(e) { console.warn('[chasers] all sources failed:', e.message); }
 }
 
 // ── STORM REPORTS , direct toggle, all types at once ──
@@ -22504,14 +22554,27 @@ function _fbInit() {
 // ── AUTH STATE ──────────────────────────────────────────────
 function _onSignedIn(user) {
   _currentUser = user;
-  _updateProfileBadge(user);
-  _loadUserPrefs(user.uid);
+  if (user.isAnonymous) {
+    // Anonymous sign-in — keep the UI clean, just track the guest visit.
+    // Firestore rule "allow write: if request.auth != null" IS satisfied
+    // by anonymous auth, so _ccPut / Firestore writes now succeed.
+    _initGuestSession();
+  } else {
+    _updateProfileBadge(user);
+    _loadUserPrefs(user.uid);
+  }
 }
 
 function _onSignedOut() {
   _currentUser = null;
   _updateProfileBadge(null);
-  _initGuestSession();
+  // Sign in anonymously so all Firestore writes (Cloud Capture, guest tracking)
+  // pass the "request.auth != null" security rule without requiring an account.
+  if (_fbAuth) {
+    _fbAuth.signInAnonymously().catch(() => _initGuestSession());
+  } else {
+    _initGuestSession();
+  }
 }
 
 function _updateProfileBadge(user, avatarEmoji) {
