@@ -5776,6 +5776,27 @@ body.gwcfc-crosshair #map::after {
 .spc-pick-btn:hover { background: rgba(100,20,0,0.7); border-color: rgba(232,184,0,0.5); color: #e8b800; }
 .spc-pick-btn.active { background: rgba(133,0,0,0.85); border-color: rgba(232,184,0,0.55); color: #e8b800; }
 .spc-pick-btn:disabled { opacity: 0.35; cursor: default; }
+#wpc-controls {
+  position: fixed;
+  top: calc(210px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 849;
+  width: 240px;
+  max-width: calc(100vw - 20px);
+  padding: 8px 10px;
+  display: none;
+  flex-direction: column;
+  gap: 5px;
+  background: rgba(8,12,16,0.96);
+  border: 1.5px solid rgba(0,140,186,0.45);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.55);
+}
+.wpc-float-title {
+  font-family: var(--display); font-weight: 700; font-size: 10px; letter-spacing: 1px;
+  color: #008CBA; text-align: center; text-transform: uppercase; margin-bottom: 1px;
+}
 /* Severe section within models panel */
 #models-severe-section { display: block; }
 #models-tropical-section { display: none; flex-direction: column; }
@@ -6262,7 +6283,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v4.6 · remove thunder, fix SPC day 4-8 colors · 2026-07-31</div>
+    <div id="build-stamp">v4.7 · WPC ERO + live storm chasers overlays · 2026-07-31</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8545,6 +8566,66 @@ function _spcPickHaz(h) {
   if (_spcOutlookOn) loadSPCOutlook(_spcDay, _spcHazard);
 }
 
+// ── WPC EXCESSIVE RAINFALL OUTLOOK (ERO) ──
+const WPC_ERO_COLORS = {
+  'MRGL': '#66c957', 'SLGT': '#f6f67f', 'MDT': '#f07d22',
+  'HIGH': '#ff00ff', 'ELEV': '#e8001f',
+};
+let _wpcOutlookActive = false, _wpcOutlookLayer = null, _wpcDay = 1;
+
+function _wpcPickDay(d) {
+  _wpcDay = d;
+  [1,2,3].forEach(n => {
+    const b = document.getElementById(`wpc-d${n}`);
+    if (b) b.classList.toggle('active', n === d);
+  });
+  if (_wpcOutlookActive) loadWPCOutlook(_wpcDay);
+}
+
+async function loadWPCOutlook(dayNum) {
+  if (!dayNum) dayNum = _wpcDay;
+  // WPC publishes ERO GeoJSON — try several known URL patterns + proxy chain
+  const urls = [
+    `https://www.wpc.ncep.noaa.gov/exper/ero/geojson/WPC_ERO_Day${dayNum}.geojson`,
+    `https://www.wpc.ncep.noaa.gov/exper/ero/geojson/ero_day${dayNum}.geojson`,
+    `https://www.wpc.ncep.noaa.gov/qpf/ero_d${dayNum}.geojson`,
+  ];
+  const wrappers = [
+    u => u,
+    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+  updateLoadStatus(`Loading WPC Day ${dayNum} Excessive Rainfall Outlook…`);
+  let data = null;
+  outer: for (const url of urls) {
+    for (const wrap of wrappers) {
+      try {
+        const r = await fetchWithTimeout(wrap(url), 8000);
+        if (!r.ok) continue;
+        const d = await r.json();
+        if (d?.features?.length) { data = d; break outer; }
+      } catch(e) {}
+    }
+  }
+  if (_wpcOutlookLayer) { try { map.removeLayer(_wpcOutlookLayer); } catch(e){} _wpcOutlookLayer = null; }
+  if (!data || !Array.isArray(data.features) || !data.features.length) {
+    updateLoadStatus('No WPC Excessive Rainfall data currently.'); return;
+  }
+  _wpcOutlookLayer = L.geoJSON(data, {
+    style: f => {
+      const dn = (f.properties.DN || f.properties.LABEL || f.properties.label || '').toUpperCase();
+      const fill = f.properties.fill || WPC_ERO_COLORS[dn] || SPC_COLORS[dn] || '#888';
+      return { color: f.properties.stroke || fill, weight: 1.5, fillColor: fill, fillOpacity: 0.4 };
+    },
+    onEachFeature: (f, layer) => {
+      const lbl = f.properties.LABEL || f.properties.DN || f.properties.label || 'Area';
+      layer.bindPopup(`<div class="alert-popup"><b>WPC ERO Day ${dayNum}</b><br>${lbl} — Excessive Rainfall Risk</div>`);
+    }
+  }).addTo(map);
+  updateLoadStatus('');
+}
+
 // ── SPC STORM REPORTS ──
 async function loadStormReports() {
   updateLoadStatus('Pulling storm reports from the field…');
@@ -10368,6 +10449,25 @@ function toggleOverlayPill(id) {
     toggleLayer('lightning');
     const pill = document.getElementById('op-lightning');
     if (pill) pill.classList.toggle('active', activeLayers.lightning);
+  } else if (id === 'wpc-outlook') {
+    _wpcOutlookActive = !_wpcOutlookActive;
+    const pill = document.getElementById('op-wpc-outlook');
+    if (pill) pill.classList.toggle('active', _wpcOutlookActive);
+    const ctrl = document.getElementById('wpc-controls');
+    if (ctrl) ctrl.style.display = _wpcOutlookActive ? 'flex' : 'none';
+    if (_wpcOutlookActive) loadWPCOutlook(_wpcDay);
+    else if (_wpcOutlookLayer) { try { map.removeLayer(_wpcOutlookLayer); } catch(e){} _wpcOutlookLayer = null; }
+  } else if (id === 'chasers') {
+    _chasersActive = !_chasersActive;
+    const pill = document.getElementById('op-chasers');
+    if (pill) pill.classList.toggle('active', _chasersActive);
+    if (_chasersActive) {
+      _loadChasers();
+      _chasersTimer = setInterval(_loadChasers, 5 * 60 * 1000);
+    } else {
+      clearInterval(_chasersTimer); _chasersTimer = null;
+      if (_chasersLayer) { try { map.removeLayer(_chasersLayer); } catch(e){} _chasersLayer = null; }
+    }
   } else if (id === 'spc-outlook') {
     _modelsSPCToggle();
     const pill = document.getElementById('op-spc-outlook');
@@ -10576,6 +10676,71 @@ async function _loadSpotterReports() {
     });
   } catch (e) {
     console.warn('[spotternetwork reports]', e.message);
+  }
+}
+
+// ── LIVE STORM CHASERS — SpotterNetwork GR placefile ──
+// The gr.txt placefile has heading/speed/name per entry — richer than the RSS feed.
+let _chasersActive = false, _chasersLayer = null, _chasersTimer = null;
+
+async function _loadChasers() {
+  if (!_chasersActive) return;
+  const url = 'https://www.spotternetwork.org/feeds/gr.txt';
+  const proxies = [
+    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+  let text = null;
+  for (const proxy of proxies) {
+    try {
+      const r = await fetchWithTimeout(proxy(url), 8000);
+      if (r.ok) { const t = await r.text(); if (t && t.length > 50) { text = t; break; } }
+    } catch(e) {}
+  }
+  if (!text) { console.warn('[chasers] all proxies failed'); return; }
+
+  if (!_chasersLayer) _chasersLayer = L.layerGroup().addTo(map);
+  else _chasersLayer.clearLayers();
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith('Icon:')) continue;
+    const rest = line.slice(5).trim();
+    const quoteIdx = rest.indexOf('"');
+    const coords = (quoteIdx > 0 ? rest.slice(0, quoteIdx) : rest).split(',');
+    if (coords.length < 2) continue;
+    const lat = +coords[0], lon = +coords[1];
+    if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90) continue;
+    const rotation = +coords[2] || 0;
+
+    const tooltipMatch = rest.match(/"([\s\S]*?)"/);
+    const tip = tooltipMatch ? tooltipMatch[1].replace(/\\n/g, '\n').replace(/<br\s*\/?>/gi, '\n') : '';
+    const tipLines = tip.split('\n').map(s => s.trim()).filter(Boolean);
+    const name = tipLines[0] || 'Storm Chaser';
+    const extraRows = tipLines.slice(1).map(s => `<div class="dp-row"><span>${s}</span></div>`).join('');
+
+    const icon = L.divIcon({
+      className: '',
+      iconSize: [26, 26], iconAnchor: [13, 13],
+      html: `<div style="width:26px;height:26px;border-radius:50%;background:rgba(255,140,0,0.9);
+        border:2.5px solid #fff;box-shadow:0 0 8px rgba(255,140,0,0.7);
+        display:flex;align-items:center;justify-content:center;
+        font-size:13px;transform:rotate(${rotation % 360}deg)">🚗</div>`
+    });
+
+    L.marker([lat, lon], { icon, zIndexOffset: 300 })
+      .bindPopup(`<div class="data-popup-inner" style="--dp-accent:#ff8c00">
+        <div class="dp-header">
+          <span class="dp-header-icon">🚗</span>
+          <span class="dp-header-label">${name}</span>
+        </div>
+        <div class="dp-body">
+          ${extraRows}
+          <div class="dp-row"><span>Coords</span><b>${lat.toFixed(3)}°, ${lon.toFixed(3)}°</b></div>
+        </div>
+      </div>`, { className: 'data-popup', maxWidth: 240 })
+      .addTo(_chasersLayer);
   }
 }
 
@@ -24279,6 +24444,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -24306,6 +24474,9 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-spotter-reports" data-ovid="spotter-reports" title="SpotterNetwork Reports">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotter-reports')">Spotter Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-chasers" data-ovid="chasers" title="Live Storm Chasers — SpotterNetwork real-time positions with heading">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('chasers')">Live Chasers</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
   </div>
   <button id="overlay-toggle-btn" onclick="toggleOverlayLauncher()" title="Toggle overlays" aria-label="Toggle overlays">
@@ -24621,6 +24792,16 @@ function buildTimelineLabels() {
     <button class="spc-pick-btn" id="spc-htorn" onclick="_spcPickHaz('torn')">Tornado</button>
     <button class="spc-pick-btn" id="spc-hwind" onclick="_spcPickHaz('wind')">Wind</button>
     <button class="spc-pick-btn" id="spc-hhail" onclick="_spcPickHaz('hail')">Hail</button>
+  </div>
+</div>
+
+<!-- ── WPC ERO DAY SWITCHER (floating) ── -->
+<div id="wpc-controls">
+  <div class="wpc-float-title">🌧 WPC Excessive Rainfall</div>
+  <div class="spc-picker-row">
+    <button class="spc-pick-btn active" id="wpc-d1" onclick="_wpcPickDay(1)">Day 1</button>
+    <button class="spc-pick-btn" id="wpc-d2" onclick="_wpcPickDay(2)">Day 2</button>
+    <button class="spc-pick-btn" id="wpc-d3" onclick="_wpcPickDay(3)">Day 3</button>
   </div>
 </div>
 
