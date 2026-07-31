@@ -6269,7 +6269,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v4.4 · thunder flash-to-bang miles · 2026-07-23</div>
+    <div id="build-stamp">v4.5 · thunder 10-min display window · 2026-07-31</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -9060,7 +9060,7 @@ const THUNDER_MILE_M        = 1609.34;                           // metres per m
 const THUNDER_MAX_MI        = 10;                                // thunder is rarely audible past ~10 mi
 const THUNDER_MAX_AUDIBLE_M = THUNDER_MAX_MI * THUNDER_MILE_M;   // ≈ 16 km
 const THUNDER_SPREAD_MS     = THUNDER_MAX_MI * 5 * 1000;         // 10 mi × 5 s/mi = 50 s to reach the cap
-const THUNDER_DISPLAY_MS    = 180000;                            // keep a strike's ring visible for ~3 min
+const THUNDER_DISPLAY_MS    = 600000;                            // keep a strike's ring visible for 10 min (matches LTG max age)
 const THUNDER_MAX_RINGS     = 220;                               // perf cap: rings for the most-recent strikes
 const THUNDER_LABEL_CAP     = 90;                                // perf cap: "X mi" labels for the freshest strikes
 
@@ -9100,11 +9100,11 @@ function _thunderTick() {
     const milesTxt = miles.toFixed(1) + ' mi';
     const wantLabel = idx < THUNDER_LABEL_CAP;
     const ll = rec.marker.getLatLng();
-    // Bright while the wavefront is still travelling, then fade over the display window.
+    // Bright while the wavefront is still travelling (0-50s), then fade gently to 0.2 over the rest of the display window.
     let opacity = spreading
       ? 0.9 - 0.3 * (radius / THUNDER_MAX_AUDIBLE_M)
-      : 0.6 * (1 - (elapsed - THUNDER_SPREAD_MS) / (THUNDER_DISPLAY_MS - THUNDER_SPREAD_MS));
-    opacity = Math.max(0.07, Math.min(0.9, opacity));
+      : 0.6 - 0.4 * ((elapsed - THUNDER_SPREAD_MS) / (THUNDER_DISPLAY_MS - THUNDER_SPREAD_MS));
+    opacity = Math.max(0.15, Math.min(0.9, opacity));
 
     let ring = _thunderRings.get(key);
     if (!ring) {
