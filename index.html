@@ -6283,7 +6283,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v4.8 · fix live chasers GR parser + WPC ERO URLs · 2026-07-31</div>
+    <div id="build-stamp">v4.9 · WPC ERO correct MapServer endpoint · 2026-08-01</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8585,19 +8585,14 @@ function _wpcPickDay(d) {
 async function loadWPCOutlook(dayNum) {
   if (!dayNum) dayNum = _wpcDay;
   const layerIdx = dayNum - 1; // ArcGIS layer index: Day1=0, Day2=1, Day3=2
-  // WPC ERO GeoJSON — try every known URL pattern then proxy chain
   const urls = [
-    // WPC experimental ERO endpoint (most authoritative)
+    // Primary: NOAA NWS MapServices — correct vector endpoint, wpc_precip_hazards service
+    `https://mapservices.weather.noaa.gov/vector/rest/services/hazards/wpc_precip_hazards/MapServer/${layerIdx}/query?where=1%3D1&outFields=*&f=geojson`,
+    // Secondary: WPC direct GeoJSON paths
     `https://www.wpc.ncep.noaa.gov/exper/ero/geojson/ero_day${dayNum}.geojson`,
     `https://www.wpc.ncep.noaa.gov/exper/ero/geojson/WPC_ERO_Day${dayNum}.geojson`,
-    `https://www.wpc.ncep.noaa.gov/exper/ero/ero_day${dayNum}.geojson`,
-    // WPC QPF directory
-    `https://www.wpc.ncep.noaa.gov/qpf/ero_day${dayNum}.geojson`,
-    `https://www.wpc.ncep.noaa.gov/qpf/ero_d${dayNum}.geojson`,
-    // NOAA IDPGIS ArcGIS REST Feature Service
-    `https://idpgis.ncep.noaa.gov/arcgis/rest/services/NWS_Forecasts_Guidance_Warnings/wpc_ero/MapServer/${layerIdx}/query?where=1%3D1&outFields=*&f=geojson`,
-    // NOAA MapServices ArcGIS REST
-    `https://mapservices.weather.noaa.gov/static/rest/services/ERO/ERO_outlooks/MapServer/${layerIdx}/query?where=1%3D1&outFields=*&f=geojson`,
+    // Tertiary: FEMA mirror of the same data
+    `https://gis.fema.gov/arcgis/rest/services/Partner/Excessive_Rainfall/MapServer/${layerIdx}/query?where=1%3D1&outFields=*&f=geojson`,
   ];
   const wrappers = [
     u => u,
@@ -8625,12 +8620,16 @@ async function loadWPCOutlook(dayNum) {
   }
   _wpcOutlookLayer = L.geoJSON(data, {
     style: f => {
-      const dn = (f.properties.DN || f.properties.LABEL || f.properties.label || '').toUpperCase();
-      const fill = f.properties.fill || WPC_ERO_COLORS[dn] || SPC_COLORS[dn] || '#888';
-      return { color: f.properties.stroke || fill, weight: 1.5, fillColor: fill, fillOpacity: 0.4 };
+      const p = f.properties || {};
+      const raw = (p.LABEL || p.Risk || p.DN || p.label || p.risk || '').trim().toUpperCase();
+      // Normalize full-word category names to abbreviations used in WPC_ERO_COLORS
+      const abbrev = { MARGINAL:'MRGL', SLIGHT:'SLGT', MODERATE:'MDT', HIGH:'HIGH', ELEVATED:'ELEV', EXTREME:'HIGH' }[raw] || raw;
+      const fill = p.fill || WPC_ERO_COLORS[abbrev] || SPC_COLORS[abbrev] || '#888';
+      return { color: p.stroke || fill, weight: 1.5, fillColor: fill, fillOpacity: 0.4 };
     },
     onEachFeature: (f, layer) => {
-      const lbl = f.properties.LABEL || f.properties.DN || f.properties.label || 'Area';
+      const p = f.properties || {};
+      const lbl = p.LABEL || p.Risk || p.DN || p.label || 'Area';
       layer.bindPopup(`<div class="alert-popup"><b>WPC ERO Day ${dayNum}</b><br>${lbl} — Excessive Rainfall Risk</div>`);
     }
   }).addTo(map);
