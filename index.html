@@ -1185,6 +1185,7 @@ body {
 
   /* SPC legend , move up to not overlap animbar */
   #spc-legend { bottom: 90px; left: 160px; right: auto; }
+  #wpc-legend { bottom: 90px; left: 290px; right: auto; }
 
   /* Status bar , hide less-critical items */
   #statusbar { gap: 12px; padding: 0 10px; }
@@ -1280,6 +1281,7 @@ body {
 
   /* SPC legend small phone */
   #spc-legend { bottom: 86px; left: 150px; right: auto; }
+  #wpc-legend { bottom: 86px; left: 278px; right: auto; }
 }
 
 /* ── ALERTS PANEL ── */
@@ -2420,6 +2422,27 @@ body {
 }
 .spc-row { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text); padding: 2px 0; }
 .spc-swatch { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+
+/* WPC ERO legend — mirrors SPC legend, positioned to its right */
+#wpc-legend {
+  position: fixed;
+  bottom: 100px;
+  left: 320px;
+  right: auto;
+  background: rgb(8,12,16);
+  border: 1px solid var(--border2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  z-index: 800;
+  backdrop-filter: blur(6px);
+  display: none;
+  min-width: 120px;
+}
+#wpc-legend-title {
+  font-family: var(--mono);
+  font-size: 9px; letter-spacing: 1.5px; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 6px;
+}
 
 
 /* Scrollbar global */
@@ -6283,7 +6306,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp — lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v4.9 · WPC ERO correct MapServer endpoint · 2026-08-01</div>
+    <div id="build-stamp">v5.0 · WPC ERO legend matches SPC style · 2026-08-01</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6386,6 +6409,16 @@ body.clean-mode #clean-hint { opacity: 1; }
       <div class="spc-row"><div class="spc-swatch" style="background:#f07d22"></div>Enhanced (ENH)</div>
       <div class="spc-row"><div class="spc-swatch" style="background:#e8001f"></div>Moderate (MDT)</div>
       <div class="spc-row"><div class="spc-swatch" style="background:#ff00ff"></div>High (HIGH)</div>
+    </div>
+
+    <!-- WPC ERO Legend -->
+    <div id="wpc-legend">
+      <div id="wpc-legend-title">WPC Rain Risk</div>
+      <div class="spc-row"><div class="spc-swatch" style="background:#66c957"></div>Marginal (MRGL)</div>
+      <div class="spc-row"><div class="spc-swatch" style="background:#f6f67f"></div>Slight (SLGT)</div>
+      <div class="spc-row"><div class="spc-swatch" style="background:#f07d22"></div>Moderate (MDT)</div>
+      <div class="spc-row"><div class="spc-swatch" style="background:#ff00ff"></div>High (HIGH)</div>
+      <div class="spc-row"><div class="spc-swatch" style="background:#e8001f"></div>Elevated (ELEV)</div>
     </div>
 
     <!-- Tool Hint -->
@@ -8616,7 +8649,10 @@ async function loadWPCOutlook(dayNum) {
   }
   if (_wpcOutlookLayer) { try { map.removeLayer(_wpcOutlookLayer); } catch(e){} _wpcOutlookLayer = null; }
   if (!data || !Array.isArray(data.features) || !data.features.length) {
-    updateLoadStatus('No WPC Excessive Rainfall data currently.'); return;
+    updateLoadStatus('No WPC Excessive Rainfall data currently.');
+    const wleg = document.getElementById('wpc-legend');
+    if (wleg) wleg.style.display = 'none';
+    return;
   }
   _wpcOutlookLayer = L.geoJSON(data, {
     style: f => {
@@ -8633,6 +8669,8 @@ async function loadWPCOutlook(dayNum) {
       layer.bindPopup(`<div class="alert-popup"><b>WPC ERO Day ${dayNum}</b><br>${lbl} — Excessive Rainfall Risk</div>`);
     }
   }).addTo(map);
+  const wleg = document.getElementById('wpc-legend');
+  if (wleg) wleg.style.display = 'block';
   updateLoadStatus('');
 }
 
@@ -10466,7 +10504,11 @@ function toggleOverlayPill(id) {
     const ctrl = document.getElementById('wpc-controls');
     if (ctrl) ctrl.style.display = _wpcOutlookActive ? 'flex' : 'none';
     if (_wpcOutlookActive) loadWPCOutlook(_wpcDay);
-    else if (_wpcOutlookLayer) { try { map.removeLayer(_wpcOutlookLayer); } catch(e){} _wpcOutlookLayer = null; }
+    else {
+      if (_wpcOutlookLayer) { try { map.removeLayer(_wpcOutlookLayer); } catch(e){} _wpcOutlookLayer = null; }
+      const wleg = document.getElementById('wpc-legend');
+      if (wleg) wleg.style.display = 'none';
+    }
   } else if (id === 'chasers') {
     _chasersActive = !_chasersActive;
     const pill = document.getElementById('op-chasers');
@@ -11909,6 +11951,7 @@ function switchTab(tab) {
     }
     if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
     document.getElementById('spc-legend').style.display = 'none';
+    const wleg = document.getElementById('wpc-legend'); if (wleg) wleg.style.display = 'none';
   }
 
   currentTab = tab;
@@ -11940,6 +11983,7 @@ function switchTab(tab) {
   // Alerts panel
   document.getElementById('alerts-panel').style.display = 'none';
   document.getElementById('spc-legend').style.display = 'none';
+  const _wlegClr = document.getElementById('wpc-legend'); if (_wlegClr) _wlegClr.style.display = 'none';
   document.getElementById('product-bar') && (document.getElementById('product-bar').style.display = 'none');
   renderSubBubbles(tab);
 }
