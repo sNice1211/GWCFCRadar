@@ -6306,7 +6306,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.6 · SPC Day 4-8 individual day buttons + correct URLs · 2026-08-01</div>
+    <div id="build-stamp">v5.7 · map blank fix + overlay drag order + renames + remove HH · 2026-08-01</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -7063,6 +7063,12 @@ function initMap() {
 
   mapTileLayers = { dark: cartoDark, light: cartoLight, satellite, topo };
   cartoDark.addTo(map);
+
+  // Auto-fix blank map whenever the container changes size (sidebar open/close, orientation, etc.)
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => { try { map.invalidateSize({ pan: false }); } catch(e){} })
+      .observe(document.getElementById('map'));
+  }
 
   // Dedicated pane for alert polygons so we can hide them independently
   map.createPane('alertsPane');
@@ -8548,6 +8554,7 @@ async function loadSPCOutlook(dayNum, hazard) {
     }
     // SPC GeoJSON includes fill/stroke/LABEL on each feature (per outlooks.js)
     spcOutlookLayer = L.geoJSON(data, {
+      pane: _ovPane('spc-outlook'),
       style: f => {
         const dn = (f.properties.DN || '');
         const fill = f.properties.fill || SPC_COLORS[dn.toUpperCase()] || SPC_PROB_COLORS[dn] || '#888';
@@ -8656,6 +8663,7 @@ async function loadWPCOutlook(dayNum) {
     return;
   }
   _wpcOutlookLayer = L.geoJSON(data, {
+    pane: _ovPane('wpc-outlook'),
     style: f => {
       const p = f.properties || {};
       if (!window._wpcDebugLogged) { window._wpcDebugLogged = true; console.log('[WPC ERO] feature props:', JSON.stringify(p)); }
@@ -12000,6 +12008,7 @@ function switchTab(tab) {
   const _wlegClr = document.getElementById('wpc-legend'); if (_wlegClr) _wlegClr.style.display = 'none';
   document.getElementById('product-bar') && (document.getElementById('product-bar').style.display = 'none');
   renderSubBubbles(tab);
+  setTimeout(() => { try { map.invalidateSize({ pan: false }); } catch(e){} }, 50);
 }
 
 // ── LOCATE USER ──
@@ -12289,6 +12298,7 @@ function _actuallyDismiss() {
   setTimeout(() => {
     if (el.parentNode) el.parentNode.removeChild(el);
     else el.style.display = 'none';
+    try { map.invalidateSize({ pan: false }); } catch(e){}
     // Auto-open tutorial for first-time visitors, after loading screen is fully gone
     try {
       if (localStorage.getItem('gwcfc_tutorial_seen') !== '1') {
@@ -12321,6 +12331,7 @@ async function init() {
 
   try {
     initMap();
+    _ovApplyMapOrder(); // re-apply saved overlay order now that map panes exist
     updateLegend('ref');
     renderSubBubbles('regular');
   } catch(e) {
@@ -22396,186 +22407,7 @@ document.addEventListener('keydown', e => {
   }
 });
 
-// ════════════════════════════════════════════════════════════
-//  HURRICANE HUNTERS , OpenSky Network (free, no API key)
-//  https://opensky-network.org/api/states/all
-//  Known NOAA / USAF recon aircraft ICAO hex codes (FAA registry verified):
-//    N42RF  = a3fdac  (WP-3D Orion "Kermit")
-//    N43RF  = a3fdb0  (WP-3D Orion "Miss Piggy")
-//    N49RF  = a3fdae  (Gulfstream IV-SP "Gonzo")
-//    N57RF  = a44708  (Gulfstream IV)
-//  USAF 53rd WRS WC-130Js queried by callsign prefix EVAC via OpenSky
-// ════════════════════════════════════════════════════════════
 
-// ADS-B data sources , free, CORS-open, no key required
-const HH_ADSBLOL_URL     = 'https://api.adsb.lol/v2/icao/';        // primary
-const HH_AIRPLANESLIVE_URL = 'https://api.airplanes.live/v2/icao/'; // fallback
-const HH_NOAA_HEXES  = ['a3fdac','a3fdb0','a3fdae','a44708'];
-
-const HH_AIRCRAFT_INFO = {
-  'a3fdac': { name: 'NOAA42', label: 'Kermit , WP-3D Orion', org: 'NOAA', color: '#008CBA' },
-  'a3fdb0': { name: 'NOAA43', label: 'Miss Piggy , WP-3D Orion', org: 'NOAA', color: '#008CBA' },
-  'a3fdae': { name: 'NOAA49', label: 'Gonzo , Gulfstream IV-SP', org: 'NOAA', color: '#008CBA' },
-  'a44708': { name: 'NOAA57', label: 'N57RF , Gulfstream IV', org: 'NOAA', color: '#008CBA' },
-};
-
-let _hhActive      = false;
-let _hhMarkers     = {};
-let _hhInterval    = null;
-let _hhLayerGroup  = null;
-let _hhLastFetch   = 0;
-
-(function() {
-  const orig = window.toggleOverlayPill;
-  window.toggleOverlayPill = function(id) {
-    if (id === 'hhunt') { _toggleHHunt(); } else { orig(id); }
-  };
-})();
-
-function _toggleHHunt() {
-  _hhActive = !_hhActive;
-  const pill = document.getElementById('op-hhunt');
-  if (pill) pill.classList.toggle('active', _hhActive);
-  if (_hhActive) { _hhStart(); } else { _hhStop(); }
-}
-
-function _hhStart() {
-  if (!_hhLayerGroup) _hhLayerGroup = L.layerGroup().addTo(map);
-  _hhFetch();
-  _hhInterval = setInterval(_hhFetch, 60000);
-}
-
-function _hhStop() {
-  clearInterval(_hhInterval);
-  _hhInterval = null;
-  if (_hhLayerGroup) { _hhLayerGroup.clearLayers(); map.removeLayer(_hhLayerGroup); _hhLayerGroup = null; }
-  _hhMarkers = {};
-}
-
-async function _hhFetch() {
-  const now = Date.now();
-  if (now - _hhLastFetch < 10000) return;
-  _hhLastFetch = now;
-
-  const hexList = HH_NOAA_HEXES.join(',');
-  const found   = [];
-
-  // Try adsb.lol first, fall back to airplanes.live
-  // Both return: { ac: [ { hex, flight, lat, lon, alt_baro, gs, track, ... } ] }
-  let data = null;
-  const sources = [
-    { name: 'adsb.lol',         url: HH_ADSBLOL_URL + hexList },
-    { name: 'airplanes.live',   url: HH_AIRPLANESLIVE_URL + hexList },
-  ];
-  for (const src of sources) {
-    try {
-      const res = await fetch(src.url, { signal: AbortSignal.timeout(8000) });
-      if (!res.ok) throw new Error(src.name + ' HTTP ' + res.status);
-      data = await res.json();
-      if (data && (data.ac || data.aircraft)) break; // success
-    } catch(e) {
-      console.warn('HH source ' + src.name + ' failed:', e.message);
-      data = null;
-    }
-  }
-
-  if (!data) {
-    _showHHToast('⚠ ADS-B feed unreachable , will retry in 60 s.');
-    return;
-  }
-
-  const aircraft = data.ac || data.aircraft || [];
-  aircraft.forEach(ac => {
-    const hex = (ac.hex || ac.icao || '').toLowerCase();
-    if (!HH_NOAA_HEXES.includes(hex)) return;
-    const lat = ac.lat ?? ac.latitude;
-    const lon = ac.lon ?? ac.longitude;
-    if (lat == null || lon == null) return;
-    const info = HH_AIRCRAFT_INFO[hex] || { name: hex.toUpperCase(), label: 'NOAA Recon', org: 'NOAA', color: '#008CBA' };
-    // alt_baro in feet; gs in knots; track in degrees
-    const alt_ft    = ac.alt_baro === 'ground' ? 0 : (ac.alt_baro ?? ac.altitude ?? null);
-    const speed_kts = ac.gs ?? ac.speed ?? null;
-    const heading   = ac.track ?? ac.heading ?? 0;
-    const on_ground = ac.alt_baro === 'ground' || ac.on_ground === true || alt_ft === 0;
-    found.push({
-      hex, lat, lon,
-      callsign:  ((ac.flight || ac.r || hex).trim()),
-      alt_ft:    alt_ft != null ? Math.round(alt_ft) : null,
-      speed_kts: speed_kts != null ? Math.round(speed_kts) : null,
-      heading:   Math.round(heading),
-      on_ground,
-      info
-    });
-  });
-
-  if (!_hhLayerGroup) return;
-
-  // Remove stale markers
-  const foundHexes = new Set(found.map(f => f.hex));
-  Object.entries(_hhMarkers).forEach(([hex, marker]) => {
-    if (!foundHexes.has(hex)) { _hhLayerGroup.removeLayer(marker); delete _hhMarkers[hex]; }
-  });
-
-  if (found.length === 0) {
-    _showHHToast('🛩️ No NOAA hurricane hunters currently airborne.');
-    return;
-  }
-
-  found.forEach(ac => { if (!ac.on_ground) _hhPlot(ac); });
-}
-
-function _hhPlot(ac) {
-  const { hex, lat, lon, callsign, alt_ft, speed_kts, heading, last_contact, info } = ac;
-  const color = info.color || '#008CBA';
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 34 34"
-    style="transform:rotate(${heading}deg);transform-origin:center;filter:drop-shadow(0 0 6px ${color})90;">
-    <polygon points="17,3 21,20 17,17 13,20" fill="${color}" opacity="0.97"/>
-    <polygon points="8,15 26,15 24,18 10,18" fill="${color}" opacity="0.72"/>
-    <polygon points="14,23 20,23 19,28 15,28" fill="${color}" opacity="0.72"/>
-  </svg>`;
-
-  const icon = L.divIcon({ html: svg, className: '', iconSize: [34,34], iconAnchor: [17,17], popupAnchor: [0,-17] });
-
-  const altStr   = alt_ft   != null ? alt_ft.toLocaleString() + ' ft'    : '-';
-  const spdStr   = speed_kts != null ? speed_kts + ' kts'               : '-';
-  const hdgStr   = heading != null ? Math.round(heading) + '°'          : '-';
-  const ageStr   = last_contact ? Math.round((Date.now()/1000 - last_contact)) + 's ago' : '-';
-
-  const popup = `<div style="font-family:'Comfortaa', sans-serif;font-size:12px;padding:6px 2px;color:#d4e8ff;min-width:220px;">
-    <div style="font-family:'Comfortaa',sans-serif;font-size:20px;font-weight:700;color:${color};letter-spacing:2px;margin-bottom:3px;">${callsign}</div>
-    <div style="color:rgba(212,232,255,0.55);font-size:10px;margin-bottom:10px;">${info.label}</div>
-    <table style="width:100%;font-size:11px;border-collapse:collapse;">
-      <tr><td style="color:rgba(212,232,255,0.5);padding:2px 0">Altitude</td><td style="color:#008CBA;text-align:right">${altStr}</td></tr>
-      <tr><td style="color:rgba(212,232,255,0.5);padding:2px 0">Ground Speed</td><td style="color:#008CBA;text-align:right">${spdStr}</td></tr>
-      <tr><td style="color:rgba(212,232,255,0.5);padding:2px 0">Heading</td><td style="color:#008CBA;text-align:right">${hdgStr}</td></tr>
-      <tr><td style="color:rgba(212,232,255,0.5);padding:2px 0">Last seen</td><td style="color:#008CBA;text-align:right">${ageStr}</td></tr>
-      <tr><td style="color:rgba(212,232,255,0.5);padding:2px 0">ICAO</td><td style="color:#008CBA;text-align:right">${hex.toUpperCase()}</td></tr>
-    </table>
-    <div style="margin-top:8px;font-size:9px;color:rgba(212,232,255,0.3);letter-spacing:1px;">SOURCE · ADSB.LOL / ADS-B EXCHANGE</div>
-  </div>`;
-
-  if (_hhMarkers[hex]) {
-    _hhMarkers[hex].setLatLng([lat,lon]);
-    _hhMarkers[hex].setIcon(icon);
-    _hhMarkers[hex].getPopup().setContent(popup);
-  } else {
-    const marker = L.marker([lat,lon], { icon, zIndexOffset: 5000 })
-      .bindPopup(popup, { className: 'hh-popup', maxWidth: 270 });
-    _hhLayerGroup.addLayer(marker);
-    _hhMarkers[hex] = marker;
-  }
-}
-
-function _showHHToast(msg) {
-  // Use existing toast if available, otherwise roll our own
-  if (typeof showToast === 'function') { showToast(msg); return; }
-  const t = document.createElement('div');
-  t.style.cssText = 'position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.85);border:1px solid rgba(0,140,186,0.4);color:#d4e8ff;font-family:Comfortaa,sans-serif;font-size:12px;padding:10px 20px;border-radius:20px;z-index:9000;pointer-events:none;transition:opacity 0.4s;';
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => { t.style.opacity='0'; setTimeout(() => t.remove(), 400); }, 3500);
-}
 
 
 // ════════════════════════════════════════════════════════════
@@ -23552,7 +23384,6 @@ const RADAR_CATALOG = [
   { icon:'⚡', label:'Lightning',       type:'OVERLAY', action:()=>toggleOverlayPill('lightning'), kw:['lightning','bolt','strike'] },
   { icon:'📻', label:'Radio Stations',  type:'OVERLAY', action:()=>toggleOverlayPill('radio'),     kw:['radio','weather radio','noaa radio'] },
   { icon:'🌥️', label:'Forecast Dots',   type:'OVERLAY', action:()=>toggleOverlayPill('forecasts'), kw:['forecast','dot','point'] },
-  { icon:'🛩️', label:'Hurricane Hunters',type:'OVERLAY',action:()=>toggleOverlayPill('hhunt'),   kw:['hunter','recon','reconnaissance','noaa plane','evac'] },
   // Tools
   { icon:'📖', label:'Tutorial',         type:'TOOL',   action:()=>openTutorial(),          kw:['tutorial','help','guide','how to'] },
   { icon:'⚙️', label:'Settings',         type:'TOOL',   action:()=>lqmOpenSettings(),       kw:['settings','options','config','preferences'] },
@@ -24093,41 +23924,44 @@ async function loadSurfaceAnalysis() {
 
   const{lines,centers}=_parseSurfaceText(prod);
   const layers=[];
+  const _fp = _ovPane('fronts');
+  const _poly=(ll,opts)=>L.polyline(ll,Object.assign({pane:_fp},opts));
 
   for(const line of lines){
     if(line.coords.length<2)continue;
     const ll=line.coords;
     const mkr=(lat,lng,html)=>L.marker([lat,lng],{
+      pane:_fp,
       icon:L.divIcon({className:'sa-sym',html,iconSize:[18,18],iconAnchor:[9,9]}),
       interactive:false,keyboard:false
     });
 
     switch(line.type){
       case 'COLD':
-        layers.push(L.polyline(ll,{color:'#3b82f6',weight:3,opacity:0.9}));
+        layers.push(_poly(ll,{color:'#3b82f6',weight:3,opacity:0.9}));
         _sampleFrontLine(ll,1.4).forEach(({lat,lng,bearing})=>
           layers.push(mkr(lat,lng,_triSVG(bearing-90,'#3b82f6'))));
         break;
       case 'WARM':
-        layers.push(L.polyline(ll,{color:'#ef4444',weight:3,opacity:0.9}));
+        layers.push(_poly(ll,{color:'#ef4444',weight:3,opacity:0.9}));
         _sampleFrontLine(ll,1.4).forEach(({lat,lng,bearing})=>
           layers.push(mkr(lat,lng,_semicSVG(bearing-90,'#ef4444'))));
         break;
       case 'STNRY':
-        layers.push(L.polyline(ll,{color:'#3b82f6',weight:3,opacity:0.9}));
-        layers.push(L.polyline(ll,{color:'#ef4444',weight:3,opacity:0.9,dashArray:'12 6',dashOffset:'6'}));
+        layers.push(_poly(ll,{color:'#3b82f6',weight:3,opacity:0.9}));
+        layers.push(_poly(ll,{color:'#ef4444',weight:3,opacity:0.9,dashArray:'12 6',dashOffset:'6'}));
         _sampleFrontLine(ll,2.2).forEach(({lat,lng,bearing},i)=>
           layers.push(mkr(lat,lng,
             i%2===0 ? _semicSVG(bearing-90,'#ef4444') : _triSVG(bearing+90,'#3b82f6'))));
         break;
       case 'OCFNT':
-        layers.push(L.polyline(ll,{color:'#8b5cf6',weight:3,opacity:0.9}));
+        layers.push(_poly(ll,{color:'#8b5cf6',weight:3,opacity:0.9}));
         _sampleFrontLine(ll,2.2).forEach(({lat,lng,bearing},i)=>
           layers.push(mkr(lat,lng,
             i%2===0 ? _triSVG(bearing-90,'#8b5cf6') : _semicSVG(bearing-90,'#8b5cf6'))));
         break;
       case 'TROF':
-        layers.push(L.polyline(ll,{color:'#a16207',weight:2.5,opacity:0.85,dashArray:'8 5'}));
+        layers.push(_poly(ll,{color:'#a16207',weight:2.5,opacity:0.85,dashArray:'8 5'}));
         break;
     }
   }
@@ -24136,6 +23970,7 @@ async function loadSurfaceAnalysis() {
     const col=c.type==='HIGH'?'#1e40af':'#dc2626';
     const letter=c.type==='HIGH'?'H':'L';
     layers.push(L.marker([c.lat,c.lng],{
+      pane:_fp,
       icon:L.divIcon({
         className:'sa-sym',
         html:`<div style="font-family:'Comfortaa',sans-serif;font-weight:900;font-size:20px;line-height:1;color:${col};text-shadow:-1px -1px 0 #fff,1px -1px 0 #fff,-1px 1px 0 #fff,1px 1px 0 #fff;text-align:center">${letter}<br><span style="font-size:9px;font-weight:600;color:#222;text-shadow:none">${c.pressure}</span></div>`,
@@ -24552,10 +24387,10 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="overlay-launcher">
   <div id="overlay-pills-row">
     <div class="ov-list-hint">Tap to toggle · drag ⋮ to reorder</div>
-    <div class="ov-pill active" id="op-alerts" data-ovid="alerts" title="NWS Warnings &amp; Watches">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('alerts')">Warnings</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    <div class="ov-pill active" id="op-alerts" data-ovid="alerts" title="NWS Alert Polygons - Warnings &amp; Watches">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('alerts')">Alert Polygons</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-spc-outlook" data-ovid="spc-outlook" title="SPC Convective Outlook (Day 1–3 · Categorical/Tornado/Wind/Hail)">
+    <div class="ov-pill" id="op-spc-outlook" data-ovid="spc-outlook" title="SPC Convective Outlook (Day 1-8 Categorical/Tornado/Wind/Hail)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-outlook')">SPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-spc-reports" data-ovid="spc-reports" title="SPC Storm Reports (tornado/hail/wind LSRs)">
@@ -24567,30 +24402,26 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning Strikes - real-time strike data">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning Strikes</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-
     <div class="ov-pill" id="op-cloudcam" data-ovid="cloudcam" title="Cloud Capture - submit weather photos to the map">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('cloudcam')">Cloud Capture</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-radio" data-ovid="radio" title="NOAA Radio">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('radio')">Radio</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    <div class="ov-pill" id="op-radio" data-ovid="radio" title="NOAA Weather Radio (NWR) transmitter stations">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('radio')">NWR Stations</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill active" id="op-forecasts" data-ovid="forecasts" title="Forecasts">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('forecasts')">Forecasts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    <div class="ov-pill active" id="op-forecasts" data-ovid="forecasts" title="Weather Forecasts - point forecast dots">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('forecasts')">Weather Forecasts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-hhunt" data-ovid="hhunt" title="Hurricane Hunters">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('hhunt')">Hunters</span><span class="ov-drag" title="Drag to reorder">⠿</span>
-    </div>
-    <div class="ov-pill" id="op-metar-stations" data-ovid="metar-stations" title="METAR Stations">
+    <div class="ov-pill" id="op-metar-stations" data-ovid="metar-stations" title="METAR Stations - surface observations">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('metar-stations')">METAR Stations</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill active" id="op-fronts" data-ovid="fronts" title="WPC Surface Fronts">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('fronts')">Fronts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    <div class="ov-pill active" id="op-fronts" data-ovid="fronts" title="WPC Surface Analysis - fronts, highs, lows">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('fronts')">Surface Analysis</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-spotters" data-ovid="spotters" title="SpotterNetwork Positions">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotters')">Spotters</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    <div class="ov-pill" id="op-spotters" data-ovid="spotters" title="SpotterNetwork - Storm Spotter Positions">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotters')">Storm Spotters</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-spotter-reports" data-ovid="spotter-reports" title="SpotterNetwork Reports">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotter-reports')">Spotter Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
@@ -25390,15 +25221,22 @@ function _ovContainer(){ return document.getElementById('overlay-pills-row'); }
 function _ovPane(id){
   if (typeof map==='undefined'||!map) return undefined;
   const name='ovp-'+id;
-  if (!map.getPane(name)){ const p=map.createPane(name); p.style.zIndex=615; }
+  if (!map.getPane(name)){
+    const p=map.createPane(name);
+    p.style.zIndex='420';
+    p.style.pointerEvents='auto';
+  }
   return name;
 }
 function _ovApplyMapOrder(){
   if (typeof map==='undefined'||!map) return;
   const ids=_ovRows().map(r=>r.dataset.ovid), n=ids.length;
   ids.forEach((id,idx)=>{
+    const z = 402 + (n - idx) * 2; // range ~404-432, between overlayPane(400) and shadowPane(500)
     const pane=map.getPane('ovp-'+id);
-    if (pane) pane.style.zIndex = 610 + (n - idx); // top of list → highest z → on top
+    if (pane) pane.style.zIndex = String(z);
+    // alertsPane is the dedicated pane for NWS alert polygons - keep it in sync
+    if (id==='alerts'){ const ap=map.getPane('alertsPane'); if(ap) ap.style.zIndex=String(z); }
   });
 }
 function _ovSaveOrder(){
