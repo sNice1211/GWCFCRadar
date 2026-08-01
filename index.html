@@ -6306,7 +6306,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.5 · WPC ERO colors match SPC palette · 2026-08-01</div>
+    <div id="build-stamp">v5.6 · SPC Day 4-8 individual day buttons + correct URLs · 2026-08-01</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8511,11 +8511,11 @@ let _spcDay = 1, _spcHazard = 'cat';
 async function loadSPCOutlook(dayNum, hazard) {
   if (!dayNum) dayNum = _spcDay;
   if (!hazard) hazard = _spcHazard;
-  const isExt = (dayNum === 48);
+  const isExt = (dayNum >= 4);
   const haz = isExt ? 'prob' : (dayNum === 3) ? 'cat' : hazard;
-  const dayLabel = isExt ? '4-8' : String(dayNum);
+  const dayLabel = String(dayNum);
   const spcUrl = isExt
-    ? 'https://www.spc.noaa.gov/products/exper/day4-8/day48prob.nolyr.geojson'
+    ? `https://www.spc.noaa.gov/products/exper/day4-8/day${dayNum}prob.nolyr.geojson`
     : `https://www.spc.noaa.gov/products/outlook/day${dayNum}otlk_${haz}.nolyr.geojson`;
   updateLoadStatus(`Loading SPC Day ${dayLabel} ${haz.toUpperCase()} outlook…`);
   try {
@@ -8528,7 +8528,7 @@ async function loadSPCOutlook(dayNum, hazard) {
     // 2. corsproxy.io - returns raw JSON directly, no wrapper (pattern from outlooks.js)
     if (!data) {
       try {
-        const r = await fetchWithTimeout(`https://corsproxy.io/?${encodeURIComponent(spcUrl)}`, 8000);
+        const r = await fetchWithTimeout(`https://corsproxy.io/?url=${encodeURIComponent(spcUrl)}`, 8000);
         if (r.ok) data = await r.json();
       } catch(e) {}
     }
@@ -8570,16 +8570,16 @@ async function loadSPCOutlook(dayNum, hazard) {
 
 function _spcPickDay(d) {
   _spcDay = d;
-  [1,2,3,48].forEach(n => {
+  [1,2,3,4,5,6,7,8].forEach(n => {
     const b = document.getElementById(`spc-d${n}`);
     if (b) b.classList.toggle('active', n === d);
   });
   const hazBtns = ['torn','wind','hail'];
   hazBtns.forEach(h => {
     const b = document.getElementById(`spc-h${h}`);
-    if (b) { b.disabled = (d === 3 || d === 48); }   // Day 3 + Day 4-8 are categorical/prob only
+    if (b) { b.disabled = (d >= 3); }   // Day 3+ are categorical/prob only
   });
-  if ((d === 3 || d === 48) && _spcHazard !== 'cat') {
+  if ((d >= 3) && _spcHazard !== 'cat') {
     _spcHazard = 'cat';
     ['cat','torn','wind','hail'].forEach(h => {
       const b = document.getElementById(`spc-h${h}`);
@@ -24905,7 +24905,13 @@ function buildTimelineLabels() {
     <button class="spc-pick-btn active" id="spc-d1" onclick="_spcPickDay(1)">Day 1</button>
     <button class="spc-pick-btn" id="spc-d2" onclick="_spcPickDay(2)">Day 2</button>
     <button class="spc-pick-btn" id="spc-d3" onclick="_spcPickDay(3)">Day 3</button>
-    <button class="spc-pick-btn" id="spc-d48" onclick="_spcPickDay(48)">Day 4-8</button>
+  </div>
+  <div class="spc-picker-row">
+    <button class="spc-pick-btn" id="spc-d4" onclick="_spcPickDay(4)">Day 4</button>
+    <button class="spc-pick-btn" id="spc-d5" onclick="_spcPickDay(5)">Day 5</button>
+    <button class="spc-pick-btn" id="spc-d6" onclick="_spcPickDay(6)">Day 6</button>
+    <button class="spc-pick-btn" id="spc-d7" onclick="_spcPickDay(7)">Day 7</button>
+    <button class="spc-pick-btn" id="spc-d8" onclick="_spcPickDay(8)">Day 8</button>
   </div>
   <div class="spc-picker-row">
     <button class="spc-pick-btn active" id="spc-hcat" onclick="_spcPickHaz('cat')">Categorical</button>
