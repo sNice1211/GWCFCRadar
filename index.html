@@ -5832,7 +5832,7 @@ body.gwcfc-crosshair #map::after {
 #overlay-panel-stack {
   position: fixed;
   top: calc(70px + env(safe-area-inset-top, 0px));
-  left: 10px;
+  left: calc(56px + env(safe-area-inset-left, 0px));
   z-index: 849;
   display: flex;
   flex-direction: column;
@@ -6405,7 +6405,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.10 · fix panels/CPC/meso/radar requests · 2026-08-02</div>
+    <div id="build-stamp">v5.11 · CPC/FireWx/Meso via NOAA vector API + panel nudge · 2026-08-02</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8849,11 +8849,14 @@ function _fwPickDay(d) {
 
 async function loadFireOutlook(dayNum) {
   if (!dayNum) dayNum = _fwDay;
-  // Try multiple known URL patterns for SPC fire weather GeoJSON
+  // Layer index in the NOAA vector service: Day1 categorical=0, Day2 categorical=2
+  const arcgisLayerIdx = dayNum === 1 ? 0 : 2;
   const urls = [
+    // Primary: NOAA vector MapServer - CORS-enabled, no proxy needed (same pattern as WPC ERO)
+    `https://mapservices.weather.noaa.gov/vector/rest/services/outlooks/SPC_fire_wx_outlks/MapServer/${arcgisLayerIdx}/query?where=1%3D1&outFields=*&f=geojson`,
+    // Fallback: direct SPC GeoJSON (may or may not exist depending on product day)
     `https://www.spc.noaa.gov/products/fire_wx/fwdy${dayNum}otlk_cat.nolyr.geojson`,
     `https://www.spc.noaa.gov/products/fire_wx/day${dayNum}fw_otlk.nolyr.geojson`,
-    `https://www.spc.noaa.gov/products/fire_wx/fwdy${dayNum}otlk.nolyr.geojson`,
   ];
   const wrappers = [
     u => u,
@@ -8867,11 +8870,11 @@ async function loadFireOutlook(dayNum) {
     for (const wrap of wrappers) {
       try {
         const r = await fetchWithTimeout(wrap(url), 8000);
-        if (!r.ok) continue;
+        if (!r.ok) { console.debug(`[firewx] ${r.status} ${url.slice(0,90)}`); continue; }
         const txt = await r.text();
-        let d; try { d = JSON.parse(txt); } catch(e) { continue; }
-        if (d?.features !== undefined) { data = d; break outer; }
-      } catch(e) {}
+        let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[firewx] non-JSON', url.slice(0,90)); continue; }
+        if (d?.features?.length) { data = d; break outer; }
+      } catch(e) { console.debug('[firewx] error:', e.message); }
     }
   }
   if (_fwLayer) { try { map.removeLayer(_fwLayer); } catch(e){} _fwLayer = null; }
@@ -8884,16 +8887,18 @@ async function loadFireOutlook(dayNum) {
     pane: _ovPane('fire-outlook'),
     style: f => {
       const p = f.properties || {};
-      const raw = String(p.label || p.LABEL || p.fill || p.DN || '').trim().toUpperCase();
+      if (!window._fwDebugLogged) { window._fwDebugLogged = true; console.log('[FireWx] feature props:', JSON.stringify(p)); }
+      const rawVal = p.dn ?? p.DN ?? p.label ?? p.LABEL ?? p.fill ?? p.category ?? p.CATEGORY ?? '';
+      const raw = String(rawVal).trim().toUpperCase();
       const labelMap = { 'ELEVATED':'ELEV','CRITICAL':'CRIT','EXTREME':'EXTR','ELEV':'ELEV','CRIT':'CRIT','EXTR':'EXTR' };
       const numMap   = { '3':'ELEV','5':'CRIT','7':'EXTR','1':'ELEV','2':'CRIT','4':'EXTR' };
       const norm = labelMap[raw] || numMap[raw];
-      const fill = (norm && FW_COLORS[norm]) || p.fill || '#888';
+      const fill = (norm && FW_COLORS[norm]) || p.fill || '#c8641e';
       return { color: fill, weight: 2, fillColor: fill, fillOpacity: 0.45 };
     },
     onEachFeature: (f, layer) => {
       const p = f.properties || {};
-      const lbl = String(p.LABEL || p.label || p.DN || 'Area');
+      const lbl = String(p.label ?? p.LABEL ?? p.dn ?? p.DN ?? 'Area');
       layer.bindPopup(`<div class="alert-popup"><b>🔥 SPC Fire Weather Day ${dayNum}</b><br>${lbl} Risk</div>`);
     }
   }).addTo(map);
@@ -8905,6 +8910,8 @@ let _mesoActive = false, _mesoLayer = null, _mesoTimer = null;
 
 async function loadMesoDisc() {
   const urls = [
+    // Primary: NOAA vector MapServer - CORS-enabled, no proxy needed (same pattern as WPC ERO)
+    'https://mapservices.weather.noaa.gov/vector/rest/services/outlooks/SPC_mcd/MapServer/0/query?where=1%3D1&outFields=*&f=geojson',
     'https://mesonet.agron.iastate.edu/geojson/spc_mcd.geojson',
     'https://www.spc.noaa.gov/products/md/md.geojson',
   ];
@@ -8920,11 +8927,11 @@ async function loadMesoDisc() {
     for (const wrap of wrappers) {
       try {
         const r = await fetchWithTimeout(wrap(url), 8000);
-        if (!r.ok) continue;
+        if (!r.ok) { console.debug(`[meso] ${r.status} ${url.slice(0,90)}`); continue; }
         const txt = await r.text();
-        let d; try { d = JSON.parse(txt); } catch(e) { continue; }
+        let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[meso] non-JSON', url.slice(0,90)); continue; }
         if (d?.features !== undefined) { data = d; break outer; }
-      } catch(e) {}
+      } catch(e) { console.debug('[meso] error:', e.message); }
     }
   }
   if (_mesoLayer) { try { map.removeLayer(_mesoLayer); } catch(e){} _mesoLayer = null; }
@@ -8938,8 +8945,9 @@ async function loadMesoDisc() {
     style: { color: '#ff8c00', weight: 2.5, dashArray: '6 4', fillColor: '#ff8c00', fillOpacity: 0.1 },
     onEachFeature: (f, layer) => {
       const p = f.properties || {};
-      const id = p.product_id || p.num || p.md || '?';
-      const about = p.concerning || p.about || '';
+      if (!window._mesoDebugLogged) { window._mesoDebugLogged = true; console.log('[Meso] feature props:', JSON.stringify(p)); }
+      const id = p.product_id || p.PRODUCT_ID || p.num || p.NUM || p.md || '?';
+      const about = p.concerning || p.CONCERNING || p.about || p.discussion || '';
       layer.bindPopup(`<div class="alert-popup"><b>🌀 MCD #${id}</b>${about ? '<br>' + about : ''}</div>`);
     }
   }).addTo(map);
@@ -8952,18 +8960,20 @@ let _cpcActive = false, _cpcLayer = null, _cpcType = '6_10_temp';
 const CPC_TYPES = ['6_10_temp','6_10_prcp','8_14_temp','8_14_prcp'];
 const CPC_BOUNDS = [[20.8, -131], [52.8, -61.5]];
 
+// NOAA vector MapServer: service + layer index per outlook type (CORS-enabled, no proxy needed)
+const CPC_ARCGIS = {
+  '6_10_temp': { svc: 'cpc_6_10_day_outlk', layer: 0 },
+  '6_10_prcp': { svc: 'cpc_6_10_day_outlk', layer: 1 },
+  '8_14_temp': { svc: 'cpc_8_14_day_outlk', layer: 0 },
+  '8_14_prcp': { svc: 'cpc_8_14_day_outlk', layer: 1 },
+};
+
+// Fallback: CPC's own static forecast map images
 const CPC_IMG_URLS = {
   '6_10_temp': 'https://www.cpc.ncep.noaa.gov/products/predictions/610day/610temp.new.gif',
   '6_10_prcp': 'https://www.cpc.ncep.noaa.gov/products/predictions/610day/610prcp.new.gif',
   '8_14_temp': 'https://www.cpc.ncep.noaa.gov/products/predictions/814day/814temp.new.gif',
   '8_14_prcp': 'https://www.cpc.ncep.noaa.gov/products/predictions/814day/814prcp.new.gif',
-};
-
-const CPC_WMS_URLS = {
-  '6_10_temp': 'https://mapservices.weather.noaa.gov/outlooks/services/cpc/cpc_weather_hazards/MapServer/WMSServer',
-  '6_10_prcp': 'https://mapservices.weather.noaa.gov/outlooks/services/cpc/cpc_weather_hazards/MapServer/WMSServer',
-  '8_14_temp': 'https://mapservices.weather.noaa.gov/outlooks/services/cpc/cpc_weather_hazards/MapServer/WMSServer',
-  '8_14_prcp': 'https://mapservices.weather.noaa.gov/outlooks/services/cpc/cpc_weather_hazards/MapServer/WMSServer',
 };
 
 function _cpcPickType(t) {
@@ -8975,26 +8985,75 @@ function _cpcPickType(t) {
   if (_cpcActive) loadCPCOutlook(t);
 }
 
-function loadCPCOutlook(type) {
+function _cpcColorFor(type, rawVal) {
+  const raw = String(rawVal).trim().toUpperCase();
+  const isTemp = type.endsWith('temp');
+  if (raw.includes('ABOVE') || raw === 'A') return isTemp ? '#e05a2b' : '#3aa93a';
+  if (raw.includes('BELOW') || raw === 'B') return isTemp ? '#2b7fe0' : '#c9922b';
+  return '#999'; // Equal Chances / Normal
+}
+
+async function loadCPCOutlook(type) {
   if (!type) type = _cpcType;
   if (_cpcLayer) { try { map.removeLayer(_cpcLayer); } catch(e){} _cpcLayer = null; }
   updateLoadStatus('Loading CPC Outlook…');
 
+  const cfg = CPC_ARCGIS[type];
+  const vectorUrl = `https://mapservices.weather.noaa.gov/vector/rest/services/outlooks/${cfg.svc}/MapServer/${cfg.layer}/query?where=1%3D1&outFields=*&f=geojson`;
+  const wrappers = [
+    u => u,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+
+  let data = null;
+  for (const wrap of wrappers) {
+    try {
+      const r = await fetchWithTimeout(wrap(vectorUrl), 8000);
+      if (!r.ok) { console.debug(`[cpc] ${r.status} ${vectorUrl.slice(0,90)}`); continue; }
+      const txt = await r.text();
+      let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[cpc] non-JSON', vectorUrl.slice(0,90)); continue; }
+      if (d?.features?.length) { data = d; break; }
+    } catch(e) { console.debug('[cpc] error:', e.message); }
+  }
+
+  if (data && data.features.length) {
+    _cpcLayer = L.geoJSON(data, {
+      pane: _ovPane('cpc-outlook'),
+      style: f => {
+        const p = f.properties || {};
+        if (!window._cpcDebugLogged) { window._cpcDebugLogged = true; console.log('[CPC] feature props:', JSON.stringify(p)); }
+        const rawVal = p.Cat ?? p.CAT ?? p.cat ?? p.GENCAT ?? p.gencat ?? p.label ?? p.LABEL ?? '';
+        const fill = _cpcColorFor(type, rawVal);
+        return { color: fill, weight: 1, fillColor: fill, fillOpacity: 0.4 };
+      },
+      onEachFeature: (f, layer) => {
+        const p = f.properties || {};
+        const cat  = p.Cat ?? p.CAT ?? p.cat ?? p.GENCAT ?? p.label ?? 'Outlook';
+        const prob = p.Prob ?? p.PROB ?? p.prob ?? '';
+        layer.bindPopup(`<div class="alert-popup"><b>CPC Outlook</b><br>${cat}${prob ? ' (' + prob + '%)' : ''}</div>`);
+      }
+    }).addTo(map);
+    updateLoadStatus('');
+    return;
+  }
+
+  // Fallback: static CPC forecast image
   const imgUrl = CPC_IMG_URLS[type];
-  const proxies = [
+  const imgWrappers = [
     u => u,
     u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
   ];
-
   let idx = 0;
   function tryNext() {
-    if (idx >= proxies.length) {
+    if (idx >= imgWrappers.length) {
       updateLoadStatus('CPC data not currently available.');
       setTimeout(() => updateLoadStatus(''), 4000);
       return;
     }
-    const url = proxies[idx++](imgUrl);
+    const url = imgWrappers[idx++](imgUrl);
     if (_cpcLayer) { try { map.removeLayer(_cpcLayer); } catch(e){} _cpcLayer = null; }
     _cpcLayer = L.imageOverlay(url, CPC_BOUNDS, {
       opacity: 0.7,
