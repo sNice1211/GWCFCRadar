@@ -5737,7 +5737,7 @@ body.gwcfc-crosshair #map::after {
 #overlay-panel-stack > div { pointer-events: auto; }
 
 /* Shared panel shell – applied to all overlay panels */
-#spc-controls, #wpc-controls, #fw-controls, #cpc-controls, #meso-panel, #storm-reports-panel {
+#spc-controls, #wpc-controls, #fw-controls, #cpc-controls, #meso-panel, #storm-reports-panel, #tornado-tracks-panel {
   position: static;
   transform: none;
   width: 180px;
@@ -5756,6 +5756,7 @@ body.gwcfc-crosshair #map::after {
 #cpc-controls { border: 1.5px solid rgba(0,180,80,0.45);  }
 #meso-panel   { border: 1.5px solid rgba(255,140,0,0.45); }
 #storm-reports-panel { border: 1.5px solid rgba(255,68,68,0.45); }
+#tornado-tracks-panel { border: 1.5px solid rgba(220,20,60,0.45); }
 
 /* Title bars */
 .spc-float-title {
@@ -5781,6 +5782,10 @@ body.gwcfc-crosshair #map::after {
 .rpt-float-title {
   font-family: var(--display); font-weight: 700; font-size: 10px; letter-spacing: 1px;
   color: #ff4444; text-align: center; text-transform: uppercase; margin-bottom: 1px;
+}
+.tt-float-title {
+  font-family: var(--display); font-weight: 700; font-size: 10px; letter-spacing: 1px;
+  color: #dc143c; text-align: center; text-transform: uppercase; margin-bottom: 1px;
 }
 
 /* Button row */
@@ -6307,7 +6312,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.16 · Storm Reports overlay fixed properly + legend panel · 2026-08-02</div>
+    <div id="build-stamp">v5.17 · Tornado Tracks / Damage Assessment overlay (NWS DAT) · 2026-08-02</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -9020,6 +9025,100 @@ async function loadCanadaAlerts() {
   updateLoadStatus('');
 }
 
+// ── TORNADO TRACKS / DAMAGE ASSESSMENT (NWS Damage Assessment Toolkit) ──
+// Real, verified NOAA service: services.dat.noaa.gov hosts the official DAT
+// "DamageViewer" feature service. Layer 2 ("Damage Polygons SDE") is the
+// tornado/wind damage survey path polygons, keyed by EF-scale rating - this
+// is the same data source behind NWS's public "Tornado Tracks" map.
+let _tornadoTracksActive = false, _tornadoTracksLayer = null;
+
+const TORNADO_TRACK_COLORS = {
+  'EF0': '#8cbf26', 'EFU': '#888888',
+  'EF1': '#ffd700', 'EF2': '#ff8c00',
+  'EF3': '#ff4500', 'EF4': '#dc143c',
+  'EF5': '#8b008b',
+};
+
+function _tornadoTrackColorFor(ef) {
+  const key = String(ef || '').trim().toUpperCase();
+  return TORNADO_TRACK_COLORS[key] || TORNADO_TRACK_COLORS['EFU'];
+}
+
+async function loadTornadoTracks() {
+  updateLoadStatus('Loading tornado damage tracks…');
+  // Damage surveys are a slow-changing dataset (hours/days, not minutes) -
+  // limit to the last 60 days so the overlay stays relevant instead of
+  // drawing every tornado track NWS has ever surveyed.
+  const cutoff = new Date(Date.now() - 60 * 24 * 3600 * 1000);
+  const cutoffStr = cutoff.toISOString().slice(0, 19).replace('T', ' ');
+  const where = encodeURIComponent(`stormdate >= timestamp '${cutoffStr}'`);
+  const url = `https://services.dat.noaa.gov/arcgis/rest/services/nws_damageassessmenttoolkit/DamageViewer/FeatureServer/2/query?where=${where}&outFields=*&f=geojson`;
+  const wrappers = [
+    u => u,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+
+  let data = null;
+  for (const wrap of wrappers) {
+    try {
+      const r = await fetchWithTimeout(wrap(url), 12000);
+      if (!r.ok) { console.debug(`[tornado-tracks] HTTP ${r.status}`); continue; }
+      const txt = await r.text();
+      let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[tornado-tracks] non-JSON response'); continue; }
+      if (d?.features !== undefined) { data = d; break; }
+    } catch(e) { console.debug('[tornado-tracks] error:', e.message); }
+  }
+
+  if (_tornadoTracksLayer) { try { map.removeLayer(_tornadoTracksLayer); } catch(e){} _tornadoTracksLayer = null; }
+  if (!data) {
+    updateLoadStatus('Tornado damage track data unavailable.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+    return;
+  }
+  const features = Array.isArray(data.features) ? data.features : [];
+  if (!features.length) {
+    updateLoadStatus('No recent tornado damage tracks.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+    return;
+  }
+  const fc = { type: 'FeatureCollection', features };
+
+  const casing = L.geoJSON(fc, {
+    pane: _ovPane('tornado-tracks'), interactive: false,
+    style: () => ({ color: '#000000', weight: 4.5, fill: false, opacity: 1 }),
+  });
+
+  const main = L.geoJSON(fc, {
+    pane: _ovPane('tornado-tracks'),
+    style: f => {
+      const color = _tornadoTrackColorFor((f.properties || {}).efscale);
+      return { color, weight: 2.5, fillColor: color, fillOpacity: 0.5, opacity: 1 };
+    },
+    onEachFeature: (f, layer) => {
+      const p = f.properties || {};
+      if (!window._ttDebugLogged) { window._ttDebugLogged = true; console.log('[TornadoTracks] feature props:', JSON.stringify(p)); }
+      const ef = String(p.efscale || 'Unrated').toUpperCase();
+      let dateStr = '';
+      if (p.stormdate) {
+        const t = Number(p.stormdate);
+        const d = Number.isFinite(t) ? new Date(t) : new Date(p.stormdate);
+        if (!isNaN(d.getTime())) dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      }
+      const lengthMi = p.length ? `${(Number(p.length)).toFixed(1)} mi` : '';
+      layer.bindPopup(`<div class="alert-popup">
+        <b>🌪 Tornado Damage Track</b><br>
+        Rating: <b>${ef}</b>${dateStr ? `<br>Date: ${dateStr}` : ''}${lengthMi ? `<br>Path Length: ${lengthMi}` : ''}
+        <br><span style="opacity:0.7;font-size:10px;">NWS Damage Assessment Toolkit — preliminary</span>
+      </div>`);
+    }
+  });
+
+  _tornadoTracksLayer = L.layerGroup([casing, main]).addTo(map);
+  updateLoadStatus('');
+}
+
 // ── SPC STORM REPORTS ──
 function _clearStormReportLayers() {
   ['tor','hail','wind'].forEach(t => {
@@ -11003,6 +11102,14 @@ function toggleOverlayPill(id) {
       clearInterval(_canadaAlertsTimer); _canadaAlertsTimer = null;
       if (_canadaAlertsLayer) { try { map.removeLayer(_canadaAlertsLayer); } catch(e){} _canadaAlertsLayer = null; }
     }
+  } else if (id === 'tornado-tracks') {
+    _tornadoTracksActive = !_tornadoTracksActive;
+    const pill = document.getElementById('op-tornado-tracks');
+    if (pill) pill.classList.toggle('active', _tornadoTracksActive);
+    const panel = document.getElementById('tornado-tracks-panel');
+    if (panel) panel.style.display = _tornadoTracksActive ? 'flex' : 'none';
+    if (_tornadoTracksActive) loadTornadoTracks();
+    else { if (_tornadoTracksLayer) { try { map.removeLayer(_tornadoTracksLayer); } catch(e){} _tornadoTracksLayer = null; } }
   }
 }
 
@@ -24845,6 +24952,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-canada-alerts" data-ovid="canada-alerts" title="Environment Canada Weather Alerts">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('canada-alerts')">Canada Alerts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-tornado-tracks" data-ovid="tornado-tracks" title="Tornado Tracks - NWS Damage Assessment Toolkit survey paths (last 60 days)">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('tornado-tracks')">Tornado Tracks</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
   </div>
   <button id="overlay-toggle-btn" onclick="toggleOverlayLauncher()" title="Toggle overlays" aria-label="Toggle overlays">
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -25257,6 +25367,20 @@ function buildTimelineLabels() {
     <div class="ov-panel-legend">
       <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:rgba(255,140,0,0.25);border:2px dashed #ff8c00"></div>Active MCD</div>
     </div>
+  </div>
+
+  <div id="tornado-tracks-panel">
+    <div class="tt-float-title">🌪 Tornado Tracks</div>
+    <div class="ov-panel-legend">
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#8cbf26"></div>EF0</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ffd700"></div>EF1</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ff8c00"></div>EF2</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ff4500"></div>EF3</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#dc143c"></div>EF4</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#8b008b"></div>EF5</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#888888"></div>Unrated</div>
+    </div>
+    <div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-top:2px;line-height:1.4;">Last 60 days · NWS DAT (preliminary)</div>
   </div>
 
 </div>
