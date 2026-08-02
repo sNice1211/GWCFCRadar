@@ -5838,7 +5838,7 @@ body.gwcfc-crosshair #map::after {
   flex-direction: column;
   gap: 6px;
   pointer-events: none;
-  max-width: 215px;
+  max-width: 185px;
 }
 #overlay-panel-stack > div { pointer-events: auto; }
 
@@ -5846,7 +5846,7 @@ body.gwcfc-crosshair #map::after {
 #spc-controls, #wpc-controls, #fw-controls, #cpc-controls, #meso-panel {
   position: static;
   transform: none;
-  width: 210px;
+  width: 180px;
   max-width: calc(100vw - 24px);
   padding: 8px 10px;
   display: none;          /* each panel sets display:flex when active */
@@ -6405,7 +6405,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.9 · merged overlay panels top-left + CPC/FW fix + alert fill toggle · 2026-08-02</div>
+    <div id="build-stamp">v5.10 · fix panels/CPC/meso/radar requests · 2026-08-02</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -7785,7 +7785,9 @@ function _ensureNexradLayer(i) {
 
 function _ensureCanadaLayer(i) {
   if (_canadaLayerPool[i]) return;
-  if (!activeLayers.nexrad) return; // don't preload Canada when radar is off
+  if (!activeLayers.nexrad) return;
+  // Only load Canada tiles when viewport includes Canadian latitudes (> 41°N)
+  if (map && map.getBounds().getNorth() < 41) return;
   const frame = radarFrames[i];
   if (!frame) return;
   const iso = frame.iso || new Date(frame.time * 1000).toISOString().slice(0,19) + 'Z';
@@ -7794,7 +7796,7 @@ function _ensureCanadaLayer(i) {
     version: '1.1.1', TIME: iso,
     opacity: 0, zIndex: 11, pane: 'radarPane',
     crossOrigin: 'anonymous', noWrap: true, tileSize: 256,
-    keepBuffer: 2, updateWhenIdle: true, updateWhenZooming: false,
+    keepBuffer: 1, updateWhenIdle: true, updateWhenZooming: false,
     detectRetina: false,
     attribution: 'Canada Radar © Iowa Mesonet / ECCC',
   });
@@ -7814,6 +7816,9 @@ function _activateWindow(idx) {
   _lastWindowS = s; _lastWindowE = e;
   for (let i = s; i <= e; i++) {
     _ensureNexradLayer(i);
+  }
+  // Canada WMS: only current ±1 to avoid hundreds of extra tile requests
+  for (let i = Math.max(s, idx - 1); i <= Math.min(e, idx + 1); i++) {
     _ensureCanadaLayer(i);
   }
 }
@@ -8899,28 +8904,33 @@ async function loadFireOutlook(dayNum) {
 let _mesoActive = false, _mesoLayer = null, _mesoTimer = null;
 
 async function loadMesoDisc() {
-  const url = 'https://mesonet.agron.iastate.edu/geojson/spc_mcd.geojson';
+  const urls = [
+    'https://mesonet.agron.iastate.edu/geojson/spc_mcd.geojson',
+    'https://www.spc.noaa.gov/products/md/md.geojson',
+  ];
   updateLoadStatus('Loading SPC Mesoscale Discussions…');
   let data = null;
   const wrappers = [
     u => u,
     u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   ];
-  outer: for (const wrap of wrappers) {
-    try {
-      const r = await fetchWithTimeout(wrap(url), 8000);
-      if (!r.ok) continue;
-      const txt = await r.text();
-      let d; try { d = JSON.parse(txt); } catch(e) { continue; }
-      if (d?.features !== undefined) { data = d; break outer; }
-    } catch(e) {}
+  outer: for (const url of urls) {
+    for (const wrap of wrappers) {
+      try {
+        const r = await fetchWithTimeout(wrap(url), 8000);
+        if (!r.ok) continue;
+        const txt = await r.text();
+        let d; try { d = JSON.parse(txt); } catch(e) { continue; }
+        if (d?.features !== undefined) { data = d; break outer; }
+      } catch(e) {}
+    }
   }
   if (_mesoLayer) { try { map.removeLayer(_mesoLayer); } catch(e){} _mesoLayer = null; }
-  const mleg = document.getElementById('meso-legend');
   if (!data || !Array.isArray(data.features) || !data.features.length) {
-    updateLoadStatus('No active Mesoscale Discussions.');
-    if (mleg) mleg.style.display = 'none';
+    updateLoadStatus(data ? 'No active Mesoscale Discussions.' : 'Meso discussion data unavailable.');
+    setTimeout(() => updateLoadStatus(''), 4000);
     return;
   }
   _mesoLayer = L.geoJSON(data, {
@@ -8933,40 +8943,32 @@ async function loadMesoDisc() {
       layer.bindPopup(`<div class="alert-popup"><b>🌀 MCD #${id}</b>${about ? '<br>' + about : ''}</div>`);
     }
   }).addTo(map);
-  if (mleg) mleg.style.display = 'block';
   updateLoadStatus('');
 }
 
 // ── CPC OUTLOOKS ──
 let _cpcActive = false, _cpcLayer = null, _cpcType = '6_10_temp';
 
-// CPC uses ArcGIS MapServer image export as a Leaflet imageOverlay.
-// We try multiple known service paths in order; first successful image wins.
-const CPC_EXPORT_CANDIDATES = {
-  '6_10_temp': [
-    'https://idpgis.ncep.noaa.gov/arcgis/rest/services/NWS_Climate_Outlooks/cpc_6_10_day_temp_fcst/MapServer',
-    'https://mapservices.weather.noaa.gov/raster/rest/services/outlooks/cpc_6_10_day_temp_fcst/MapServer',
-    'https://nowcoast.noaa.gov/arcgis/rest/services/nowcoast/guidance_cpc_outlooks_time/MapServer',
-  ],
-  '6_10_prcp': [
-    'https://idpgis.ncep.noaa.gov/arcgis/rest/services/NWS_Climate_Outlooks/cpc_6_10_day_prcp_fcst/MapServer',
-    'https://mapservices.weather.noaa.gov/raster/rest/services/outlooks/cpc_6_10_day_prcp_fcst/MapServer',
-    'https://nowcoast.noaa.gov/arcgis/rest/services/nowcoast/guidance_cpc_outlooks_time/MapServer',
-  ],
-  '8_14_temp': [
-    'https://idpgis.ncep.noaa.gov/arcgis/rest/services/NWS_Climate_Outlooks/cpc_8_14_day_temp_fcst/MapServer',
-    'https://mapservices.weather.noaa.gov/raster/rest/services/outlooks/cpc_8_14_day_temp_fcst/MapServer',
-  ],
-  '8_14_prcp': [
-    'https://idpgis.ncep.noaa.gov/arcgis/rest/services/NWS_Climate_Outlooks/cpc_8_14_day_prcp_fcst/MapServer',
-    'https://mapservices.weather.noaa.gov/raster/rest/services/outlooks/cpc_8_14_day_prcp_fcst/MapServer',
-  ],
+const CPC_TYPES = ['6_10_temp','6_10_prcp','8_14_temp','8_14_prcp'];
+const CPC_BOUNDS = [[20.8, -131], [52.8, -61.5]];
+
+const CPC_IMG_URLS = {
+  '6_10_temp': 'https://www.cpc.ncep.noaa.gov/products/predictions/610day/610temp.new.gif',
+  '6_10_prcp': 'https://www.cpc.ncep.noaa.gov/products/predictions/610day/610prcp.new.gif',
+  '8_14_temp': 'https://www.cpc.ncep.noaa.gov/products/predictions/814day/814temp.new.gif',
+  '8_14_prcp': 'https://www.cpc.ncep.noaa.gov/products/predictions/814day/814prcp.new.gif',
 };
-const CPC_BOUNDS = [[20, -135], [55, -55]]; // CONUS+
+
+const CPC_WMS_URLS = {
+  '6_10_temp': 'https://mapservices.weather.noaa.gov/outlooks/services/cpc/cpc_weather_hazards/MapServer/WMSServer',
+  '6_10_prcp': 'https://mapservices.weather.noaa.gov/outlooks/services/cpc/cpc_weather_hazards/MapServer/WMSServer',
+  '8_14_temp': 'https://mapservices.weather.noaa.gov/outlooks/services/cpc/cpc_weather_hazards/MapServer/WMSServer',
+  '8_14_prcp': 'https://mapservices.weather.noaa.gov/outlooks/services/cpc/cpc_weather_hazards/MapServer/WMSServer',
+};
 
 function _cpcPickType(t) {
   _cpcType = t;
-  Object.keys(CPC_EXPORT_CANDIDATES).forEach(k => {
+  CPC_TYPES.forEach(k => {
     const b = document.getElementById(`cpc-${k}`);
     if (b) b.classList.toggle('active', k === t);
   });
@@ -8976,22 +8978,28 @@ function _cpcPickType(t) {
 function loadCPCOutlook(type) {
   if (!type) type = _cpcType;
   if (_cpcLayer) { try { map.removeLayer(_cpcLayer); } catch(e){} _cpcLayer = null; }
-  const candidates = (CPC_EXPORT_CANDIDATES[type] || []).slice(); // copy so we can shift
   updateLoadStatus('Loading CPC Outlook…');
 
+  const imgUrl = CPC_IMG_URLS[type];
+  const proxies = [
+    u => u,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+  ];
+
+  let idx = 0;
   function tryNext() {
-    if (!candidates.length) {
+    if (idx >= proxies.length) {
       updateLoadStatus('CPC data not currently available.');
       setTimeout(() => updateLoadStatus(''), 4000);
       return;
     }
-    const svc = candidates.shift();
-    const exportUrl = `${svc}/export?bbox=-135,20,-55,55&bboxSR=4326&size=1200,600&imageSR=4326&format=png32&transparent=true&f=image`;
+    const url = proxies[idx++](imgUrl);
     if (_cpcLayer) { try { map.removeLayer(_cpcLayer); } catch(e){} _cpcLayer = null; }
-    _cpcLayer = L.imageOverlay(exportUrl, CPC_BOUNDS, {
-      opacity: 0.75,
+    _cpcLayer = L.imageOverlay(url, CPC_BOUNDS, {
+      opacity: 0.7,
       pane: _ovPane('cpc-outlook'),
-      crossOrigin: false,
+      crossOrigin: 'anonymous',
     });
     _cpcLayer.on('load',  () => { updateLoadStatus(''); });
     _cpcLayer.on('error', () => {
