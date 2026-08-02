@@ -6312,7 +6312,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.17 · Tornado Tracks / Damage Assessment overlay (NWS DAT) · 2026-08-02</div>
+    <div id="build-stamp">v5.18 · fix Storm Reports: CORS fallback + convective-day fix · 2026-08-02</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -9126,24 +9126,47 @@ function _clearStormReportLayers() {
   });
 }
 
+// Fetch one SPC storm-report CSV, trying a direct request first then falling
+// back through the same CORS proxy chain used everywhere else in this app -
+// this loader was the one place still using a bare fetch() with no fallback,
+// which silently fails if spc.noaa.gov/climo/reports doesn't send CORS headers.
+async function _fetchReportCsv(dateStr, kind) {
+  const url = `https://www.spc.noaa.gov/climo/reports/${dateStr}_rpts_${kind}.csv`;
+  const wrappers = [
+    u => u,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+  for (const wrap of wrappers) {
+    try {
+      const r = await fetchWithTimeout(wrap(url), 10000);
+      if (!r.ok) { console.debug(`[storm-reports] HTTP ${r.status} :: ${kind} ${dateStr}`); continue; }
+      const txt = await r.text();
+      if (txt && txt.trim()) return txt;
+    } catch(e) { console.debug(`[storm-reports] error :: ${kind} ${dateStr} ::`, e.message); }
+  }
+  return '';
+}
+
 async function loadStormReports() {
   updateLoadStatus('Pulling storm reports from the field…');
   try {
+    // SPC's daily report files are keyed by "convective day" (12Z-12Z), not
+    // the calendar UTC date - before 12Z, the file still in progress is
+    // dated yesterday, so the plain today's-date file can be empty/missing.
     const now = new Date();
-    const yr = now.getUTCFullYear().toString().slice(2);
-    const mo = (now.getUTCMonth()+1).toString().padStart(2,'0');
-    const dy = now.getUTCDate().toString().padStart(2,'0');
+    const convDay = new Date(now);
+    if (now.getUTCHours() < 12) convDay.setUTCDate(convDay.getUTCDate() - 1);
+    const yr = convDay.getUTCFullYear().toString().slice(2);
+    const mo = (convDay.getUTCMonth()+1).toString().padStart(2,'0');
+    const dy = convDay.getUTCDate().toString().padStart(2,'0');
     const dateStr = `${yr}${mo}${dy}`;
-    // Fetch all three report types in parallel
-    const [torRes, hailRes, windRes] = await Promise.all([
-      fetch(`https://www.spc.noaa.gov/climo/reports/${dateStr}_rpts_torn.csv`),
-      fetch(`https://www.spc.noaa.gov/climo/reports/${dateStr}_rpts_hail.csv`),
-      fetch(`https://www.spc.noaa.gov/climo/reports/${dateStr}_rpts_wind.csv`)
-    ]);
+
     const [torText, hailText, windText] = await Promise.all([
-      torRes.ok ? torRes.text() : Promise.resolve(''),
-      hailRes.ok ? hailRes.text() : Promise.resolve(''),
-      windRes.ok ? windRes.text() : Promise.resolve('')
+      _fetchReportCsv(dateStr, 'torn'),
+      _fetchReportCsv(dateStr, 'hail'),
+      _fetchReportCsv(dateStr, 'wind'),
     ]);
 
     // Remove the previous refresh's layers before rebuilding, or markers pile up duplicated each refresh
@@ -9209,7 +9232,23 @@ async function loadStormReports() {
     if (_rptHailActive) stormReportLayers.hail.addTo(map);
     if (_rptWindActive) stormReportLayers.wind.addTo(map);
 
-  } catch (e) { console.warn('Storm reports error:', e); }
+    const total = stormReportLayers.tor.getLayers().length
+      + stormReportLayers.hail.getLayers().length
+      + stormReportLayers.wind.getLayers().length;
+    if (!torText && !hailText && !windText) {
+      updateLoadStatus('Storm report data unavailable.');
+      setTimeout(() => updateLoadStatus(''), 4000);
+    } else if (!total) {
+      updateLoadStatus('No storm reports so far today.');
+      setTimeout(() => updateLoadStatus(''), 4000);
+    } else {
+      updateLoadStatus('');
+    }
+  } catch (e) {
+    console.warn('Storm reports error:', e);
+    updateLoadStatus('Storm reports failed to load.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+  }
 }
 
 function _rptToggleType(type) {
