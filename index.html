@@ -1111,6 +1111,36 @@ body {
 }
 .ov-drag:hover { color: var(--accent2); }
 .ov-drag:active { cursor: grabbing; }
+.ov-info-btn {
+  flex-shrink: 0; cursor: pointer;
+  width: 15px; height: 15px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  color: rgba(255,255,255,0.35);
+  border: 1px solid rgba(255,255,255,0.25);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.ov-info-btn:hover, .ov-info-btn.active { color: var(--accent2); border-color: var(--accent2); background: rgba(0,140,186,0.12); }
+#ov-info-tooltip {
+  position: fixed;
+  z-index: 3000;
+  max-width: 230px;
+  background: rgb(8,12,16);
+  border: 1px solid rgba(0,140,186,0.35);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(255,255,255,0.85);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.6);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+#ov-info-tooltip.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
 .ov-icon { font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; }
 .ov-label { font-family: var(--mono); font-size: 7px; letter-spacing: 0.5px; text-transform: uppercase; color: inherit; opacity: 0.8; text-align: center; white-space: nowrap; }
 /* ── RESPONSIVE: TABLET (≤768px) ── */
@@ -6312,7 +6342,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.19 · fix Storm Reports popup data + redesign card · 2026-08-02</div>
+    <div id="build-stamp">v5.20 · info buttons on every overlay pill · 2026-08-02</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -25017,6 +25047,7 @@ document.addEventListener('DOMContentLoaded', () => {
     </svg>
   </button>
 </div>
+<div id="ov-info-tooltip"></div>
 <button id="float-search-btn" onclick="lqmOpenSearch()" title="Search" aria-label="Search">
   <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="10.5" cy="10.5" r="7"/>
@@ -25882,6 +25913,90 @@ function _ccShowModal(){
 function _ccHideModal(){ const b=document.getElementById('cc-modal-backdrop'); if(b) b.classList.remove('visible'); }
 function _ccOpen(){ _ccTab('submit'); _ccResetForm(false); _ccShowModal(); }
 function _ccClose(){ _ccHideModal(); _ccAdminUnlocked=false; }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// OVERLAY INFO BUTTONS - small "i" icon on each pill, tap for a plain-English
+// description in a floating tooltip. Descriptions live in one place (OV_DESCRIPTIONS)
+// and the buttons are injected into the existing pills rather than hand-edited in,
+// so every overlay stays covered even as new ones get added later.
+// ═══════════════════════════════════════════════════════════════════════════════
+const OV_DESCRIPTIONS = {
+  'alerts':          'Active NWS warnings and watches, shown as colored polygons. Tap a polygon for the full alert text.',
+  'spc-outlook':      "SPC's convective outlook for severe thunderstorm risk, Day 1 through Day 8. Switch categories and hazard types in the panel.",
+  'spc-reports':      'Live local storm reports for tornadoes, hail, and damaging wind, submitted by NWS offices today.',
+  'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, plus any active tropical systems and their forecast tracks.",
+  'wpc-outlook':      "WPC's Excessive Rainfall Outlook, showing flash flood risk for Days 1 through 3.",
+  'lightning':        'Real-time lightning strike data, updated continuously as strikes are detected.',
+  'cloudcam':         'Submit your own weather photos to the map, or browse photos other users have shared nearby.',
+  'radio':            'NOAA Weather Radio (NWR) transmitter locations, with call signs and frequencies.',
+  'forecasts':        'Point forecast dots showing the short-term forecast for spots across the map.',
+  'metar-stations':   'Airport and surface weather stations (METAR), with current temperature, wind, and sky conditions.',
+  'fronts':           "WPC's surface analysis, showing fronts, high pressure, and low pressure systems.",
+  'spotters':         'Live positions of trained storm spotters from SpotterNetwork.',
+  'spotter-reports':  'Reports submitted by SpotterNetwork storm spotters out in the field.',
+  'chasers':          'Real-time positions and heading of storm chasers, from SpotterNetwork.',
+  'fire-outlook':     "SPC's fire weather outlook for Day 1 and Day 2, rating fire danger as Elevated, Critical, or Extreme.",
+  'meso-disc':        'Active Mesoscale Discussions from SPC, short-term outlooks issued ahead of expected severe weather.',
+  'cpc-outlook':      'Climate Prediction Center outlooks for temperature and precipitation, 6 to 10 days and 8 to 14 days out.',
+  'canada-alerts':    'Active weather alerts from Environment Canada, colored by risk level.',
+  'tornado-tracks':   'Surveyed tornado damage paths from the NWS Damage Assessment Toolkit, rated by EF scale, for the last 60 days.',
+};
+
+function _ovInjectInfoButtons() {
+  document.querySelectorAll('#overlay-pills-row .ov-pill').forEach(pill => {
+    if (pill.querySelector('.ov-info-btn')) return; // already injected
+    const ovid = pill.dataset.ovid;
+    if (!ovid || !OV_DESCRIPTIONS[ovid]) return;
+    const drag = pill.querySelector('.ov-drag');
+    const btn = document.createElement('span');
+    btn.className = 'ov-info-btn';
+    btn.textContent = 'i';
+    btn.title = 'Info';
+    btn.onclick = (ev) => { ev.stopPropagation(); _ovShowInfo(ovid, btn); };
+    if (drag) drag.insertAdjacentElement('beforebegin', btn);
+    else pill.appendChild(btn);
+  });
+}
+
+let _ovInfoOpenBtn = null;
+
+function _ovShowInfo(ovid, btnEl) {
+  const tip = document.getElementById('ov-info-tooltip');
+  if (!tip) return;
+  // Tapping the same info button again closes it
+  if (_ovInfoOpenBtn === btnEl && tip.classList.contains('open')) {
+    _ovHideInfo();
+    return;
+  }
+  tip.textContent = OV_DESCRIPTIONS[ovid] || '';
+  tip.classList.add('open');
+  if (_ovInfoOpenBtn) _ovInfoOpenBtn.classList.remove('active');
+  _ovInfoOpenBtn = btnEl;
+  btnEl.classList.add('active');
+
+  const r = btnEl.getBoundingClientRect();
+  tip.style.left = '0px'; tip.style.top = '0px'; // reset before measuring
+  const tipRect = tip.getBoundingClientRect();
+  let left = r.left - tipRect.width - 8;
+  if (left < 8) left = r.right + 8; // flip to the right if it would go off-screen
+  let top = r.top + r.height / 2 - tipRect.height / 2;
+  top = Math.max(8, Math.min(top, window.innerHeight - tipRect.height - 8));
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top}px`;
+}
+
+function _ovHideInfo() {
+  const tip = document.getElementById('ov-info-tooltip');
+  if (tip) tip.classList.remove('open');
+  if (_ovInfoOpenBtn) { _ovInfoOpenBtn.classList.remove('active'); _ovInfoOpenBtn = null; }
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.ov-info-btn') || e.target.closest('#ov-info-tooltip')) return;
+  _ovHideInfo();
+});
+
+_ovInjectInfoButtons();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // OVERLAY LIST - drag ⋮ to reorder; order is saved and drives map stacking order.
