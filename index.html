@@ -6312,7 +6312,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.18 · fix Storm Reports: CORS fallback + convective-day fix · 2026-08-02</div>
+    <div id="build-stamp">v5.19 · fix Storm Reports popup data + redesign card · 2026-08-02</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -9178,26 +9178,33 @@ async function loadStormReports() {
       lines.forEach(line => {
         const p = line.split(',');
         if (p.length < 7) return;
+        // SPC report CSV columns: Time, Mag(F/EF-scale, hail size, or wind speed),
+        // Location, County, State, Lat, Lon, Comments
         const lat = parseFloat(p[5]), lon = parseFloat(p[6]);
         if (isNaN(lat) || isNaN(lon)) return;
         if (!_ptInPolyUnion(lat, lon)) return;
-        const desc = (p[8] || '').trim();
-        const mag  = p[4] ? p[4].trim() : '';
+        const timeRaw  = (p[0] || '').trim();
+        const timeFmt  = /^\d{4}$/.test(timeRaw) ? `${timeRaw.slice(0,2)}:${timeRaw.slice(2)}` : timeRaw;
+        const mag      = p[1] ? p[1].trim() : '';
+        const location = (p[2] || '').trim();
+        const county   = (p[3] || '').trim();
+        const state    = (p[4] || '').trim();
+        const desc     = (p[7] || '').trim();
 
-        let color, icon, radius, label;
+        let color, icon, radius, label, typeLabel;
         if (type === 'tor') {
-          color = '#ff2020'; icon = '🌪'; radius = 8;
+          color = '#ff2020'; icon = '🌪'; radius = 8; typeLabel = 'Tornado';
           label = mag ? `EF${mag}` : 'Tornado';
         } else if (type === 'hail') {
           const sz = parseFloat(mag) || 0;
           color = sz >= 2 ? '#ff6600' : sz >= 1 ? '#ffcc00' : '#ffee88';
-          icon = '🧊'; radius = Math.max(6, Math.min(sz * 5, 14));
+          icon = '🧊'; radius = Math.max(6, Math.min(sz * 5, 14)); typeLabel = 'Hail';
           label = mag ? `${mag}"` : 'Hail';
         } else {
           const spd = parseFloat(mag) || 0;
           color = spd >= 65 ? '#ff44ff' : spd >= 58 ? '#00aaff' : '#88ccff';
-          icon = '💨'; radius = 7;
-          label = mag ? `${mag}mph` : 'Wind';
+          icon = '💨'; radius = 7; typeLabel = 'Wind';
+          label = mag ? `${mag} mph` : 'Wind';
         }
 
         const svgIcon = L.divIcon({
@@ -9213,12 +9220,20 @@ async function loadStormReports() {
         });
 
         const m = L.marker([lat, lon], { icon: svgIcon });
-        m.bindPopup(`<div class="data-popup-inner">
-          <div class="dp-coord">${lat.toFixed(2)}°, ${lon.toFixed(2)}°</div>
-          <div class="dp-section">${icon} ${type === 'tor' ? 'Tornado' : type === 'hail' ? 'Hail' : 'Wind'} Report</div>
-          <div class="dp-row"><span>Magnitude</span><b>${label}</b></div>
-          ${desc ? `<div class="dp-row"><span>Notes</span><b>${desc}</b></div>` : ''}
-        </div>`, { className: 'data-popup', maxWidth: 220 });
+        m.bindPopup(`<div class="data-popup-inner" style="--dp-accent:${color}">
+          <div class="dp-header">
+            <span class="dp-header-icon">${icon}</span>
+            <span class="dp-header-label">${typeLabel} Report</span>
+            ${timeFmt ? `<span class="dp-header-sub">${timeFmt}</span>` : ''}
+          </div>
+          <div class="dp-body">
+            <div class="dp-row"><span>Magnitude</span><b>${label}</b></div>
+            ${location ? `<div class="dp-row"><span>Near</span><b>${_ccEsc(location)}</b></div>` : ''}
+            ${county ? `<div class="dp-row"><span>County</span><b>${_ccEsc(county)}${state ? ', ' + _ccEsc(state) : ''}</b></div>` : ''}
+            <div class="dp-row"><span>Coords</span><b>${lat.toFixed(2)}°, ${lon.toFixed(2)}°</b></div>
+            ${desc ? `<div class="dp-section">Notes</div><div style="font-family:var(--mono);font-size:10px;color:rgba(255,255,255,0.65);line-height:1.4;">${_ccEsc(desc)}</div>` : ''}
+          </div>
+        </div>`, { className: 'data-popup', maxWidth: 240 });
         m.addTo(stormReportLayers[type]);
       });
     }
