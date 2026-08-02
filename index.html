@@ -6275,7 +6275,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.13 · Canada Alerts + color fixes + font fix + dead legend cleanup · 2026-08-02</div>
+    <div id="build-stamp">v5.14 · CPC Monthly + Seasonal outlooks added · 2026-08-02</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -8766,23 +8766,36 @@ async function loadMesoDisc() {
 // ── CPC OUTLOOKS ──
 let _cpcActive = false, _cpcLayer = null, _cpcType = '6_10_temp';
 
-const CPC_TYPES = ['6_10_temp','6_10_prcp','8_14_temp','8_14_prcp'];
+// Note: CPC doesn't publish individual-day breakdowns for these products -
+// 6-10 Day and 8-14 Day are themselves the finest-grained lead-time ranges
+// CPC issues. Monthly and Seasonal (3-Month) are the other two real CPC
+// outlook products, added here as the next tiers out, same idea as the SPC
+// Day 1-8 picker but using CPC's actual product lineup instead of fake days.
+const CPC_TYPES = ['6_10_temp','6_10_prcp','8_14_temp','8_14_prcp','monthly_temp','monthly_prcp','seasonal_temp','seasonal_prcp'];
 const CPC_BOUNDS = [[20.8, -131], [52.8, -61.5]];
 
 // NOAA vector MapServer: service + layer index per outlook type (CORS-enabled, no proxy needed)
 const CPC_ARCGIS = {
-  '6_10_temp': { svc: 'cpc_6_10_day_outlk', layer: 0 },
-  '6_10_prcp': { svc: 'cpc_6_10_day_outlk', layer: 1 },
-  '8_14_temp': { svc: 'cpc_8_14_day_outlk', layer: 0 },
-  '8_14_prcp': { svc: 'cpc_8_14_day_outlk', layer: 1 },
+  '6_10_temp':   { svc: 'cpc_6_10_day_outlk', layer: 0 },
+  '6_10_prcp':   { svc: 'cpc_6_10_day_outlk', layer: 1 },
+  '8_14_temp':   { svc: 'cpc_8_14_day_outlk', layer: 0 },
+  '8_14_prcp':   { svc: 'cpc_8_14_day_outlk', layer: 1 },
+  'monthly_temp':  { svc: 'cpc_monthly_outlk',  layer: 0 },
+  'monthly_prcp':  { svc: 'cpc_monthly_outlk',  layer: 1 },
+  'seasonal_temp': { svc: 'cpc_seasonal_outlk', layer: 0 },
+  'seasonal_prcp': { svc: 'cpc_seasonal_outlk', layer: 1 },
 };
 
 // Fallback: CPC's own static forecast map images
 const CPC_IMG_URLS = {
-  '6_10_temp': 'https://www.cpc.ncep.noaa.gov/products/predictions/610day/610temp.new.gif',
-  '6_10_prcp': 'https://www.cpc.ncep.noaa.gov/products/predictions/610day/610prcp.new.gif',
-  '8_14_temp': 'https://www.cpc.ncep.noaa.gov/products/predictions/814day/814temp.new.gif',
-  '8_14_prcp': 'https://www.cpc.ncep.noaa.gov/products/predictions/814day/814prcp.new.gif',
+  '6_10_temp':   'https://www.cpc.ncep.noaa.gov/products/predictions/610day/610temp.new.gif',
+  '6_10_prcp':   'https://www.cpc.ncep.noaa.gov/products/predictions/610day/610prcp.new.gif',
+  '8_14_temp':   'https://www.cpc.ncep.noaa.gov/products/predictions/814day/814temp.new.gif',
+  '8_14_prcp':   'https://www.cpc.ncep.noaa.gov/products/predictions/814day/814prcp.new.gif',
+  'monthly_temp':  'https://www.cpc.ncep.noaa.gov/products/predictions/30day/off14_temp.gif',
+  'monthly_prcp':  'https://www.cpc.ncep.noaa.gov/products/predictions/30day/off14_prcp.gif',
+  'seasonal_temp': 'https://www.cpc.ncep.noaa.gov/products/predictions/90day/off14_temp.gif',
+  'seasonal_prcp': 'https://www.cpc.ncep.noaa.gov/products/predictions/90day/off14_prcp.gif',
 };
 
 function _cpcPickType(t) {
@@ -25130,6 +25143,14 @@ function buildTimelineLabels() {
     <div class="spc-picker-row">
       <button class="spc-pick-btn" id="cpc-8_14_temp" onclick="_cpcPickType('8_14_temp')">8-14d Temp</button>
       <button class="spc-pick-btn" id="cpc-8_14_prcp" onclick="_cpcPickType('8_14_prcp')">8-14d Precip</button>
+    </div>
+    <div class="spc-picker-row">
+      <button class="spc-pick-btn" id="cpc-monthly_temp" onclick="_cpcPickType('monthly_temp')">Monthly Temp</button>
+      <button class="spc-pick-btn" id="cpc-monthly_prcp" onclick="_cpcPickType('monthly_prcp')">Monthly Precip</button>
+    </div>
+    <div class="spc-picker-row">
+      <button class="spc-pick-btn" id="cpc-seasonal_temp" onclick="_cpcPickType('seasonal_temp')">Seasonal Temp</button>
+      <button class="spc-pick-btn" id="cpc-seasonal_prcp" onclick="_cpcPickType('seasonal_prcp')">Seasonal Precip</button>
     </div>
     <hr class="ov-panel-sep">
     <div class="ov-panel-legend">
