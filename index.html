@@ -5736,8 +5736,8 @@ body.gwcfc-crosshair #map::after {
 }
 #overlay-panel-stack > div { pointer-events: auto; }
 
-/* Shared panel shell – applied to all 5 overlay panels */
-#spc-controls, #wpc-controls, #fw-controls, #cpc-controls, #meso-panel {
+/* Shared panel shell – applied to all overlay panels */
+#spc-controls, #wpc-controls, #fw-controls, #cpc-controls, #meso-panel, #storm-reports-panel {
   position: static;
   transform: none;
   width: 180px;
@@ -5755,6 +5755,7 @@ body.gwcfc-crosshair #map::after {
 #fw-controls  { border: 1.5px solid rgba(200,80,0,0.45);  }
 #cpc-controls { border: 1.5px solid rgba(0,180,80,0.45);  }
 #meso-panel   { border: 1.5px solid rgba(255,140,0,0.45); }
+#storm-reports-panel { border: 1.5px solid rgba(255,68,68,0.45); }
 
 /* Title bars */
 .spc-float-title {
@@ -5776,6 +5777,10 @@ body.gwcfc-crosshair #map::after {
 .meso-float-title {
   font-family: var(--display); font-weight: 700; font-size: 10px; letter-spacing: 1px;
   color: #ff8c00; text-align: center; text-transform: uppercase; margin-bottom: 1px;
+}
+.rpt-float-title {
+  font-family: var(--display); font-weight: 700; font-size: 10px; letter-spacing: 1px;
+  color: #ff4444; text-align: center; text-transform: uppercase; margin-bottom: 1px;
 }
 
 /* Button row */
@@ -6302,7 +6307,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.15 · CPC temp/precip columns + settings redo + fire wx retry · 2026-08-02</div>
+    <div id="build-stamp">v5.16 · Storm Reports overlay fixed properly + legend panel · 2026-08-02</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -6973,10 +6978,10 @@ let activeLayers = {
 };
 let currentTab = 'radar';
 let lightningFlash = [];
-let nhcLayer = null, spcOutlookLayer = null, stormReportsLayer = null;
+let nhcLayer = null, spcOutlookLayer = null;
 let stormReportLayers = { tor: null, hail: null, wind: null };
 let _rptTorActive = true, _rptHailActive = true, _rptWindActive = true;
-let _reportsLoaded = false;
+let _stormReportsTimer = null;
 
 // ── AbortSignal.timeout polyfill for Samsung/older browsers ──
 function _abortSignal(ms) {
@@ -9016,6 +9021,12 @@ async function loadCanadaAlerts() {
 }
 
 // ── SPC STORM REPORTS ──
+function _clearStormReportLayers() {
+  ['tor','hail','wind'].forEach(t => {
+    if (stormReportLayers[t] && map.hasLayer(stormReportLayers[t])) { try { map.removeLayer(stormReportLayers[t]); } catch(e){} }
+  });
+}
+
 async function loadStormReports() {
   updateLoadStatus('Pulling storm reports from the field…');
   try {
@@ -9036,7 +9047,8 @@ async function loadStormReports() {
       windRes.ok ? windRes.text() : Promise.resolve('')
     ]);
 
-    if (stormReportsLayer) { map.removeLayer(stormReportsLayer); stormReportsLayer = null; }
+    // Remove the previous refresh's layers before rebuilding, or markers pile up duplicated each refresh
+    _clearStormReportLayers();
     stormReportLayers = { tor: L.layerGroup(), hail: L.layerGroup(), wind: L.layerGroup() };
 
     function parseReports(text, type) {
@@ -9099,6 +9111,18 @@ async function loadStormReports() {
     if (_rptWindActive) stormReportLayers.wind.addTo(map);
 
   } catch (e) { console.warn('Storm reports error:', e); }
+}
+
+function _rptToggleType(type) {
+  if (type === 'tor')  _rptTorActive  = !_rptTorActive;
+  if (type === 'hail') _rptHailActive = !_rptHailActive;
+  if (type === 'wind') _rptWindActive = !_rptWindActive;
+  const active = type === 'tor' ? _rptTorActive : type === 'hail' ? _rptHailActive : _rptWindActive;
+  const btn = document.getElementById(`rpt-${type}`);
+  if (btn) btn.classList.toggle('active', active);
+  if (!stormReportLayers[type]) return;
+  if (active && !map.hasLayer(stormReportLayers[type])) stormReportLayers[type].addTo(map);
+  if (!active && map.hasLayer(stormReportLayers[type])) map.removeLayer(stormReportLayers[type]);
 }
 
 // ── NHC TROPICAL + SPAGHETTI MODELS ──
@@ -9652,7 +9676,10 @@ function toggleLayer(id) {
     else { if (_nwrLayer) { map.removeLayer(_nwrLayer); } }
   }
   if (['spc1','spc2','spc3'].includes(id) && activeLayers[id]) loadSPCOutlook(parseInt(id.replace('spc',''), 10));
-  if (id === 'spcrpts' && activeLayers[id]) loadStormReports();
+  if (id === 'spcrpts') {
+    if (activeLayers[id]) loadStormReports();
+    else { clearInterval(_stormReportsTimer); _stormReportsTimer = null; _clearStormReportLayers(); }
+  }
   if (id === 'nhc' && activeLayers[id]) loadTropical();
   if (id === 'models') updateModelInfo(currentModel);
   if (['tornado','tstm','flood','watch'].includes(id)) loadAlerts(true);
@@ -10867,8 +10894,15 @@ function toggleOverlayPill(id) {
     activeLayers.spcrpts = !activeLayers.spcrpts;
     const pill = document.getElementById('op-spc-reports');
     if (pill) pill.classList.toggle('active', activeLayers.spcrpts);
-    if (activeLayers.spcrpts) loadStormReports();
-    else if (stormReportsLayer) { map.removeLayer(stormReportsLayer); stormReportsLayer = null; }
+    const rPanel = document.getElementById('storm-reports-panel');
+    if (rPanel) rPanel.style.display = activeLayers.spcrpts ? 'flex' : 'none';
+    if (activeLayers.spcrpts) {
+      loadStormReports();
+      _stormReportsTimer = setInterval(loadStormReports, 5 * 60 * 1000);
+    } else {
+      clearInterval(_stormReportsTimer); _stormReportsTimer = null;
+      _clearStormReportLayers();
+    }
   } else if (id === 'nhc-outlook') {
     _modelsNHCToggle();
     const pill = document.getElementById('op-nhc-outlook');
@@ -11216,17 +11250,6 @@ async function _loadChasers() {
         .addTo(_chasersLayer);
     });
   } catch(e) { console.warn('[chasers] all sources failed:', e.message); }
-}
-
-// ── STORM REPORTS , direct toggle, all types at once ──
-let _reportsActive = false;
-
-function _syncReportLayers() {
-  ['tor','hail','wind'].forEach(t => {
-    if (!stormReportLayers[t]) return;
-    if (_reportsActive && !map.hasLayer(stormReportLayers[t])) stormReportLayers[t].addTo(map);
-    if (!_reportsActive && map.hasLayer(stormReportLayers[t])) map.removeLayer(stormReportLayers[t]);
-  });
 }
 
 // ── PRECIP SUB-MENU ──
@@ -24774,8 +24797,8 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-spc-outlook" data-ovid="spc-outlook" title="SPC Convective Outlook (Day 1-8 Categorical/Tornado/Wind/Hail)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-outlook')">SPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-spc-reports" data-ovid="spc-reports" title="SPC Storm Reports (tornado/hail/wind LSRs)">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-reports')">SPC Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    <div class="ov-pill" id="op-spc-reports" data-ovid="spc-reports" title="Storm Reports - Local Storm Reports for tornado, hail, and wind from SPC">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-reports')">Storm Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
@@ -25207,6 +25230,25 @@ function buildTimelineLabels() {
       <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ffffff;border:1px solid #555"></div>Near Normal</div>
       <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#0080ff"></div>Below Normal</div>
       <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#0000aa"></div>Much Below Normal</div>
+    </div>
+  </div>
+
+  <div id="storm-reports-panel">
+    <div class="rpt-float-title">⚡ Storm Reports</div>
+    <div class="spc-picker-row">
+      <button class="spc-pick-btn active" id="rpt-tor"  onclick="_rptToggleType('tor')">🌪 Tor</button>
+      <button class="spc-pick-btn active" id="rpt-hail" onclick="_rptToggleType('hail')">🧊 Hail</button>
+      <button class="spc-pick-btn active" id="rpt-wind" onclick="_rptToggleType('wind')">💨 Wind</button>
+    </div>
+    <hr class="ov-panel-sep">
+    <div class="ov-panel-legend">
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ff2020"></div>Tornado</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ffee88"></div>Hail &lt;1"</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ffcc00"></div>Hail 1-2"</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ff6600"></div>Hail &ge;2"</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#88ccff"></div>Wind &lt;58mph</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#00aaff"></div>Wind 58-64mph</div>
+      <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ff44ff"></div>Wind &ge;65mph</div>
     </div>
   </div>
 
