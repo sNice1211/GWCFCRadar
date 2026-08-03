@@ -9390,12 +9390,17 @@ async function loadAmbientWeather() {
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   ];
-  let data = null, rateLimited = false;
+  let data = null, rateLimited = false, lastBadStatus = null, lastBadBody = '';
   for (const wrap of wrappers) {
     try {
       const r = await fetchWithTimeout(wrap(url), 10000);
       if (r.status === 429) { rateLimited = true; break; }
-      if (!r.ok) { console.debug(`[ambient] HTTP ${r.status}`); continue; }
+      if (!r.ok) {
+        lastBadStatus = r.status;
+        try { lastBadBody = (await r.text()).slice(0, 200); } catch(e) {}
+        console.debug(`[ambient] HTTP ${r.status} :: ${lastBadBody}`);
+        continue;
+      }
       const txt = await r.text();
       let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[ambient] non-JSON response'); continue; }
       if (Array.isArray(d)) { data = d; break; }
@@ -9409,8 +9414,13 @@ async function loadAmbientWeather() {
     return;
   }
   if (!data) {
-    updateLoadStatus('Ambient Weather data unavailable.');
-    setTimeout(() => updateLoadStatus(''), 4000);
+    if (lastBadStatus === 401 || lastBadStatus === 403) {
+      console.warn('[ambient] auth rejected:', lastBadStatus, lastBadBody);
+      updateLoadStatus('Ambient Weather: keys rejected (check apiKey/applicationKey on your account page).');
+    } else {
+      updateLoadStatus('Ambient Weather data unavailable.');
+    }
+    setTimeout(() => updateLoadStatus(''), 5000);
     return;
   }
 
