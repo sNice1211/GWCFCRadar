@@ -1276,6 +1276,7 @@ body {
   }
   .sub-bubble-main .sb-label { display: none; }
   .sub-bubble-main .sb-icon { font-size: 15px; }
+  .sub-bubble-main .ov-info-btn { display: none; }
 
   /* Active main bubble , show its label again so you can tell what's on */
   .sub-bubble-main.active {
@@ -1286,6 +1287,7 @@ body {
   }
   .sub-bubble-main.active .sb-label { display: inline; }
   .sub-bubble-main.active .sb-icon { font-size: 13px; }
+  .sub-bubble-main.active .ov-info-btn { display: flex; }
 
   /* Float buttons , tighter on tiny screens */
   #float-search-btn { bottom: 80px; width: 40px; height: 40px; }
@@ -6339,7 +6341,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.23 · rebalanced overlay descriptions, less baby-talk · 2026-08-02</div>
+    <div id="build-stamp">v5.24 · info buttons on sidebar layers + products · 2026-08-03</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -10951,6 +10953,7 @@ function toggleSatelliteSub() {
       el.classList.add('active');
       _setGoesProduct(p.id);
     };
+    if (LAYER_DESCRIPTIONS[p.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[p.id]));
     pGrid.appendChild(el);
   });
   wrap.appendChild(pGrid);
@@ -10985,6 +10988,39 @@ function toggleSatelliteSub() {
 }
 
 // ── SUB BUBBLES ──
+// Info text for the main sidebar layer bubbles and every product bubble underneath
+// them (Radar's Reflectivity/Velocity/etc, Satellite's GOES channels, Alerts'
+// sub-panels). Shown in the same ⓘ tooltip used for the overlay pills.
+const LAYER_DESCRIPTIONS = {
+  radar:      'Turns on NEXRAD radar. Tap again to pick which radar product to show, like Reflectivity or Velocity.',
+  satellite:  'Turns on GOES satellite imagery. Tap again to pick a channel, like Visible, Infrared, or Water Vapor.',
+  alerts:     'Opens the Weather Alerts and EAS Alerts panels for active warnings in your area.',
+  models:     'Opens the Models panel, covering severe weather guidance (SPC Outlooks, HRRR, NAM) and tropical guidance (hurricane tracks, spaghetti models).',
+  reflectivity: 'Standard radar reflectivity (dBZ). Shows where precipitation is falling and how heavy it is.',
+  velocity:     'Radial velocity radar. Shows wind moving toward or away from the radar, used to spot rotation inside storms.',
+  hc:           'Hydrometeor classification. Shows what type of precipitation the radar is picking up, like rain, hail, or snow.',
+  accum:        'Storm total precipitation, accumulated by radar since the current event began.',
+  boha:         'Radar-estimated precipitation over just the last hour.',
+  ch01: 'Daytime visible imagery in blue light. Good for seeing haze, smoke, and snow cover.',
+  ch02: 'The sharpest daytime visible image, close to what your eye would see from space.',
+  ch03: 'Daytime image tuned to vegetation, useful for spotting fires, burn scars, and land cover.',
+  ch04: 'Daytime image that highlights thin, high cirrus clouds.',
+  ch05: 'Daytime image that helps tell snow and ice apart from ordinary clouds.',
+  ch06: 'Daytime image that highlights cloud top particle size, useful for spotting strong storm updrafts.',
+  ch07: 'Infrared channel that works day and night, good for spotting fires and fog.',
+  ch08: 'Shows moisture high in the atmosphere, day or night.',
+  ch09: 'Shows moisture in the middle of the atmosphere, day or night.',
+  ch10: 'Shows moisture lower in the atmosphere, day or night.',
+  ch11: 'Infrared image tuned to measure cloud top temperature.',
+  ch12: 'Infrared channel tuned to detect fires and other hot spots.',
+  ch13: 'The standard infrared channel, showing cloud tops day or night with little water vapor interference.',
+  ch14: 'Another infrared channel for cloud tops, similar to Clean IR.',
+  ch15: 'Infrared channel useful for spotting volcanic ash and dust.',
+  ch16: 'Infrared channel tuned to carbon dioxide absorption, used mainly for very high clouds.',
+  'wx-alerts':  'Opens the panel listing active NWS weather warnings and watches.',
+  'eas-alerts': 'Opens the panel showing Emergency Alert System (EAS) broadcasts.',
+};
+
 const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
   { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
@@ -12386,6 +12422,7 @@ function toggleAlertSub() {
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => { b.action(); el.classList.toggle('active'); _syncParentBubble('alerts'); };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
@@ -12455,6 +12492,7 @@ function toggleRadarSub() {
       el.classList.add('active');
       b.action();
     };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
@@ -12482,6 +12520,7 @@ function renderSubBubbles(tab) {
       }
       b.action();
     };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
   wrap.style.display = bubbles.length ? 'flex' : 'none';
@@ -25945,19 +25984,26 @@ function _ovInjectInfoButtons() {
     const ovid = pill.dataset.ovid;
     if (!ovid || !OV_DESCRIPTIONS[ovid]) return;
     const drag = pill.querySelector('.ov-drag');
-    const btn = document.createElement('span');
-    btn.className = 'ov-info-btn';
-    btn.textContent = 'ⓘ';
-    btn.title = 'Info';
-    btn.onclick = (ev) => { ev.stopPropagation(); _ovShowInfo(ovid, btn); };
+    const btn = _makeInfoBtn(OV_DESCRIPTIONS[ovid]);
     if (drag) drag.insertAdjacentElement('beforebegin', btn);
     else pill.appendChild(btn);
   });
 }
 
+// Shared "ⓘ" button factory - used by overlay pills and by the layer/product
+// sub-bubbles, so every info button in the app is the same size and style.
+function _makeInfoBtn(text) {
+  const btn = document.createElement('span');
+  btn.className = 'ov-info-btn';
+  btn.textContent = 'ⓘ';
+  btn.title = 'Info';
+  btn.onclick = (ev) => { ev.stopPropagation(); _ovShowInfo(text, btn); };
+  return btn;
+}
+
 let _ovInfoOpenBtn = null;
 
-function _ovShowInfo(ovid, btnEl) {
+function _ovShowInfo(text, btnEl) {
   const tip = document.getElementById('ov-info-tooltip');
   if (!tip) return;
   // Tapping the same info button again closes it
@@ -25965,7 +26011,7 @@ function _ovShowInfo(ovid, btnEl) {
     _ovHideInfo();
     return;
   }
-  tip.textContent = OV_DESCRIPTIONS[ovid] || '';
+  tip.textContent = text || '';
   tip.classList.add('open');
   if (_ovInfoOpenBtn) _ovInfoOpenBtn.classList.remove('active');
   _ovInfoOpenBtn = btnEl;
