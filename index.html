@@ -6339,7 +6339,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.25 · fix info buttons hidden on collapsed mobile layer bubbles · 2026-08-03</div>
+    <div id="build-stamp">v5.28 · tornado track card popup + new Wildfires overlay · 2026-08-03</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -9126,24 +9126,177 @@ async function loadTornadoTracks() {
     onEachFeature: (f, layer) => {
       const p = f.properties || {};
       if (!window._ttDebugLogged) { window._ttDebugLogged = true; console.log('[TornadoTracks] feature props:', JSON.stringify(p)); }
-      const ef = String(p.efscale || 'Unrated').toUpperCase();
+
+      // The DAT FeatureServer's exact field casing isn't pinned down from here,
+      // so pick the first defined value among the likely names for each field
+      // rather than hardcoding one - a wrong guess just means that row quietly
+      // doesn't render, instead of the whole popup breaking.
+      const pick = (...keys) => { for (const k of keys) { if (p[k] !== undefined && p[k] !== null && p[k] !== '') return p[k]; } return undefined; };
+
+      const ef = String(pick('efscale', 'EFSCALE', 'EF_SCALE') || 'Unrated').toUpperCase();
+      const color = _tornadoTrackColorFor(ef);
+
       let dateStr = '';
-      if (p.stormdate) {
-        const t = Number(p.stormdate);
-        const d = Number.isFinite(t) ? new Date(t) : new Date(p.stormdate);
+      const rawDate = pick('stormdate', 'STORMDATE', 'eventdate', 'EVENTDATE');
+      if (rawDate) {
+        const t = Number(rawDate);
+        const d = Number.isFinite(t) ? new Date(t) : new Date(rawDate);
         if (!isNaN(d.getTime())) dateStr = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
       }
-      const lengthMi = p.length ? `${(Number(p.length)).toFixed(1)} mi` : '';
-      layer.bindPopup(`<div class="alert-popup">
-        <b>🌪 Tornado Damage Track</b><br>
-        Rating: <b>${ef}</b>${dateStr ? `<br>Date: ${dateStr}` : ''}${lengthMi ? `<br>Path Length: ${lengthMi}` : ''}
-        <br><span style="opacity:0.7;font-size:10px;">NWS Damage Assessment Toolkit — preliminary</span>
-      </div>`);
+
+      const lengthMi   = pick('length', 'LENGTH', 'pathlength');
+      const widthYd    = pick('width', 'WIDTH', 'pathwidth');
+      const windGust   = pick('maxwindgust', 'MAXWINDGUST', 'windgust', 'WINDGUST');
+      const fatalities = Number(pick('fatalities', 'FATALITIES') || 0);
+      const injuries   = Number(pick('injuries', 'INJURIES') || 0);
+      const county     = pick('county', 'COUNTY', 'cwa', 'CWA');
+      const state      = pick('state', 'STATE', 'states', 'STATES');
+      const startLat   = pick('startlat', 'STARTLAT', 'slat', 'SLAT');
+      const startLon   = pick('startlon', 'STARTLON', 'slon', 'SLON');
+      const endLat     = pick('endlat', 'ENDLAT', 'elat', 'ELAT');
+      const endLon     = pick('endlon', 'ENDLON', 'elon', 'ELON');
+      const comments   = pick('comments', 'COMMENTS', 'remarks', 'REMARKS');
+
+      layer.bindPopup(`<div class="data-popup-inner" style="--dp-accent:${color}">
+        <div class="dp-header">
+          <span class="dp-header-icon">🌪</span>
+          <span class="dp-header-label">Tornado Damage Track</span>
+        </div>
+        <div class="dp-body">
+          <div class="dp-row"><span>Rating</span><b>${ef}</b></div>
+          ${dateStr ? `<div class="dp-row"><span>Date</span><b>${dateStr}</b></div>` : ''}
+          ${lengthMi ? `<div class="dp-row"><span>Path Length</span><b>${Number(lengthMi).toFixed(1)} mi</b></div>` : ''}
+          ${widthYd ? `<div class="dp-row"><span>Path Width</span><b>${Number(widthYd).toFixed(0)} yd</b></div>` : ''}
+          ${windGust ? `<div class="dp-row"><span>Max Wind Gust</span><b>${Number(windGust).toFixed(0)} mph</b></div>` : ''}
+          ${(county || state) ? `<div class="dp-row"><span>County</span><b>${_ccEsc(county || '')}${county && state ? ', ' : ''}${_ccEsc(state || '')}</b></div>` : ''}
+          ${(startLat !== undefined && startLon !== undefined) ? `<div class="dp-row"><span>Start</span><b>${Number(startLat).toFixed(3)}°, ${Number(startLon).toFixed(3)}°</b></div>` : ''}
+          ${(endLat !== undefined && endLon !== undefined) ? `<div class="dp-row"><span>End</span><b>${Number(endLat).toFixed(3)}°, ${Number(endLon).toFixed(3)}°</b></div>` : ''}
+          ${injuries > 0 ? `<div class="dp-row"><span>Injuries</span><b>${injuries}</b></div>` : ''}
+          ${fatalities > 0 ? `<div class="dp-row"><span>Fatalities</span><b>${fatalities}</b></div>` : ''}
+          ${comments ? `<div class="dp-section">Notes</div><div style="font-family:var(--mono);font-size:10px;color:rgba(255,255,255,0.65);line-height:1.4;">${_ccEsc(comments)}</div>` : ''}
+          <div style="opacity:0.6;font-size:10px;margin-top:4px;">NWS Damage Assessment Toolkit, preliminary</div>
+        </div>
+      </div>`, { className: 'data-popup', maxWidth: 250 });
     }
   });
 
   _tornadoTracksLayer = L.layerGroup([casing, main]).addTo(map);
   updateLoadStatus('');
+}
+
+// ── WILDFIRES (NIFC / Esri USA_Wildfires_v1) ──
+let _wildfiresActive = false, _wildfiresLayer = null, _wildfiresTimer = null;
+const WILDFIRE_SOURCE_URL = 'https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/USA_Wildfires_v1/FeatureServer/0/query?where=1%3D1&outFields=*&f=geojson';
+const WILDFIRE_MAX_AGE_MS = 48 * 60 * 60 * 1000; // only show fires updated in the last 2 days
+const WILDFIRE_MIN_DAILY_ACRES = 3; // filter out tiny/contained fires so the map doesn't get swamped
+
+function _wildfirePick(p, ...keys) {
+  for (const k of keys) { if (p[k] !== undefined && p[k] !== null && p[k] !== '') return p[k]; }
+  return undefined;
+}
+function _wildfireTsMs(v) {
+  const n = Number(v);
+  if (Number.isFinite(n)) return n > 1e12 ? n : n * 1000; // ArcGIS fields can be epoch ms or seconds
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+function _wildfireFmtDate(v) {
+  const ms = _wildfireTsMs(v);
+  if (ms === null) return '';
+  return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+async function loadWildfires() {
+  updateLoadStatus('Loading wildfire data…');
+  const wrappers = [
+    u => u,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+  let data = null;
+  for (const wrap of wrappers) {
+    try {
+      const r = await fetchWithTimeout(wrap(WILDFIRE_SOURCE_URL), 12000);
+      if (!r.ok) { console.debug(`[wildfires] HTTP ${r.status}`); continue; }
+      const txt = await r.text();
+      let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[wildfires] non-JSON response'); continue; }
+      if (d?.features !== undefined) { data = d; break; }
+    } catch(e) { console.debug('[wildfires] error:', e.message); }
+  }
+
+  if (_wildfiresLayer) { try { map.removeLayer(_wildfiresLayer); } catch(e){} _wildfiresLayer = null; }
+  if (!data) {
+    updateLoadStatus('Wildfire data unavailable.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+    return;
+  }
+
+  const now = Date.now();
+  const pane = _ovPane('wildfires');
+  const layer = L.layerGroup();
+  let shown = 0;
+
+  (data.features || []).forEach(f => {
+    const geom = f.geometry;
+    if (!geom || geom.type !== 'Point' || !Array.isArray(geom.coordinates)) return;
+    const [lon, lat] = geom.coordinates;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const p = f.properties || {};
+    const pick = (...keys) => _wildfirePick(p, ...keys);
+
+    const modifiedRaw = pick('ModifiedOnDateTime', 'MODIFIEDONDATE', 'MODIFIED_DATE', 'modifiedOnDateTime');
+    const modifiedMs = _wildfireTsMs(modifiedRaw);
+    if (modifiedMs !== null && (now - modifiedMs) > WILDFIRE_MAX_AGE_MS) return;
+
+    const dailyAcres = Number(pick('DailyAcres', 'DAILY_ACRES', 'dailyAcres') || 0);
+    if (dailyAcres < WILDFIRE_MIN_DAILY_ACRES) return;
+
+    const incident   = String(pick('IncidentName', 'INCIDENTNAME') || 'Wildfire');
+    const discovered = _wildfireFmtDate(pick('FireDiscoveryDateTime', 'FIREDISCOVERYDATETIME'));
+    const modified   = _wildfireFmtDate(modifiedRaw);
+    const county     = String(pick('POOCounty', 'POOCOUNTY') || 'Unknown County');
+    const state      = String(pick('POOState', 'POOSTATE') || 'Unknown State');
+    const cause      = String(pick('FireCause', 'FIRECAUSE') || 'Unknown');
+    const injuries   = Number(pick('Injuries', 'INJURIES') || 0);
+    const fatalities = Number(pick('Fatalities', 'FATALITIES') || 0);
+
+    const icon = L.divIcon({
+      className: '',
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+      html: `<div style="width:22px;height:22px;border-radius:50%;background:rgba(220,40,20,0.9);
+        border:2px solid rgba(255,180,0,0.9);box-shadow:0 0 8px rgba(255,80,0,0.6);
+        display:flex;align-items:center;justify-content:center;font-size:12px;">🔥</div>`
+    });
+
+    L.marker([lat, lon], { icon, pane, zIndexOffset: 250 })
+      .bindPopup(`<div class="data-popup-inner" style="--dp-accent:#ff4500">
+        <div class="dp-header">
+          <span class="dp-header-icon">🔥</span>
+          <span class="dp-header-label">${_ccEsc(incident)}</span>
+        </div>
+        <div class="dp-body">
+          <div class="dp-row"><span>Daily Acres</span><b>${dailyAcres.toLocaleString()}</b></div>
+          ${discovered ? `<div class="dp-row"><span>Discovered</span><b>${discovered}</b></div>` : ''}
+          ${modified ? `<div class="dp-row"><span>Last Updated</span><b>${modified}</b></div>` : ''}
+          <div class="dp-row"><span>Location</span><b>${_ccEsc(county)}, ${_ccEsc(state)}</b></div>
+          ${cause && cause !== 'Undetermined' ? `<div class="dp-row"><span>Cause</span><b>${_ccEsc(cause)}</b></div>` : ''}
+          ${injuries > 0 ? `<div class="dp-row"><span>Injuries</span><b>${injuries}</b></div>` : ''}
+          ${fatalities > 0 ? `<div class="dp-row"><span>Fatalities</span><b>${fatalities}</b></div>` : ''}
+        </div>
+      </div>`, { className: 'data-popup', maxWidth: 240 })
+      .addTo(layer);
+    shown++;
+  });
+
+  _wildfiresLayer = layer.addTo(map);
+  if (!shown) {
+    updateLoadStatus('No active large wildfires right now.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+  } else {
+    updateLoadStatus('');
+  }
 }
 
 // ── SPC STORM REPORTS ──
@@ -11225,6 +11378,17 @@ function toggleOverlayPill(id) {
     if (panel) panel.style.display = _tornadoTracksActive ? 'flex' : 'none';
     if (_tornadoTracksActive) loadTornadoTracks();
     else { if (_tornadoTracksLayer) { try { map.removeLayer(_tornadoTracksLayer); } catch(e){} _tornadoTracksLayer = null; } }
+  } else if (id === 'wildfires') {
+    _wildfiresActive = !_wildfiresActive;
+    const pill = document.getElementById('op-wildfires');
+    if (pill) pill.classList.toggle('active', _wildfiresActive);
+    if (_wildfiresActive) {
+      loadWildfires();
+      _wildfiresTimer = setInterval(loadWildfires, 15 * 60 * 1000);
+    } else {
+      clearInterval(_wildfiresTimer); _wildfiresTimer = null;
+      if (_wildfiresLayer) { try { map.removeLayer(_wildfiresLayer); } catch(e){} _wildfiresLayer = null; }
+    }
   }
 }
 
@@ -25073,6 +25237,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-tornado-tracks" data-ovid="tornado-tracks" title="Tornado Tracks - NWS Damage Assessment Toolkit survey paths (last 60 days)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('tornado-tracks')">Tornado Tracks</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-wildfires" data-ovid="wildfires" title="Wildfires - active large wildfires, updated in the last 48 hours">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wildfires')">Wildfires</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
   </div>
   <button id="overlay-toggle-btn" onclick="toggleOverlayLauncher()" title="Toggle overlays" aria-label="Toggle overlays">
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -25974,6 +26141,7 @@ const OV_DESCRIPTIONS = {
   'cpc-outlook':      'Whether an area is likely to run warmer, colder, wetter, or drier than normal over the next couple of weeks.',
   'canada-alerts':    'Active weather alerts for Canada, from Environment Canada.',
   'tornado-tracks':   'Surveyed tornado damage paths, rated by EF scale, from the last 60 days.',
+  'wildfires':        'Active large wildfires, updated in the last 48 hours, with acres burned and location.',
 };
 
 function _ovInjectInfoButtons() {
