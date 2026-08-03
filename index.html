@@ -1264,9 +1264,28 @@ body {
   #right-menu { gap: 3px; }
   .right-bubble { padding: 4px 9px; font-size: 10px; letter-spacing: 0.5px; }
 
-  /* Main left menu bubbles (Radar/Satellite/Alerts/Models) and their product
-     lists are icon-only with a hover/press flyout at all screen sizes , see
-     .sb-hoverbar and .sb-flyout above. Nothing extra needed here on phones. */
+  /* Main left menu bubbles (Radar/Satellite/Alerts/Models) , icon-only on
+     phones to free up map/scrolling room. Sub-menu bubbles (e.g. radar
+     products, alert types) keep their text since some share an icon. */
+  .sub-bubble-main {
+    padding: 6px 8px;
+    min-width: 34px;
+    height: 34px;
+    justify-content: center;
+    border-radius: 17px;
+  }
+  .sub-bubble-main .sb-label { display: none; }
+  .sub-bubble-main .sb-icon { font-size: 15px; }
+
+  /* Active main bubble , show its label again so you can tell what's on */
+  .sub-bubble-main.active {
+    width: auto;
+    height: auto;
+    padding: 6px 14px;
+    border-radius: 20px;
+  }
+  .sub-bubble-main.active .sb-label { display: inline; }
+  .sub-bubble-main.active .sb-icon { font-size: 13px; }
 
   /* Float buttons , tighter on tiny screens */
   #float-search-btn { bottom: 80px; width: 40px; height: 40px; }
@@ -1544,49 +1563,6 @@ body {
   transform: translateY(-2px);
 }
 .sub-bubble .sb-icon { font-size: 13px; }
-
-/* ── HOVER FLYOUT: icon-only bubble, name + info button extend out on hover ──
-   Used for the main layer bubbles (Radar/Satellite/Alerts/Models), radar
-   products, and alert sub-panels , all single-column lists. The satellite
-   channel grid stays icon+label inline since it's 2 columns.
-   #sub-bubbles scrolls vertically (overflow-y:auto), which per the CSS spec
-   forces overflow-x to auto too , anything positioned to stick out past its
-   edge would get clipped. So the flyout is ONE shared element, positioned
-   with fixed + JS (same trick as #ov-info-tooltip), not a CSS-only child. */
-.sub-bubble.sb-hoverbar {
-  position: relative;
-  width: 38px;
-  height: 38px;
-  padding: 0;
-  justify-content: center;
-  border-radius: 50%;
-}
-.sub-bubble.sb-hoverbar .sb-icon { font-size: 15px; }
-#sb-flyout {
-  position: fixed;
-  z-index: 3000;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
-  background: rgb(90,0,0);
-  border: 1px solid rgba(255,215,0,0.65);
-  border-radius: 20px;
-  white-space: nowrap;
-  font-family: var(--display);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: rgba(255,255,255,0.75);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(4px);
-  transition: opacity 0.12s ease, transform 0.12s ease;
-}
-#sb-flyout.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
-#sb-flyout .ov-info-btn { color: rgba(255,255,255,0.55); }
-#sb-flyout .ov-info-btn:hover, #sb-flyout .ov-info-btn.active { color: var(--accent2); }
 
 /* ── SATELLITE REGION SELECTOR ── */
 #sat-region-row {
@@ -6363,7 +6339,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.26 · icon bubbles now flyout name + info on hover · 2026-08-03</div>
+    <div id="build-stamp">v5.25 · fix info buttons hidden on collapsed mobile layer bubbles · 2026-08-03</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -10952,7 +10928,6 @@ function _setGoesRegion(id) {
 }
 
 function toggleSatelliteSub() {
-  _sbHideFlyout();
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
   wrap.dataset.mode = 'satellite';
@@ -12432,7 +12407,6 @@ const ALERT_SUB_BUBBLES = [
 ];
 
 function toggleAlertSub() {
-  _sbHideFlyout();
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
   const back = document.createElement('div');
@@ -12444,8 +12418,9 @@ function toggleAlertSub() {
     const el = document.createElement('div');
     el.className = 'sub-bubble';
     el.id = 'sub-' + b.id;
-    _buildHoverBubble(el, b.icon, b.label, LAYER_DESCRIPTIONS[b.id]);
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => { b.action(); el.classList.toggle('active'); _syncParentBubble('alerts'); };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
@@ -12486,7 +12461,6 @@ const RADAR_SUB_BUBBLES = [
 ];
 
 function toggleRadarSub() {
-  _sbHideFlyout();
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
   const back = document.createElement('div');
@@ -12510,25 +12484,24 @@ function toggleRadarSub() {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
     el.id = 'sub-' + b.id;
-    _buildHoverBubble(el, b.icon, b.label, LAYER_DESCRIPTIONS[b.id]);
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
       document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr').forEach(s=>s.classList.remove('active'));
       el.classList.add('active');
       b.action();
     };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
 }
 
 function hideSubBubbles() {
-  _sbHideFlyout();
   const wrap = document.getElementById('sub-bubbles');
   if (wrap) { wrap.innerHTML = ''; wrap.style.display = 'none'; }
 }
 
 function renderSubBubbles(tab) {
-  _sbHideFlyout();
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
   const bubbles = TAB_BUBBLES[tab] || [];
@@ -12537,7 +12510,7 @@ function renderSubBubbles(tab) {
     const isActive = _getBubbleActive(b.id);
     el.className = 'sub-bubble sub-bubble-main' + (isActive ? ' active' : '');
     el.id = 'sub-' + b.id;
-    _buildHoverBubble(el, b.icon, b.label, LAYER_DESCRIPTIONS[b.id]);
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
       if (b.id !== 'forecasts') {
         activeBubbles[b.id] = !activeBubbles[b.id];
@@ -12545,6 +12518,7 @@ function renderSubBubbles(tab) {
       }
       b.action();
     };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
   wrap.style.display = bubbles.length ? 'flex' : 'none';
@@ -25108,7 +25082,6 @@ document.addEventListener('DOMContentLoaded', () => {
   </button>
 </div>
 <div id="ov-info-tooltip"></div>
-<div id="sb-flyout"></div>
 <button id="float-search-btn" onclick="lqmOpenSearch()" title="Search" aria-label="Search">
   <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="10.5" cy="10.5" r="7"/>
@@ -26015,51 +25988,6 @@ function _ovInjectInfoButtons() {
   });
 }
 
-// Turns a bare sub-bubble div into an icon-only bubble with a hover/press
-// flyout bar (name + info button) extending to the right. Used for the main
-// layer bubbles and their single-column product lists.
-function _buildHoverBubble(el, icon, label, infoText) {
-  el.classList.add('sb-hoverbar');
-  el.innerHTML = `<span class="sb-icon">${icon}</span>`;
-  el.addEventListener('mouseenter', () => _sbShowFlyout(el, label, infoText));
-  el.addEventListener('mouseleave', _sbScheduleHideFlyout);
-  el.addEventListener('touchstart', () => _sbShowFlyout(el, label, infoText), { passive: true });
-}
-
-let _sbFlyoutHideTimer = null;
-let _sbFlyoutOwner = null; // the bubble currently showing the flyout
-
-function _sbShowFlyout(bubbleEl, label, infoText) {
-  clearTimeout(_sbFlyoutHideTimer);
-  const fly = document.getElementById('sb-flyout');
-  if (!fly) return;
-  _sbFlyoutOwner = bubbleEl;
-  fly.innerHTML = `<span class="sb-flyout-label">${label}</span>`;
-  if (infoText) fly.appendChild(_makeInfoBtn(infoText));
-  fly.classList.add('open');
-
-  const r = bubbleEl.getBoundingClientRect();
-  fly.style.left = '0px'; fly.style.top = '0px'; // reset before measuring
-  const flyRect = fly.getBoundingClientRect();
-  let left = r.right + 8;
-  if (left + flyRect.width > window.innerWidth - 8) left = r.left - flyRect.width - 8;
-  let top = r.top + r.height / 2 - flyRect.height / 2;
-  top = Math.max(8, Math.min(top, window.innerHeight - flyRect.height - 8));
-  fly.style.left = `${left}px`;
-  fly.style.top = `${top}px`;
-}
-
-function _sbScheduleHideFlyout() {
-  clearTimeout(_sbFlyoutHideTimer);
-  _sbFlyoutHideTimer = setTimeout(_sbHideFlyout, 150);
-}
-
-function _sbHideFlyout() {
-  const fly = document.getElementById('sb-flyout');
-  if (fly) fly.classList.remove('open');
-  _sbFlyoutOwner = null;
-}
-
 // Shared "ⓘ" button factory - used by overlay pills and by the layer/product
 // sub-bubbles, so every info button in the app is the same size and style.
 function _makeInfoBtn(text) {
@@ -26108,22 +26036,6 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('.ov-info-btn') || e.target.closest('#ov-info-tooltip')) return;
   _ovHideInfo();
 });
-
-// Moving the mouse off a bubble and into its own flyout (to reach the info
-// button) shouldn't close it , cancel the pending hide while over the flyout.
-(() => {
-  const fly = document.getElementById('sb-flyout');
-  if (!fly) return;
-  fly.addEventListener('mouseenter', () => clearTimeout(_sbFlyoutHideTimer));
-  fly.addEventListener('mouseleave', _sbScheduleHideFlyout);
-})();
-
-// Touch has no hover, so a tap elsewhere (outside the bubble that opened it
-// and outside the flyout itself) closes it.
-document.addEventListener('touchstart', (e) => {
-  if (e.target.closest('.sb-hoverbar') || e.target.closest('#sb-flyout')) return;
-  _sbHideFlyout();
-}, { passive: true });
 
 _ovInjectInfoButtons();
 
