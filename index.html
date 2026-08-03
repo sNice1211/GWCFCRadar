@@ -1576,7 +1576,11 @@ body {
   gap: 7px;
   z-index: 800;
   max-height: calc(100vh - 120px);
+  max-width: 190px; /* keeps the satellite product grid's long channel names
+    (e.g. "Upper Water Vapor") from ballooning this column across the map -
+    they wrap instead, see #sat-product-grid .sub-bubble below */
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .sub-bubble {
   display: flex;
@@ -1642,7 +1646,10 @@ body {
   border-bottom: 1px solid rgba(255,255,255,0.08);
   margin-bottom: 4px; width: 100%;
 }
-#sat-product-grid .sub-bubble { width: 100%; box-sizing: border-box; }
+#sat-product-grid .sub-bubble {
+  width: 100%; box-sizing: border-box; min-width: 0;
+  white-space: normal; text-align: center; line-height: 1.25;
+}
 
 .sat-region-bubble {
   background: rgb(0,20,40);
@@ -5802,15 +5809,31 @@ body.gwcfc-crosshair #map::after {
 #overlay-panel-stack {
   position: fixed;
   top: calc(70px + env(safe-area-inset-top, 0px));
-  left: calc(56px + env(safe-area-inset-left, 0px));
+  /* Cleared past #sub-bubbles' capped 190px width (12px left offset + 190px +
+     gap) so an open control panel (SPC/WPC/Fire/CPC/Storm Reports/Meso/
+     Tornado Tracks) never overlaps the Radar/Satellite/Alerts/Models bubbles
+     or their product lists sitting in that column. */
+  left: calc(220px + env(safe-area-inset-left, 0px));
   z-index: 849;
   display: flex;
   flex-direction: column;
   gap: 6px;
   pointer-events: none;
   max-width: 185px;
+  max-height: calc(100vh - 140px); /* stop before the bottom animbar even with several panels open at once */
+  overflow-y: auto;
 }
 #overlay-panel-stack > div { pointer-events: auto; }
+/* On phones, #sub-bubbles relocates to the bottom of the screen (see the
+   ≤480px rule further up), so it no longer shares the top-left corner with
+   this panel stack , the 220px desktop offset (added to clear that column)
+   would just run past the right edge of a narrow screen for no reason. This
+   must stay AFTER the unconditional rule above, same reasoning as the
+   #sub-bubbles/#right-menu comment near the top of the file: equal-specificity
+   rules resolve by source order, not by which one is in a media query. */
+@media (max-width: 480px) {
+  #overlay-panel-stack { left: calc(56px + env(safe-area-inset-left, 0px)); max-width: calc(100vw - 68px); }
+}
 
 /* Shared panel shell – applied to all overlay panels */
 #spc-controls, #wpc-controls, #fw-controls, #cpc-controls, #meso-panel, #storm-reports-panel, #tornado-tracks-panel {
@@ -6388,7 +6411,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.30 · restore toolbar flyout, verified it doesn't block clicks · 2026-08-03</div>
+    <div id="build-stamp">v5.31 · fix panels overlapping the layer bubbles · 2026-08-03</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
