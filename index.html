@@ -9639,6 +9639,114 @@ function _rptToggleType(type) {
   if (!active && map.hasLayer(stormReportLayers[type])) map.removeLayer(stormReportLayers[type]);
 }
 
+// ── STORM CENTERS (NEXRAD TVS / hail signatures, IEM nexrad_attr feed) ──
+// Ported the *concept* here, not the code, from a user-supplied reference file
+// written for a Mapbox/MapLibre GL app (map.addSource/addLayer, ES module
+// imports, a Dialog class) - none of which exist in GWCFCRadar, which is a
+// single inline-script Leaflet app. This rebuilds the same idea - triangle
+// markers for Tornado Vortex Signatures and hail cores, from the same public
+// IEM feed - using the divIcon + data-popup-inner patterns already used by
+// every other overlay in this file.
+let _stormCentersActive = false, _stormCentersLayer = null, _stormCentersTimer = null;
+
+function _scTriangleIcon(color, inverted) {
+  const size = 22;
+  const pts = inverted
+    ? `2,3 ${size - 2},3 ${size / 2},${size - 3}`      // TVS: downward-pointing triangle
+    : `${size / 2},3 ${size - 2},${size - 3} 2,${size - 3}`; // Hail: upward-pointing triangle
+  return L.divIcon({
+    className: '',
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    html: `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+      <polygon points="${pts}" fill="${color}" stroke="#000" stroke-width="2.5" stroke-linejoin="round"/>
+    </svg>`
+  });
+}
+
+async function loadStormCenters() {
+  updateLoadStatus('Loading storm centers…');
+  const url = 'https://mesonet.agron.iastate.edu/geojson/nexrad_attr.py';
+  const wrappers = [
+    u => u,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+  let data = null;
+  for (const wrap of wrappers) {
+    try {
+      const r = await fetchWithTimeout(wrap(url), 10000);
+      if (!r.ok) { console.debug(`[storm-centers] HTTP ${r.status}`); continue; }
+      const txt = await r.text();
+      let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[storm-centers] non-JSON response'); continue; }
+      if (d?.features !== undefined) { data = d; break; }
+    } catch(e) { console.debug('[storm-centers] error:', e.message); }
+  }
+
+  if (_stormCentersLayer) { try { map.removeLayer(_stormCentersLayer); } catch(e){} _stormCentersLayer = null; }
+  if (!data) {
+    updateLoadStatus('Storm center data unavailable.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+    return;
+  }
+
+  const pane = _ovPane('storm-centers');
+  const layer = L.layerGroup();
+
+  (data.features || []).forEach(f => {
+    const geom = f.geometry;
+    if (!geom || geom.type !== 'Point' || !Array.isArray(geom.coordinates)) return;
+    const [lon, lat] = geom.coordinates;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const p = f.properties || {};
+
+    // A center only matters here if it's a Tornado Vortex Signature or has a
+    // nonzero Probability of Severe Hail - otherwise it's just routine radar
+    // storm-tracking noise with nothing worth surfacing.
+    const isTVS = p.tvs === 'TVS';
+    const posh = Number(p.posh) || 0;
+    if (!isTVS && posh <= 0) return;
+
+    const type = isTVS ? 'TVS Signature' : 'Hail Center';
+    const color = isTVS ? '#ff2121' : '#00ffaf';
+    const icon = _scTriangleIcon(color, isTVS);
+
+    const fmt = (v, d = 1) => (v === null || v === undefined || v === '' || isNaN(Number(v))) ? 'N/A' : Number(v).toFixed(d);
+    const nexrad = p.nexrad ? `K${String(p.nexrad).replace(/^K/i, '')}` : 'Unknown';
+
+    L.marker([lat, lon], { icon, pane, zIndexOffset: 220 })
+      .bindPopup(`<div class="data-popup-inner" style="--dp-accent:${color}">
+        <div class="dp-header">
+          <span class="dp-header-icon">▲</span>
+          <span class="dp-header-label">${_ccEsc(type)}</span>
+        </div>
+        <div class="dp-body">
+          <div class="dp-row"><span>Radar</span><b>${_ccEsc(nexrad)}</b></div>
+          ${p.storm_id ? `<div class="dp-row"><span>Cell ID</span><b>${_ccEsc(String(p.storm_id))}</b></div>` : ''}
+          ${(p.range !== undefined && p.azimuth !== undefined) ? `<div class="dp-row"><span>From Radar</span><b>${fmt(p.range,0)} nmi @ ${fmt(p.azimuth,0)}°</b></div>` : ''}
+          ${(p.drct !== undefined && p.sknt !== undefined) ? `<div class="dp-row"><span>Movement</span><b>${fmt(p.drct,0)}° @ ${fmt(p.sknt,0)} kt</b></div>` : ''}
+          ${p.max_dbz !== undefined ? `<div class="dp-row"><span>Max dBZ</span><b>${fmt(p.max_dbz,1)} dBZ at ${fmt(p.max_dbz_height,0)} km</b></div>` : ''}
+          ${p.top !== undefined ? `<div class="dp-row"><span>Storm Top</span><b>${fmt(p.top,1)} km</b></div>` : ''}
+          ${p.vil !== undefined ? `<div class="dp-row"><span>VIL</span><b>${fmt(p.vil,1)} kg/m²</b></div>` : ''}
+          ${posh > 0 ? `<div class="dp-row"><span>PoSH</span><b>${fmt(posh,0)}%</b></div>` : ''}
+          ${p.poh !== undefined ? `<div class="dp-row"><span>PoH</span><b>${fmt(p.poh,0)}%</b></div>` : ''}
+          ${p.max_size !== undefined && Number(p.max_size) > 0 ? `<div class="dp-row"><span>Max Hail Size</span><b>${fmt(p.max_size,2)} in</b></div>` : ''}
+          ${isTVS ? `<div class="dp-row"><span>TVS</span><b>DETECTED</b></div>` : ''}
+        </div>
+      </div>`, { className: 'data-popup', maxWidth: 250 })
+      .addTo(layer);
+  });
+
+  _stormCentersLayer = layer.addTo(map);
+  if (!layer.getLayers().length) {
+    updateLoadStatus('No active storm centers right now.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+  } else {
+    updateLoadStatus('');
+  }
+}
+
 // ── NHC TROPICAL + SPAGHETTI MODELS ──
 let tropicalLayers = [];
 let _tropActiveStorms = [];  // populated by loadTropical()
@@ -11580,6 +11688,17 @@ function toggleOverlayPill(id) {
     } else {
       clearInterval(_ambientTimer); _ambientTimer = null;
       if (_ambientLayer) { try { map.removeLayer(_ambientLayer); } catch(e){} _ambientLayer = null; }
+    }
+  } else if (id === 'storm-centers') {
+    _stormCentersActive = !_stormCentersActive;
+    const pill = document.getElementById('op-storm-centers');
+    if (pill) pill.classList.toggle('active', _stormCentersActive);
+    if (_stormCentersActive) {
+      loadStormCenters();
+      _stormCentersTimer = setInterval(loadStormCenters, 3 * 60 * 1000);
+    } else {
+      clearInterval(_stormCentersTimer); _stormCentersTimer = null;
+      if (_stormCentersLayer) { try { map.removeLayer(_stormCentersLayer); } catch(e){} _stormCentersLayer = null; }
     }
   }
 }
@@ -25435,6 +25554,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-ambient-weather" data-ovid="ambient-weather" title="Ambient Weather Network - personal weather stations">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('ambient-weather')">Ambient Weather</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-storm-centers" data-ovid="storm-centers" title="Storm Centers - radar-detected TVS and hail signatures">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('storm-centers')">Storm Centers</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
   </div>
   <button id="overlay-toggle-btn" onclick="toggleOverlayLauncher()" title="Toggle overlays" aria-label="Toggle overlays">
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -26339,6 +26461,7 @@ const OV_DESCRIPTIONS = {
   'tornado-tracks':   'Surveyed tornado damage paths, rated by EF scale, from the last 60 days.',
   'wildfires':        'Active large wildfires, updated in the last 48 hours, with acres burned and location.',
   'ambient-weather':  'Personal weather stations from the Ambient Weather Network, showing live temperature, wind, rain, and pressure.',
+  'storm-centers':    "Triangles marking storms radar has flagged as rotating (red, possible tornado) or hail-producing (green), straight from NEXRAD's automated detection.",
 };
 
 function _ovInjectInfoButtons() {
