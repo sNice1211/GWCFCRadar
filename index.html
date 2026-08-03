@@ -1140,6 +1140,55 @@ body {
 #ov-info-tooltip.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
 .ov-icon { font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center; }
 .ov-label { font-family: var(--mono); font-size: 7px; letter-spacing: 0.5px; text-transform: uppercase; color: inherit; opacity: 0.8; text-align: center; white-space: nowrap; }
+
+/* ── TOOLBAR (right-menu) HOVER FLYOUT ──
+   The draw/text/polygon/measure/track/radius/storm-cone/inspector icons in
+   #right-menu are icon-only squares. Hovering one (or, on touch, pressing
+   it) extends a small dark tag with the tool's name + info button, with a
+   triangle "tail" pointing back at the exact icon it belongs to so it's
+   never ambiguous which button it's attached to.
+   #right-menu scrolls vertically (overflow-y:auto), which per the CSS spec
+   forces overflow-x to auto too , so like the overlay-pill tooltip, this is
+   ONE shared element positioned with fixed + JS, not a CSS child. */
+#tb-flyout {
+  position: fixed;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  background: rgb(10,14,18);
+  border: 1px solid rgba(0,140,186,0.5);
+  border-radius: 8px;
+  white-space: nowrap;
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: rgba(255,255,255,0.85);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#tb-flyout.open { opacity: 1; pointer-events: auto; transform: translateY(0); }
+#tb-flyout::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0; height: 0;
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+}
+/* Flyout sits to the LEFT of its icon , tail on the right edge points at it */
+#tb-flyout.point-left::before { right: -6px; border-left: 7px solid rgb(10,14,18); }
+/* Flyout sits to the RIGHT of its icon , tail on the left edge points at it */
+#tb-flyout.point-right::before { left: -6px; border-right: 7px solid rgb(10,14,18); }
+#tb-flyout .ov-info-btn { color: rgba(255,255,255,0.5); }
+#tb-flyout .ov-info-btn:hover, #tb-flyout .ov-info-btn.active { color: var(--accent2); }
+
 /* ── RESPONSIVE: TABLET (≤768px) ── */
 @media (max-width: 768px) {
   /* Logo , shrink significantly */
@@ -6339,7 +6388,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="map"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.29 · rename Wildfires overlay to Wildfire Reports · 2026-08-03</div>
+    <div id="build-stamp">v5.30 · restore toolbar flyout, verified it doesn't block clicks · 2026-08-03</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -25249,6 +25298,7 @@ document.addEventListener('DOMContentLoaded', () => {
   </button>
 </div>
 <div id="ov-info-tooltip"></div>
+<div id="tb-flyout"></div>
 <button id="float-search-btn" onclick="lqmOpenSearch()" title="Search" aria-label="Search">
   <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <circle cx="10.5" cy="10.5" r="7"/>
@@ -26206,6 +26256,100 @@ document.addEventListener('click', (e) => {
 });
 
 _ovInjectInfoButtons();
+
+// ── TOOLBAR (#right-menu) HOVER FLYOUT ──
+// Draw/Text/Polygon/Measure/Track/Radius/Storm Cone/Inspector are icon-only
+// buttons with only a native `title` tooltip. Hovering (or, on touch,
+// pressing) one now extends a small tag with its name + info button, with a
+// triangle tail glued to whichever edge faces the icon, so it's always
+// visually attached to the exact button it describes even as it flips side
+// to stay on screen.
+const TOOL_LABELS = {
+  'tool-draw':      'Draw',
+  'tool-text':      'Text',
+  'tool-polygon':   'Polygon',
+  'tool-distance':  'Measure Distance',
+  'tool-track':     'Track Maker',
+  'tool-radius':    'Radius Maker',
+  'tool-stormcone': 'Storm Cone',
+  'tool-inspector': 'Inspector',
+};
+const TOOL_DESCRIPTIONS = {
+  'tool-draw':      'Freehand drawing. Click and drag to sketch directly on the map.',
+  'tool-text':      'Adds a text label you can place and edit anywhere on the map.',
+  'tool-polygon':   'Draws a custom shape by clicking each corner point.',
+  'tool-distance':  'Measures the straight-line distance between two points you click.',
+  'tool-track':     'Plots a moving track, like a storm or vehicle path, from a series of points.',
+  'tool-radius':    'Click to place a center point, then set a radius to draw a circle around it.',
+  'tool-stormcone': 'Click and drag to draw a cone-shaped threat area, and lists the cities that fall inside it.',
+  'tool-inspector': 'Shows the radar value at the exact center of the map, and updates live as you pan.',
+};
+
+let _tbFlyoutHideTimer = null;
+
+function _tbShowFlyout(btnEl, label, infoText) {
+  clearTimeout(_tbFlyoutHideTimer);
+  const fly = document.getElementById('tb-flyout');
+  if (!fly) return;
+  fly.classList.remove('point-left', 'point-right');
+  fly.innerHTML = `<span>${label}</span>`;
+  if (infoText) fly.appendChild(_makeInfoBtn(infoText));
+  fly.classList.add('open');
+
+  const r = btnEl.getBoundingClientRect();
+  fly.style.left = '0px'; fly.style.top = '0px'; // reset before measuring
+  const flyRect = fly.getBoundingClientRect();
+  // These buttons sit along the right edge of the screen, so the flyout
+  // defaults to extending left (into the map) and only flips right if that
+  // would run off the left edge of the viewport.
+  let left = r.left - flyRect.width - 10;
+  let pointClass = 'point-left'; // flyout ends up left of the icon, tail points right at it
+  if (left < 8) {
+    left = r.right + 10;
+    pointClass = 'point-right'; // flyout ends up right of the icon, tail points left at it
+  }
+  fly.classList.add(pointClass);
+  let top = r.top + r.height / 2 - flyRect.height / 2;
+  top = Math.max(8, Math.min(top, window.innerHeight - flyRect.height - 8));
+  fly.style.left = `${left}px`;
+  fly.style.top = `${top}px`;
+}
+
+function _tbScheduleHideFlyout() {
+  clearTimeout(_tbFlyoutHideTimer);
+  _tbFlyoutHideTimer = setTimeout(_tbHideFlyout, 150);
+}
+
+function _tbHideFlyout() {
+  const fly = document.getElementById('tb-flyout');
+  if (fly) fly.classList.remove('open');
+}
+
+function _tbWireToolButtons() {
+  document.querySelectorAll('#right-menu .tool-btn').forEach(btn => {
+    const label = TOOL_LABELS[btn.id];
+    if (!label) return;
+    const infoText = TOOL_DESCRIPTIONS[btn.id];
+    btn.addEventListener('mouseenter', () => _tbShowFlyout(btn, label, infoText));
+    btn.addEventListener('mouseleave', _tbScheduleHideFlyout);
+    btn.addEventListener('touchstart', () => _tbShowFlyout(btn, label, infoText), { passive: true });
+  });
+}
+_tbWireToolButtons();
+
+// Entering the flyout itself (to reach the info button) cancels the pending hide.
+(() => {
+  const fly = document.getElementById('tb-flyout');
+  if (!fly) return;
+  fly.addEventListener('mouseenter', () => clearTimeout(_tbFlyoutHideTimer));
+  fly.addEventListener('mouseleave', _tbScheduleHideFlyout);
+})();
+
+// Touch has no hover, so a tap elsewhere closes it.
+document.addEventListener('touchstart', (e) => {
+  if (e.target.closest('#right-menu .tool-btn') || e.target.closest('#tb-flyout')) return;
+  _tbHideFlyout();
+}, { passive: true });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // OVERLAY LIST - drag ⋮ to reorder; order is saved and drives map stacking order.
