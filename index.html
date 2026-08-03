@@ -9371,6 +9371,115 @@ async function loadWildfires() {
   }
 }
 
+// ── AMBIENT WEATHER NETWORK (personal weather stations) ──
+// API docs: https://ambientweather.docs.apiary.io/
+// Keys live near the top of this file (AMBIENT_WEATHER_API_KEY / AMBIENT_WEATHER_APPLICATION_KEY).
+let _ambientActive = false, _ambientLayer = null, _ambientTimer = null;
+
+async function loadAmbientWeather() {
+  if (!AMBIENT_WEATHER_APPLICATION_KEY) {
+    updateLoadStatus('Ambient Weather: paste an applicationKey into index.html first.');
+    setTimeout(() => updateLoadStatus(''), 5000);
+    return;
+  }
+  updateLoadStatus('Loading Ambient Weather stations…');
+  const url = `https://api.ambientweather.net/v1/devices?applicationKey=${encodeURIComponent(AMBIENT_WEATHER_APPLICATION_KEY)}&apiKey=${encodeURIComponent(AMBIENT_WEATHER_API_KEY)}`;
+  const wrappers = [
+    u => u,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+  let data = null, rateLimited = false;
+  for (const wrap of wrappers) {
+    try {
+      const r = await fetchWithTimeout(wrap(url), 10000);
+      if (r.status === 429) { rateLimited = true; break; }
+      if (!r.ok) { console.debug(`[ambient] HTTP ${r.status}`); continue; }
+      const txt = await r.text();
+      let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[ambient] non-JSON response'); continue; }
+      if (Array.isArray(d)) { data = d; break; }
+    } catch(e) { console.debug('[ambient] error:', e.message); }
+  }
+
+  if (_ambientLayer) { try { map.removeLayer(_ambientLayer); } catch(e){} _ambientLayer = null; }
+  if (rateLimited) {
+    updateLoadStatus('Ambient Weather: rate limited, try again shortly.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+    return;
+  }
+  if (!data) {
+    updateLoadStatus('Ambient Weather data unavailable.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+    return;
+  }
+
+  const pane = _ovPane('ambient-weather');
+  const layer = L.layerGroup();
+
+  data.forEach(dev => {
+    const info = dev.info || {};
+    const coords = (info.coords && info.coords.coords) || {};
+    const lat = Number(coords.lat), lon = Number(coords.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const d = dev.lastData || {};
+    const name = info.name || 'Weather Station';
+    const tempf = Number(d.tempf);
+    const hasTemp = Number.isFinite(tempf);
+    const [r, g, b] = hasTemp ? tempToColor(tempf) : [130, 130, 130];
+    const color = `rgb(${r},${g},${b})`;
+
+    const icon = L.divIcon({
+      className: '',
+      iconSize: [26, 26],
+      iconAnchor: [13, 13],
+      html: `<div style="width:26px;height:26px;border-radius:50%;background:${color};
+        border:2px solid rgba(255,255,255,0.85);box-shadow:0 0 6px rgba(0,0,0,0.5);
+        display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;
+        color:#000;font-family:var(--mono, monospace);">
+        ${hasTemp ? Math.round(tempf) : '📡'}</div>`
+    });
+
+    const ageMin = Number.isFinite(Number(d.dateutc)) ? Math.max(0, Math.round((Date.now() - Number(d.dateutc)) / 60000)) : null;
+    const humidity  = Number(d.humidity);
+    const feelsLike = Number(d.feelsLike);
+    const windSpd   = Number(d.windspeedmph);
+    const windGust  = Number(d.windgustmph);
+    const windDir   = Number(d.winddir);
+    const baromRel  = Number(d.baromrelin);
+    const dewPoint  = Number(d.dewPoint);
+    const dailyRain = Number(d.dailyrainin);
+
+    L.marker([lat, lon], { icon, pane, zIndexOffset: 200 })
+      .bindPopup(`<div class="data-popup-inner" style="--dp-accent:${color}">
+        <div class="dp-header">
+          <span class="dp-header-icon">📡</span>
+          <span class="dp-header-label">${_ccEsc(name)}</span>
+          ${ageMin !== null ? `<span class="dp-header-sub">${ageMin}m ago</span>` : ''}
+        </div>
+        <div class="dp-body">
+          ${hasTemp ? `<div class="dp-row"><span>Temp</span><b>${tempf.toFixed(1)}°F</b></div>` : ''}
+          ${Number.isFinite(feelsLike) ? `<div class="dp-row"><span>Feels Like</span><b>${feelsLike.toFixed(1)}°F</b></div>` : ''}
+          ${Number.isFinite(humidity) ? `<div class="dp-row"><span>Humidity</span><b>${humidity}%</b></div>` : ''}
+          ${Number.isFinite(windSpd) ? `<div class="dp-row"><span>Wind</span><b>${windSpd.toFixed(1)} mph${Number.isFinite(windDir) ? ' @ ' + windDir + '°' : ''}</b></div>` : ''}
+          ${Number.isFinite(windGust) ? `<div class="dp-row"><span>Gust</span><b>${windGust.toFixed(1)} mph</b></div>` : ''}
+          ${Number.isFinite(baromRel) ? `<div class="dp-row"><span>Pressure</span><b>${baromRel.toFixed(2)} inHg</b></div>` : ''}
+          ${Number.isFinite(dewPoint) ? `<div class="dp-row"><span>Dew Point</span><b>${dewPoint.toFixed(1)}°F</b></div>` : ''}
+          ${Number.isFinite(dailyRain) ? `<div class="dp-row"><span>Rain Today</span><b>${dailyRain.toFixed(2)} in</b></div>` : ''}
+        </div>
+      </div>`, { className: 'data-popup', maxWidth: 240 })
+      .addTo(layer);
+  });
+
+  _ambientLayer = layer.addTo(map);
+  if (!layer.getLayers().length) {
+    updateLoadStatus('No Ambient Weather stations found for this apiKey.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+  } else {
+    updateLoadStatus('');
+  }
+}
+
 // ── SPC STORM REPORTS ──
 function _clearStormReportLayers() {
   ['tor','hail','wind'].forEach(t => {
@@ -11460,6 +11569,17 @@ function toggleOverlayPill(id) {
     } else {
       clearInterval(_wildfiresTimer); _wildfiresTimer = null;
       if (_wildfiresLayer) { try { map.removeLayer(_wildfiresLayer); } catch(e){} _wildfiresLayer = null; }
+    }
+  } else if (id === 'ambient-weather') {
+    _ambientActive = !_ambientActive;
+    const pill = document.getElementById('op-ambient-weather');
+    if (pill) pill.classList.toggle('active', _ambientActive);
+    if (_ambientActive) {
+      loadAmbientWeather();
+      _ambientTimer = setInterval(loadAmbientWeather, 5 * 60 * 1000);
+    } else {
+      clearInterval(_ambientTimer); _ambientTimer = null;
+      if (_ambientLayer) { try { map.removeLayer(_ambientLayer); } catch(e){} _ambientLayer = null; }
     }
   }
 }
@@ -25312,6 +25432,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-wildfires" data-ovid="wildfires" title="Wildfire Reports - active large wildfires, updated in the last 48 hours">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wildfires')">Wildfire Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-ambient-weather" data-ovid="ambient-weather" title="Ambient Weather Network - personal weather stations">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('ambient-weather')">Ambient Weather</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
   </div>
   <button id="overlay-toggle-btn" onclick="toggleOverlayLauncher()" title="Toggle overlays" aria-label="Toggle overlays">
     <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -26215,6 +26338,7 @@ const OV_DESCRIPTIONS = {
   'canada-alerts':    'Active weather alerts for Canada, from Environment Canada.',
   'tornado-tracks':   'Surveyed tornado damage paths, rated by EF scale, from the last 60 days.',
   'wildfires':        'Active large wildfires, updated in the last 48 hours, with acres burned and location.',
+  'ambient-weather':  'Personal weather stations from the Ambient Weather Network, showing live temperature, wind, rain, and pressure.',
 };
 
 function _ovInjectInfoButtons() {
