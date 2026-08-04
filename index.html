@@ -5725,6 +5725,45 @@ footer {
 }
 .lqm-avatar-edit-btn.remove:hover { border-color: rgba(255,60,60,0.6); color: #fff; }
 
+/* Avatar crop modal - matches #gwcfc-auth-modal's fixed/inset/z-index convention */
+#avatar-crop-modal {
+  display: none; position: fixed; inset: 0; z-index: 9995;
+  background: rgba(0,0,0,0.82); align-items: center; justify-content: center;
+}
+#avatar-crop-modal.open { display: flex; }
+#avatar-crop-inner {
+  background: rgb(20,6,6); border: 1px solid rgba(170,0,0,0.4); border-radius: 14px;
+  padding: 18px; width: min(320px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 12px;
+}
+#avatar-crop-title {
+  font-family: 'Comfortaa', sans-serif; font-size: 14px; font-weight: 700; color: #fff; text-align: center;
+}
+#avatar-crop-viewport {
+  position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: 10px; overflow: hidden;
+  background: #000; touch-action: none; cursor: grab;
+}
+#avatar-crop-viewport.dragging { cursor: grabbing; }
+#avatar-crop-img {
+  position: absolute; top: 0; left: 0; transform-origin: 0 0;
+  max-width: none; max-height: none; user-select: none; -webkit-user-drag: none;
+}
+#avatar-crop-guide {
+  position: absolute; inset: 8%; border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 0 9999px rgba(0,0,0,0.55); border: 2px solid rgba(255,255,255,0.9);
+}
+#avatar-crop-zoom-row { display: flex; align-items: center; gap: 8px; }
+.avatar-crop-zoom-icon { font-size: 14px; color: rgba(255,255,255,0.5); flex-shrink: 0; width: 14px; text-align: center; }
+#avatar-crop-zoom { flex: 1; accent-color: #008CBA; }
+#avatar-crop-btn-row { display: flex; gap: 8px; }
+#avatar-crop-btn-row button {
+  flex: 1; font-family: 'Comfortaa', sans-serif; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  padding: 9px; border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+}
+#avatar-crop-cancel { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.2); color: rgba(255,255,255,0.75); }
+#avatar-crop-cancel:hover { background: rgba(255,255,255,0.14); }
+#avatar-crop-confirm { background: #008CBA; border-color: #008CBA; color: #fff; }
+#avatar-crop-confirm:hover { background: #00a6dd; }
+
 /* Display-name font picker */
 .lqm-font-grid {
   display: grid;
@@ -23651,7 +23690,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">🔔</div>
       <div class="fc-title">NOTIFICATIONS &amp; RAIN NEAR ME</div>
-      <p class="fc-body">Two toggles in the profile view: <strong>🔔 Alert Notifications</strong> for warnings covering your area, and <strong>🌧️ Rain Near Me</strong>, which watches radar for rain approaching within roughly 25 miles.</p>
+      <p class="fc-body">Two toggles in the profile view: <strong>🔔 Alert Notifications</strong> for warnings covering your area, and <strong>🌧️ Rain Near Me</strong>, which watches radar for rain approaching within roughly 5 miles.</p>
     </div>
   </div>
 
@@ -24540,23 +24579,7 @@ function _profileAvatarUpload(input) {
   const reader = new FileReader();
   reader.onload = e => {
     const img = new Image();
-    img.onload = () => {
-      // Center-crop to a square, then downscale - keeps the Firestore doc small.
-      const side = Math.min(img.width, img.height);
-      const sx = (img.width - side) / 2, sy = (img.height - side) / 2;
-      const render = (size, q) => {
-        const c = document.createElement('canvas');
-        c.width = size; c.height = size;
-        c.getContext('2d').drawImage(img, sx, sy, side, side, 0, 0, size, size);
-        return c.toDataURL('image/jpeg', q);
-      };
-      let url = render(256, 0.75);
-      if (url.length > 300000) url = render(200, 0.65);
-      if (url.length > 300000) url = render(160, 0.55);
-      _selectedAvatarImage = url;
-      _renderAvatarPreview(document.getElementById('lqm-avatar-edit-preview'), _selectedEmoji,
-        (_currentUser && _currentUser.displayName ? _currentUser.displayName.charAt(0).toUpperCase() : '?'));
-    };
+    img.onload = () => { _avatarCropOpen(img); };
     img.src = e.target.result;
   };
   reader.readAsDataURL(f);
@@ -24569,6 +24592,128 @@ function _profileAvatarRemove() {
   _renderAvatarPreview(document.getElementById('lqm-avatar-edit-preview'), _selectedEmoji,
     (_currentUser && _currentUser.displayName ? _currentUser.displayName.charAt(0).toUpperCase() : '?'));
 }
+
+// ── AVATAR CROP MODAL ─────────────────────────────────────────────────────
+// Lets the user pan/zoom the raw upload before it's baked into a fixed-size
+// avatar, rather than always silently center-cropping. Math works in the
+// crop viewport's own on-screen pixel space: baseScale fits the image's
+// shorter side to the viewport (so there's never a gap), zoom multiplies on
+// top of that, and pan is clamped so the image always fully covers the
+// viewport. _avatarCropConfirm() maps the visible viewport rectangle back to
+// source-image pixels to render the final square crop.
+let _avatarCropImg = null;
+let _avatarCropBaseScale = 1, _avatarCropZoom = 1;
+let _avatarCropTx = 0, _avatarCropTy = 0;
+let _avatarCropDragging = false, _avatarCropDragSX = 0, _avatarCropDragSY = 0, _avatarCropDragTX0 = 0, _avatarCropDragTY0 = 0;
+
+function _avatarCropViewportSize() {
+  const vp = document.getElementById('avatar-crop-viewport');
+  return vp ? vp.getBoundingClientRect().width : 280;
+}
+
+function _avatarCropOpen(img) {
+  _avatarCropImg = img;
+  _avatarCropZoom = 1;
+  const modal = document.getElementById('avatar-crop-modal');
+  const imgEl = document.getElementById('avatar-crop-img');
+  const zoomSlider = document.getElementById('avatar-crop-zoom');
+  if (zoomSlider) zoomSlider.value = 100;
+  if (imgEl) imgEl.src = img.src;
+  if (modal) modal.classList.add('open');
+  // Wait a frame so the viewport has a real rendered size before computing fit.
+  requestAnimationFrame(() => {
+    const V = _avatarCropViewportSize();
+    _avatarCropBaseScale = V / Math.min(img.width, img.height);
+    _avatarCropTx = (V - img.width  * _avatarCropBaseScale * _avatarCropZoom) / 2;
+    _avatarCropTy = (V - img.height * _avatarCropBaseScale * _avatarCropZoom) / 2;
+    _avatarCropClamp();
+    _avatarCropApply();
+  });
+}
+
+function _avatarCropTotalScale() { return _avatarCropBaseScale * _avatarCropZoom; }
+
+function _avatarCropClamp() {
+  if (!_avatarCropImg) return;
+  const V = _avatarCropViewportSize();
+  const s = _avatarCropTotalScale();
+  const w = _avatarCropImg.width * s, h = _avatarCropImg.height * s;
+  _avatarCropTx = Math.max(Math.min(_avatarCropTx, 0), V - w);
+  _avatarCropTy = Math.max(Math.min(_avatarCropTy, 0), V - h);
+}
+
+function _avatarCropApply() {
+  const imgEl = document.getElementById('avatar-crop-img');
+  if (!imgEl || !_avatarCropImg) return;
+  const s = _avatarCropTotalScale();
+  imgEl.style.width  = (_avatarCropImg.width  * s) + 'px';
+  imgEl.style.height = (_avatarCropImg.height * s) + 'px';
+  imgEl.style.transform = `translate(${_avatarCropTx}px, ${_avatarCropTy}px)`;
+}
+
+function _avatarCropSetZoom(sliderVal) {
+  _avatarCropZoom = Math.max(1, sliderVal / 100);
+  _avatarCropClamp();
+  _avatarCropApply();
+}
+
+function _avatarCropCancel() {
+  const modal = document.getElementById('avatar-crop-modal');
+  if (modal) modal.classList.remove('open');
+  _avatarCropImg = null;
+  const input = document.getElementById('lqm-avatar-file');
+  if (input) input.value = '';
+}
+
+function _avatarCropConfirm() {
+  const img = _avatarCropImg;
+  if (!img) return;
+  const V = _avatarCropViewportSize();
+  const s = _avatarCropTotalScale();
+  // The visible viewport rectangle, mapped back into source-image pixel space.
+  const sx = -_avatarCropTx / s, sy = -_avatarCropTy / s, sSize = V / s;
+  const render = (size, q) => {
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    c.getContext('2d').drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size);
+    return c.toDataURL('image/jpeg', q);
+  };
+  let url = render(256, 0.75);
+  if (url.length > 300000) url = render(200, 0.65);
+  if (url.length > 300000) url = render(160, 0.55);
+  _selectedAvatarImage = url;
+  _renderAvatarPreview(document.getElementById('lqm-avatar-edit-preview'), _selectedEmoji,
+    (_currentUser && _currentUser.displayName ? _currentUser.displayName.charAt(0).toUpperCase() : '?'));
+  const modal = document.getElementById('avatar-crop-modal');
+  if (modal) modal.classList.remove('open');
+  _avatarCropImg = null;
+  const input = document.getElementById('lqm-avatar-file');
+  if (input) input.value = '';
+}
+
+// One-time drag wiring for the crop viewport. The modal markup lives later in the
+// body than this script tag, so this must wait for DOMContentLoaded rather than
+// binding immediately, the element doesn't exist yet at parse time.
+document.addEventListener('DOMContentLoaded', function _avatarCropInitDrag() {
+  const vp = document.getElementById('avatar-crop-viewport');
+  if (!vp) return;
+  vp.addEventListener('pointerdown', e => {
+    _avatarCropDragging = true;
+    vp.classList.add('dragging');
+    _avatarCropDragSX = e.clientX; _avatarCropDragSY = e.clientY;
+    _avatarCropDragTX0 = _avatarCropTx; _avatarCropDragTY0 = _avatarCropTy;
+    e.preventDefault();
+  });
+  window.addEventListener('pointermove', e => {
+    if (!_avatarCropDragging) return;
+    _avatarCropTx = _avatarCropDragTX0 + (e.clientX - _avatarCropDragSX);
+    _avatarCropTy = _avatarCropDragTY0 + (e.clientY - _avatarCropDragSY);
+    _avatarCropClamp();
+    _avatarCropApply();
+  });
+  window.addEventListener('pointerup',     () => { _avatarCropDragging = false; vp.classList.remove('dragging'); });
+  window.addEventListener('pointercancel', () => { _avatarCropDragging = false; vp.classList.remove('dragging'); });
+});
 
 function selectProfileFont(key) {
   _selectedNameFont = key;
@@ -25039,13 +25184,17 @@ async function _pollRainRadar() {
   if (!_rainDetectEnabled || !_userCoords) return;
   const sub = document.getElementById('lqm-rain-sublabel');
   try {
-    // Use the radar tiles already loaded on the map - zero new network requests
-    if (!radarFrames.length) return;
-    const frame = radarFrames[currentFrame];
+    // Compute the latest NEXRAD composite frame directly, same deterministic
+    // tile-key math loadNEXRAD() uses. Don't depend on radarFrames/currentFrame,
+    // those are only populated once the user has the Radar layer toggled on -
+    // this check needs to keep working even when Radar is off.
+    const frame = _generateL3Frames(1)[0];
     if (!frame || !frame.tileKey) return;
 
-    // Convert GPS to tile XY at zoom 7 (~1.2 km/pixel; ±20px radius ≈ 25 miles)
-    const Z   = 7;
+    // Convert GPS to tile XY at a zoom fine enough for a tight ~5 mile radius.
+    // Meters/pixel in Web Mercator depends on latitude, so derive the pixel
+    // radius from the user's actual latitude rather than a fixed constant.
+    const Z   = 9;
     const n   = 1 << Z;
     const xF  = (_userCoords.lon + 180) / 360 * n;
     const latR = _userCoords.lat * Math.PI / 180;
@@ -25053,6 +25202,9 @@ async function _pollRainRadar() {
     const tx  = Math.floor(xF), ty = Math.floor(yF);
     const px  = Math.floor((xF - tx) * 256);
     const py  = Math.floor((yF - ty) * 256);
+    const metersPerPixel = 156543.03392 * Math.cos(latR) / Math.pow(2, Z);
+    const RAIN_RADIUS_MILES = 5;
+    const R = Math.max(3, Math.round((RAIN_RADIUS_MILES * 1609.34) / metersPerPixel));
 
     // Same URL the map already fetched and the SW already cached
     const tileUrl = `${IEM_TILE_BASE}${frame.tileKey}/${Z}/${tx}/${ty}.png`;
@@ -25070,7 +25222,7 @@ async function _pollRainRadar() {
       blob = await r.blob();
     }
 
-    // Draw to canvas and sample a ±20 px square around user's pixel
+    // Draw to canvas and sample a ±R px square (≈5 mi radius) around user's pixel
     const img = new Image();
     const objUrl = URL.createObjectURL(blob);
     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = objUrl; });
@@ -25079,7 +25231,6 @@ async function _pollRainRadar() {
     cv.width  = cv.height = 256;
     const ctx = cv.getContext('2d');
     ctx.drawImage(img, 0, 0);
-    const R  = 20;
     const x0 = Math.max(0, px - R), x1 = Math.min(255, px + R);
     const y0 = Math.max(0, py - R), y1 = Math.min(255, py + R);
     const pixels = ctx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1).data;
@@ -25101,7 +25252,7 @@ async function _pollRainRadar() {
       _fireNotification(
         `rain:${Date.now()}`,
         `${emoji} ${label} Near You`,
-        'Radar shows precipitation within ~25 miles of your location',
+        'Radar shows precipitation within ~5 miles of your location',
         sev
       );
       if (sub) sub.textContent = `${emoji} ${label} detected on radar nearby`;
@@ -26318,7 +26469,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="lqm-notif-row">
         <div>
           <div class="lqm-notif-label">🌧️ Rain Near Me</div>
-          <div class="lqm-notif-sublabel" id="lqm-rain-sublabel">Off - watches radar for rain within ~25 mi</div>
+          <div class="lqm-notif-sublabel" id="lqm-rain-sublabel">Off - watches radar for rain within ~5 mi</div>
         </div>
         <label class="lqm-toggle">
           <input type="checkbox" id="lqm-rain-toggle" onchange="lqmToggleRainDetect(this.checked)"/>
@@ -26360,6 +26511,26 @@ document.addEventListener('DOMContentLoaded', () => {
         <!-- populated by JS -->
       </div>
       <button class="lqm-edit-save-btn" onclick="saveProfileChanges()">SAVE CHANGES</button>
+    </div>
+  </div>
+</div>
+
+<!-- Avatar crop modal - drag to reposition, slider to zoom, before a photo is saved -->
+<div id="avatar-crop-modal">
+  <div id="avatar-crop-inner">
+    <div id="avatar-crop-title">Adjust Photo</div>
+    <div id="avatar-crop-viewport">
+      <img id="avatar-crop-img" draggable="false" alt=""/>
+      <div id="avatar-crop-guide"></div>
+    </div>
+    <div id="avatar-crop-zoom-row">
+      <span class="avatar-crop-zoom-icon">－</span>
+      <input type="range" id="avatar-crop-zoom" min="100" max="300" value="100" oninput="_avatarCropSetZoom(this.value)">
+      <span class="avatar-crop-zoom-icon">＋</span>
+    </div>
+    <div id="avatar-crop-btn-row">
+      <button id="avatar-crop-cancel" onclick="_avatarCropCancel()">Cancel</button>
+      <button id="avatar-crop-confirm" onclick="_avatarCropConfirm()">Use Photo</button>
     </div>
   </div>
 </div>
