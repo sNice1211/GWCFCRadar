@@ -2307,6 +2307,50 @@ body {
   background: rgba(0,140,186,0.25); border-color: rgba(0,140,186,0.6);
   color: #008CBA;
 }
+/* ── Compare (A/B model+run swipe) ── */
+#sev-compare-toggle-row { display: flex; justify-content: flex-end; margin: -2px 0 4px; }
+#sev-compare-btn {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .04em;
+  background: rgba(232,184,0,0.08); border: 1px solid rgba(232,184,0,0.3);
+  color: rgba(232,184,0,0.85); border-radius: 6px; padding: 3px 9px; cursor: pointer;
+}
+#sev-compare-btn.active { background: #e8b800; border-color: #e8b800; color: #1a0900; font-weight: 700; }
+#sev-compare-panel {
+  border-top: 1px dashed rgba(232,184,0,0.25); border-bottom: 1px dashed rgba(232,184,0,0.25);
+  padding: 6px 0; margin-bottom: 5px;
+}
+#sev-compare-dropdowns { display: flex; gap: 5px; padding-bottom: 4px; }
+#sev-run-row-b { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; }
+#sev-run-row-b select {
+  flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 9px; padding: 3px 4px;
+}
+#sev-compare-hint { font-family: var(--mono); font-size: 8px; color: rgba(255,255,255,0.35); line-height: 1.4; }
+
+#sev-compare-divider {
+  position: absolute; top: 0; bottom: 0; width: 0; z-index: 650;
+  pointer-events: none; touch-action: none;
+}
+#sev-compare-divider.active { pointer-events: auto; }
+#sev-compare-divider::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px;
+  background: rgba(255,255,255,0.85); box-shadow: 0 0 6px rgba(0,0,0,0.6);
+}
+#sev-compare-handle {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 30px; height: 30px; border-radius: 50%; background: rgba(20,20,24,0.92);
+  border: 2px solid rgba(255,255,255,0.85); display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: #fff; cursor: ew-resize; pointer-events: auto;
+}
+#sev-compare-label-a, #sev-compare-label-b {
+  position: absolute; top: 60px; z-index: 640; font-family: var(--mono); font-size: 10px;
+  background: rgba(8,8,10,0.75); border: 1px solid rgba(255,255,255,0.2); border-radius: 6px;
+  padding: 3px 8px; color: #fff; pointer-events: none; max-width: 46%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#sev-compare-label-a { left: 8px; border-left: 3px solid #00e5ff; }
+#sev-compare-label-b { right: 8px; border-left: 3px solid #ff9100; text-align: right; }
+
 /* Playbar */
 #sev-playbar-row {
   display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
@@ -6715,6 +6759,13 @@ body.clean-mode #clean-hint { opacity: 1; }
   <div id="map-wrap">
     <div id="map"></div>
 
+    <!-- Severe model Compare (A/B) swipe divider - hidden until Compare is toggled on -->
+    <div id="sev-compare-divider" style="display:none">
+      <div id="sev-compare-handle">⇄</div>
+    </div>
+    <div id="sev-compare-label-a" style="display:none"></div>
+    <div id="sev-compare-label-b" style="display:none"></div>
+
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
     <div id="build-stamp">v5.31 · fix panels overlapping the layer bubbles · 2026-08-03</div>
 
@@ -6759,6 +6810,32 @@ body.clean-mode #clean-hint { opacity: 1; }
             <label class="sev-dd-label">Product</label>
             <select id="sev-var-sel" onchange="_sevSetVar(this.value)"></select>
           </div>
+        </div>
+        <div id="sev-compare-toggle-row">
+          <button id="sev-compare-btn" onclick="_sevToggleCompare()" title="Compare a second model or run side by side">⇄ Compare</button>
+        </div>
+        <div id="sev-compare-panel" style="display:none">
+          <div id="sev-compare-dropdowns">
+            <div class="sev-dd-wrap">
+              <label class="sev-dd-label">Model B</label>
+              <select id="sev-model-sel-b" onchange="_sevSetSectionB(this.value)">
+                <option value="dwd">DWD ICON (Global)</option>
+                <option value="ecmwf" selected>ECMWF IFS (Global)</option>
+                <option value="hrdps">HRDPS (Hi-Res N. America)</option>
+                <option value="ndfd">NWS NDFD (US Forecast)</option>
+                <option value="hrrr">HRRR (18h)</option>
+              </select>
+            </div>
+            <div class="sev-dd-wrap">
+              <label class="sev-dd-label">Product B</label>
+              <select id="sev-var-sel-b" onchange="_sevSetVarB(this.value)"></select>
+            </div>
+          </div>
+          <div id="sev-run-row-b">
+            <span class="trop-run-lbl">Run B:</span>
+            <select id="sev-run-sel-b" onchange="_sevSetRunB(this.value)"></select>
+          </div>
+          <div id="sev-compare-hint">Drag the ⇄ divider on the map to compare. Both sides step through the same forecast-hour slider below.</div>
         </div>
         <div id="sev-run-row">
           <span class="trop-run-lbl">Run:</span>
@@ -12783,12 +12860,13 @@ const IEM_HRRR_REFP_WMS = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/hrrr/re
 
 let _iemModelLayer = null;
 
-function _iemHrrrLayer(wmsUrl, layerName, timeISO) {
+function _iemHrrrLayer(wmsUrl, layerName, timeISO, pane) {
   const opts = {
     layers: layerName, format: 'image/png', transparent: true,
     version: '1.1.1', opacity: 0.75, zIndex: 6,
   };
   if (timeISO) opts.TIME = timeISO;
+  if (pane) opts.pane = pane;
   return L.tileLayer.wms(wmsUrl, opts);
 }
 
@@ -13042,6 +13120,7 @@ function _sevMaxFrame() {
 }
 
 function _sevRender() {
+  if (_sevCompareOn) _sevRenderB();
   const body=document.getElementById('sev-panel-body');
   if(_iemModelLayer){map.removeLayer(_iemModelLayer);_iemModelLayer=null;}
   if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
@@ -13292,6 +13371,216 @@ function _sevInit() {
   _sevBuildFrameGrid();
   _sevRender();
 }
+
+// ── SEVERE MODEL COMPARE (A/B swipe) ─────────────────────────────────────────
+// Renders a second, independent WMS layer (Model/Product/Run "B") into its own
+// Leaflet pane stacked above the normal ("A") layer, then clips that pane with
+// a draggable vertical divider so the map shows A on the left / B on the right.
+// Both sides share A's forecast-hour slider (_sevFrame), each interpreted with
+// that model's own step size, so "frame 4" means a different valid time per
+// model, this is a quick-look A/B tool, not a time-synced comparison.
+let _sevCompareOn = false;
+let _sevSectionB = 'ecmwf', _sevVarB = 't2m', _sevRunB = '';
+let _sevOverlayLayerB = null;
+let _sevCompareSplit = 50; // % of map width, from the left
+
+const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR' };
+
+// Same run-list logic as _sevPopulateRuns(), but parameterized so it can fill
+// either the A or the B run <select> without touching the other side's state.
+function _sevPopulateRunsFor(section, selEl) {
+  const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const cfg = SEV_RUN_CFG[section] || SEV_RUN_CFG.dwd;
+  const lagged = new Date(Date.now() - cfg.lagH * 3600000);
+  const snappedH = lagged.getUTCHours() - (lagged.getUTCHours() % cfg.cycleH);
+  const latest = new Date(Date.UTC(lagged.getUTCFullYear(), lagged.getUTCMonth(), lagged.getUTCDate(), snappedH));
+  selEl.innerHTML = '';
+  let first = '';
+  for (let i = 0; i < cfg.maxRuns; i++) {
+    const t = new Date(latest.getTime() - i * cfg.cycleH * 3600000);
+    const val = `${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(t.getUTCHours())}`;
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = (i === 0 ? 'Latest · ' : '') + `${MONTHS[t.getUTCMonth()]} ${t.getUTCDate()} - ${pad(t.getUTCHours())}z`;
+    selEl.appendChild(opt);
+    if (!first) first = val;
+  }
+  return first;
+}
+
+function _sevUpdateProductsB() {
+  const sel = document.getElementById('sev-var-sel-b'); if (!sel) return;
+  const prods = SEV_PRODUCTS[_sevSectionB] || SEV_PRODUCTS.hrrr;
+  sel.innerHTML = '';
+  prods.forEach(p => { const o=document.createElement('option'); o.value=p.v; o.textContent=p.l; sel.appendChild(o); });
+  if (!prods.some(p => p.v === _sevVarB)) _sevVarB = SEV_DEFAULT_VAR[_sevSectionB] || prods[0].v;
+  sel.value = _sevVarB;
+}
+
+function _sevSetSectionB(s) {
+  _sevSectionB = s;
+  const el = document.getElementById('sev-model-sel-b'); if (el && el.value !== s) el.value = s;
+  _sevVarB = SEV_DEFAULT_VAR[s] || (SEV_PRODUCTS[s]||SEV_PRODUCTS.hrrr)[0].v;
+  _sevUpdateProductsB();
+  const runSel = document.getElementById('sev-run-sel-b');
+  if (runSel) _sevRunB = _sevPopulateRunsFor(s, runSel);
+  _sevRenderB();
+}
+function _sevSetVarB(v) {
+  _sevVarB = v; const el = document.getElementById('sev-var-sel-b'); if (el && el.value !== v) el.value = v;
+  _sevRenderB();
+}
+function _sevSetRunB(v) { _sevRunB = v; _sevRenderB(); }
+
+function _sevValidTimeISOFor(run, frame, stepHours) {
+  if (!run || run.length < 10) return null;
+  const runMs = Date.UTC(parseInt(run.slice(0,4)), parseInt(run.slice(4,6))-1, parseInt(run.slice(6,8)), parseInt(run.slice(8,10)));
+  return new Date(runMs + frame * stepHours * 3600000).toISOString().replace('.000Z','Z');
+}
+
+function _sevRenderB() {
+  if (_sevOverlayLayerB) { try { map.removeLayer(_sevOverlayLayerB); } catch(e){} _sevOverlayLayerB = null; }
+  if (!_sevCompareOn) return;
+  if (!map.getPane('sev-compare-b')) {
+    const p = map.createPane('sev-compare-b');
+    p.style.zIndex = 450; // above the normal overlay pane (400) so B draws on top, A shows through the clip
+    p.style.pointerEvents = 'none';
+  }
+  const commonOpts = { format:'image/png', transparent:true, version:'1.1.1', opacity:1, pane:'sev-compare-b', tileSize:256, noWrap:true };
+  const frame = _sevFrame;
+  let layer = null;
+
+  if (_sevSectionB === 'ecmwf') {
+    const layerName = ECMWF_LAYERS[_sevVarB];
+    if (layerName) {
+      const t = _sevValidTimeISOFor(_sevRunB, frame, 6);
+      const opts = Object.assign({}, commonOpts, { layers: layerName }); if (t) opts.TIME = t;
+      layer = L.tileLayer.wms(ECCHARTS_WMS, opts);
+    }
+  } else if (_sevSectionB === 'dwd') {
+    const layerName = DWD_LAYERS[_sevVarB];
+    if (layerName) {
+      const t = _sevValidTimeISOFor(_sevRunB, frame, 3);
+      const opts = Object.assign({}, commonOpts, { layers: layerName }); if (t) opts.TIME = t;
+      if (DWD_ELEVATION[_sevVarB]) opts.ELEVATION = DWD_ELEVATION[_sevVarB];
+      layer = L.tileLayer.wms(DWD_WMS, opts);
+    }
+  } else if (GEOMET_LAYERS[_sevSectionB]) {
+    const layerName = GEOMET_LAYERS[_sevSectionB][_sevVarB];
+    if (layerName) {
+      const t = _sevValidTimeISOFor(_sevRunB, frame, 3);
+      const opts = Object.assign({}, commonOpts, { layers: layerName }); if (t) opts.TIME = t;
+      layer = L.tileLayer.wms(GEOMET_WMS, opts);
+    }
+  } else if (_sevSectionB === 'ndfd') {
+    const layerName = NDFD_LAYERS[_sevVarB];
+    if (layerName && _sevRunB && _sevRunB.length >= 10) {
+      const runMs = Date.UTC(parseInt(_sevRunB.slice(0,4)), parseInt(_sevRunB.slice(4,6))-1, parseInt(_sevRunB.slice(6,8)), parseInt(_sevRunB.slice(8,10)));
+      const vt = new Date(runMs + frame * 3 * 3600000);
+      const p2 = n => String(n).padStart(2,'0');
+      const vtit = `${vt.getUTCFullYear()}-${p2(vt.getUTCMonth()+1)}-${p2(vt.getUTCDate())}T${p2(vt.getUTCHours())}:00`;
+      const opts = Object.assign({}, commonOpts, { layers: layerName, version:'1.3.0', VTIT: vtit });
+      layer = L.tileLayer.wms(NDFD_WMS, opts);
+    }
+  } else {
+    // HRRR via IEM
+    const fhrMin = Math.min(frame * 3, 18) * 60;
+    const layerMin = String(fhrMin).padStart(4, '0');
+    const t = _sevValidTimeISOFor(_sevRunB, frame, 3);
+    let wmsUrl = null, layerName = null;
+    if (_sevVarB === 'refc')        { wmsUrl = IEM_HRRR_REFD_WMS; layerName = `refd_${layerMin}`; }
+    else if (_sevVarB === 'precip') { wmsUrl = IEM_HRRR_REFP_WMS; layerName = `refp_${layerMin}`; }
+    if (wmsUrl) layer = _iemHrrrLayer(wmsUrl, layerName, t, 'sev-compare-b');
+  }
+
+  if (layer) { layer.setOpacity(1); layer.addTo(map); _sevOverlayLayerB = layer; }
+  _sevCompareUpdateLabels();
+  _sevCompareUpdateClip();
+}
+
+function _sevCompareLabelText(section, v, run) {
+  const name = SEV_MODEL_LABELS[section] || section.toUpperCase();
+  const prods = SEV_PRODUCTS[section] || SEV_PRODUCTS.hrrr;
+  const prod = prods.find(p => p.v === v);
+  const runLbl = run && run.length >= 10 ? `${run.slice(4,6)}/${run.slice(6,8)} ${run.slice(8,10)}z` : '-';
+  return `${name} · ${prod ? prod.l : v} · ${runLbl}`;
+}
+
+function _sevCompareUpdateLabels() {
+  const a = document.getElementById('sev-compare-label-a');
+  const b = document.getElementById('sev-compare-label-b');
+  if (a) a.textContent = 'A  ' + _sevCompareLabelText(_sevSection, _sevVar, _sevRun);
+  if (b) b.textContent = 'B  ' + _sevCompareLabelText(_sevSectionB, _sevVarB, _sevRunB);
+}
+
+// Keeps the on-screen divider glued to the same viewport x-position while
+// panning/zooming, by re-deriving the clip offset from the pane's own current
+// pan transform each time (Leaflet panes have no fixed size/position of their
+// own, they're just translated, so a plain % clip-path would drift on pan).
+function _sevCompareUpdateClip() {
+  if (!_sevCompareOn) return;
+  const paneEl = map.getPane('sev-compare-b');
+  if (!paneEl) return;
+  // Leaflet only ever transforms the shared mapPane (the parent of every overlay
+  // pane) for panning, individual panes like this one sit at a fixed (0,0)
+  // offset from it, so mapPane's transform is what actually tracks pan/zoom.
+  const pos = (map._mapPane && L.DomUtil.getPosition(map._mapPane)) || { x: 0, y: 0 };
+  const mapSize = map.getSize();
+  const dividerPx = mapSize.x * (_sevCompareSplit / 100);
+  const clipLeft = dividerPx - pos.x;
+  paneEl.style.clipPath = `inset(-99999px -99999px -99999px ${clipLeft}px)`;
+  const divider = document.getElementById('sev-compare-divider');
+  if (divider) divider.style.left = dividerPx + 'px';
+}
+
+function _sevCompareSetSplit(clientX) {
+  const mapEl = document.getElementById('map');
+  if (!mapEl) return;
+  const rect = mapEl.getBoundingClientRect();
+  let pct = ((clientX - rect.left) / rect.width) * 100;
+  pct = Math.max(4, Math.min(96, pct));
+  _sevCompareSplit = pct;
+  _sevCompareUpdateClip();
+}
+
+function _sevToggleCompare() {
+  _sevCompareOn = !_sevCompareOn;
+  const btn     = document.getElementById('sev-compare-btn');
+  const panel   = document.getElementById('sev-compare-panel');
+  const divider = document.getElementById('sev-compare-divider');
+  const labelA  = document.getElementById('sev-compare-label-a');
+  const labelB  = document.getElementById('sev-compare-label-b');
+  if (btn)     btn.classList.toggle('active', _sevCompareOn);
+  if (panel)   panel.style.display = _sevCompareOn ? 'block' : 'none';
+  if (divider) { divider.style.display = _sevCompareOn ? 'block' : 'none'; divider.classList.toggle('active', _sevCompareOn); }
+  if (labelA)  labelA.style.display = _sevCompareOn ? 'block' : 'none';
+  if (labelB)  labelB.style.display = _sevCompareOn ? 'block' : 'none';
+
+  if (_sevCompareOn) {
+    const mSelB = document.getElementById('sev-model-sel-b');
+    if (mSelB && mSelB.value !== _sevSectionB) mSelB.value = _sevSectionB;
+    _sevUpdateProductsB();
+    const runSelB = document.getElementById('sev-run-sel-b');
+    if (runSelB && !runSelB.options.length) _sevRunB = _sevPopulateRunsFor(_sevSectionB, runSelB);
+    map.on('move zoom resize', _sevCompareUpdateClip);
+    _sevRenderB();
+    _sevCompareUpdateClip();
+  } else {
+    map.off('move zoom resize', _sevCompareUpdateClip);
+    if (_sevOverlayLayerB) { try { map.removeLayer(_sevOverlayLayerB); } catch(e){} _sevOverlayLayerB = null; }
+  }
+}
+
+// One-time drag wiring for the swipe divider (static markup, safe to bind at parse time)
+(function _sevCompareInitDrag() {
+  const divider = document.getElementById('sev-compare-divider');
+  if (!divider) return;
+  let dragging = false;
+  divider.addEventListener('pointerdown', e => { dragging = true; e.preventDefault(); });
+  window.addEventListener('pointermove', e => { if (dragging) _sevCompareSetSplit(e.clientX); });
+  window.addEventListener('pointerup',   () => { dragging = false; });
+  window.addEventListener('pointercancel', () => { dragging = false; });
+})();
 
 // ── Toast notification helper ──
 function showToast(msg, durationMs) {
