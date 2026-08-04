@@ -2278,6 +2278,20 @@ body {
 #trop-panel-body, #sev-panel-body {
   margin-top: 4px;
 }
+#trop-intro {
+  font-family: var(--mono); font-size: 10px; color: rgba(212,232,255,0.55);
+  line-height: 1.5; margin: 2px 0 8px;
+}
+#trop-storm-status {
+  font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.4); padding: 4px 0;
+}
+.trop-storm-card {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 6px;
+  background: rgba(0,140,186,0.06); border: 1px solid rgba(0,140,186,0.25); border-radius: 8px;
+}
+.trop-storm-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.trop-storm-name { font-family: 'Comfortaa', sans-serif; font-size: 12px; font-weight: 700; color: #fff; }
+.trop-storm-meta { font-family: var(--mono); font-size: 9px; color: rgba(212,232,255,0.6); }
 /* Forecast hour grid */
 #sev-fcast-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -6828,8 +6842,8 @@ body.clean-mode #clean-hint { opacity: 1; }
 
       <!-- Pill toggle: Severe | Tropical -->
       <div class="models-pill-row">
-        <button class="models-pill active" id="mpill-severe" onclick="_modelsSetType('severe')">⚡ Severe</button>
-        <button class="models-pill" id="mpill-tropical" onclick="_modelsSetType('tropical')">🌀 Tropical</button>
+        <button class="models-pill active" id="mpill-severe" onclick="_modelsSetType('severe')" title="Pick a model/run and browse its forecast, with A/B compare">📈 Run Models</button>
+        <button class="models-pill" id="mpill-tropical" onclick="_modelsSetType('tropical')" title="NHC's official forecast track, cone, and active storms">🌀 Spaghetti Models</button>
       </div>
 
       <!-- ── SEVERE CONTENT ── -->
@@ -6898,7 +6912,12 @@ body.clean-mode #clean-hint { opacity: 1; }
       </div>
 
 
-      <!-- ── TROPICAL CONTENT ── -->
+      <!-- ── SPAGHETTI MODELS (NHC official track/cone/invests) ── -->
+      <div id="models-tropical-section" style="display:none">
+        <p id="trop-intro">The National Hurricane Center's official forecast track, cone, and any areas being watched for development. Same live feed as the <b>NHC Outlook</b> overlay pill, kept in sync.</p>
+        <div id="trop-storm-status">Loading active storms…</div>
+        <div id="trop-storm-list"></div>
+      </div>
     </div>
 
     <!-- Alerts Panel -->
@@ -11530,83 +11549,13 @@ function _degToCompass(deg) {
 // toggleTempSub no longer used - Stations is now a direct METAR toggle
 function toggleTempSub() {}
 
-// SST (Sea Surface Temperature) layers
+// SST (Sea Surface Temperature): the rendering layers this used to drive were
+// dead (never reachable from any button) and have been removed. These flags
+// stay at their permanent `false` default - _syncDataClickHandler()/_onDataClick
+// below still read them, so the click-to-inspect path degrades to "never fires"
+// rather than throwing on an undefined variable.
 let sstBarbActive = false, sstMapActive = false;
 let _sstBarbLayer = null, _sstMapLayer = null;
-
-async function _loadSSTBarbLayer() {
-  if (_sstBarbLayer) { map.removeLayer(_sstBarbLayer); _sstBarbLayer = null; }
-  _sstBarbLayer = L.layerGroup().addTo(map);
-
-  const bounds = map.getBounds();
-  const ROWS = 8, COLS = 8;
-  const south = bounds.getSouth(), north = bounds.getNorth();
-  const west  = bounds.getWest(),  east  = bounds.getEast();
-  const pts = [];
-  for (let r = 0; r < ROWS; r++)
-    for (let c = 0; c < COLS; c++)
-      pts.push({ lat: south + (north - south) * r / (ROWS - 1),
-                 lng: west  + (east  - west)  * c / (COLS - 1) });
-
-  const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
-  const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
-
-  try {
-    // Two parallel batched requests , marine for SST/waves, air for land fallback
-    const [marRes, airRes] = await Promise.all([
-      fetch(`https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}&current=sea_surface_temperature,wave_height,wave_direction&temperature_unit=fahrenheit&length_unit=imperial`),
-      fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}&current=temperature_2m&temperature_unit=fahrenheit&forecast_days=1`)
-    ]);
-    const marData = await marRes.json();
-    const airData = await airRes.json();
-    const mar = Array.isArray(marData) ? marData : [marData];
-    const air = Array.isArray(airData) ? airData : [airData];
-
-    if (!_sstBarbLayer) return;
-
-    pts.forEach((pt, i) => {
-      const sst = mar[i]?.current?.sea_surface_temperature;
-      const wh  = mar[i]?.current?.wave_height;
-      const wd  = mar[i]?.current?.wave_direction;
-      if (sst == null && wh == null) return; // skip land
-      const tF = sst != null ? Math.round(sst) : Math.round(air[i]?.current?.temperature_2m ?? 0);
-      const col = tF > 84 ? '#ff2a2a' : tF > 72 ? '#ff8800' : tF > 60 ? '#008CBA' : tF > 48 ? '#4488ff' : '#9966ff';
-      const m = L.circleMarker([pt.lat, pt.lng], { radius: 7, color: col, fillColor: col, fillOpacity: 0.85, weight: 0 });
-      m.bindPopup(`<div class="data-popup-inner" style="--dp-accent:#29b6f6">
-        <div class="dp-header">
-          <span class="dp-header-icon">🌡</span>
-          <span class="dp-header-label">Sea Surface</span>
-          <span class="dp-header-sub">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</span>
-        </div>
-        <div class="dp-body">
-          <div class="dp-section">Temperature</div>
-          <div class="dp-row"><span>SST</span><b style="color:${col}">${tF}°F / ${Math.round((tF-32)*5/9)}°C</b></div>
-          ${wh != null ? `<div class="dp-section">Waves</div>
-          <div class="dp-row"><span>Height</span><b>${wh.toFixed(1)} ft</b></div>
-          ${wd != null ? `<div class="dp-row"><span>Direction</span><b>${_degToCompass ? _degToCompass(wd) : Math.round(wd)+'°'}</b></div>` : ''}` : ''}
-        </div>
-      </div>`, { className: 'data-popup', maxWidth: 240 });
-      m.addTo(_sstBarbLayer);
-    });
-  } catch(e) { console.warn('SST barb error:', e); }
-}
-
-function _loadSSTMapLayer() {
-  if (_sstMapLayer) { map.removeLayer(_sstMapLayer); _sstMapLayer = null; }
-  // NOAA CoastWatch ERDDAP SST tile layer
-  _sstMapLayer = L.tileLayer(
-    'https://coastwatch.pfeg.noaa.gov/erddap/wms/erdMHsstnmday_LonPM180/request?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&BBOX={bbox-epsg-3857}&CRS=CRS:84&WIDTH=256&HEIGHT=256&LAYERS=erdMHsstnmday_LonPM180:sstMasked&STYLES=&FORMAT=image/png&DPI=96&MAP_RESOLUTION=96&FORMAT_OPTIONS=dpi:96&TRANSPARENT=TRUE',
-    { opacity: 0.65, attribution: 'NOAA CoastWatch', tileSize: 256, noWrap: true }
-  );
-  // Fallback to a simpler coloured marker grid if tile fails
-  _sstMapLayer.on('tileerror', () => {
-    if (_sstMapLayer) { map.removeLayer(_sstMapLayer); }
-    _sstMapLayer = L.layerGroup().addTo(map);
-    showToast('SST tile layer unavailable , showing point data', 3000);
-    _loadSSTBarbLayer();
-  });
-  _sstMapLayer.addTo(map);
-}
 
 
 // ── MAP TYPE ──
@@ -14412,8 +14361,24 @@ function _modelsSetType(type) {
     _sevInit();
     if (_nhcOutlookOn) loadNHC5dayOutlook();
   } else {
-    _fnv3SwitchTab('spaghetti');
+    _tropInit();
   }
+}
+
+// Spaghetti Models panel: NHC's own official track/cone/invests feed - the
+// same live data the "NHC Outlook" overlay pill draws, just also shown here
+// with a plain-language storm list. Turns the overlay pill on too, so the two
+// stay in sync rather than tracking their own separate on/off state.
+function _tropInit() {
+  _nhcOutlookOn = true;
+  const row = document.getElementById('nhc-tog-row');
+  if (row) row.classList.add('on');
+  const statusEl = document.getElementById('trop-storm-status');
+  if (statusEl) statusEl.textContent = 'Loading active storms…';
+  loadNHC5dayOutlook().catch(e => {
+    console.warn('Spaghetti Models load error:', e);
+    if (statusEl) statusEl.textContent = 'Could not reach NHC right now - try again shortly.';
+  });
 }
 
 function _modelsSPCToggle() {
@@ -14607,6 +14572,18 @@ async function loadNHC5dayOutlook() {
       });
     });
 
+    // Summarize one entry per storm (first-encountered = earliest forecast
+    // point, since NHC orders these from the initial position outward) for
+    // the Spaghetti Models panel's plain-language storm list.
+    const seenStorms = new Set();
+    _tropActiveStorms = [];
+    markerQueue.forEach(d => {
+      const key = d.name + '_' + d.basin;
+      if (seenStorms.has(key)) return;
+      seenStorms.add(key);
+      _tropActiveStorms.push(d);
+    });
+
     // Draw category-colored track segments first so icons sit on top
     Object.values(stormPaths).forEach(pts => {
       for (let i = 0; i < pts.length - 1; i++) {
@@ -14627,7 +14604,10 @@ async function loadNHC5dayOutlook() {
       _nhcExtraLayers.push(m);
       tropicalLayers.push(m);
     });
+  } else {
+    _tropActiveStorms = [];
   }
+  _tropRenderStormList();
 
   // ── Past tracks (semi-transparent) ──────────────────────────────────────
   if (pastTracks?.features?.length) {
@@ -14689,6 +14669,27 @@ async function loadNHC5dayOutlook() {
       tropicalLayers.push(m);
     } catch(e) { console.warn('NHC past obs icon error:', e, f); }
   });
+}
+
+function _tropRenderStormList() {
+  const statusEl = document.getElementById('trop-storm-status');
+  const listEl   = document.getElementById('trop-storm-list');
+  if (!statusEl || !listEl) return;
+  if (!_tropActiveStorms.length) {
+    statusEl.textContent = 'No active storms right now.';
+    listEl.innerHTML = '';
+    return;
+  }
+  statusEl.textContent = `${_tropActiveStorms.length} active storm${_tropActiveStorms.length > 1 ? 's' : ''}:`;
+  listEl.innerHTML = _tropActiveStorms.map(d => `
+    <div class="trop-storm-card">
+      <span class="trop-storm-dot" style="background:${d.color}"></span>
+      <div>
+        <div class="trop-storm-name">${d.emoji} ${_ccEsc(d.name)}</div>
+        <div class="trop-storm-meta">${_ccEsc(d.typeLbl)}${d.winds !== '-' ? ' · ' + d.winds + ' kt' : ''}${d.basin ? ' · ' + _ccEsc(d.basin) : ''}</div>
+      </div>
+    </div>
+  `).join('');
 }
 
 function _modelsNHCToggle() {
@@ -23557,7 +23558,7 @@ function lqmSetTZ(tz) {
   <a class="toc-link" href="#overlays">Overlays</a>
   <a class="toc-link" href="#radio">Radio</a>
   <a class="toc-link" href="#spc">SPC</a>
-  <a class="toc-link" href="#tropical">Tropical</a>
+  <a class="toc-link" href="#tropical">Spaghetti</a>
   <a class="toc-link" href="#models">Models</a>
   <a class="toc-link" href="#tools">Tools</a>
   <a class="toc-link" href="#tips">Pro Tips</a>
@@ -23763,7 +23764,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">📊</div>
       <div class="fc-title">MODELS</div>
-      <p class="fc-body">Opens the unified Models panel covering both <strong>Severe</strong> guidance (point-forecast model viewer) and <strong>Tropical</strong> guidance (spaghetti ensemble tracks, NHC outlooks). See the <a href="#models">Models</a> section below.</p>
+      <p class="fc-body">Opens the unified Models panel covering both <strong>📈 Run Models</strong> (a point-forecast model viewer with A/B compare) and <strong>🌀 Spaghetti Models</strong> (NHC's official track, cone, and active storms). See the <a href="#models">Models</a> section below.</p>
     </div>
   </div>
 
@@ -23929,7 +23930,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">🌀</div>
       <div class="fc-title">NHC OUTLOOK</div>
-      <p class="fc-body">NHC's 5-day tropical outlook plus active systems. See the <a href="#tropical">Tropical</a> section.</p>
+      <p class="fc-body">NHC's 5-day tropical outlook plus active systems. See the <a href="#tropical">Spaghetti Models</a> section.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌧️</div>
@@ -23974,7 +23975,7 @@ function lqmSetTZ(tz) {
 
   <div class="callout">
     <div class="callout-icon">🛩️</div>
-    <div class="callout-body"><strong>Hurricane Hunters:</strong> Live Chasers is for ground spotters, for aircraft tracking during tropical systems, NOAA's WP-3D Orions (<strong>N42RF "Kermit"</strong>, <strong>N43RF "Miss Piggy"</strong>) and G-IV jet (<strong>N49RF "Gonzo"</strong>) are tracked via ADS-B Exchange from inside the <a href="#tropical">Tropical</a> panel, no API key needed. If no aircraft are airborne, a brief notice appears and clears automatically.</div>
+    <div class="callout-body"><strong>Note:</strong> Live Chasers tracks ground-based storm spotters, not aircraft. For the current storm's official track and cone, see <a href="#tropical">Spaghetti Models</a>.</div>
   </div>
 </section>
 
@@ -24053,58 +24054,33 @@ function lqmSetTZ(tz) {
   <div class="section-header">
     <div class="section-icon">🌀</div>
     <div>
-      <div class="section-title">TROPICAL MODE</div>
-      <div class="section-sub">Hurricane tracking &amp; tropical analysis</div>
+      <div class="section-title">SPAGHETTI MODELS</div>
+      <div class="section-sub">The National Hurricane Center's official track, cone &amp; active storms</div>
     </div>
   </div>
 
-  <p>Open the <strong>📊 Models</strong> bubble and select the <strong>Tropical</strong> pill during hurricane season (June 1 – November 30). The panel loads tropical track guidance, ensemble spaghetti plots, and NHC products. You can also turn on the <strong>NHC Outlook</strong> row in the overlay launcher for a quick look at the current 5-day outlook without opening the full panel. Recent major storms tracked here include <strong>Hurricane Milton</strong> (Cat 5, Oct 2024, rapidly intensified to 180 mph before striking Florida's Gulf Coast near Siesta Key) and <strong>Hurricane Helene</strong> (Cat 4, Sep 2024, made landfall near Perry, FL and caused catastrophic inland flooding through the Southern Appalachians).</p>
+  <p>Open the <strong>📊 Models</strong> bubble and select the <strong>🌀 Spaghetti Models</strong> pill. It loads the National Hurricane Center's live forecast feed, the official track, forecast cone, and any disturbances being watched, plus a plain-language list of every storm currently active. This is the same feed the <strong>NHC Outlook</strong> row in the overlay launcher draws; opening either one keeps both in sync.</p>
 
   <div class="card-grid">
     <div class="feature-card">
       <div class="fc-icon">🌀</div>
-      <div class="fc-title">NHC FORECAST CONE</div>
-      <p class="fc-body">The official 5-day track forecast from the National Hurricane Center. The cone shows the probable path of the storm's center. Approximately 2/3 of historical storms stay within the cone, but impacts extend well outside it.</p>
+      <div class="fc-title">FORECAST CONE &amp; TRACK</div>
+      <p class="fc-body">The official 5-day track forecast. The cone shows the probable path of the storm's center, approximately 2/3 of historical storms stay within it, but impacts extend well outside it. Colored track segments and icons mark the forecast positions, click any of them for wind speed and pressure.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🔵</div>
       <div class="fc-title">INVEST AREAS</div>
-      <p class="fc-body">Disturbances being monitored for development. Numbered 90L–99L (Atlantic) or 90E–99E (East Pacific). For example, <strong>Invest 97L</strong> in August 2024 eventually became Hurricane Helene. When an invest reaches watch/warning criteria, NHC issues advisories and may name the system.</p>
+      <p class="fc-body">Disturbances being monitored for development, numbered 90L–99L (Atlantic) or 90E–99E (East Pacific). When an invest reaches watch/warning criteria, NHC issues advisories and may name the system.</p>
     </div>
     <div class="feature-card">
-      <div class="fc-icon">🌡️</div>
-      <div class="fc-title">SEA SURFACE TEMP</div>
-      <p class="fc-body">Critical fuel for tropical systems. Warm water above 26°C (79°F) to a depth of at least 50 meters is generally required to sustain a hurricane. Click a point on the map for the exact reading at that spot.</p>
+      <div class="fc-icon">🕐</div>
+      <div class="fc-title">PAST TRACK</div>
+      <p class="fc-body">A faded line and dimmed icons showing where the storm has already been, so you can see its actual path alongside where it's forecast to go next.</p>
     </div>
     <div class="feature-card">
-      <div class="fc-icon">📊</div>
-      <div class="fc-title">TROPICAL MODELS</div>
-      <p class="fc-body">A Tropical Tidbits-style model viewer inside the map. Available models: <strong>GFS</strong>, <strong>ECMWF (Euro)</strong>, <strong>GEFS-Avg</strong>, <strong>CMC (Canadian)</strong>, <strong>ICON (German)</strong>, <strong>NAM</strong>, <strong>HWRF</strong>, <strong>HAFS-A</strong>, and <strong>HAFS-B</strong>. Pick a region and parameter, then step through hours or hit Play.</p>
-    </div>
-  </div>
-
-  <div class="callout">
-    <div class="callout-icon">🛩️</div>
-    <div class="callout-body"><strong>Combine Tropical + Hurricane Hunters:</strong> While in Tropical mode, activate Hurricane Hunter tracking to see NOAA's recon aircraft flying into the storm in real time. Their data feeds directly into NHC's intensity analysis.</div>
-  </div>
-
-  <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;">Using the Tropical Model Viewer</h3>
-  <div class="steps">
-    <div class="step">
-      <div class="step-num">1</div>
-      <div class="step-body">Tap the <strong>📊 Models</strong> bubble, then select the <strong>Tropical</strong> pill. The model viewer slides in.</div>
-    </div>
-    <div class="step">
-      <div class="step-num">2</div>
-      <div class="step-body">Choose your <strong>Model</strong> (GFS, ECMWF, GEFS-Avg, CMC, ICON, NAM, HWRF, HAFS-A, HAFS-B) and <strong>Region</strong> (Atlantic Basin, W. Atlantic/US East, E. Pacific, C. Pacific, W. Pacific, S. Hemisphere, Indian Ocean, or Global).</div>
-    </div>
-    <div class="step">
-      <div class="step-num">3</div>
-      <div class="step-body">Select a <strong>Parameter</strong>: MSLP + 6h Precip, 500mb Vort + Heights, 200mb Wind (Jet Stream), 850mb Wind, 2m Temperature, Total Precip, or Precipitable Water.</div>
-    </div>
-    <div class="step">
-      <div class="step-num">4</div>
-      <div class="step-body">Pick a <strong>Run</strong> (model initialization time) and use the frame slider or <strong>▶ Play</strong> to animate the forecast.</div>
+      <div class="fc-icon">📋</div>
+      <div class="fc-title">ACTIVE STORM LIST</div>
+      <p class="fc-body">Every tracked system gets a card in the panel itself, name, storm type, top winds, and basin, so you don't have to hunt for it on the map. Reads "No active storms right now" when the tropics are quiet.</p>
     </div>
   </div>
 </section>
@@ -24114,12 +24090,12 @@ function lqmSetTZ(tz) {
   <div class="section-header">
     <div class="section-icon">🖥️</div>
     <div>
-      <div class="section-title">WEATHER MODELS</div>
+      <div class="section-title">RUN MODELS</div>
       <div class="section-sub">DWD ICON, ECMWF, HRDPS, NDFD, HRRR &amp; more</div>
     </div>
   </div>
 
-  <p>The <strong>📊 Models</strong> bubble is always available on the left. Tapping it opens a single panel with a <strong>Severe ⟷ Tropical</strong> pill switch at the top. Severe is a general point-forecast model viewer, pick a <strong>Model</strong>, a <strong>Product</strong> (variable), and a <strong>Run</strong>, then step through forecast hours with the play bar. A floating info box on the map shows which run is loaded, the resolution, the variable, and current forecast hour.</p>
+  <p>The <strong>📊 Models</strong> bubble is always available on the left. Tapping it opens a single panel with a <strong>📈 Run Models ⟷ 🌀 Spaghetti Models</strong> pill switch at the top. Run Models is a general point-forecast model viewer, pick a <strong>Model</strong>, a <strong>Product</strong> (variable), and a <strong>Run</strong>, then step through forecast hours with the play bar. A floating info box on the map shows which run is loaded, the resolution, the variable, and current forecast hour.</p>
 
   <div class="model-demo">
     <div class="model-demo-row"><span>Model</span><span>HRRR · NOAA</span></div>
@@ -24160,7 +24136,9 @@ function lqmSetTZ(tz) {
   </div>
 
   <p>Use the <strong>Run</strong> selector and hour slider (or ▶ Play) to step through the forecast for whichever model and variable you've picked.</p>
-</section>
+
+  <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;">⇄ Compare Two Models or Runs</h3>
+  <p>Tap <strong>⇄ Compare</strong> to pick a second Model, Product, and Run ("B"), rendered as its own layer on the map. A draggable divider splits the screen, drag it left/right to swipe between A on the left and B on the right, both labeled at the top of the map. Both sides step through the same forecast-hour slider, comparing two runs of the same model, or two entirely different models, at a matching lead time.</p>
 
 
 <section class="section" id="tools">
@@ -24263,9 +24241,9 @@ function lqmSetTZ(tz) {
 
   <div class="card-grid">
     <div class="feature-card">
-      <div class="fc-icon">🌀 + 🛩️</div>
-      <div class="fc-title">RECON + NHC COMBO</div>
-      <p class="fc-body">During active storms: open <strong>📊 Models → Tropical</strong> for the NHC track guidance, then activate Hurricane Hunter tracking. Watch N42RF "Kermit" fly through the eyewall in real time while the track guidance updates in the background.</p>
+      <div class="fc-icon">🌀 + ⇄</div>
+      <div class="fc-title">SPAGHETTI + RUN MODELS COMBO</div>
+      <p class="fc-body">During active storms: open <strong>🌀 Spaghetti Models</strong> for the NHC official track and cone, then switch to <strong>📈 Run Models</strong> and use <strong>⇄ Compare</strong> to check two different models' MSLP or wind fields at the storm's forecast position.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">📻</div>
@@ -24285,7 +24263,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">⚠ + 📊</div>
       <div class="fc-title">SPC + MODEL FIELDS</div>
-      <p class="fc-body">Cross-reference the SPC Day 1 outlook area with the ECMWF IFS model's <strong>CAPE</strong> and <strong>2m Dew Point</strong> fields (Models → Severe → ECMWF IFS). Instability and moisture overlapping inside a Moderate risk area is a serious setup.</p>
+      <p class="fc-body">Cross-reference the SPC Day 1 outlook area with the ECMWF IFS model's <strong>CAPE</strong> and <strong>2m Dew Point</strong> fields (Models → Run Models → ECMWF IFS). Instability and moisture overlapping inside a Moderate risk area is a serious setup.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌥️</div>
