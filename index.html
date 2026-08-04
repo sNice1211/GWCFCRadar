@@ -11444,7 +11444,6 @@ function toggleSatelliteSub() {
 const LAYER_DESCRIPTIONS = {
   radar:      'Turns on NEXRAD radar. Tap again to pick which radar product to show, like Reflectivity or Velocity.',
   satellite:  'Turns on GOES satellite imagery. Tap again to pick a channel, like Visible, Infrared, or Water Vapor.',
-  alerts:     'Opens the Weather Alerts and EAS Alerts panels for active warnings in your area.',
   models:     'Opens the Models panel, covering severe weather guidance (SPC Outlooks, HRRR, NAM) and tropical guidance (hurricane tracks, spaghetti models).',
   reflectivity: 'Standard radar reflectivity (dBZ). Shows where precipitation is falling and how heavy it is.',
   velocity:     'Radial velocity radar. Shows wind moving toward or away from the radar, used to spot rotation inside storms.',
@@ -11467,14 +11466,11 @@ const LAYER_DESCRIPTIONS = {
   ch14: 'Another infrared channel for cloud tops, similar to Clean IR.',
   ch15: 'Infrared channel useful for spotting volcanic ash and dust.',
   ch16: 'Infrared channel tuned to carbon dioxide absorption, used mainly for very high clouds.',
-  'wx-alerts':  'Opens the panel listing active NWS weather warnings and watches.',
-  'eas-alerts': 'Opens the panel showing Emergency Alert System (EAS) broadcasts.',
 };
 
 const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
   { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
-  { id: 'alerts',    icon: '⚠', label: 'Alerts',     action: () => toggleAlertSub() },
   { id: 'models',    icon: '📊', label: 'Models',     action: () => toggleModelsPanel() },
 ];
 
@@ -11491,7 +11487,6 @@ const activeBubbles = {};
 function _getBubbleActive(id) {
   if (id === 'radar')    return !!activeLayers.nexrad;
   if (id === 'satellite') return !!activeLayers.satellite;
-  if (id === 'alerts')   return !!(activeLayers.tornado || activeLayers.tstm || activeLayers.flood || activeLayers.watch);
   return !!activeBubbles[id];
 }
 
@@ -11531,6 +11526,16 @@ function toggleOverlayPill(id) {
     toggleLayer('lightning');
     const pill = document.getElementById('op-lightning');
     if (pill) pill.classList.toggle('active', activeLayers.lightning);
+  } else if (id === 'wx-alerts') {
+    toggleAlertsPanel();
+    const panel = document.getElementById('alerts-panel');
+    const pill = document.getElementById('op-wx-alerts');
+    if (pill) pill.classList.toggle('active', panel.style.display === 'flex');
+  } else if (id === 'eas-alerts') {
+    toggleEASPanel();
+    const panel = document.getElementById('eas-panel');
+    const pill = document.getElementById('op-eas-alerts');
+    if (pill) pill.classList.toggle('active', panel.style.display === 'flex');
   } else if (id === 'wpc-outlook') {
     _wpcOutlookActive = !_wpcOutlookActive;
     const pill = document.getElementById('op-wpc-outlook');
@@ -12870,45 +12875,6 @@ function _sevInit() {
   _sevPopulateRuns();
   _sevBuildFrameGrid();
   _sevRender();
-}
-
-const ALERT_SUB_BUBBLES = [
-  {
-    id: 'wx-alerts',
-    icon: '🌩',
-    label: 'WX Alerts',
-    action: () => {
-      toggleAlertsPanel();
-    }
-  },
-  {
-    id: 'eas-alerts',
-    icon: '📻',
-    label: 'EAS Alerts',
-    action: () => {
-      toggleEASPanel();
-    }
-  }
-];
-
-function toggleAlertSub() {
-  const wrap = document.getElementById('sub-bubbles');
-  wrap.innerHTML = '';
-  const back = document.createElement('div');
-  back.className = 'sub-bubble';
-  back.innerHTML = `<span class="sb-icon">←</span><span class="sb-label">Back</span>`;
-  back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('alerts'); renderSubBubbles('regular'); };
-  wrap.appendChild(back);
-  ALERT_SUB_BUBBLES.forEach(b => {
-    const el = document.createElement('div');
-    el.className = 'sub-bubble';
-    el.id = 'sub-' + b.id;
-    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
-    el.onclick = () => { b.action(); el.classList.toggle('active'); _syncParentBubble('alerts'); };
-    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
-    wrap.appendChild(el);
-  });
-  wrap.style.display = 'flex';
 }
 
 // ── Toast notification helper ──
@@ -25502,6 +25468,12 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill active" id="op-alerts" data-ovid="alerts" title="NWS Alert Polygons - Warnings &amp; Watches">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('alerts')">Alert Polygons</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-wx-alerts" data-ovid="wx-alerts" title="WX Alerts - list panel of active NWS warnings and watches">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wx-alerts')">WX Alerts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-eas-alerts" data-ovid="eas-alerts" title="EAS Alerts - live Emergency Alert System broadcasts">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('eas-alerts')">EAS Alerts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
     <div class="ov-pill" id="op-spc-outlook" data-ovid="spc-outlook" title="SPC Convective Outlook (Day 1-8 Categorical/Tornado/Wind/Hail)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-outlook')">SPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -26449,6 +26421,8 @@ function _ccClose(){ _ccHideModal(); _ccAdminUnlocked=false; }
 // ═══════════════════════════════════════════════════════════════════════════════
 const OV_DESCRIPTIONS = {
   'alerts':          'Live warnings and watches from the National Weather Service, like tornado warnings or flood watches. Tap a shape to read the full alert.',
+  'wx-alerts':       'Opens a scrollable list of active NWS weather warnings and watches, as plain text instead of shapes on the map.',
+  'eas-alerts':      'Opens a live feed of Emergency Alert System (EAS) broadcasts, with audio playback for each one.',
   'spc-outlook':      "The Storm Prediction Center's forecast for severe thunderstorms over the next 8 days. Darker colors mean higher risk.",
   'spc-reports':      'Tornado, hail, and wind reports logged by local National Weather Service offices today.',
   'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, including any active hurricanes or tropical storms and their forecast tracks.",
