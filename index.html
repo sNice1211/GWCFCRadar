@@ -1867,6 +1867,7 @@ body {
 .ap-meta-val { font-family: var(--mono); font-size: 9.5px; color: rgba(255,255,255,0.75); }
 .ap-section { font-family: var(--display); font-size: 7px; letter-spacing: 2px; color: rgba(255,255,255,0.25); text-transform: uppercase; margin: 9px 0 3px; }
 .ap-counties { font-family: var(--mono); font-size: 8.5px; color: rgba(255,255,255,0.58); line-height: 1.6; word-break: break-word; }
+.ap-approx-note { font-family: var(--mono); font-size: 8px; color: var(--muted); font-style: italic; margin-top: 4px; line-height: 1.4; }
 .ap-headline { font-family: var(--sans); font-size: 11px; color: rgba(212,232,255,0.88); line-height: 1.55; font-weight: 300; }
 .ap-desc { font-family: var(--mono); font-size: 8.5px; color: rgba(255,255,255,0.48); line-height: 1.65; margin-top: 4px; white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
 .ap-more-btn { width: 100%; margin-top: 9px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.42); font-family: var(--display); font-size: 8px; letter-spacing: 1px; padding: 5px 10px; border-radius: 5px; cursor: pointer; transition: background 0.15s; }
@@ -8338,6 +8339,10 @@ async function _doLoadAlerts(forceRender) {
     ]);
     const [activeData, pastData] = await Promise.all([activeRes.json(), pastRes.json()]);
     const activeFeatures = activeData.features || [];
+    const rawPastFeatures = pastData.features || [];
+    // Fill in zone-based geometry BEFORE filtering, so alerts that only carry
+    // a UGC zone code (no drawn polygon) aren't discarded for lacking geometry.
+    await Promise.all([_fillMissingAlertGeometry(activeFeatures), _fillMissingAlertGeometry(rawPastFeatures)]);
     const activeIds = new Set(activeFeatures.map(f => f.properties.id || f.id));
 
     // Skip full re-render on 60s refresh if nothing changed
@@ -8346,7 +8351,7 @@ async function _doLoadAlerts(forceRender) {
     _lastAlertSig = sig;
 
     const now = Date.now();
-    const pastFeatures = (pastData.features || []).filter(f => {
+    const pastFeatures = rawPastFeatures.filter(f => {
       const p = f.properties;
       const fid = p.id || f.id;
       if (activeIds.has(fid) || !f.geometry) return false;
@@ -8441,6 +8446,7 @@ function _buildAlertPopupHTML(p, color) {
       </div>
       <div class="ap-section">AFFECTED AREAS</div>
       <div class="ap-counties">${countiesHtml}</div>
+      ${p._approxZone ? `<div class="ap-approx-note">Shape shown is the forecast zone boundary - NWS did not provide an exact polygon for this alert.</div>` : ''}
       <div class="ap-section">SUMMARY</div>
       <div class="ap-headline">${summary}</div>
       ${hasMore ? `
@@ -8469,6 +8475,53 @@ let alertsLayerVisible = true;  // always on
 let _lastAlertFeatures = [];
 let _alertFlashRAF = null;
 let _alertNewLayers = [];   // { layer, fillLayer, color, until }
+
+// Some NWS alerts (mostly advisories issued by county/zone rather than an
+// exact drawn polygon) come back with geometry: null - properties.geocode.UGC
+// lists the affected zone codes instead. Without this, those alerts show up
+// in the panel with nothing to draw on the map and nowhere to fly to when
+// clicked. Resolve each UGC to its real shape via the NWS zones API (cached,
+// since the same zone gets reused across many alerts and over time) and
+// splice the combined shape back onto the feature before it's ever rendered.
+const _zoneGeomCache = new Map();
+async function _fetchZoneGeometry(ugc) {
+  if (_zoneGeomCache.has(ugc)) return _zoneGeomCache.get(ugc);
+  // 'Z'-suffixed UGCs are either land forecast zones or marine zones (same
+  // letter, different endpoint) - try forecast first since it's the common
+  // case, then fall back to marine. 'C' suffix is unambiguously a county.
+  const typesToTry = ugc[2] === 'Z' ? ['forecast', 'marine'] : ['county'];
+  const promise = (async () => {
+    for (const type of typesToTry) {
+      try {
+        const r = await fetch(`https://api.weather.gov/zones/${type}/${ugc}`, { signal: _abortSignal(8000) });
+        if (!r.ok) continue;
+        const d = await r.json();
+        if (d.geometry) return d.geometry;
+      } catch(e) {}
+    }
+    return null;
+  })();
+  _zoneGeomCache.set(ugc, promise);
+  return promise;
+}
+async function _fillMissingAlertGeometry(features) {
+  await Promise.all(features.map(async f => {
+    if (f.geometry || !f.properties) return;
+    const ugcList = f.properties.geocode && f.properties.geocode.UGC;
+    if (!Array.isArray(ugcList) || !ugcList.length) return;
+    const geoms = (await Promise.all(ugcList.map(_fetchZoneGeometry))).filter(Boolean);
+    if (!geoms.length) return;
+    const polys = [];
+    geoms.forEach(g => {
+      if (g.type === 'Polygon') polys.push(g.coordinates);
+      else if (g.type === 'MultiPolygon') polys.push(...g.coordinates);
+    });
+    if (!polys.length) return;
+    f.geometry = { type: 'MultiPolygon', coordinates: polys };
+    f.properties._approxZone = true; // flag so the UI can note this shape is the zone boundary, not the exact warned polygon
+  }));
+  return features;
+}
 
 // ── Alert helpers (ported from tgranz alerts.js, adapted to Leaflet + NWS data) ──
 function _alertColorFor(ev){ const info = Object.entries(ALERT_COLORS).find(([k]) => (ev||'').includes(k)); return info ? info[1].color : '#aaaaaa'; }
@@ -8635,7 +8688,7 @@ function renderAlerts(features) {
     const div = document.createElement('div');
     div.className = `alert-card ${cls}`;
     const expiresLabel = _fmtAlertTime(p.expires);
-    div.innerHTML = `<div class="alert-event"><span>${_ccEsc(ev)}</span>${expiresLabel ? `<span class="alert-event-time">until ${expiresLabel}</span>` : ''}</div><div class="alert-area">${_ccEsc(p.areaDesc || '')}</div>`;
+    div.innerHTML = `<div class="alert-event"><span>${_ccEsc(ev)}</span>${expiresLabel ? `<span class="alert-event-time">until ${expiresLabel}</span>` : ''}</div><div class="alert-area">${_ccEsc(p.areaDesc || '')}</div>${p._approxZone ? `<div class="alert-meta">zone boundary (approximate)</div>` : ''}`;
 
 div.onclick = () => {
   try {
@@ -8701,7 +8754,7 @@ function renderPastAlerts(features) {
     const div = document.createElement('div');
     div.className = `alert-card past ${cls}`;
     const expiresLabel = _fmtAlertTime(p.expires);
-    div.innerHTML = `<div class="alert-event"><span>${_ccEsc(ev)}</span>${expiresLabel ? `<span class="alert-event-time">expired ${expiresLabel}</span>` : ''}</div><div class="alert-area">${_ccEsc(p.areaDesc || '')}</div>`;
+    div.innerHTML = `<div class="alert-event"><span>${_ccEsc(ev)}</span>${expiresLabel ? `<span class="alert-event-time">expired ${expiresLabel}</span>` : ''}</div><div class="alert-area">${_ccEsc(p.areaDesc || '')}</div>${p._approxZone ? `<div class="alert-meta">zone boundary (approximate)</div>` : ''}`;
     div.onclick = () => {
       try {
         const tmpLayer = L.geoJSON(f);
