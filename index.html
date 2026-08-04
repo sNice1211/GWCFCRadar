@@ -1373,6 +1373,57 @@ body {
 }
 #alerts-panel::-webkit-scrollbar { width: 3px; }
 #alerts-panel::-webkit-scrollbar-thumb { background: var(--border2); }
+#alerts-drag {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 4px 2px 5px;
+  border-bottom: 1px solid rgba(170,0,0,0.25);
+  margin-bottom: 2px;
+  cursor: grab;
+  user-select: none;
+}
+#alerts-drag:active { cursor: grabbing; }
+#alerts-drag .alerts-grip {
+  display: flex; justify-content: center; gap: 4px; margin-bottom: 5px; opacity: 0.4;
+}
+#alerts-drag .alerts-grip span {
+  display: block; width: 14px; height: 2px; border-radius: 1px; background: var(--warn);
+}
+#alerts-drag:hover .alerts-grip { opacity: 0.9; }
+#alerts-drag .alerts-row {
+  display: flex; justify-content: space-between; align-items: center;
+}
+#alerts-panel-title {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--warn);
+}
+#alerts-panel-count {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--muted);
+}
+#alerts-panel-body { display: flex; flex-direction: column; gap: 4px; }
+.alerts-empty {
+  font-family: var(--display);
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  padding: 10px 0;
+  letter-spacing: 0.5px;
+}
+.alert-meta {
+  font-family: var(--mono);
+  font-size: 8px;
+  color: var(--muted);
+  margin-top: 3px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 
 /* ── EAS ALERTS PANEL ── */
 #eas-panel {
@@ -1513,6 +1564,18 @@ body {
   font-weight: 700;
   letter-spacing: 0.4px;
   color: var(--warn);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.alert-event-time {
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .alert-card.tor    { border-left-color: #ff0000; }
 .alert-card.tstm   { border-left-color: #ffd700; }
@@ -1560,9 +1623,8 @@ body {
   font-size: 9px;
   color: var(--muted);
   margin-top: 1px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  line-height: 1.3;
 }
 
 /* ── SUB BUBBLES ── */
@@ -6482,7 +6544,14 @@ body.clean-mode #clean-hint { opacity: 1; }
 
     <!-- Alerts Panel -->
     <div id="alerts-panel">
-      <div id="alerts-drag" class="dtb-drag" style="flex-direction:row;width:100%;justify-content:center;padding:4px 0 6px;" title="Drag to move"><span></span><span></span><span></span></div>
+      <div id="alerts-drag" title="Drag to move">
+        <div class="alerts-grip"><span></span><span></span><span></span></div>
+        <div class="alerts-row">
+          <span id="alerts-panel-title">⚠ WX Alerts</span>
+          <span id="alerts-panel-count">-</span>
+        </div>
+      </div>
+      <div id="alerts-panel-body"></div>
       <div id="past-alerts-toggle" class="past-alerts-toggle" onclick="togglePastAlerts()">
         <span><span class="pat-count">Show</span> past alerts</span>
         <span class="pat-arrow">▼</span>
@@ -8293,7 +8362,7 @@ async function _doLoadAlerts(forceRender) {
       if (typeof renderPastAlerts === 'function') renderPastAlerts(pastFeatures);
     }
 
-    if (activeFeatures.length > 0) document.getElementById('alerts-dot').classList.add('has-data');
+    if (activeFeatures.length > 0) { const dot = document.getElementById('alerts-dot'); if (dot) dot.classList.add('has-data'); }
   } catch (e) {
     console.warn('Alerts error:', e);
   }
@@ -8443,8 +8512,8 @@ function renderAlerts(features) {
   _alertNewLayers = [];
   if (alertsLayer) { map.removeLayer(alertsLayer); alertsLayer = null; }
 
-  const panel = document.getElementById('alerts-panel');
-  panel.innerHTML = '';
+  const body = document.getElementById('alerts-panel-body');
+  body.innerHTML = '';
 
   const filtered = features.filter(f => {
     const ev = f.properties.event || '';
@@ -8553,6 +8622,11 @@ function renderAlerts(features) {
   }
 
   // Side panel
+  const countEl = document.getElementById('alerts-panel-count');
+  if (countEl) countEl.textContent = filtered.length ? `${filtered.length} active` : '0 active';
+  if (!filtered.length) {
+    body.innerHTML = '<div class="alerts-empty">No active alerts</div>';
+  }
   filtered.slice(0, 20).forEach(f => {
     const p = f.properties;
     const ev = p.event || '';
@@ -8560,8 +8634,9 @@ function renderAlerts(features) {
     const cls = info ? info[1].cls : '';
     const div = document.createElement('div');
     div.className = `alert-card ${cls}`;
-    div.innerHTML = `<div class="alert-event">${ev}</div><div class="alert-area">${(p.areaDesc || '').slice(0, 60)}</div>`;
-    
+    const expiresLabel = _fmtAlertTime(p.expires);
+    div.innerHTML = `<div class="alert-event"><span>${_ccEsc(ev)}</span>${expiresLabel ? `<span class="alert-event-time">until ${expiresLabel}</span>` : ''}</div><div class="alert-area">${_ccEsc(p.areaDesc || '')}</div>`;
+
 div.onclick = () => {
   try {
     const tmpLayer = L.geoJSON(f);
@@ -8588,7 +8663,53 @@ div.onclick = () => {
   }
 };
 
-    panel.appendChild(div);
+    body.appendChild(div);
+  });
+}
+
+function _fmtAlertTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+let _pastAlertsOpen = false;
+function togglePastAlerts() {
+  _pastAlertsOpen = !_pastAlertsOpen;
+  const toggle = document.getElementById('past-alerts-toggle');
+  const list = document.getElementById('past-alerts-list');
+  const label = toggle ? toggle.querySelector('.pat-count') : null;
+  if (toggle) toggle.classList.toggle('open', _pastAlertsOpen);
+  if (list) list.classList.toggle('open', _pastAlertsOpen);
+  if (label) label.textContent = _pastAlertsOpen ? 'Hide' : 'Show';
+}
+
+function renderPastAlerts(features) {
+  const list = document.getElementById('past-alerts-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!features.length) {
+    list.innerHTML = '<div class="alerts-empty">No recently expired alerts</div>';
+    return;
+  }
+  features.slice(0, 20).forEach(f => {
+    const p = f.properties;
+    const ev = p.event || '';
+    const info = Object.entries(ALERT_COLORS).find(([k]) => ev.includes(k));
+    const cls = info ? info[1].cls : '';
+    const div = document.createElement('div');
+    div.className = `alert-card past ${cls}`;
+    const expiresLabel = _fmtAlertTime(p.expires);
+    div.innerHTML = `<div class="alert-event"><span>${_ccEsc(ev)}</span>${expiresLabel ? `<span class="alert-event-time">expired ${expiresLabel}</span>` : ''}</div><div class="alert-area">${_ccEsc(p.areaDesc || '')}</div>`;
+    div.onclick = () => {
+      try {
+        const tmpLayer = L.geoJSON(f);
+        const bounds = tmpLayer.getBounds();
+        if (bounds.isValid()) map.flyToBounds(bounds, { padding: [60, 60], duration: 0.8 });
+      } catch(e) {}
+    };
+    list.appendChild(div);
   });
 }
 
