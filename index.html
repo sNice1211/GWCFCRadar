@@ -1292,6 +1292,27 @@ body {
   #top-search-bar { max-width: 200px; left: calc(50% + 51px); }
   #lqm-profile-btn { padding: 5px 10px 5px 5px; }
 
+  /* On phones/tablets the bar starts collapsed to a small round search
+     icon instead of a permanently-open input - it was rendering with its
+     "Recent/Quick Access" suggestions dropdown wide open by default,
+     eating most of the screen. Tapping it (_searchBarTap) adds .expanded
+     to reveal the real input; tapping outside or Escape collapses it
+     again via lqmCloseSearch(). */
+  #top-search-bar {
+    width: 44px; height: 44px; padding: 0; border-radius: 50%;
+    overflow: hidden; cursor: pointer;
+    transition: width 0.22s ease, height 0.22s ease, border-radius 0.22s ease, padding 0.22s ease;
+  }
+  #top-search-bar:not(.expanded) #lqm-search-row { justify-content: center; width: 100%; height: 100%; }
+  #top-search-bar:not(.expanded) #lqm-search-input,
+  #top-search-bar:not(.expanded) #lqm-search-status,
+  #top-search-bar:not(.expanded) #lqm-search-dropdown { display: none !important; }
+  #top-search-bar:not(.expanded) #lqm-search-go { background: none; border: none; }
+  #top-search-bar.expanded {
+    width: min(260px, 82vw); height: auto; padding: 6px 8px; border-radius: 16px;
+    cursor: default;
+  }
+
   /* Animation bar , compact */
   #animbar {
     bottom: 28px;
@@ -21867,7 +21888,7 @@ function selectProduct(p) {
 </script>
 
 <!-- ── LOGO QUICK MENU PANELS ── -->
-<div id="top-search-bar">
+<div id="top-search-bar" onclick="_searchBarTap(event)">
   <div id="lqm-search-row">
     <input id="lqm-search-input" type="text" placeholder="Search features, locations…" oninput="lqmSearchInput(this.value)" onfocus="lqmSearchFocus()" onkeydown="lqmSearchKeydown(event)" autocomplete="off" autocorrect="off" spellcheck="false"/>
     <button id="lqm-search-go" onclick="lqmDoSearch()" title="Search" aria-label="Search">
@@ -22226,12 +22247,17 @@ function selectProduct(p) {
 })();
 
 // ── SEARCH ──
-// The search bar itself is always visible now (top-right corner), so
-// "opening" it just means focusing the input - no panel to show/hide.
+// Desktop/tablet: the bar is always visible, so "opening" it just means
+// focusing the input - no panel to show/hide. On phone widths it collapses
+// to a small round icon by default (CSS, see #top-search-bar:not(.expanded))
+// - tapping it adds .expanded to reveal the real input instead of a
+// permanently-open search box eating most of the screen.
 function lqmOpenSearch() {
   lqmCloseSettings();
+  const bar = document.getElementById('top-search-bar');
+  if (bar) bar.classList.add('expanded');
   const inp = document.getElementById('lqm-search-input');
-  if (inp) inp.focus();
+  if (inp) setTimeout(() => inp.focus(), 60);
 }
 function lqmCloseSearch() {
   const dd = document.getElementById('lqm-search-dropdown');
@@ -22239,8 +22265,27 @@ function lqmCloseSearch() {
   const st = document.getElementById('lqm-search-status');
   if (st) st.textContent = '';
   const inp = document.getElementById('lqm-search-input');
-  if (inp) inp.blur();
+  if (inp) { inp.blur(); inp.value = ''; }
+  if (window.innerWidth <= 768) {
+    const bar = document.getElementById('top-search-bar');
+    if (bar) bar.classList.remove('expanded');
+  }
 }
+// Tapping the collapsed round button (mobile only - CSS makes the whole
+// bar clickable there) expands it; once expanded, taps go to the input/
+// go-button beneath instead of re-triggering this.
+function _searchBarTap(e) {
+  const bar = document.getElementById('top-search-bar');
+  if (bar && !bar.classList.contains('expanded')) {
+    e.stopPropagation();
+    lqmOpenSearch();
+  }
+}
+document.addEventListener('click', (e) => {
+  if (window.innerWidth > 768) return;
+  const bar = document.getElementById('top-search-bar');
+  if (bar && bar.classList.contains('expanded') && !bar.contains(e.target)) lqmCloseSearch();
+});
 async function lqmDoSearch() {
   const inp = document.getElementById('lqm-search-input');
   const status = document.getElementById('lqm-search-status');
