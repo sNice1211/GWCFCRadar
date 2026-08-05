@@ -11711,22 +11711,37 @@ function _bilinearAngle(gridDeg, cols, rows, gx, gy) {
   return Math.atan2(y, x) * 180 / Math.PI;
 }
 
-// Builds the canvas, paints it, and swaps it in as an image overlay. `grid` is
-// sampled south-to-north/west-to-east (row 0 = south), but image rows paint
-// top-to-bottom = north-to-south, so the row index is flipped when sampling.
+// Fixed domain both layers render over - like a real WMS layer's tiles, this
+// is anchored to the same geographic box every time, not the current
+// viewport, so panning around just reveals more of the one already-rendered
+// image instead of triggering a re-fetch. Broad CONUS + coastal waters,
+// matching the extent this app already uses for other continent-scale
+// overlays (see CPC_BOUNDS), widened west/east a bit since Waves needs to
+// reach open ocean, not just the coastline.
+const CLIMATE_MAP_BOUNDS = [[15, -140], [55, -50]];
+
+// Builds the canvas, paints it, and returns a fixed-bounds image overlay.
+// `grid` is sampled south-to-north/west-to-east (row 0 = south), but image
+// rows paint top-to-bottom = north-to-south, so the row index is flipped.
+// Canvas pixel dimensions are kept proportional to the bounds' aspect ratio
+// so the interpolation resolution isn't lopsided on a wide, short box.
 function _paintInterpolatedOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
-  const SIZE = 200;
+  const latSpan = bounds[1][0] - bounds[0][0], lngSpan = bounds[1][1] - bounds[0][1];
+  const MAXDIM = 360;
+  let W, H;
+  if (lngSpan >= latSpan) { W = MAXDIM; H = Math.max(40, Math.round(MAXDIM * latSpan / lngSpan)); }
+  else                    { H = MAXDIM; W = Math.max(40, Math.round(MAXDIM * lngSpan / latSpan)); }
   const canvas = document.createElement('canvas');
-  canvas.width = SIZE; canvas.height = SIZE;
+  canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
-  const img = ctx.createImageData(SIZE, SIZE);
+  const img = ctx.createImageData(W, H);
   const data = img.data;
-  for (let py = 0; py < SIZE; py++) {
-    const gyFlipped = (rows - 1) - (py / (SIZE - 1)) * (rows - 1);
-    for (let px = 0; px < SIZE; px++) {
-      const gx = (px / (SIZE - 1)) * (cols - 1);
+  for (let py = 0; py < H; py++) {
+    const gyFlipped = (rows - 1) - (py / (H - 1)) * (rows - 1);
+    for (let px = 0; px < W; px++) {
+      const gx = (px / (W - 1)) * (cols - 1);
       const v = isAngle ? _bilinearAngle(grid, cols, rows, gx, gyFlipped) : _bilinear(grid, cols, rows, gx, gyFlipped);
-      const idx = (py * SIZE + px) * 4;
+      const idx = (py * W + px) * 4;
       if (v == null) { data[idx + 3] = 0; continue; }
       const [r, g, b] = colorFn(v);
       data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 165;
@@ -11737,8 +11752,8 @@ function _paintInterpolatedOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
 }
 
 function _sampleGrid(cols, rows, bounds) {
-  const south = bounds.getSouth(), north = bounds.getNorth();
-  const west  = bounds.getWest(),  east  = bounds.getEast();
+  const south = bounds[0][0], north = bounds[1][0];
+  const west  = bounds[0][1], east  = bounds[1][1];
   const pts = [];
   for (let r = 0; r < rows; r++)
     for (let c = 0; c < cols; c++)
@@ -11751,7 +11766,8 @@ let wavesActive = false;
 let _wavesProduct = 'wave-height';
 let _wavesLayer = null;
 let _wavesLoadToken = 0;
-const WAVES_GRID = 14;
+let _wavesRefreshTimer = null;
+const WAVES_COLS = 26, WAVES_ROWS = 16; // wide, low grid to match CLIMATE_MAP_BOUNDS' shape
 
 const WAVES_SUB_BUBBLES = [
   { id: 'wave-height',  icon: '🌊', label: 'Wave Height' },
@@ -11794,6 +11810,7 @@ function toggleWavesSub() {
     el.onclick = () => {
       if (wavesActive && _wavesProduct === b.id) {
         wavesActive = false;
+        clearInterval(_wavesRefreshTimer); _wavesRefreshTimer = null;
         if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} _wavesLayer = null; }
         el.classList.remove('active');
         _syncParentBubble('waves');
@@ -11805,17 +11822,24 @@ function toggleWavesSub() {
       _wavesProduct = b.id;
       _syncParentBubble('waves');
       _loadWavesLayer();
+      clearInterval(_wavesRefreshTimer);
+      _wavesRefreshTimer = setInterval(_loadWavesLayer, 10 * 60 * 1000);
     };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
 }
 
+// Renders once over the fixed CLIMATE_MAP_BOUNDS domain, not the current
+// viewport - panning/zooming the map never re-triggers this, Leaflet just
+// shows the relevant slice of the one already-rendered image, exactly like
+// panning under any other fixed-tile layer. Only re-runs on product change,
+// explicit reactivation, or the periodic background refresh above.
 async function _loadWavesLayer() {
   if (!wavesActive) return;
   const token = ++_wavesLoadToken;
-  const bounds = map.getBounds();
-  const pts = _sampleGrid(WAVES_GRID, WAVES_GRID, bounds);
+  const pts = _sampleGrid(WAVES_COLS, WAVES_ROWS, CLIMATE_MAP_BOUNDS);
   const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
   const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
   const field  = WAVES_FIELD[_wavesProduct] || 'wave_height';
@@ -11823,13 +11847,13 @@ async function _loadWavesLayer() {
   try {
     const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
       `&current=${field}&length_unit=imperial&temperature_unit=fahrenheit`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     if (token !== _wavesLoadToken) return; // a newer request/toggle already superseded this one
     const arr  = Array.isArray(data) ? data : [data];
     const grid = arr.map(d => { const v = d?.current?.[field]; return (v == null || !isFinite(v)) ? null : v; });
-    const layer = _paintInterpolatedOverlay(grid, WAVES_GRID, WAVES_GRID, bounds, _wavesProduct === 'wave-dir', v => _waveColorFor(_wavesProduct, v));
+    const layer = _paintInterpolatedOverlay(grid, WAVES_COLS, WAVES_ROWS, CLIMATE_MAP_BOUNDS, _wavesProduct === 'wave-dir', v => _waveColorFor(_wavesProduct, v));
     if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} }
     _wavesLayer = layer.addTo(map);
   } catch(e) {
@@ -11837,44 +11861,45 @@ async function _loadWavesLayer() {
     showToast('Wave data unavailable right now', 3000);
   }
 }
-// moveend/zoomend refresh wired up inside init() below, after initMap()
-// actually creates `map` - this script runs at parse time, long before
-// init()/initMap() are called.
 
 // ── AIR QUALITY LAYER (Open-Meteo Air Quality API) ───────────────────────────
 let airActive = false;
 let _airLayer = null;
 let _airLoadToken = 0;
-const AIR_GRID = 14;
+let _airRefreshTimer = null;
+const AIR_COLS = 26, AIR_ROWS = 16;
 const AQI_SCALE = [[0,[0,228,0]],[50,[255,255,0]],[100,[255,126,0]],[150,[255,0,0]],[200,[143,63,151]],[300,[126,0,35]],[500,[126,0,35]]];
 
 function toggleAirLayer() {
   airActive = !airActive;
   if (airActive) {
     _loadAirLayer();
-  } else if (_airLayer) {
-    try { map.removeLayer(_airLayer); } catch(e){}
-    _airLayer = null;
+    clearInterval(_airRefreshTimer);
+    _airRefreshTimer = setInterval(_loadAirLayer, 10 * 60 * 1000);
+  } else {
+    clearInterval(_airRefreshTimer); _airRefreshTimer = null;
+    if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} _airLayer = null; }
   }
 }
 
+// Same fixed-domain approach as Waves - renders once over CLIMATE_MAP_BOUNDS,
+// panning/zooming doesn't re-trigger this.
 async function _loadAirLayer() {
   if (!airActive) return;
   const token = ++_airLoadToken;
-  const bounds = map.getBounds();
-  const pts = _sampleGrid(AIR_GRID, AIR_GRID, bounds);
+  const pts = _sampleGrid(AIR_COLS, AIR_ROWS, CLIMATE_MAP_BOUNDS);
   const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
   const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
 
   try {
     const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}&current=us_aqi`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     if (token !== _airLoadToken) return;
     const arr  = Array.isArray(data) ? data : [data];
     const grid = arr.map(d => { const v = d?.current?.us_aqi; return (v == null || !isFinite(v)) ? null : v; });
-    const layer = _paintInterpolatedOverlay(grid, AIR_GRID, AIR_GRID, bounds, false, v => _colorScale(v, AQI_SCALE));
+    const layer = _paintInterpolatedOverlay(grid, AIR_COLS, AIR_ROWS, CLIMATE_MAP_BOUNDS, false, v => _colorScale(v, AQI_SCALE));
     if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} }
     _airLayer = layer.addTo(map);
   } catch(e) {
@@ -11882,8 +11907,6 @@ async function _loadAirLayer() {
     showToast('Air quality data unavailable right now', 3000);
   }
 }
-// moveend/zoomend refresh wired up inside init() below, after initMap()
-// actually creates `map`.
 
 
 // ── MAP TYPE ──
@@ -12275,6 +12298,13 @@ const LAYER_DESCRIPTIONS = {
   ch14: 'Another infrared channel for cloud tops, similar to Clean IR.',
   ch15: 'Infrared channel useful for spotting volcanic ash and dust.',
   ch16: 'Infrared channel tuned to carbon dioxide absorption, used mainly for very high clouds.',
+  waves: 'A smooth color map of ocean conditions from Open-Meteo. Tap again to pick a product, like Wave Height or Sea Surface Temp.',
+  air: 'A smooth US AQI color map from Open-Meteo, covering a broad North America + coastal-waters area.',
+  'wave-height':  'Overall combined wave height (wind waves + swell). Blue is calm, red/purple is rough (12+ ft).',
+  'wave-period':  'Time between wave crests. Short periods (red) mean choppy local wind waves; long periods (blue/purple) mean organized swell that traveled a long way.',
+  'wave-dir':     'The compass direction waves are heading, shown as a color wheel since direction can\'t fit on a straight scale, hue = heading.',
+  'swell-height': 'Height of the swell component alone, separate from local wind-driven waves. Same color scale as Wave Height.',
+  sst:            'Sea surface temperature. Blue/purple is cold, green is mild, yellow/orange/red is warm, key fuel for tropical systems.',
 };
 
 const BASE_BUBBLES = [
@@ -14588,8 +14618,6 @@ async function init() {
     _ovApplyMapOrder(); // re-apply saved overlay order now that map panes exist
     updateLegend('ref');
     renderSubBubbles('regular');
-    map.on('moveend zoomend', () => { if (wavesActive) _loadWavesLayer(); });
-    map.on('moveend zoomend', () => { if (airActive)   _loadAirLayer(); });
   } catch(e) {
     console.warn('Map init error:', e);
   }
@@ -24292,12 +24320,12 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">🌊</div>
       <div class="fc-title">WAVES</div>
-      <p class="fc-body">Tap to choose a product: <strong>Wave Height</strong>, <strong>Period</strong>, <strong>Direction</strong>, <strong>Swell Height</strong>, or <strong>Sea Surface Temp</strong>. Draws as a smooth, continuous color map over the ocean, powered by Open-Meteo's Marine Weather API, not clickable points. Direction uses a color wheel (hue = compass direction) since angles can't be shown on a linear scale. Updates automatically as you pan or zoom.</p>
+      <p class="fc-body">Tap to choose a product (each has its own ⓘ info button): <strong>Wave Height</strong>, <strong>Period</strong>, <strong>Direction</strong>, <strong>Swell Height</strong>, or <strong>Sea Surface Temp</strong>. Draws as a smooth, continuous color map, powered by Open-Meteo's Marine Weather API, not clickable points. Rendered once over a broad North America + coastal-waters area and fixed in place, like a real map layer, panning and zooming just reveals more of the same image rather than re-drawing it. Refreshes quietly in the background every 10 minutes. Direction uses a color wheel (hue = compass direction) since angles can't be shown on a linear scale.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌫️</div>
       <div class="fc-title">AIR</div>
-      <p class="fc-body">A smooth US AQI color map (green Good through maroon Hazardous), powered by Open-Meteo's Air Quality API. Same continuous-map style as Waves, updates as you pan or zoom.</p>
+      <p class="fc-body">A smooth US AQI color map (green Good through maroon Hazardous), powered by Open-Meteo's Air Quality API. Same fixed-area, background-refreshing approach as Waves.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">📊</div>
