@@ -4038,15 +4038,23 @@ body {
   white-space: nowrap;
 }
 /* Top-right search bar , always visible, no open/close toggle.
-   `left` is pinned just past the centered logo's own right edge (half its
-   width + a gap) instead of a guessed fixed/vw width, so this can never
-   overlap the logo on any screen size - it was doing exactly that on
-   narrow phones where a fixed-width box floated over the logo. `right`
-   plus `max-width` then just cap how wide it's allowed to grow. */
+   Anchored purely with `right` + `max-width`, no `left`. This used to also
+   set `left: calc(50% + 81px)` (pinned just past the centered logo) as a
+   defensive "never overlap the logo" guard, but at any width above the
+   768px breakpoint (the only range where that left value wasn't already
+   overridden away to `auto`), right+max-width alone already keeps this
+   comfortably clear of a centered logo - the box never gets closer than
+   ~230px+18px from the right edge, nowhere near center. Keeping `left` set
+   there over-constrained the box (left + right + an effective width from
+   max-width all fighting at once), and on wide viewports (e.g. a TV/game
+   console browser) this browser resolves that by honoring left+width and
+   silently ignoring right, the exact same bug already fixed for the mobile
+   breakpoints below - it pinned the search bar right next to the logo
+   instead of the actual right edge. Dropping `left` here too removes the
+   conflict for every width, not just the two already-patched breakpoints. */
 #top-search-bar {
   position: fixed;
   top: 18px;
-  left: calc(50% + 81px);
   right: 18px;
   max-width: 230px;
   box-sizing: border-box;
@@ -4064,17 +4072,10 @@ body {
    unconditional rule above (same equal-specificity/source-order gotcha as
    #right-menu/#sub-bubbles: copies of these declared earlier, inside the
    media queries further up the file, were silently losing to the desktop
-   rule for every property they both set).
-   left is explicitly released (auto) at these sizes rather than given a
-   smaller logo-relative value: the desktop version needs `left` because
-   its width is auto (solved from left+right, so both can stay set safely),
-   but the collapsed/expanded mobile states set an explicit width instead
-   (44px / a capped px value) - with left, right, AND width all specified
-   at once, the box is over-constrained and this browser resolves it by
-   honoring left+width and silently ignoring right, which pinned even the
-   44px collapsed circle at the desktop-logo-relative left offset, far
-   from the actual right edge. Dropping left removes the conflict and lets
-   right+width position it normally, like any other right-anchored button. */
+   rule for every property they both set). `left: auto` here is now just
+   belt-and-suspenders (the base rule above no longer sets `left` either),
+   kept so a leftover `left` from some other rule can't reintroduce the
+   over-constraint explained above the base rule. */
 @media (max-width: 768px) {
   #top-search-bar { max-width: 200px; left: auto; }
 }
