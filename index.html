@@ -11840,26 +11840,41 @@ async function _paintWavesOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
 // several doesn't make the entire world map report "unavailable". Only if
 // EVERY chunk fails do we throw, since that means the layer genuinely has
 // no data to show.
-async function _fetchGridChunked(pts, buildUrl, extractValue, chunkSize) {
+//
+// Fetches ALL of a layer's fields (e.g. every Waves product, or every Air
+// product) in one batched round of requests - Open-Meteo's "current" param
+// accepts a comma-separated variable list, same as it accepts a
+// comma-separated location list, so one chunked request already carries
+// every product. This is what lets switching products just repaint from
+// cache with zero new network calls, instead of re-fetching the whole world
+// grid per product tap.
+async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
   chunkSize = chunkSize || 500;
   const chunks = [];
   for (let i = 0; i < pts.length; i += chunkSize) chunks.push(pts.slice(i, i + chunkSize));
   let anyOk = false;
-  const results = await Promise.all(chunks.map(async chunk => {
+  const chunkResults = await Promise.all(chunks.map(async chunk => {
     try {
       const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(25000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const data = await r.json();
       const arr = Array.isArray(data) ? data : [data];
       anyOk = true;
-      return arr.map(extractValue);
+      return arr.map(d => {
+        const out = {};
+        fields.forEach(f => { const v = d?.current?.[f]; out[f] = (v == null || !isFinite(v)) ? null : v; });
+        return out;
+      });
     } catch (e) {
       console.warn('Grid chunk fetch failed, treating as no-data for that chunk:', e);
-      return chunk.map(() => null);
+      return chunk.map(() => { const out = {}; fields.forEach(f => out[f] = null); return out; });
     }
   }));
   if (!anyOk) throw new Error('All chunks failed');
-  return results.flat();
+  const flat = chunkResults.flat();
+  const grids = {};
+  fields.forEach(f => { grids[f] = flat.map(o => o[f]); });
+  return grids;
 }
 
 function _sampleGrid(cols, rows, bounds) {
@@ -11935,7 +11950,7 @@ function toggleWavesSub() {
       _syncParentBubble('waves');
       _loadWavesLayer();
       clearInterval(_wavesRefreshTimer);
-      _wavesRefreshTimer = setInterval(_loadWavesLayer, 10 * 60 * 1000);
+      _wavesRefreshTimer = setInterval(() => _loadWavesLayer(true), 10 * 60 * 1000);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
@@ -11943,35 +11958,57 @@ function toggleWavesSub() {
   wrap.style.display = 'flex';
 }
 
+let _wavesAllGrids = null; // {cols, rows, grids: {wave_height:[...], wave_period:[...], ...}} - every product's data, one fetch
+let _wavesFetchPromise = null; // collapses overlapping fetches from rapid clicking into one in-flight request
+
 // Renders once over the fixed WORLD_MAP_BOUNDS domain, not the current
 // viewport - panning/zooming the map never re-triggers this, Leaflet just
 // shows the relevant slice of the one already-rendered image, exactly like
-// panning under any other fixed-tile layer. Only re-runs on product change,
-// explicit reactivation, or the periodic background refresh above.
-async function _loadWavesLayer() {
+// panning under any other fixed-tile layer. All 5 Waves products are
+// fetched together in one request (Open-Meteo's `current` param takes a
+// comma-separated variable list), so switching products just repaints from
+// the cached response instead of re-hitting the network - only an explicit
+// forceRefresh (the periodic background timer) actually re-fetches.
+async function _loadWavesLayer(forceRefresh) {
   if (!wavesActive) return;
   const token = ++_wavesLoadToken;
-  const pts = _sampleGrid(WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS);
-  const field = WAVES_FIELD[_wavesProduct] || 'wave_height';
+  const cacheValid = _wavesAllGrids && _wavesAllGrids.cols === WAVES_COLS && _wavesAllGrids.rows === WAVES_ROWS;
+
+  if (cacheValid && !forceRefresh) {
+    await _paintAndShowWaves(_wavesAllGrids, token);
+    return;
+  }
 
   try {
-    const grid = await _fetchGridChunked(pts, chunk => {
-      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      return `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
-        `&current=${field}&length_unit=imperial&temperature_unit=fahrenheit`;
-    }, d => { const v = d?.current?.[field]; return (v == null || !isFinite(v)) ? null : v; });
+    if (!_wavesFetchPromise) {
+      const pts = _sampleGrid(WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS);
+      const fields = Object.values(WAVES_FIELD);
+      _wavesFetchPromise = _fetchGridChunked(pts, chunk => {
+        const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+        const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+        return `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
+          `&current=${fields.join(',')}&length_unit=imperial&temperature_unit=fahrenheit`;
+      }, fields).finally(() => { _wavesFetchPromise = null; });
+    }
+    const grids = await _wavesFetchPromise;
     if (token !== _wavesLoadToken) return; // a newer request/toggle already superseded this one
-    const isAngle = _wavesProduct === 'wave-dir';
-    const layer = await _paintWavesOverlay(grid, WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS, isAngle, v => _waveColorFor(_wavesProduct, v));
-    if (token !== _wavesLoadToken) return; // superseded while awaiting the land-mask fetch/rasterize
-    _wavesGridCache = { grid, cols: WAVES_COLS, rows: WAVES_ROWS, isAngle };
-    if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} }
-    _wavesLayer = layer.addTo(map);
+    _wavesAllGrids = { cols: WAVES_COLS, rows: WAVES_ROWS, grids };
+    await _paintAndShowWaves(_wavesAllGrids, token);
   } catch(e) {
     console.warn('Waves layer error:', e);
     showToast('Wave data unavailable right now', 3000);
   }
+}
+
+async function _paintAndShowWaves(allGrids, token) {
+  const field = WAVES_FIELD[_wavesProduct] || 'wave_height';
+  const grid = allGrids.grids[field];
+  const isAngle = _wavesProduct === 'wave-dir';
+  const layer = await _paintWavesOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, isAngle, v => _waveColorFor(_wavesProduct, v));
+  if (token !== _wavesLoadToken) return; // superseded while awaiting the land-mask fetch/rasterize
+  _wavesGridCache = { grid, cols: allGrids.cols, rows: allGrids.rows, isAngle };
+  if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} }
+  _wavesLayer = layer.addTo(map);
 }
 
 // ── AIR QUALITY LAYER (Open-Meteo Air Quality API) ───────────────────────────
@@ -12035,7 +12072,7 @@ function toggleAirSub() {
       _syncParentBubble('air');
       _loadAirLayer();
       clearInterval(_airRefreshTimer);
-      _airRefreshTimer = setInterval(_loadAirLayer, 10 * 60 * 1000);
+      _airRefreshTimer = setInterval(() => _loadAirLayer(true), 10 * 60 * 1000);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
@@ -12043,29 +12080,51 @@ function toggleAirSub() {
   wrap.style.display = 'flex';
 }
 
+let _airAllGrids = null; // {cols, rows, grids: {us_aqi:[...], pm2_5:[...], ...}} - every product's data, one fetch
+let _airFetchPromise = null; // collapses overlapping fetches from rapid clicking into one in-flight request
+
 // Same fixed-domain approach as Waves - renders once over WORLD_MAP_BOUNDS,
-// panning/zooming doesn't re-trigger this.
-async function _loadAirLayer() {
+// panning/zooming doesn't re-trigger this. All 4 Air products are fetched
+// together in one request, so switching products just repaints from cache -
+// only an explicit forceRefresh (the periodic background timer) re-fetches.
+async function _loadAirLayer(forceRefresh) {
   if (!airActive) return;
   const token = ++_airLoadToken;
-  const pts = _sampleGrid(AIR_COLS, AIR_ROWS, WORLD_MAP_BOUNDS);
-  const field = AIR_FIELD[_airProduct] || 'us_aqi';
+  const cacheValid = _airAllGrids && _airAllGrids.cols === AIR_COLS && _airAllGrids.rows === AIR_ROWS;
+
+  if (cacheValid && !forceRefresh) {
+    _paintAndShowAir(_airAllGrids, token);
+    return;
+  }
 
   try {
-    const grid = await _fetchGridChunked(pts, chunk => {
-      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      return `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}&current=${field}`;
-    }, d => { const v = d?.current?.[field]; return (v == null || !isFinite(v)) ? null : v; });
+    if (!_airFetchPromise) {
+      const pts = _sampleGrid(AIR_COLS, AIR_ROWS, WORLD_MAP_BOUNDS);
+      const fields = Object.values(AIR_FIELD);
+      _airFetchPromise = _fetchGridChunked(pts, chunk => {
+        const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+        const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+        return `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}&current=${fields.join(',')}`;
+      }, fields).finally(() => { _airFetchPromise = null; });
+    }
+    const grids = await _airFetchPromise;
     if (token !== _airLoadToken) return;
-    _airGridCache = { grid, cols: AIR_COLS, rows: AIR_ROWS, isAngle: false };
-    const layer = _paintInterpolatedOverlay(grid, AIR_COLS, AIR_ROWS, WORLD_MAP_BOUNDS, false, v => _airColorFor(_airProduct, v));
-    if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} }
-    _airLayer = layer.addTo(map);
+    _airAllGrids = { cols: AIR_COLS, rows: AIR_ROWS, grids };
+    _paintAndShowAir(_airAllGrids, token);
   } catch(e) {
     console.warn('Air layer error:', e);
     showToast('Air quality data unavailable right now', 3000);
   }
+}
+
+function _paintAndShowAir(allGrids, token) {
+  const field = AIR_FIELD[_airProduct] || 'us_aqi';
+  const grid = allGrids.grids[field];
+  _airGridCache = { grid, cols: allGrids.cols, rows: allGrids.rows, isAngle: false };
+  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _airColorFor(_airProduct, v));
+  if (token !== _airLoadToken) return;
+  if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} }
+  _airLayer = layer.addTo(map);
 }
 
 
