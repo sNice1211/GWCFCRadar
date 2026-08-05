@@ -3635,6 +3635,67 @@ body {
 .sc-table tr:last-child td { border-bottom: none; }
 .sc-empty { text-align: center !important; color: rgba(255,230,200,0.4); padding: 14px 6px !important; }
 
+/* Style + per-point curve popovers - same popover shell as #stormcone-panel */
+#sc-style-panel, #sc-points-panel {
+  display: none;
+  position: fixed;
+  flex-direction: column;
+  width: min(240px, calc(100vw - 32px));
+  max-height: 50vh;
+  overflow-y: auto;
+  background: rgba(8,12,22,0.97);
+  border: 1.5px solid rgba(170,0,0,0.35);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.8);
+  z-index: 1200;
+  font-family: 'Comfortaa', sans-serif;
+  font-size: 10px;
+  color: rgba(255,230,200,0.85);
+}
+#sc-style-panel.open, #sc-points-panel.open { display: flex; }
+#sc-style-panel::-webkit-scrollbar, #sc-points-panel::-webkit-scrollbar { width: 3px; }
+#sc-style-panel::-webkit-scrollbar-thumb, #sc-points-panel::-webkit-scrollbar-thumb { background: rgba(200,80,0,0.5); border-radius: 2px; }
+#sc-style-panel, #sc-points-panel { scrollbar-width: thin; scrollbar-color: rgba(200,80,0,0.5) transparent; }
+.sc-popover-title {
+  padding: 8px 12px 6px;
+  font-family: var(--display);
+  font-size: 8px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: rgba(255,230,200,0.45);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.sc-style-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.sc-style-row label { color: rgba(255,230,200,0.75); }
+.sc-style-row input[type="color"] {
+  width: 30px; height: 22px; border: 1px solid rgba(255,255,255,0.2); border-radius: 4px;
+  background: none; cursor: pointer; padding: 0;
+}
+.sc-style-row input[type="range"] { width: 100px; accent-color: #aa0000; }
+.sc-style-reset {
+  margin: 8px 12px 10px; align-self: flex-start;
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); color: rgba(255,230,200,0.85);
+  border-radius: 6px; font-family: var(--mono); font-size: 10px; padding: 5px 10px; cursor: pointer;
+}
+.sc-point-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  cursor: pointer;
+}
+.sc-point-row.selected { background: rgba(74,158,255,0.15); }
+.sc-point-label { flex: 1; color: rgba(255,230,200,0.75); }
+.sc-point-curve { color: rgba(255,230,200,0.45); font-family: var(--mono); font-size: 9px; width: 32px; text-align: right; }
+.sc-point-input {
+  width: 44px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 10px; text-align: center; padding: 3px 2px;
+}
+.sc-point-empty { text-align: center; color: rgba(255,230,200,0.4); padding: 16px 10px; }
+
 /* ── CANVA-STYLE TEXT ITEMS ── */
 .dtb-cv-wrap {
   position: relative; display: inline-block;
@@ -11724,15 +11785,37 @@ function _bilinearAngle(gridDeg, cols, rows, gx, gy) {
 // would badly distort an equirectangular projection).
 const WORLD_MAP_BOUNDS = [[-60, -180], [75, 180]];
 
+// Leaflet's default CRS is spherical Web Mercator, so when it stretches our
+// canvas across `bounds`, the stretch happens linearly in MERCATOR-Y pixel
+// space, not linearly in raw latitude degrees. Our data grid is sampled at
+// even latitude steps (_sampleGrid), which is fine for interpolation, but a
+// canvas ROW must represent whatever latitude actually lands at that row's
+// fraction of Mercator-Y - not that same fraction of raw latitude - or the
+// image drifts out of alignment with the real map. That mismatch grows with
+// |latitude| and was small enough to ignore over the old CONUS-only bounds,
+// but WORLD_MAP_BOUNDS' near-polar extent (-60 to 75) makes it large enough
+// to visibly shift everything toward the pole with more Mercator stretch
+// (north, given our bounds reach further north than south).
+function _latToMercY(latDeg) {
+  const r = latDeg * Math.PI / 180;
+  return Math.log(Math.tan(Math.PI / 4 + r / 2));
+}
+function _mercYToLat(y) {
+  return (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI;
+}
+
 // Builds the raw painted canvas (no L.imageOverlay wrapping yet) so callers
 // that need to post-process the pixels - Waves' land mask, see below - can
 // do so before turning it into a data URL.
-// `grid` is sampled south-to-north/west-to-east (row 0 = south), but image
-// rows paint top-to-bottom = north-to-south, so the row index is flipped.
-// Canvas pixel dimensions are kept proportional to the bounds' aspect ratio
-// so the interpolation resolution isn't lopsided on a wide, short box.
+// `grid` is sampled south-to-north/west-to-east (row 0 = south); each canvas
+// row is mapped to the latitude that actually lands there under Mercator,
+// then that latitude is converted into the grid's own (linear) row-space to
+// sample it. Canvas pixel dimensions are kept proportional to the bounds'
+// aspect ratio so the interpolation resolution isn't lopsided on a wide,
+// short box.
 function _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn) {
-  const latSpan = bounds[1][0] - bounds[0][0], lngSpan = bounds[1][1] - bounds[0][1];
+  const south = bounds[0][0], north = bounds[1][0];
+  const latSpan = north - south, lngSpan = bounds[1][1] - bounds[0][1];
   const MAXDIM = 720; // bumped up from 360 now that bounds span the whole world
   let W, H;
   if (lngSpan >= latSpan) { W = MAXDIM; H = Math.max(40, Math.round(MAXDIM * latSpan / lngSpan)); }
@@ -11742,11 +11825,14 @@ function _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn) {
   const ctx = canvas.getContext('2d');
   const img = ctx.createImageData(W, H);
   const data = img.data;
+  const mercYNorth = _latToMercY(north), mercYSouth = _latToMercY(south);
   for (let py = 0; py < H; py++) {
-    const gyFlipped = (rows - 1) - (py / (H - 1)) * (rows - 1);
+    const t = py / (H - 1); // 0 at the top (north edge) of the image
+    const latAtRow = _mercYToLat(mercYNorth + (mercYSouth - mercYNorth) * t);
+    const gy = (latAtRow - south) / (north - south) * (rows - 1); // row0=south in our data grid
     for (let px = 0; px < W; px++) {
       const gx = (px / (W - 1)) * (cols - 1);
-      const v = isAngle ? _bilinearAngle(grid, cols, rows, gx, gyFlipped) : _bilinear(grid, cols, rows, gx, gyFlipped);
+      const v = isAngle ? _bilinearAngle(grid, cols, rows, gx, gy) : _bilinear(grid, cols, rows, gx, gy);
       const idx = (py * W + px) * 4;
       if (v == null) { data[idx + 3] = 0; continue; }
       const [r, g, b] = colorFn(v);
@@ -11782,12 +11868,15 @@ function _loadLandGeoJSON() {
   }
   return _landGeoJSONPromise;
 }
-// Projects [lng,lat] the same way _buildInterpolatedCanvas does (linear
-// equirectangular, row 0 = south painted at the bottom) so the mask lines up
-// pixel-for-pixel with the color canvas.
+// Projects [lng,lat] the same Mercator-correct way _buildInterpolatedCanvas
+// paints its rows, so the mask lines up pixel-for-pixel with the color
+// canvas (and both line up with where Leaflet actually renders the image).
 function _projectLngLat(lng, lat, bounds, W, H) {
   const south = bounds[0][0], north = bounds[1][0], west = bounds[0][1], east = bounds[1][1];
-  return [(lng - west) / (east - west) * W, H - (lat - south) / (north - south) * H];
+  const mercYNorth = _latToMercY(north), mercYSouth = _latToMercY(south);
+  const x = (lng - west) / (east - west) * W;
+  const y = (mercYNorth - _latToMercY(lat)) / (mercYNorth - mercYSouth) * H;
+  return [x, y];
 }
 function _rasterizeLandMask(geojson, bounds, W, H) {
   const canvas = document.createElement('canvas');
@@ -16354,9 +16443,20 @@ let _scDrawing  = false;
 let _scStartLatLng = null;
 let _scDragPath = [];    // latlngs captured during the current drag
 let _scCones    = [];    // committed cones that stay on the map: {track,polygon,centerLine,dotLayer}
-let _scEditingPointIdx = null; // index of center point being edited
+let _scEditingPointIdx = null; // pointCurves index of the dot currently selected for per-point curve editing
+let _scDotIndices = [];  // parallel to the dots currently rendered: which pointCurves index each one represents
 let _scFirstPoint = null; // first clicked point for click-to-point mode
 let _scWarningShown = false; // track if mouse tracking warning shown
+
+// User-customizable cone appearance. Independent of the CURVE/DOTS/OFFSET
+// geometry controls above - this only changes how the cone is drawn, not
+// its shape.
+let _scStyle = {
+  outline: '#000000', outlineOpacity: 0.95,
+  fill: '#aa0000', fillOpacity: 0.2,
+  line: '#ffe066',
+  dotFill: '#ffe066', dotStroke: '#ffb347',
+};
 
 function _scBearingDegrees(a, b) {
   const lat1 = a.lat * Math.PI / 180, lat2 = b.lat * Math.PI / 180;
@@ -16591,8 +16691,9 @@ function _scClosePanel() {
 // the popover that same gesture just opened.
 (function _scInitOutsideClose() {
   function outside(e) {
-    if (!_scResultsOpen) return;
-    if (!e.target.closest('#stormcone-panel') && !e.target.closest('#sc-results-btn')) _scClosePanel();
+    if (_scResultsOpen && !e.target.closest('#stormcone-panel') && !e.target.closest('#sc-results-btn')) _scClosePanel();
+    if (_scStyleOpen && !e.target.closest('#sc-style-panel') && !e.target.closest('#sc-style-btn')) _scCloseStylePanel();
+    if (_scPointsOpen && !e.target.closest('#sc-points-panel') && !e.target.closest('#sc-points-btn')) _scClosePointsPanel();
   }
   document.addEventListener('mousedown', outside);
   document.addEventListener('touchstart', outside, { passive: true });
@@ -16799,22 +16900,36 @@ function _inspRadarRow(center, cx, cy) {
   return { label: 'Radar', value: '~ color', unit: `rgb(${s.r},${s.g},${s.b})`, color: `rgb(${s.r},${s.g},${s.b})` };
 }
 
+// Satellite (GOES) and Run Models are third-party colorized WMS imagery with
+// no client-side lookup table to decode a pixel color back into a physical
+// value, so unlike Radar/Waves/Air this can only ever report what's on
+// screen, not a calibrated reading. Most IR/water-vapor channels are
+// rendered close to grayscale (r/g/b nearly equal), so for those we report
+// a genuine 0-100% brightness instead of an opaque "~ color" placeholder;
+// truly colorized/enhanced imagery gets a clearly-labeled color swatch
+// instead of pretending the RGB triplet is itself a "value".
+function _inspPixelRow(label, s) {
+  if (s && s.tainted) return { label, value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
+  if (!s) return { label, value: 'No data', color: 'rgba(120,120,120,0.5)' };
+  if (s.transparent) return { label, value: 'No image', color: 'rgba(120,120,120,0.35)' };
+  const color = `rgb(${s.r},${s.g},${s.b})`;
+  const maxC = Math.max(s.r, s.g, s.b), minC = Math.min(s.r, s.g, s.b);
+  if (maxC - minC <= 12) { // near-grayscale: likely an uncolorized brightness/IR channel
+    return { label, value: Math.round((maxC / 255) * 100) + '%', unit: 'brightness', color };
+  }
+  return { label, value: 'Color', unit: color, color };
+}
+
 function _inspSatelliteRow(cx, cy) {
   const container = _goesLayer && _goesLayer.getContainer ? _goesLayer.getContainer() : null;
-  const s = _inspSampleColorFrom(container, cx, cy);
-  if (s && s.tainted) return { label: 'Satellite', value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
-  if (!s) return { label: 'Satellite', value: 'No data', color: 'rgba(120,120,120,0.5)' };
-  if (s.transparent) return { label: 'Satellite', value: 'No image', color: 'rgba(120,120,120,0.35)' };
-  return { label: 'Satellite', value: '~ color', unit: `rgb(${s.r},${s.g},${s.b})`, color: `rgb(${s.r},${s.g},${s.b})` };
+  return _inspPixelRow('Satellite', _inspSampleColorFrom(container, cx, cy));
 }
 
 function _inspModelsRow(cx, cy) {
   const container = _iemModelLayer && _iemModelLayer.getContainer ? _iemModelLayer.getContainer() : null;
-  const s = _inspSampleColorFrom(container, cx, cy);
-  if (s && s.tainted) return { label: 'Run Models', value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
-  if (!s) return { label: 'Run Models', value: 'No data', color: 'rgba(120,120,120,0.5)' };
-  if (s.transparent) return { label: 'Run Models', value: 'No data', color: 'rgba(120,120,120,0.35)' };
-  return { label: 'Run Models', value: '~ color', unit: `rgb(${s.r},${s.g},${s.b})`, color: `rgb(${s.r},${s.g},${s.b})` };
+  const row = _inspPixelRow('Run Models', _inspSampleColorFrom(container, cx, cy));
+  if (row.value === 'No image') row.value = 'No data'; // Run Models has no "cloud vs. clear" distinction worth calling out
+  return row;
 }
 
 // Waves/Air read the EXACT interpolated value from the same grid the color
@@ -16916,24 +17031,27 @@ function _scRenderCone() {
   if (_scPolygon) { map.removeLayer(_scPolygon); _scPolygon = null; }
   if (_scCenterLine) { map.removeLayer(_scCenterLine); _scCenterLine = null; }
   if (_scDotLayer) { map.removeLayer(_scDotLayer); _scDotLayer = null; }
-  if (!_scTrack) return;
+  _scDotIndices = [];
+  if (!_scTrack) { _scRenderPointsPanel(); return; }
 
   // Main cone shape (non-interactive so clicks don't interfere with map dragging)
   _scPolygon = L.polygon(_scTrack.ring, {
-    color: '#000000', weight: 4, opacity: 0.95,
-    fillColor: '#AA0000', fillOpacity: 0.2,
+    color: _scStyle.outline, weight: 4, opacity: _scStyle.outlineOpacity,
+    fillColor: _scStyle.fill, fillOpacity: _scStyle.fillOpacity,
     interactive: false,
   }).addTo(map);
 
   // Offset storm-center line down the middle
   if (_scTrack.centerLine && _scTrack.centerLine.length > 1) {
     _scCenterLine = L.polyline(_scTrack.centerLine, {
-      color: '#ffe066', weight: 2, opacity: 0.9, dashArray: '6 5',
+      color: _scStyle.line, weight: 2, opacity: 0.9, dashArray: '6 5',
       interactive: false,
     }).addTo(map);
   }
 
-  // Dots along the storm track (the center line, inside the cone)
+  // Dots along the storm track (the center line, inside the cone). Each one
+  // maps to a specific index in _scTrack.pointCurves - clickable so a dot
+  // can be selected for per-point curve editing in the Points popover.
   const dots = (typeof _scGetDots === 'function') ? _scGetDots() : 0;
   const path = _scTrack.centerLine;
   if (dots > 0 && path && path.length > 1) {
@@ -16943,13 +17061,122 @@ function _scRenderCone() {
       const t = d / (dots + 1);
       const i = Math.round(t * N);
       const pt = path[i];
-      if (pt) markers.push(L.circleMarker(pt, {
-        radius: 4, color: '#ffb347', weight: 1.5,
-        fillColor: '#ffe066', fillOpacity: 0.95, interactive: false,
-      }));
+      if (!pt) continue;
+      const selected = _scEditingPointIdx === i;
+      const marker = L.circleMarker(pt, {
+        radius: selected ? 7 : 4, color: selected ? '#4a9eff' : _scStyle.dotStroke, weight: selected ? 2.5 : 1.5,
+        fillColor: _scStyle.dotFill, fillOpacity: 0.95, interactive: true, bubblingMouseEvents: false,
+      }).on('click', () => _scOnDotClick(i));
+      markers.push(marker);
+      _scDotIndices.push(i);
     }
     if (markers.length) _scDotLayer = L.layerGroup(markers).addTo(map);
   }
+  _scRenderPointsPanel();
+}
+
+// ── CONE STYLE (colors + opacity) ────────────────────────────────────────────
+function _scSetStyle(key, value) {
+  _scStyle[key] = (key === 'outlineOpacity' || key === 'fillOpacity') ? Number(value) : value;
+  if (_scTrack) _scRenderCone();
+}
+function _scResetStyle() {
+  _scStyle = {
+    outline: '#000000', outlineOpacity: 0.95,
+    fill: '#aa0000', fillOpacity: 0.2,
+    line: '#ffe066',
+    dotFill: '#ffe066', dotStroke: '#ffb347',
+  };
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+  set('sc-style-outline', _scStyle.outline);
+  set('sc-style-outline-op', Math.round(_scStyle.outlineOpacity * 100));
+  set('sc-style-fill', _scStyle.fill);
+  set('sc-style-fill-op', Math.round(_scStyle.fillOpacity * 100));
+  set('sc-style-line', _scStyle.line);
+  set('sc-style-dot', _scStyle.dotFill);
+  set('sc-style-dot-stroke', _scStyle.dotStroke);
+  if (_scTrack) _scRenderCone();
+}
+
+let _scStyleOpen = false;
+function _scToggleStyle(ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  _scStyleOpen ? _scCloseStylePanel() : _scOpenStylePanel();
+}
+function _scOpenStylePanel() {
+  const panel = document.getElementById('sc-style-panel');
+  const btn = document.getElementById('sc-style-btn');
+  if (!panel || !btn) return;
+  const r = btn.getBoundingClientRect();
+  panel.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+  panel.style.left   = r.left + 'px';
+  panel.classList.add('open');
+  _scStyleOpen = true;
+}
+function _scCloseStylePanel() {
+  document.getElementById('sc-style-panel')?.classList.remove('open');
+  _scStyleOpen = false;
+}
+
+// ── PER-POINT CURVE EDITING ───────────────────────────────────────────────
+// Each rendered dot corresponds to one entry in _scTrack.pointCurves (see
+// _scBuildTrack). This popover lists every currently-shown dot with its
+// curve value, lets you type a new value for any of them, and clicking a
+// dot on the map (or a row here) selects it, highlighting that dot in blue.
+let _scPointsOpen = false;
+function _scTogglePoints(ev) {
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  _scPointsOpen ? _scClosePointsPanel() : _scOpenPointsPanel();
+}
+function _scOpenPointsPanel() {
+  const panel = document.getElementById('sc-points-panel');
+  const btn = document.getElementById('sc-points-btn');
+  if (!panel || !btn) return;
+  const r = btn.getBoundingClientRect();
+  panel.style.bottom = (window.innerHeight - r.top + 8) + 'px';
+  panel.style.left   = r.left + 'px';
+  panel.classList.add('open');
+  _scPointsOpen = true;
+  _scRenderPointsPanel();
+}
+function _scClosePointsPanel() {
+  document.getElementById('sc-points-panel')?.classList.remove('open');
+  _scPointsOpen = false;
+}
+function _scRenderPointsPanel() {
+  const list = document.getElementById('sc-points-list');
+  if (!list) return;
+  if (!_scTrack || !_scDotIndices.length) {
+    list.innerHTML = '<div class="sc-point-empty">Draw a cone with DOTS &gt; 0 to edit curve at each dot.</div>';
+    return;
+  }
+  list.innerHTML = _scDotIndices.map((idx, n) => {
+    const curve = (_scTrack.pointCurves && _scTrack.pointCurves[idx]) || 0;
+    const selected = _scEditingPointIdx === idx;
+    return `
+      <div class="sc-point-row${selected ? ' selected' : ''}" onclick="_scOnDotClick(${idx})">
+        <span class="sc-point-label">Dot ${n + 1}</span>
+        <span class="sc-point-curve">${curve > 0 ? '+' : ''}${curve}</span>
+        <input type="number" class="sc-point-input" min="-10" max="10" step="0.5" value="${curve}"
+          onclick="event.stopPropagation()" oninput="_scSetPointCurve(${idx}, this.value)">
+      </div>`;
+  }).join('');
+}
+// Selecting a dot (map click or list row click) opens the Points popover so
+// its curve value is immediately visible/editable.
+function _scOnDotClick(idx) {
+  _scEditingPointIdx = idx;
+  _scOpenPointsPanel();
+  _scRenderCone(); // re-render so the selected dot highlights on the map
+}
+function _scSetPointCurve(idx, value) {
+  if (!_scTrack || !_scTrack.pointCurves) return;
+  const v = Number(value);
+  const pointCurves = [...(_scTrack.pointCurves || [])];
+  pointCurves[idx] = Number.isFinite(v) ? Math.max(-10, Math.min(10, v)) : 0;
+  _scTrack = _scBuildTrack(_scTrack.path, pointCurves);
+  _scRenderCone();
+  _scComputeAndShowResults();
 }
 
 function _onScMove(e) {
@@ -17049,7 +17276,9 @@ function _scOnCurveChange() {
 }
 
 function _scOnDotsChange() {
-  // Dots are purely visual, just re-render.
+  // Changing the dot count reassigns which pointCurves indices are shown,
+  // so a previous selection may no longer correspond to a visible dot.
+  _scEditingPointIdx = null;
   if (_scTrack) _scRenderCone();
 }
 
@@ -17126,6 +17355,8 @@ function _scNew() {
   if (activeTool !== 'stormcone') toggleStormConeTool();
   _scCommitCurrent(); // previous cone stays on the map
   _scClosePanel();
+  _scEditingPointIdx = null;
+  _scClosePointsPanel();
   _scSetStatus('Click and drag on the map to draw a new storm cone.');
 }
 
@@ -17134,8 +17365,10 @@ function _scClearAll() {
   _scCones.forEach(c => [c.polygon, c.centerLine, c.dotLayer].forEach(l => { if (l) { try { map.removeLayer(l); } catch(e){} } }));
   _scCones = [];
   _scTrack = null;
+  _scEditingPointIdx = null;
   _scRenderCone();
   _scClosePanel();
+  _scClosePointsPanel();
 }
 
 
@@ -25070,7 +25303,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">▲</div>
       <div class="fc-title">STORM CONE</div>
-      <p class="fc-body">Click and drag to draw a storm threat cone, similar to an NHC forecast cone but for any storm, and see which cities fall inside it.</p>
+      <p class="fc-body">Click and drag to draw a storm threat cone, similar to an NHC forecast cone but for any storm, and see which cities fall inside it. <strong>🎨 Style</strong> customizes the cone's outline, fill, center line, and dot colors plus opacity. <strong>〜 Points</strong> opens a list of the cone's edge dots, each with its own curve value, click a dot (on the map or in the list) to select it, then type a value to bend just that part of the cone independently of the global CURVE slider.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🔎</div>
@@ -27474,6 +27707,9 @@ document.addEventListener('DOMContentLoaded', () => {
   <label for="sc-offset-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">OFFSET</label>
   <input type="number" id="sc-offset-input" min="-50" max="50" step="5" value="0" oninput="_scOnOffsetChange()" title="Storm center line offset (%)">
   <div class="dtb-sep"></div>
+  <button class="dtb-btn" id="sc-style-btn" onclick="_scToggleStyle(event)" title="Cone colors &amp; opacity">🎨 Style</button>
+  <button class="dtb-btn" id="sc-points-btn" onclick="_scTogglePoints(event)" title="Edit curve at individual dots">〜 Points</button>
+  <div class="dtb-sep"></div>
   <button class="dtb-btn" id="sc-new-btn" onclick="_scNew()" title="Start a new cone">+ New</button>
   <button class="dtb-btn" id="sc-results-btn" onclick="_scToggleResults(event)" title="Show city list">☰ Cities</button>
   <!-- Close -->
@@ -27493,6 +27729,26 @@ document.addEventListener('DOMContentLoaded', () => {
       <tbody id="sc-results-body"></tbody>
     </table>
   </div>
+</div>
+
+<!-- Style popover: cone outline/fill/line/dot colors + opacity -->
+<div id="sc-style-panel">
+  <div class="sc-popover-title">Cone Style</div>
+  <div class="sc-style-row"><label for="sc-style-outline">Outline color</label><input type="color" id="sc-style-outline" value="#000000" oninput="_scSetStyle('outline', this.value)"></div>
+  <div class="sc-style-row"><label for="sc-style-outline-op">Outline opacity</label><input type="range" id="sc-style-outline-op" min="0" max="100" value="95" oninput="_scSetStyle('outlineOpacity', this.value / 100)"></div>
+  <div class="sc-style-row"><label for="sc-style-fill">Fill color</label><input type="color" id="sc-style-fill" value="#aa0000" oninput="_scSetStyle('fill', this.value)"></div>
+  <div class="sc-style-row"><label for="sc-style-fill-op">Fill opacity</label><input type="range" id="sc-style-fill-op" min="0" max="100" value="20" oninput="_scSetStyle('fillOpacity', this.value / 100)"></div>
+  <div class="sc-style-row"><label for="sc-style-line">Center line</label><input type="color" id="sc-style-line" value="#ffe066" oninput="_scSetStyle('line', this.value)"></div>
+  <div class="sc-style-row"><label for="sc-style-dot">Dot fill</label><input type="color" id="sc-style-dot" value="#ffe066" oninput="_scSetStyle('dotFill', this.value)"></div>
+  <div class="sc-style-row"><label for="sc-style-dot-stroke">Dot outline</label><input type="color" id="sc-style-dot-stroke" value="#ffb347" oninput="_scSetStyle('dotStroke', this.value)"></div>
+  <button class="sc-style-reset" onclick="_scResetStyle()">Reset to defaults</button>
+</div>
+
+<!-- Per-point curve popover: vertical list of the cone's edge dots, each
+     showing/editing its own curve value independent of the global CURVE slider -->
+<div id="sc-points-panel">
+  <div class="sc-popover-title">Curve Per Dot</div>
+  <div id="sc-points-list"><div class="sc-point-empty">Draw a cone with DOTS &gt; 0 to edit curve at each dot.</div></div>
 </div>
 
 <!-- Overlay toggle button + fly-out pills -->
