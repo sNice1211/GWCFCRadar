@@ -11932,6 +11932,64 @@ function _bilinearAngle(gridDeg, cols, rows, gx, gy) {
   return Math.atan2(sy, sx) * 180 / Math.PI;
 }
 
+// Fills every null cell with its nearest non-null neighbor's value (multi-
+// source BFS flood fill). Bilinear is only C0 continuous - it matches color
+// at cell edges but not slope, so the eye still sees a straight "seam" at
+// every grid line (Mach banding), which is what "chunky/blocky tiles" turns
+// out to actually be even when the interpolation math has no missing-corner
+// bug. Bicubic (below) fixes that by matching slope too, but needs a full
+// 4x4 neighborhood of real numbers - so nulls are filled in once per grid
+// here rather than handled pixel-by-pixel.
+function _fillNullsNearest(grid, cols, rows) {
+  const n = cols * rows;
+  const filled = grid.slice();
+  const dist = new Int32Array(n).fill(-1);
+  const queue = [];
+  for (let i = 0; i < n; i++) if (filled[i] != null) { dist[i] = 0; queue.push(i); }
+  let qi = 0;
+  while (qi < queue.length) {
+    const idx = queue[qi++];
+    const x = idx % cols, y = (idx / cols) | 0;
+    const neighbors = [];
+    if (x > 0) neighbors.push(idx - 1);
+    if (x < cols - 1) neighbors.push(idx + 1);
+    if (y > 0) neighbors.push(idx - cols);
+    if (y < rows - 1) neighbors.push(idx + cols);
+    for (const nb of neighbors) {
+      if (dist[nb] === -1) { dist[nb] = dist[idx] + 1; filled[nb] = filled[idx]; queue.push(nb); }
+    }
+  }
+  return filled;
+}
+// Catmull-Rom cubic through 4 evenly-spaced points, t in [0,1] between p1,p2.
+function _cubicHermite(p0, p1, p2, p3, t) {
+  const t2 = t * t, t3 = t2 * t;
+  return 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 + (-p0 + 3 * p1 - 3 * p2 + p3) * t3);
+}
+// Bicubic sample of a null-free grid (run it through _fillNullsNearest first).
+// Matches value AND slope at every cell boundary, unlike bilinear, so there's
+// no visible seam at the data grid lines - just one continuous smooth surface.
+function _bicubic(filledGrid, cols, rows, gx, gy) {
+  const x1 = Math.floor(gx), y1 = Math.floor(gy);
+  const tx = gx - x1, ty = gy - y1;
+  const cx = i => Math.max(0, Math.min(cols - 1, i));
+  const cy = i => Math.max(0, Math.min(rows - 1, i));
+  const rowVals = [];
+  for (let j = -1; j <= 2; j++) {
+    const yy = cy(y1 + j);
+    const base = yy * cols;
+    rowVals.push(_cubicHermite(filledGrid[base + cx(x1 - 1)], filledGrid[base + cx(x1)], filledGrid[base + cx(x1 + 1)], filledGrid[base + cx(x1 + 2)], tx));
+  }
+  return _cubicHermite(rowVals[0], rowVals[1], rowVals[2], rowVals[3], ty);
+}
+// Angle version: bicubic on the cos/sin component grids separately (each is
+// already null-free from _fillNullsNearest applied to the raw degrees before
+// converting), then recover the angle with atan2 - same reasoning as
+// _bilinearAngle re: why plain degrees can't be averaged directly.
+function _bicubicAngle(cosGrid, sinGrid, cols, rows, gx, gy) {
+  return Math.atan2(_bicubic(sinGrid, cols, rows, gx, gy), _bicubic(cosGrid, cols, rows, gx, gy)) * 180 / Math.PI;
+}
+
 // Fixed domain both layers render over - like a real WMS layer's tiles, this
 // is anchored to the same geographic box every time, not the current
 // viewport, so panning around just reveals more of the one already-rendered
@@ -11986,15 +12044,28 @@ function _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn) {
   const img = ctx.createImageData(W, H);
   const data = img.data;
   const mercYNorth = _latToMercY(north), mercYSouth = _latToMercY(south);
+
+  const hasData = grid.some(v => v != null);
+  let filled = null, cosGrid = null, sinGrid = null;
+  if (hasData) {
+    if (isAngle) {
+      const filledDeg = _fillNullsNearest(grid, cols, rows);
+      cosGrid = filledDeg.map(d => Math.cos(d * Math.PI / 180));
+      sinGrid = filledDeg.map(d => Math.sin(d * Math.PI / 180));
+    } else {
+      filled = _fillNullsNearest(grid, cols, rows);
+    }
+  }
+
   for (let py = 0; py < H; py++) {
     const t = py / (H - 1); // 0 at the top (north edge) of the image
     const latAtRow = _mercYToLat(mercYNorth + (mercYSouth - mercYNorth) * t);
     const gy = (latAtRow - south) / (north - south) * (rows - 1); // row0=south in our data grid
     for (let px = 0; px < W; px++) {
-      const gx = (px / (W - 1)) * (cols - 1);
-      const v = isAngle ? _bilinearAngle(grid, cols, rows, gx, gy) : _bilinear(grid, cols, rows, gx, gy);
       const idx = (py * W + px) * 4;
-      if (v == null) { data[idx + 3] = 0; continue; }
+      if (!hasData) { data[idx + 3] = 0; continue; }
+      const gx = (px / (W - 1)) * (cols - 1);
+      const v = isAngle ? _bicubicAngle(cosGrid, sinGrid, cols, rows, gx, gy) : _bicubic(filled, cols, rows, gx, gy);
       const [r, g, b] = colorFn(v);
       data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 165;
     }
