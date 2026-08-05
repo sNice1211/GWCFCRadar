@@ -12186,6 +12186,32 @@ async function _runLimited(items, limit, worker) {
   return results;
 }
 
+// Waves/Air/Temperature/Pressure/Ensemble each cap their OWN chunk requests
+// at 4-in-flight via _runLimited above, but that's a per-layer cap - a user
+// can turn all of them on at once, and each one loading (or refreshing on
+// its own 10-min timer) at the same moment used to mean up to 4x that many
+// real requests hitting Open-Meteo simultaneously. This is a second, GLOBAL
+// gate shared by every grid fetch across every layer, so total in-flight
+// requests to Open-Meteo never exceeds this regardless of how many layers
+// are active - the actual lever against real-world rate limiting.
+const GLOBAL_FETCH_LIMIT = 4;
+let _globalFetchInFlight = 0;
+const _globalFetchQueue = [];
+function _globalFetchAcquire() {
+  return new Promise(resolve => {
+    const tryAcquire = () => {
+      if (_globalFetchInFlight < GLOBAL_FETCH_LIMIT) { _globalFetchInFlight++; resolve(); }
+      else _globalFetchQueue.push(tryAcquire);
+    };
+    tryAcquire();
+  });
+}
+function _globalFetchRelease() {
+  _globalFetchInFlight--;
+  const next = _globalFetchQueue.shift();
+  if (next) next();
+}
+
 async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
   chunkSize = chunkSize || 500;
   const numChunks = Math.max(1, Math.ceil(pts.length / chunkSize));
@@ -12205,6 +12231,7 @@ async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
 
   await _runLimited(chunkIdx, 4, async indices => {
     const chunkPts = indices.map(i => pts[i]);
+    await _globalFetchAcquire();
     try {
       const r = await fetch(buildUrl(chunkPts), { signal: AbortSignal.timeout(25000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -12220,6 +12247,8 @@ async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
       });
     } catch (e) {
       console.warn('Grid chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
+    } finally {
+      _globalFetchRelease();
     }
   });
   if (!anyOk) throw new Error('All chunks failed');
@@ -13063,6 +13092,10 @@ function toggleSatelliteSub() {
 // them (Radar's Reflectivity/Velocity/etc, Satellite's GOES channels, Alerts'
 // sub-panels). Shown in the same ⓘ tooltip used for the overlay pills.
 const LAYER_DESCRIPTIONS = {
+  waves:          'Ocean conditions - wave height, period, direction, swell, and sea surface temperature - shown as a smooth color map over the water. Tap a product below to pick which one.',
+  air:            'Air quality - overall AQI, PM2.5, PM10, and ozone - shown as a smooth color map. Tap a product below to pick which one.',
+  temperature:    'Current temperature conditions - air temperature, feels-like, and dew point - shown as a smooth color map. Tap a product below to pick which one.',
+  pressure:       'Barometric pressure - sea-level (the standard weather-map number) or raw surface/station pressure - shown as a smooth color map. Tap a product below to pick which one.',
   radar:      'Turns on NEXRAD radar. Tap again to pick which radar product to show, like Reflectivity or Velocity.',
   satellite:  'Turns on GOES satellite imagery. Tap again to pick a channel, like Visible, Infrared, or Water Vapor.',
   models:     'Opens the Models panel, covering severe weather guidance (SPC Outlooks, HRRR, NAM) and tropical guidance (hurricane tracks, spaghetti models).',
@@ -15065,6 +15098,7 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
   const out = new Array(pts.length).fill(null);
   await _runLimited(chunkIdx, 4, async indices => {
     const chunkPts = indices.map(i => pts[i]);
+    await _globalFetchAcquire();
     try {
       const r = await fetch(buildUrl(chunkPts), { signal: AbortSignal.timeout(30000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -15074,6 +15108,8 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
       arr.forEach((d, j) => { out[indices[j]] = d; });
     } catch (e) {
       console.warn('Ensemble chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
+    } finally {
+      _globalFetchRelease();
     }
   });
   if (!anyOk) throw new Error('All chunks failed');
@@ -29618,6 +29654,7 @@ const OV_DESCRIPTIONS = {
   'wildfires':        'Active large wildfires, updated in the last 48 hours, with acres burned and location.',
   'ambient-weather':  'Personal weather stations from the Ambient Weather Network, showing live temperature, wind, rain, and pressure.',
   'storm-centers':    "Triangles marking storms radar has flagged as rotating (red, possible tornado) or hail-producing (green), straight from NEXRAD's automated detection.",
+  'traffic-cameras':  'Live state DOT traffic camera feeds (Kansas, Maryland, Oregon, Kentucky, Iowa, South Dakota) - tap a dot for a live or recently-refreshed still image.',
 };
 
 function _ovInjectInfoButtons() {
