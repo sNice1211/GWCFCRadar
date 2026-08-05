@@ -2105,63 +2105,46 @@ body {
 }
 #tropical-model-panel::-webkit-scrollbar { width: 3px; }
 #tropical-model-panel::-webkit-scrollbar-thumb { background: rgba(0,140,186,0.3); }
-/* ── NWS FORECAST OFFICE PANEL ── */
-#wfo-office-panel {
-  display: none;
+/* ── NWS FORECAST OFFICE MARKERS ── */
+/* Same pill-label mechanics as .nexrad-label (radar sites) - just a
+   different accent color so the two marker types read as distinct layers. */
+.wfo-label {
   position: absolute;
-  top: 52px;
-  right: 8px;
-  width: min(300px, calc(100vw - 24px));
-  max-height: calc(100vh - 120px);
-  overflow-y: auto;
-  background: rgb(5,14,10);
-  border: 1px solid rgba(31,209,90,0.4);
-  border-radius: 10px;
-  padding: 10px 12px;
-  z-index: 820;
-  flex-direction: column;
-  gap: 8px;
+  left: 0; top: 0;
+  transform: translate(-50%, -50%);
+  transform-origin: center center;
+  background: #1fd15a;
+  border: 1.5px solid rgba(0,0,0,0.55);
+  color: #00210a;
+  font-family: 'Comfortaa', sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 0 6px rgba(31,209,90,0.55);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.wfo-label:hover {
+  transform: translate(-50%, -50%) scale(1.2);
+  box-shadow: 0 0 12px rgba(31,209,90,1);
+  z-index: 1000;
+}
+/* Popup content reuses the METAR-style .data-popup/.dp-* classes; these are
+   the only WFO-specific additions (clickable rows + raw text block). */
+.wfo-link { cursor: pointer; }
+.wfo-link:hover { background: rgba(31,209,90,0.12); }
+.wfo-product-text {
+  white-space: pre-wrap;
   font-family: var(--mono);
-  color: var(--muted);
-  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
-}
-.wfo-panel-header { display: flex; align-items: center; justify-content: space-between; font-family: var(--display); font-size: 12px; font-weight: 700; color: #1fd15a; }
-.wfo-close-btn { cursor: pointer; opacity: 0.7; padding: 2px 4px; }
-.wfo-close-btn:hover { opacity: 1; }
-.wfo-jump-btn {
-  background: rgba(31,209,90,0.12); border: 1px solid rgba(31,209,90,0.35); border-radius: 8px;
-  color: #1fd15a; font-family: var(--mono); font-size: 11px; padding: 6px 8px; cursor: pointer;
-}
-.wfo-jump-btn:hover { background: rgba(31,209,90,0.22); }
-.wfo-section-label { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--accent2); opacity: 0.8; margin-top: 2px; }
-.wfo-list { display: flex; flex-direction: column; gap: 5px; max-height: 160px; overflow-y: auto; }
-.wfo-loading, .wfo-empty { font-size: 11px; opacity: 0.6; padding: 4px 0; }
-.wfo-alert-row { background: rgba(255,255,255,0.04); border-radius: 6px; padding: 5px 7px; font-size: 11px; }
-.wfo-alert-event { font-weight: 600; color: #ffcc00; }
-.wfo-alert-meta, .wfo-product-meta { font-size: 10px; opacity: 0.65; margin-top: 1px; }
-.wfo-product-row { background: rgba(255,255,255,0.04); border-radius: 6px; padding: 5px 7px; font-size: 11px; cursor: pointer; }
-.wfo-product-row:hover { background: rgba(31,209,90,0.12); }
-.wfo-product-name { font-weight: 600; }
-#wfo-product-detail {
-  display: none;
-  position: absolute;
-  top: 52px;
-  right: 8px;
-  width: min(360px, calc(100vw - 24px));
-  max-height: calc(100vh - 120px);
+  font-size: 10px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  max-height: 260px;
   overflow-y: auto;
-  background: rgb(5,14,10);
-  border: 1px solid rgba(31,209,90,0.4);
-  border-radius: 10px;
-  padding: 10px 12px;
-  z-index: 830;
-  flex-direction: column;
-  gap: 8px;
-  font-family: var(--mono);
-  color: var(--muted);
-  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
 }
-#wfo-product-detail-body { white-space: pre-wrap; font-size: 10px; line-height: 1.5; margin: 0; }
 /* WeatherFront overlay - force browser smoothing on the stretched image */
 .wxf-smooth-overlay {
   image-rendering: auto;
@@ -10339,117 +10322,163 @@ const WFO_OFFICES = [
 ];
 
 let _wfoOfficesActive = false, _wfoOfficesLayer = null;
-let _wfoCurrentOffice = null;
+// State for whichever office popup is currently open, so the product-detail
+// view and the "back" link can re-render without re-fetching.
+let _wfoActivePopup = null, _wfoActiveOffice = null, _wfoActiveAlerts = [], _wfoActiveProducts = [];
 
+function _escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+
+// Markers are pill labels showing the office ID directly, same look-and-feel
+// as the NEXRAD radar site markers (.nexrad-label), just a different accent
+// color so the two aren't confused on the map.
 function loadWfoOfficesLayer() {
   if (_wfoOfficesLayer) { try { map.removeLayer(_wfoOfficesLayer); } catch(e){} }
-  const pane = _ovPane('wfo-offices');
   const layer = L.layerGroup();
   WFO_OFFICES.forEach(office => {
-    const marker = L.circleMarker([office.lat, office.lon], {
-      pane, radius: 5, weight: 1.5, color: '#0a3d1a', fillColor: '#1fd15a', fillOpacity: 0.9,
+    const icon = L.divIcon({
+      className: 'wfo-label-marker',
+      html: `<div class="wfo-label">${office.id}</div>`,
+      iconSize: [0, 0],
+      iconAnchor: [0, 0] // 0×0 box at the office point; the pill self-centers via CSS transform
     });
-    marker.bindTooltip(office.id, { direction: 'top', offset: [0, -4] });
-    marker.on('click', () => _wfoOpenPanel(office));
+    const marker = L.marker([office.lat, office.lon], { icon, zIndexOffset: 300 });
+    marker.on('click', () => _wfoOpenPopup(marker, office));
     marker.addTo(layer);
   });
   _wfoOfficesLayer = layer.addTo(map);
 }
 
-function _wfoJumpToOffice(office) {
+function _wfoJumpToOffice(id) {
+  const office = WFO_OFFICES.find(o => o.id === id);
+  if (!office) return;
   map.setView([office.lat, office.lon], 7);
   if (currentMapType !== 'satellite') { setMapType('satellite'); rmActivate('rm-satellite'); }
 }
 
-function _wfoOpenPanel(office) {
-  _wfoCurrentOffice = office;
-  const panel = document.getElementById('wfo-office-panel');
-  if (!panel) return;
-  panel.style.display = 'flex';
-  document.getElementById('wfo-panel-title').textContent = `${office.id} — ${office.name}`;
-  document.getElementById('wfo-alerts-list').innerHTML = '<div class="wfo-loading">Loading alerts…</div>';
-  document.getElementById('wfo-products-list').innerHTML = '<div class="wfo-loading">Loading text products…</div>';
-  document.getElementById('wfo-product-detail').style.display = 'none';
-  _wfoLoadAlerts(office);
-  _wfoLoadProducts(office);
+function _wfoLoadingHtml(office) {
+  return `<div class="data-popup-inner" style="--dp-accent:#1fd15a">
+    <div class="dp-header">
+      <span class="dp-header-icon">🏢</span>
+      <span class="dp-header-label">${office.name}</span>
+      <span class="dp-header-sub">${office.id}</span>
+    </div>
+    <div class="dp-body"><div class="dp-loading">⏳ Loading alerts &amp; products…</div></div>
+  </div>`;
 }
 
-function _wfoClosePanel() {
-  const panel = document.getElementById('wfo-office-panel');
-  if (panel) panel.style.display = 'none';
-  _wfoCurrentOffice = null;
+function _wfoOfficeHtml(office, alerts, products) {
+  const alertsHtml = alerts.length ? alerts.map(f => {
+    const p = f.properties;
+    const expires = p.expires ? new Date(p.expires).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
+    return `<div class="dp-row"><span>${_escapeHtml(p.event || 'Alert')}</span><b>until ${expires}</b></div>`;
+  }).join('') : `<div class="dp-row"><span>No active alerts</span></div>`;
+
+  const productsHtml = products.length ? products.map(p => {
+    const issued = p.issuanceTime ? new Date(p.issuanceTime).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
+    const pid = (p.id || '').replace(/"/g, '&quot;');
+    return `<div class="dp-row wfo-link" onclick="_wfoShowProductText(&quot;${pid}&quot;)"><span>${_escapeHtml(p.productName || p.productCode || 'Text Product')}</span><b>${issued}</b></div>`;
+  }).join('') : `<div class="dp-row"><span>No recent products</span></div>`;
+
+  return `<div class="data-popup-inner" style="--dp-accent:#1fd15a">
+    <div class="dp-header">
+      <span class="dp-header-icon">🏢</span>
+      <span class="dp-header-label">${office.name}</span>
+      <span class="dp-header-sub">${office.id}</span>
+    </div>
+    <div class="dp-body">
+      <div class="dp-section">Active Alerts</div>
+      ${alertsHtml}
+      <div class="dp-section">Recent Text Products</div>
+      ${productsHtml}
+      <div class="dp-section">Quick Look</div>
+      <div class="dp-row wfo-link" onclick="_wfoJumpToOffice(&quot;${office.id}&quot;)"><span>🛰 Jump to Area &amp; View Satellite</span></div>
+    </div>
+  </div>`;
+}
+
+function _wfoOpenPopup(marker, office) {
+  const popup = L.popup({ className: 'data-popup', maxWidth: 280 })
+    .setLatLng(marker.getLatLng())
+    .setContent(_wfoLoadingHtml(office))
+    .openOn(map);
+  _wfoActivePopup = popup;
+  _wfoActiveOffice = office;
+  _wfoActiveAlerts = [];
+  _wfoActiveProducts = [];
+
+  Promise.all([_wfoFetchAlerts(office), _wfoFetchProducts(office)]).then(([alerts, products]) => {
+    if (_wfoActiveOffice !== office || !map.hasLayer(popup)) return; // closed or superseded while in flight
+    _wfoActiveAlerts = alerts;
+    _wfoActiveProducts = products;
+    popup.setContent(_wfoOfficeHtml(office, alerts, products));
+  });
 }
 
 // Alerts aren't queryable by issuing office directly on this endpoint, so this
 // pulls all currently active alerts and matches by city name inside the CAP
 // senderName field (e.g. "NWS Miami FL") - simple, but there's no other
 // office-level field guaranteed present on every alert.
-async function _wfoLoadAlerts(office) {
-  const listEl = document.getElementById('wfo-alerts-list');
+async function _wfoFetchAlerts(office) {
   try {
     const r = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert', { signal: _abortSignal(15000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-    if (_wfoCurrentOffice !== office) return; // panel moved on to a different office while this was in flight
     const city = office.name.split(',')[0].split('/')[0].trim().toLowerCase();
-    const matches = (data.features || []).filter(f => (f.properties.senderName || '').toLowerCase().includes(city));
-    if (!matches.length) { listEl.innerHTML = '<div class="wfo-empty">No active alerts from this office.</div>'; return; }
-    listEl.innerHTML = matches.map(f => {
-      const p = f.properties;
-      const expires = p.expires ? new Date(p.expires).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
-      return `<div class="wfo-alert-row">
-        <div class="wfo-alert-event">${p.event || 'Alert'}</div>
-        <div class="wfo-alert-meta">${p.severity || ''} · until ${expires}</div>
-      </div>`;
-    }).join('');
+    return (data.features || []).filter(f => (f.properties.senderName || '').toLowerCase().includes(city));
   } catch(e) {
     console.warn('WFO alerts fetch error:', e);
-    if (_wfoCurrentOffice === office) listEl.innerHTML = '<div class="wfo-empty">Alerts unavailable right now.</div>';
+    return [];
   }
 }
 
-async function _wfoLoadProducts(office) {
-  const listEl = document.getElementById('wfo-products-list');
+async function _wfoFetchProducts(office) {
   try {
     const r = await fetch(`https://api.weather.gov/products?office=${office.id}&limit=15`, { signal: _abortSignal(15000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-    if (_wfoCurrentOffice !== office) return;
-    const products = data['@graph'] || [];
-    if (!products.length) { listEl.innerHTML = '<div class="wfo-empty">No recent text products found.</div>'; return; }
-    listEl.innerHTML = products.map(p => {
-      const issued = p.issuanceTime ? new Date(p.issuanceTime).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
-      const pid = (p.id || '').replace(/'/g, "\\'");
-      return `<div class="wfo-product-row" onclick="_wfoShowProductText('${pid}')">
-        <div class="wfo-product-name">${p.productName || p.productCode || 'Text Product'}</div>
-        <div class="wfo-product-meta">${issued}</div>
-      </div>`;
-    }).join('');
+    return data['@graph'] || [];
   } catch(e) {
     console.warn('WFO products fetch error:', e);
-    if (_wfoCurrentOffice === office) listEl.innerHTML = '<div class="wfo-empty">Text products unavailable right now.</div>';
+    return [];
   }
 }
 
 async function _wfoShowProductText(productId) {
-  const detail = document.getElementById('wfo-product-detail');
-  const body = document.getElementById('wfo-product-detail-body');
-  detail.style.display = 'flex';
-  body.textContent = 'Loading…';
+  if (!_wfoActivePopup || !_wfoActiveOffice) return;
+  const loadingHtml = `<div class="data-popup-inner" style="--dp-accent:#1fd15a">
+    <div class="dp-header"><span class="dp-header-icon">📄</span><span class="dp-header-label">Text Product</span></div>
+    <div class="dp-body"><div class="dp-loading">⏳ Loading…</div></div>
+  </div>`;
+  _wfoActivePopup.setContent(loadingHtml);
   try {
     const r = await fetch(`https://api.weather.gov/products/${productId}`, { signal: _abortSignal(15000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-    body.textContent = data.productText || 'No text available.';
+    if (!_wfoActivePopup) return;
+    _wfoActivePopup.setContent(`<div class="data-popup-inner" style="--dp-accent:#1fd15a">
+      <div class="dp-header"><span class="dp-header-icon">📄</span><span class="dp-header-label">Text Product</span></div>
+      <div class="dp-body">
+        <div class="dp-row wfo-link" onclick="_wfoBackToOffice()"><span>← Back to office</span></div>
+        <pre class="wfo-product-text">${_escapeHtml(data.productText || 'No text available.')}</pre>
+      </div>
+    </div>`);
   } catch(e) {
     console.warn('WFO product text fetch error:', e);
-    body.textContent = 'Could not load this product right now.';
+    if (_wfoActivePopup) _wfoActivePopup.setContent(`<div class="data-popup-inner" style="--dp-accent:#1fd15a">
+      <div class="dp-header"><span class="dp-header-icon">📄</span><span class="dp-header-label">Text Product</span></div>
+      <div class="dp-body">
+        <div class="dp-row wfo-link" onclick="_wfoBackToOffice()"><span>← Back to office</span></div>
+        <div class="dp-loading">Could not load this product right now.</div>
+      </div>
+    </div>`);
   }
 }
 
-function _wfoCloseProductDetail() {
-  const detail = document.getElementById('wfo-product-detail');
-  if (detail) detail.style.display = 'none';
+function _wfoBackToOffice() {
+  if (!_wfoActivePopup || !_wfoActiveOffice) return;
+  _wfoActivePopup.setContent(_wfoOfficeHtml(_wfoActiveOffice, _wfoActiveAlerts, _wfoActiveProducts));
 }
 
 // ── AMBIENT WEATHER NETWORK (personal weather stations) ──
@@ -13630,7 +13659,7 @@ function toggleOverlayPill(id) {
       loadWfoOfficesLayer();
     } else {
       if (_wfoOfficesLayer) { try { map.removeLayer(_wfoOfficesLayer); } catch(e){} _wfoOfficesLayer = null; }
-      _wfoClosePanel();
+      if (_wfoActivePopup) { try { map.closePopup(_wfoActivePopup); } catch(e){} _wfoActivePopup = null; _wfoActiveOffice = null; }
     }
   } else if (id === 'ambient-weather') {
     _ambientActive = !_ambientActive;
@@ -29432,26 +29461,6 @@ function buildTimelineLabels() {
     <div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-top:2px;line-height:1.4;">Last 60 days · NWS DAT (preliminary)</div>
   </div>
 
-</div>
-
-<!-- ── NWS FORECAST OFFICE PANEL ──────────────────────────────────── -->
-<div id="wfo-office-panel">
-  <div class="wfo-panel-header">
-    <div id="wfo-panel-title">Office</div>
-    <span class="wfo-close-btn" onclick="_wfoClosePanel()">✕</span>
-  </div>
-  <button class="wfo-jump-btn" onclick="if(_wfoCurrentOffice)_wfoJumpToOffice(_wfoCurrentOffice)">🛰 Jump to Area &amp; View Satellite</button>
-  <div class="wfo-section-label">Active Alerts</div>
-  <div id="wfo-alerts-list" class="wfo-list"></div>
-  <div class="wfo-section-label">Recent Text Products</div>
-  <div id="wfo-products-list" class="wfo-list"></div>
-</div>
-<div id="wfo-product-detail">
-  <div class="wfo-panel-header">
-    <div>Text Product</div>
-    <span class="wfo-close-btn" onclick="_wfoCloseProductDetail()">✕</span>
-  </div>
-  <pre id="wfo-product-detail-body"></pre>
 </div>
 
 <!-- ── CLOUD CAPTURE ─────────────────────────────────────────────── -->
