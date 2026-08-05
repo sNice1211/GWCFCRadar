@@ -11639,112 +11639,214 @@ function toggleTempSub() {}
 let sstBarbActive = false, sstMapActive = false;
 let _sstBarbLayer = null, _sstMapLayer = null;
 
-// ── WAVES LAYER (Open-Meteo Marine Weather API) ──────────────────────────────
-// Point API, not a tile service, so this samples a grid of points across the
-// current view (same technique the old SST layer used) and batches them into
-// one request via Open-Meteo's comma-separated lat/lon multi-point support.
-let wavesActive = false;
-let _wavesLayer = null;
+// ── SHARED: interpolated color-map overlay (Waves + Air both use this) ──────
+// Open-Meteo's marine/air-quality endpoints are point APIs, not tile servers,
+// so there's no ready-made map image the way DWD/ECMWF WMS layers have. This
+// samples a grid of points across the current view in one batched request
+// (Open-Meteo accepts comma-separated lat/lon lists, one result per point),
+// then builds a smooth, non-interactive color-map image by bilinear-
+// interpolating between grid points and painting the result into a canvas,
+// which becomes an L.imageOverlay - a real filled map, not clickable dots.
 
-function _waveColor(ft) {
-  if (ft == null) return '#888888';
-  if (ft > 12) return '#dd00ff';
-  if (ft > 8)  return '#ff2a2a';
-  if (ft > 5)  return '#ff8800';
-  if (ft > 2)  return '#ffcc00';
-  return '#00c8ff';
+// value -> [r,g,b], stops sorted ascending by value, linearly blended between them
+function _colorScale(value, stops) {
+  if (value <= stops[0][0]) return stops[0][1];
+  for (let i = 1; i < stops.length; i++) {
+    if (value <= stops[i][0]) {
+      const [v0, c0] = stops[i - 1], [v1, c1] = stops[i];
+      const t = (value - v0) / ((v1 - v0) || 1);
+      return [
+        Math.round(c0[0] + (c1[0] - c0[0]) * t),
+        Math.round(c0[1] + (c1[1] - c0[1]) * t),
+        Math.round(c0[2] + (c1[2] - c0[2]) * t),
+      ];
+    }
+  }
+  return stops[stops.length - 1][1];
+}
+function _hslToRgb(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if      (h < 60)  { r = c; g = x; b = 0; }
+  else if (h < 120) { r = x; g = c; b = 0; }
+  else if (h < 180) { r = 0; g = c; b = x; }
+  else if (h < 240) { r = 0; g = x; b = c; }
+  else if (h < 300) { r = x; g = 0; b = c; }
+  else              { r = c; g = 0; b = x; }
+  return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
 }
 
-function toggleWavesLayer() {
-  wavesActive = !wavesActive;
-  if (wavesActive) {
-    _loadWavesLayer();
-  } else if (_wavesLayer) {
-    try { map.removeLayer(_wavesLayer); } catch(e){}
-    _wavesLayer = null;
+// Scalar bilinear interpolation over a flat row-major grid (grid[row*cols+col]).
+function _bilinear(grid, cols, rows, gx, gy) {
+  const x0 = Math.max(0, Math.min(cols - 1, Math.floor(gx))), x1 = Math.min(cols - 1, x0 + 1);
+  const y0 = Math.max(0, Math.min(rows - 1, Math.floor(gy))), y1 = Math.min(rows - 1, y0 + 1);
+  const tx = gx - x0, ty = gy - y0;
+  const v00 = grid[y0 * cols + x0], v10 = grid[y0 * cols + x1];
+  const v01 = grid[y1 * cols + x0], v11 = grid[y1 * cols + x1];
+  if (v00 == null || v10 == null || v01 == null || v11 == null) {
+    const vals = [v00, v10, v01, v11].filter(v => v != null);
+    return vals.length ? vals[0] : null;
   }
+  const top = v00 + (v10 - v00) * tx, bot = v01 + (v11 - v01) * tx;
+  return top + (bot - top) * ty;
+}
+// Angular data (e.g. wave direction) can't be averaged as plain degrees -
+// 350° and 10° average to 180° that way instead of 0°. Interpolate the unit
+// vector components instead, then recover the angle with atan2.
+function _bilinearAngle(gridDeg, cols, rows, gx, gy) {
+  const x0 = Math.max(0, Math.min(cols - 1, Math.floor(gx))), x1 = Math.min(cols - 1, x0 + 1);
+  const y0 = Math.max(0, Math.min(rows - 1, Math.floor(gy))), y1 = Math.min(rows - 1, y0 + 1);
+  const tx = gx - x0, ty = gy - y0;
+  const vecAt = (x, y) => { const d = gridDeg[y * cols + x]; if (d == null) return null; const r = d * Math.PI / 180; return [Math.cos(r), Math.sin(r)]; };
+  const v00 = vecAt(x0, y0), v10 = vecAt(x1, y0), v01 = vecAt(x0, y1), v11 = vecAt(x1, y1);
+  if (!v00 || !v10 || !v01 || !v11) {
+    const vals = [v00, v10, v01, v11].filter(Boolean);
+    return vals.length ? Math.atan2(vals[0][1], vals[0][0]) * 180 / Math.PI : null;
+  }
+  const topX = v00[0] + (v10[0] - v00[0]) * tx, topY = v00[1] + (v10[1] - v00[1]) * tx;
+  const botX = v01[0] + (v11[0] - v01[0]) * tx, botY = v01[1] + (v11[1] - v01[1]) * tx;
+  const x = topX + (botX - topX) * ty, y = topY + (botY - topY) * ty;
+  return Math.atan2(y, x) * 180 / Math.PI;
+}
+
+// Builds the canvas, paints it, and swaps it in as an image overlay. `grid` is
+// sampled south-to-north/west-to-east (row 0 = south), but image rows paint
+// top-to-bottom = north-to-south, so the row index is flipped when sampling.
+function _paintInterpolatedOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
+  const SIZE = 200;
+  const canvas = document.createElement('canvas');
+  canvas.width = SIZE; canvas.height = SIZE;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(SIZE, SIZE);
+  const data = img.data;
+  for (let py = 0; py < SIZE; py++) {
+    const gyFlipped = (rows - 1) - (py / (SIZE - 1)) * (rows - 1);
+    for (let px = 0; px < SIZE; px++) {
+      const gx = (px / (SIZE - 1)) * (cols - 1);
+      const v = isAngle ? _bilinearAngle(grid, cols, rows, gx, gyFlipped) : _bilinear(grid, cols, rows, gx, gyFlipped);
+      const idx = (py * SIZE + px) * 4;
+      if (v == null) { data[idx + 3] = 0; continue; }
+      const [r, g, b] = colorFn(v);
+      data[idx] = r; data[idx + 1] = g; data[idx + 2] = b; data[idx + 3] = 165;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: 1, interactive: false });
+}
+
+function _sampleGrid(cols, rows, bounds) {
+  const south = bounds.getSouth(), north = bounds.getNorth();
+  const west  = bounds.getWest(),  east  = bounds.getEast();
+  const pts = [];
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++)
+      pts.push({ lat: south + (north - south) * r / (rows - 1), lng: west + (east - west) * c / (cols - 1) });
+  return pts;
+}
+
+// ── WAVES LAYER (Open-Meteo Marine Weather API) ──────────────────────────────
+let wavesActive = false;
+let _wavesProduct = 'wave-height';
+let _wavesLayer = null;
+let _wavesLoadToken = 0;
+const WAVES_GRID = 14;
+
+const WAVES_SUB_BUBBLES = [
+  { id: 'wave-height',  icon: '🌊', label: 'Wave Height' },
+  { id: 'wave-period',  icon: '⏱',  label: 'Period' },
+  { id: 'wave-dir',     icon: '🧭', label: 'Direction' },
+  { id: 'swell-height', icon: '〰️', label: 'Swell Height' },
+  { id: 'sst',          icon: '🌡',  label: 'Sea Surf. Temp' },
+];
+const WAVES_FIELD = {
+  'wave-height':  'wave_height',
+  'wave-period':  'wave_period',
+  'wave-dir':     'wave_direction',
+  'swell-height': 'swell_wave_height',
+  'sst':          'sea_surface_temperature',
+};
+const WAVES_SCALES = {
+  'wave-height':  [[0,[0,60,140]],[2,[0,150,220]],[5,[0,220,180]],[8,[255,204,0]],[12,[255,80,0]],[18,[200,0,220]]],
+  'swell-height': [[0,[0,60,140]],[2,[0,150,220]],[5,[0,220,180]],[8,[255,204,0]],[12,[255,80,0]],[18,[200,0,220]]],
+  'wave-period':  [[3,[255,60,60]],[7,[255,204,0]],[10,[0,220,120]],[14,[0,150,255]],[20,[160,0,220]]],
+  'sst':          [[40,[80,0,180]],[55,[0,90,220]],[65,[0,190,190]],[75,[0,200,60]],[82,[255,204,0]],[88,[255,90,0]],[95,[220,0,0]]],
+};
+function _waveColorFor(product, v) {
+  if (product === 'wave-dir') return _hslToRgb(((v % 360) + 360) % 360, 0.85, 0.5);
+  return _colorScale(v, WAVES_SCALES[product] || WAVES_SCALES['wave-height']);
+}
+
+function toggleWavesSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  const back = document.createElement('div');
+  back.className = 'sub-bubble';
+  back.innerHTML = `<span class="sb-icon">←</span><span class="sb-label">Back</span>`;
+  back.onclick = () => { _syncParentBubble('waves'); renderSubBubbles('regular'); };
+  wrap.appendChild(back);
+  WAVES_SUB_BUBBLES.forEach(b => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (wavesActive && _wavesProduct === b.id ? ' active' : '');
+    el.id = 'sub-' + b.id;
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
+    el.onclick = () => {
+      if (wavesActive && _wavesProduct === b.id) {
+        wavesActive = false;
+        if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} _wavesLayer = null; }
+        el.classList.remove('active');
+        _syncParentBubble('waves');
+        return;
+      }
+      WAVES_SUB_BUBBLES.forEach(x => { const xe = document.getElementById('sub-' + x.id); if (xe) xe.classList.remove('active'); });
+      el.classList.add('active');
+      wavesActive = true;
+      _wavesProduct = b.id;
+      _syncParentBubble('waves');
+      _loadWavesLayer();
+    };
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
 }
 
 async function _loadWavesLayer() {
   if (!wavesActive) return;
-  const myLayer = L.layerGroup();
-  if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} }
-  _wavesLayer = myLayer;
-  myLayer.addTo(map);
-
+  const token = ++_wavesLoadToken;
   const bounds = map.getBounds();
-  const ROWS = 7, COLS = 7;
-  const south = bounds.getSouth(), north = bounds.getNorth();
-  const west  = bounds.getWest(),  east  = bounds.getEast();
-  const pts = [];
-  for (let r = 0; r < ROWS; r++)
-    for (let c = 0; c < COLS; c++)
-      pts.push({ lat: south + (north - south) * r / (ROWS - 1),
-                 lng: west  + (east  - west)  * c / (COLS - 1) });
+  const pts = _sampleGrid(WAVES_GRID, WAVES_GRID, bounds);
   const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
   const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
+  const field  = WAVES_FIELD[_wavesProduct] || 'wave_height';
 
   try {
     const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
-      `&current=wave_height,wave_direction,wave_period,swell_wave_height&length_unit=imperial`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
+      `&current=${field}&length_unit=imperial&temperature_unit=fahrenheit`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-    const arr = Array.isArray(data) ? data : [data];
-    if (!wavesActive || myLayer !== _wavesLayer) return; // stale response, layer already replaced/off
-    arr.forEach((d, i) => {
-      const cur = d?.current;
-      const wh = cur?.wave_height;
-      if (wh == null) return; // land / no marine data at this point
-      const pt  = pts[i];
-      const col = _waveColor(wh);
-      const wd  = cur.wave_direction, wp = cur.wave_period, swh = cur.swell_wave_height;
-      const m = L.circleMarker([pt.lat, pt.lng], { radius: 7, color: col, fillColor: col, fillOpacity: 0.85, weight: 1 });
-      m.bindPopup(`<div class="data-popup-inner" style="--dp-accent:#00c8ff">
-        <div class="dp-header">
-          <span class="dp-header-icon">🌊</span>
-          <span class="dp-header-label">Waves</span>
-          <span class="dp-header-sub">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</span>
-        </div>
-        <div class="dp-body">
-          <div class="dp-row"><span>Wave Height</span><b style="color:${col}">${wh.toFixed(1)} ft</b></div>
-          ${wp  != null ? `<div class="dp-row"><span>Period</span><b>${wp.toFixed(0)} s</b></div>` : ''}
-          ${wd  != null ? `<div class="dp-row"><span>Direction</span><b>${_degToCompass(wd)}</b></div>` : ''}
-          ${swh != null ? `<div class="dp-row"><span>Swell Height</span><b>${swh.toFixed(1)} ft</b></div>` : ''}
-        </div>
-      </div>`, { className: 'data-popup', maxWidth: 220 });
-      m.addTo(myLayer);
-    });
+    if (token !== _wavesLoadToken) return; // a newer request/toggle already superseded this one
+    const arr  = Array.isArray(data) ? data : [data];
+    const grid = arr.map(d => { const v = d?.current?.[field]; return (v == null || !isFinite(v)) ? null : v; });
+    const layer = _paintInterpolatedOverlay(grid, WAVES_GRID, WAVES_GRID, bounds, _wavesProduct === 'wave-dir', v => _waveColorFor(_wavesProduct, v));
+    if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} }
+    _wavesLayer = layer.addTo(map);
   } catch(e) {
     console.warn('Waves layer error:', e);
     showToast('Wave data unavailable right now', 3000);
   }
 }
-// Wired up inside init() below, after initMap() actually creates `map` -
-// this script runs at parse time, long before init()/initMap() are called.
+// moveend/zoomend refresh wired up inside init() below, after initMap()
+// actually creates `map` - this script runs at parse time, long before
+// init()/initMap() are called.
 
 // ── AIR QUALITY LAYER (Open-Meteo Air Quality API) ───────────────────────────
 let airActive = false;
 let _airLayer = null;
-
-function _aqiColor(aqi) {
-  if (aqi == null) return '#888888';
-  if (aqi <= 50)  return '#00e400';
-  if (aqi <= 100) return '#ffff00';
-  if (aqi <= 150) return '#ff7e00';
-  if (aqi <= 200) return '#ff0000';
-  if (aqi <= 300) return '#8f3f97';
-  return '#7e0023';
-}
-function _aqiLabel(aqi) {
-  if (aqi == null) return 'Unknown';
-  if (aqi <= 50)  return 'Good';
-  if (aqi <= 100) return 'Moderate';
-  if (aqi <= 150) return 'Unhealthy (Sensitive Groups)';
-  if (aqi <= 200) return 'Unhealthy';
-  if (aqi <= 300) return 'Very Unhealthy';
-  return 'Hazardous';
-}
+let _airLoadToken = 0;
+const AIR_GRID = 14;
+const AQI_SCALE = [[0,[0,228,0]],[50,[255,255,0]],[100,[255,126,0]],[150,[255,0,0]],[200,[143,63,151]],[300,[126,0,35]],[500,[126,0,35]]];
 
 function toggleAirLayer() {
   airActive = !airActive;
@@ -11758,60 +11860,30 @@ function toggleAirLayer() {
 
 async function _loadAirLayer() {
   if (!airActive) return;
-  const myLayer = L.layerGroup();
-  if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} }
-  _airLayer = myLayer;
-  myLayer.addTo(map);
-
+  const token = ++_airLoadToken;
   const bounds = map.getBounds();
-  const ROWS = 7, COLS = 7;
-  const south = bounds.getSouth(), north = bounds.getNorth();
-  const west  = bounds.getWest(),  east  = bounds.getEast();
-  const pts = [];
-  for (let r = 0; r < ROWS; r++)
-    for (let c = 0; c < COLS; c++)
-      pts.push({ lat: south + (north - south) * r / (ROWS - 1),
-                 lng: west  + (east  - west)  * c / (COLS - 1) });
+  const pts = _sampleGrid(AIR_GRID, AIR_GRID, bounds);
   const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
   const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
 
   try {
-    const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}` +
-      `&current=us_aqi,pm2_5,pm10,ozone`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}&current=us_aqi`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-    const arr = Array.isArray(data) ? data : [data];
-    if (!airActive || myLayer !== _airLayer) return; // stale response
-    arr.forEach((d, i) => {
-      const cur = d?.current;
-      const aqi = cur?.us_aqi;
-      if (aqi == null) return;
-      const pt  = pts[i];
-      const col = _aqiColor(aqi);
-      const pm25 = cur.pm2_5, pm10 = cur.pm10, ozone = cur.ozone;
-      const m = L.circleMarker([pt.lat, pt.lng], { radius: 7, color: col, fillColor: col, fillOpacity: 0.85, weight: 1 });
-      m.bindPopup(`<div class="data-popup-inner" style="--dp-accent:${col}">
-        <div class="dp-header">
-          <span class="dp-header-icon">🌫️</span>
-          <span class="dp-header-label">Air Quality</span>
-          <span class="dp-header-sub">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</span>
-        </div>
-        <div class="dp-body">
-          <div class="dp-row"><span>US AQI</span><b style="color:${col}">${Math.round(aqi)} · ${_aqiLabel(aqi)}</b></div>
-          ${pm25  != null ? `<div class="dp-row"><span>PM2.5</span><b>${pm25.toFixed(1)} µg/m³</b></div>` : ''}
-          ${pm10  != null ? `<div class="dp-row"><span>PM10</span><b>${pm10.toFixed(1)} µg/m³</b></div>` : ''}
-          ${ozone != null ? `<div class="dp-row"><span>Ozone</span><b>${ozone.toFixed(0)} µg/m³</b></div>` : ''}
-        </div>
-      </div>`, { className: 'data-popup', maxWidth: 220 });
-      m.addTo(myLayer);
-    });
+    if (token !== _airLoadToken) return;
+    const arr  = Array.isArray(data) ? data : [data];
+    const grid = arr.map(d => { const v = d?.current?.us_aqi; return (v == null || !isFinite(v)) ? null : v; });
+    const layer = _paintInterpolatedOverlay(grid, AIR_GRID, AIR_GRID, bounds, false, v => _colorScale(v, AQI_SCALE));
+    if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} }
+    _airLayer = layer.addTo(map);
   } catch(e) {
     console.warn('Air layer error:', e);
     showToast('Air quality data unavailable right now', 3000);
   }
 }
-// Wired up inside init() below, after initMap() actually creates `map`.
+// moveend/zoomend refresh wired up inside init() below, after initMap()
+// actually creates `map`.
 
 
 // ── MAP TYPE ──
@@ -12208,9 +12280,9 @@ const LAYER_DESCRIPTIONS = {
 const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
   { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
-  { id: 'waves',     icon: '🌊', label: 'Waves',      action: () => toggleWavesLayer() },
+  { id: 'waves',     icon: '🌊', label: 'Waves',      action: () => toggleWavesSub() },
   { id: 'air',       icon: '🌫️', label: 'Air',        action: () => toggleAirLayer() },
-  { id: 'models',    icon: '📊', label: 'Models',     action: () => toggleModelsPanel() },
+  { id: 'models',    icon: '📊', label: 'Models',     action: () => toggleModelsSub() },
 ];
 
 const MAIN_BUBBLES = BASE_BUBBLES; // alias for compat
@@ -12224,8 +12296,10 @@ const TAB_BUBBLES = {
 const activeBubbles = {};
 
 function _getBubbleActive(id) {
-  if (id === 'radar')    return !!activeLayers.nexrad;
+  if (id === 'radar')     return !!activeLayers.nexrad;
   if (id === 'satellite') return !!activeLayers.satellite;
+  if (id === 'waves')     return !!wavesActive;
+  if (id === 'air')       return !!airActive;
   return !!activeBubbles[id];
 }
 
@@ -14514,8 +14588,8 @@ async function init() {
     _ovApplyMapOrder(); // re-apply saved overlay order now that map panes exist
     updateLegend('ref');
     renderSubBubbles('regular');
-    map.on('moveend', () => { if (wavesActive) _loadWavesLayer(); });
-    map.on('moveend', () => { if (airActive)   _loadAirLayer(); });
+    map.on('moveend zoomend', () => { if (wavesActive) _loadWavesLayer(); });
+    map.on('moveend zoomend', () => { if (airActive)   _loadAirLayer(); });
   } catch(e) {
     console.warn('Map init error:', e);
   }
@@ -14743,6 +14817,54 @@ function toggleModelsPanel() {
   } else {
     openModelsPanel();                     // nothing active -> open
   }
+}
+
+function _modelsPanelIsOpen() {
+  const panel = document.getElementById('models-panel');
+  return !!panel && panel.style.display !== 'none' && panel.style.display !== '';
+}
+
+function openModelsPanelAt(type) {
+  _modelsType = type;
+  openModelsPanel();
+}
+
+// Models sub-menu: separates Run Models / Spaghetti Models as their own
+// sub-bubbles (same picker pattern Radar/Satellite/Waves use), rather than
+// only being reachable via the pill switch inside the panel itself.
+const MODELS_SUB_BUBBLES = [
+  { id: 'run-models',       icon: '📈', label: 'Run Models' },
+  { id: 'spaghetti-models', icon: '🌀', label: 'Spaghetti Models' },
+];
+const MODELS_SUB_TYPE = { 'run-models': 'severe', 'spaghetti-models': 'tropical' };
+
+function toggleModelsSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  const back = document.createElement('div');
+  back.className = 'sub-bubble';
+  back.innerHTML = `<span class="sb-icon">←</span><span class="sb-label">Back</span>`;
+  back.onclick = () => { _syncParentBubble('models'); renderSubBubbles('regular'); };
+  wrap.appendChild(back);
+  MODELS_SUB_BUBBLES.forEach(b => {
+    const type = MODELS_SUB_TYPE[b.id];
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (_modelsPanelIsOpen() && _modelsType === type ? ' active' : '');
+    el.id = 'sub-' + b.id;
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
+    el.onclick = () => {
+      MODELS_SUB_BUBBLES.forEach(x => { const xe = document.getElementById('sub-' + x.id); if (xe) xe.classList.remove('active'); });
+      if (_modelsPanelIsOpen() && _modelsType === type) {
+        closeModelsPanel();
+      } else {
+        el.classList.add('active');
+        openModelsPanelAt(type);
+      }
+      _syncParentBubble('models');
+    };
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
 }
 
 function _modelsSetType(type) {
@@ -24128,7 +24250,7 @@ function lqmSetTZ(tz) {
     </div>
   </div>
 
-  <p>The left side of the screen holds five floating bubble buttons: <strong>Radar</strong>, <strong>Satellite</strong>, <strong>Waves</strong>, <strong>Air</strong>, and <strong>Models</strong>. Tap a bubble to turn it on, it glows cyan when active. Radar and Satellite each open a secondary sub-menu of products, and are mutually exclusive, turning one on disables the other. On phones this row relocates to the bottom of the screen.</p>
+  <p>The left side of the screen holds five floating bubble buttons: <strong>Radar</strong>, <strong>Satellite</strong>, <strong>Waves</strong>, <strong>Air</strong>, and <strong>Models</strong>. Tap a bubble to turn it on, it glows cyan when active. Radar, Satellite, and Waves each open a secondary sub-menu of products, tap the same product again to turn it off. Radar and Satellite are mutually exclusive, turning one on disables the other. On phones this row relocates to the bottom of the screen.</p>
 
   <div class="ui-diagram">
     <div class="ui-diagram-title">The five main bubbles, active bubble glows cyan</div>
@@ -24170,17 +24292,17 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">🌊</div>
       <div class="fc-title">WAVES</div>
-      <p class="fc-body">Samples a grid of points across the visible map from Open-Meteo's Marine Weather API. Colored dots show wave height (blue calm through purple 12+ ft), click one for period, direction, and swell height. Re-samples automatically as you pan.</p>
+      <p class="fc-body">Tap to choose a product: <strong>Wave Height</strong>, <strong>Period</strong>, <strong>Direction</strong>, <strong>Swell Height</strong>, or <strong>Sea Surface Temp</strong>. Draws as a smooth, continuous color map over the ocean, powered by Open-Meteo's Marine Weather API, not clickable points. Direction uses a color wheel (hue = compass direction) since angles can't be shown on a linear scale. Updates automatically as you pan or zoom.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌫️</div>
       <div class="fc-title">AIR</div>
-      <p class="fc-body">Same grid-sampling approach, powered by Open-Meteo's Air Quality API. Dots are colored by the standard EPA US AQI scale (green Good through maroon Hazardous), click one for AQI, PM2.5, PM10, and ozone.</p>
+      <p class="fc-body">A smooth US AQI color map (green Good through maroon Hazardous), powered by Open-Meteo's Air Quality API. Same continuous-map style as Waves, updates as you pan or zoom.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">📊</div>
       <div class="fc-title">MODELS</div>
-      <p class="fc-body">Opens the unified Models panel covering both <strong>📈 Run Models</strong> (a point-forecast model viewer with A/B compare and ensemble spread) and <strong>🌀 Spaghetti Models</strong> (NHC's official track, cone, and active storms). See the <a href="#models">Models</a> section below.</p>
+      <p class="fc-body">Tap to choose between its two sub-bubbles: <strong>📈 Run Models</strong> (a point-forecast model viewer with A/B compare and ensemble spread) and <strong>🌀 Spaghetti Models</strong> (NHC's official track, cone, and active storms). Each opens the same panel straight to that view. See the <a href="#models">Models</a> section below.</p>
     </div>
   </div>
 
@@ -24516,7 +24638,7 @@ function lqmSetTZ(tz) {
     </div>
   </div>
 
-  <p>The <strong>📊 Models</strong> bubble is always available on the left. Tapping it opens a single panel with a <strong>📈 Run Models ⟷ 🌀 Spaghetti Models</strong> pill switch at the top. Run Models is a general point-forecast model viewer, pick a <strong>Model</strong>, a <strong>Product</strong> (variable), and a <strong>Run</strong>, then step through forecast hours with the play bar. A floating info box on the map shows which run is loaded, the resolution, the variable, and current forecast hour.</p>
+  <p>The <strong>📊 Models</strong> bubble is always available on the left. Tapping it opens a sub-menu with two separate options, <strong>📈 Run Models</strong> and <strong>🌀 Spaghetti Models</strong>, each opens the same panel straight to that view (a pill switch at the top of the panel also lets you flip between them once it's open). Run Models is a general point-forecast model viewer, pick a <strong>Model</strong>, a <strong>Product</strong> (variable), and a <strong>Run</strong>, then step through forecast hours with the play bar. A floating info box on the map shows which run is loaded, the resolution, the variable, and current forecast hour.</p>
 
   <div class="model-demo">
     <div class="model-demo-row"><span>Model</span><span>HRRR · NOAA</span></div>
