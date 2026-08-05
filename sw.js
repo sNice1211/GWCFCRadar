@@ -1,4 +1,4 @@
-// GWCFCRadar Service Worker — radar tile cache + background alert notifications
+// GWCFCRadar Service Worker - radar tile cache + background alert notifications
 const CACHE       = 'gwcfc-v12';
 const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
@@ -53,7 +53,7 @@ self.addEventListener('periodicsync', e => {
   if (e.tag === 'check-alerts') e.waitUntil(_checkAndNotify());
 });
 
-// ── Push event (FCM — fires even when browser is closed) ─────
+// ── Push event (FCM - fires even when browser is closed) ─────
 self.addEventListener('push', e => {
   let payload = {};
   try { payload = e.data ? e.data.json() : {}; } catch {}
@@ -258,7 +258,7 @@ async function _checkAndNotify() {
     }
   }
 
-  // ── Rain Near Me — read the IEM radar tile already in the SW cache ──
+  // ── Rain Near Me - read the IEM radar tile already in the SW cache ──
   if (_swCoords && _swTileKey) {
     try {
       const { lat, lon } = _swCoords;
@@ -273,7 +273,7 @@ async function _checkAndNotify() {
 
       const tileUrl = `https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-${_swTileKey}/${Z}/${tx}/${ty}.png`;
 
-      // Try the SW cache first — this tile was already downloaded by the map
+      // Try the SW cache first - this tile was already downloaded by the map
       const radarCache = await caches.open(CACHE);
       let resp = await radarCache.match(tileUrl);
       if (!resp) resp = await fetch(tileUrl, { signal: AbortSignal.timeout(8000) });

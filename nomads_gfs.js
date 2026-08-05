@@ -21,7 +21,7 @@
  * IMPORTANT CORS NOTE:
  *   NOMADS does NOT set Access-Control-Allow-Origin headers, so direct
  *   browser fetch() calls are blocked. However, Leaflet's tileLayer.wms
- *   uses <img> tags (not fetch), so it bypasses CORS — tiles load fine.
+ *   uses <img> tags (not fetch), so it bypasses CORS - tiles load fine.
  *   Only use fetch() for metadata; use a CORS proxy if you need to.
  * -------------------------------------------------------------------
  */
@@ -126,7 +126,7 @@
 
       const meta = GFS_LAYERS[varName];
       if (!meta) {
-        console.warn('[NomadsGFS] Unknown layer:', varName, '— valid keys:', Object.keys(GFS_LAYERS));
+        console.warn('[NomadsGFS] Unknown layer:', varName, '- valid keys:', Object.keys(GFS_LAYERS));
         return;
       }
 
@@ -197,7 +197,7 @@
 
       // L.tileLayer.wms works just like a normal tile layer but formats
       // requests as WMS GetMap calls.  Any extra properties you pass here
-      // are appended to each tile request URL as query parameters — that's
+      // are appended to each tile request URL as query parameters - that's
       // how 'dir' and 'TIME' reach the NOMADS server.
       return L.tileLayer.wms('https://nomads.ncep.noaa.gov/cgi-bin/wms_gfs.php', {
         layers:      varName,
