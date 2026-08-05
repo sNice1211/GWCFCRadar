@@ -2105,6 +2105,63 @@ body {
 }
 #tropical-model-panel::-webkit-scrollbar { width: 3px; }
 #tropical-model-panel::-webkit-scrollbar-thumb { background: rgba(0,140,186,0.3); }
+/* ── NWS FORECAST OFFICE PANEL ── */
+#wfo-office-panel {
+  display: none;
+  position: absolute;
+  top: 52px;
+  right: 8px;
+  width: min(300px, calc(100vw - 24px));
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  background: rgb(5,14,10);
+  border: 1px solid rgba(31,209,90,0.4);
+  border-radius: 10px;
+  padding: 10px 12px;
+  z-index: 820;
+  flex-direction: column;
+  gap: 8px;
+  font-family: var(--mono);
+  color: var(--muted);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+}
+.wfo-panel-header { display: flex; align-items: center; justify-content: space-between; font-family: var(--display); font-size: 12px; font-weight: 700; color: #1fd15a; }
+.wfo-close-btn { cursor: pointer; opacity: 0.7; padding: 2px 4px; }
+.wfo-close-btn:hover { opacity: 1; }
+.wfo-jump-btn {
+  background: rgba(31,209,90,0.12); border: 1px solid rgba(31,209,90,0.35); border-radius: 8px;
+  color: #1fd15a; font-family: var(--mono); font-size: 11px; padding: 6px 8px; cursor: pointer;
+}
+.wfo-jump-btn:hover { background: rgba(31,209,90,0.22); }
+.wfo-section-label { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--accent2); opacity: 0.8; margin-top: 2px; }
+.wfo-list { display: flex; flex-direction: column; gap: 5px; max-height: 160px; overflow-y: auto; }
+.wfo-loading, .wfo-empty { font-size: 11px; opacity: 0.6; padding: 4px 0; }
+.wfo-alert-row { background: rgba(255,255,255,0.04); border-radius: 6px; padding: 5px 7px; font-size: 11px; }
+.wfo-alert-event { font-weight: 600; color: #ffcc00; }
+.wfo-alert-meta, .wfo-product-meta { font-size: 10px; opacity: 0.65; margin-top: 1px; }
+.wfo-product-row { background: rgba(255,255,255,0.04); border-radius: 6px; padding: 5px 7px; font-size: 11px; cursor: pointer; }
+.wfo-product-row:hover { background: rgba(31,209,90,0.12); }
+.wfo-product-name { font-weight: 600; }
+#wfo-product-detail {
+  display: none;
+  position: absolute;
+  top: 52px;
+  right: 8px;
+  width: min(360px, calc(100vw - 24px));
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  background: rgb(5,14,10);
+  border: 1px solid rgba(31,209,90,0.4);
+  border-radius: 10px;
+  padding: 10px 12px;
+  z-index: 830;
+  flex-direction: column;
+  gap: 8px;
+  font-family: var(--mono);
+  color: var(--muted);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+}
+#wfo-product-detail-body { white-space: pre-wrap; font-size: 10px; line-height: 1.5; margin: 0; }
 /* WeatherFront overlay - force browser smoothing on the stretched image */
 .wxf-smooth-overlay {
   image-rendering: auto;
@@ -10213,6 +10270,188 @@ async function loadTrafficCameras() {
   updateLoadStatus('');
 }
 
+// ── NWS FORECAST OFFICES (click an office, see its alerts + text products) ──
+// Office locations are a static reference list (3-letter ID, host city,
+// approximate city-center lat/lon) - the NWS API doesn't publish a single
+// bulk endpoint with every office's coordinates, so this is compiled from
+// public knowledge of where each office is based. Good enough to place a
+// clickable dot at national map zoom; ping if one looks off and it'll get
+// corrected.
+const WFO_OFFICES = [
+  { id:'BGM', name:'Binghamton, NY', lat:42.21, lon:-75.98 }, { id:'BOX', name:'Boston/Norton, MA', lat:41.955, lon:-71.137 },
+  { id:'BUF', name:'Buffalo, NY', lat:42.94, lon:-78.73 }, { id:'BTV', name:'Burlington, VT', lat:44.47, lon:-73.15 },
+  { id:'CAR', name:'Caribou, ME', lat:46.87, lon:-68.02 }, { id:'CTP', name:'State College, PA', lat:40.79, lon:-77.85 },
+  { id:'CLE', name:'Cleveland, OH', lat:41.42, lon:-81.86 }, { id:'GYX', name:'Gray/Portland, ME', lat:43.89, lon:-70.25 },
+  { id:'ILN', name:'Wilmington, OH', lat:39.42, lon:-83.82 }, { id:'LWX', name:'Sterling/Baltimore-Washington, VA', lat:38.976, lon:-77.478 },
+  { id:'MHX', name:'Newport/Morehead City, NC', lat:34.78, lon:-76.87 }, { id:'OKX', name:'Upton/New York, NY', lat:40.87, lon:-72.86 },
+  { id:'PBZ', name:'Pittsburgh, PA', lat:40.53, lon:-80.23 }, { id:'PHI', name:'Mount Holly/Philadelphia, NJ', lat:39.93, lon:-74.87 },
+  { id:'RLX', name:'Charleston, WV', lat:38.31, lon:-81.72 }, { id:'RNK', name:'Blacksburg, VA', lat:37.20, lon:-80.41 },
+  { id:'ALY', name:'Albany, NY', lat:42.75, lon:-73.80 },
+  { id:'AMA', name:'Amarillo, TX', lat:35.22, lon:-101.72 }, { id:'BMX', name:'Birmingham, AL', lat:33.17, lon:-86.77 },
+  { id:'BRO', name:'Brownsville, TX', lat:25.92, lon:-97.43 }, { id:'CRP', name:'Corpus Christi, TX', lat:27.77, lon:-97.51 },
+  { id:'EPZ', name:'El Paso, TX', lat:31.87, lon:-106.70 }, { id:'FFC', name:'Peachtree City/Atlanta, GA', lat:33.36, lon:-84.57 },
+  { id:'FWD', name:'Fort Worth/Dallas, TX', lat:32.83, lon:-97.30 }, { id:'HGX', name:'Houston/Galveston, TX', lat:29.47, lon:-95.08 },
+  { id:'HUN', name:'Huntsville, AL', lat:34.65, lon:-86.77 }, { id:'JAN', name:'Jackson, MS', lat:32.32, lon:-90.08 },
+  { id:'JAX', name:'Jacksonville, FL', lat:30.49, lon:-81.70 }, { id:'LCH', name:'Lake Charles, LA', lat:30.13, lon:-93.23 },
+  { id:'LIX', name:'New Orleans/Slidell, LA', lat:30.34, lon:-89.83 }, { id:'LUB', name:'Lubbock, TX', lat:33.66, lon:-101.82 },
+  { id:'LZK', name:'Little Rock, AR', lat:34.83, lon:-92.26 }, { id:'MAF', name:'Midland/Odessa, TX', lat:31.94, lon:-102.19 },
+  { id:'MEG', name:'Memphis, TN', lat:35.05, lon:-89.99 }, { id:'MFL', name:'Miami, FL', lat:25.7546, lon:-80.3831 },
+  { id:'MLB', name:'Melbourne, FL', lat:28.11, lon:-80.65 }, { id:'MOB', name:'Mobile, AL', lat:30.68, lon:-88.24 },
+  { id:'MRX', name:'Morristown, TN', lat:36.17, lon:-83.40 }, { id:'OHX', name:'Nashville, TN', lat:36.25, lon:-86.56 },
+  { id:'OUN', name:'Norman/Oklahoma City, OK', lat:35.24, lon:-97.46 }, { id:'SHV', name:'Shreveport, LA', lat:32.45, lon:-93.84 },
+  { id:'SJT', name:'San Angelo, TX', lat:31.37, lon:-100.50 }, { id:'SJU', name:'San Juan, PR', lat:18.43, lon:-66.00 },
+  { id:'TAE', name:'Tallahassee, FL', lat:30.44, lon:-84.35 }, { id:'TBW', name:'Tampa Bay/Ruskin, FL', lat:27.705, lon:-82.40 },
+  { id:'TSA', name:'Tulsa, OK', lat:36.16, lon:-95.99 },
+  { id:'ABR', name:'Aberdeen, SD', lat:45.45, lon:-98.42 }, { id:'APX', name:'Gaylord, MI', lat:45.02, lon:-84.72 },
+  { id:'ARX', name:'La Crosse, WI', lat:43.82, lon:-91.19 }, { id:'BIS', name:'Bismarck, ND', lat:46.77, lon:-100.76 },
+  { id:'BOU', name:'Boulder/Denver, CO', lat:40.13, lon:-105.20 }, { id:'CYS', name:'Cheyenne, WY', lat:41.15, lon:-104.81 },
+  { id:'DDC', name:'Dodge City, KS', lat:37.76, lon:-99.97 }, { id:'DLH', name:'Duluth, MN', lat:46.84, lon:-92.21 },
+  { id:'DMX', name:'Des Moines, IA', lat:41.73, lon:-93.72 }, { id:'DTX', name:'Detroit/Pontiac, MI', lat:42.70, lon:-83.47 },
+  { id:'DVN', name:'Quad Cities/Davenport, IA', lat:41.61, lon:-90.58 }, { id:'EAX', name:'Kansas City/Pleasant Hill, MO', lat:38.81, lon:-94.26 },
+  { id:'FGF', name:'Grand Forks, ND', lat:47.92, lon:-97.06 }, { id:'FSD', name:'Sioux Falls, SD', lat:43.59, lon:-96.73 },
+  { id:'GID', name:'Hastings, NE', lat:40.59, lon:-98.38 }, { id:'GJT', name:'Grand Junction, CO', lat:39.06, lon:-108.55 },
+  { id:'GLD', name:'Goodland, KS', lat:39.37, lon:-101.70 }, { id:'GRB', name:'Green Bay, WI', lat:44.51, lon:-88.11 },
+  { id:'GRR', name:'Grand Rapids, MI', lat:42.89, lon:-85.52 }, { id:'ICT', name:'Wichita, KS', lat:37.65, lon:-97.43 },
+  { id:'ILX', name:'Lincoln, IL', lat:40.15, lon:-89.34 }, { id:'IND', name:'Indianapolis, IN', lat:39.71, lon:-86.29 },
+  { id:'IWX', name:'Northern Indiana/Syracuse, IN', lat:41.35, lon:-85.82 }, { id:'JKL', name:'Jackson, KY', lat:37.59, lon:-83.32 },
+  { id:'LBF', name:'North Platte, NE', lat:41.13, lon:-100.68 }, { id:'LMK', name:'Louisville, KY', lat:38.18, lon:-85.74 },
+  { id:'LOT', name:'Chicago/Romeoville, IL', lat:41.60, lon:-88.08 }, { id:'LSX', name:'St. Louis, MO', lat:38.70, lon:-90.66 },
+  { id:'MKX', name:'Milwaukee/Sullivan, WI', lat:42.90, lon:-88.55 }, { id:'MPX', name:'Twin Cities/Chanhassen, MN', lat:44.85, lon:-93.57 },
+  { id:'MQT', name:'Marquette, MI', lat:46.53, lon:-87.55 }, { id:'OAX', name:'Omaha/Valley, NE', lat:41.32, lon:-96.37 },
+  { id:'PAH', name:'Paducah, KY', lat:37.06, lon:-88.77 }, { id:'PUB', name:'Pueblo, CO', lat:38.29, lon:-104.60 },
+  { id:'RIW', name:'Riverton, WY', lat:43.06, lon:-108.48 }, { id:'SGF', name:'Springfield, MO', lat:37.24, lon:-93.40 },
+  { id:'TOP', name:'Topeka, KS', lat:39.07, lon:-95.63 }, { id:'UNR', name:'Rapid City, SD', lat:44.08, lon:-103.21 },
+  { id:'BOI', name:'Boise, ID', lat:43.57, lon:-116.22 }, { id:'BYZ', name:'Billings, MT', lat:45.81, lon:-108.54 },
+  { id:'EKA', name:'Eureka, CA', lat:40.80, lon:-124.16 }, { id:'FGZ', name:'Flagstaff, AZ', lat:35.23, lon:-111.82 },
+  { id:'GGW', name:'Glasgow, MT', lat:48.21, lon:-106.63 }, { id:'HNX', name:'Hanford, CA', lat:36.31, lon:-119.63 },
+  { id:'LKN', name:'Elko, NV', lat:40.87, lon:-115.74 }, { id:'LOX', name:'Los Angeles/Oxnard, CA', lat:34.20, lon:-119.18 },
+  { id:'MFR', name:'Medford, OR', lat:42.37, lon:-122.87 }, { id:'MSO', name:'Missoula, MT', lat:46.92, lon:-114.09 },
+  { id:'MTR', name:'San Francisco/Monterey, CA', lat:36.60, lon:-121.85 }, { id:'OTX', name:'Spokane, WA', lat:47.68, lon:-117.63 },
+  { id:'PDT', name:'Pendleton, OR', lat:45.68, lon:-118.85 }, { id:'PIH', name:'Pocatello, ID', lat:42.91, lon:-112.55 },
+  { id:'PQR', name:'Portland, OR', lat:45.50, lon:-122.71 }, { id:'PSR', name:'Phoenix, AZ', lat:33.43, lon:-112.01 },
+  { id:'REV', name:'Reno, NV', lat:39.57, lon:-119.80 }, { id:'SEW', name:'Seattle, WA', lat:47.68, lon:-122.26 },
+  { id:'SGX', name:'San Diego, CA', lat:32.83, lon:-117.13 }, { id:'SLC', name:'Salt Lake City, UT', lat:40.77, lon:-111.95 },
+  { id:'STO', name:'Sacramento, CA', lat:38.61, lon:-121.35 }, { id:'TFX', name:'Great Falls, MT', lat:47.46, lon:-111.38 },
+  { id:'TWC', name:'Tucson, AZ', lat:32.13, lon:-110.94 }, { id:'VEF', name:'Las Vegas, NV', lat:36.05, lon:-115.18 },
+  { id:'AFC', name:'Anchorage, AK', lat:61.16, lon:-150.03 }, { id:'AFG', name:'Fairbanks, AK', lat:64.80, lon:-147.87 },
+  { id:'AJK', name:'Juneau, AK', lat:58.35, lon:-134.50 }, { id:'HFO', name:'Honolulu, HI', lat:21.32, lon:-157.87 },
+  { id:'GUM', name:'Guam/Tiyan', lat:13.48, lon:144.80 },
+];
+
+let _wfoOfficesActive = false, _wfoOfficesLayer = null;
+let _wfoCurrentOffice = null;
+
+function loadWfoOfficesLayer() {
+  if (_wfoOfficesLayer) { try { map.removeLayer(_wfoOfficesLayer); } catch(e){} }
+  const pane = _ovPane('wfo-offices');
+  const layer = L.layerGroup();
+  WFO_OFFICES.forEach(office => {
+    const marker = L.circleMarker([office.lat, office.lon], {
+      pane, radius: 5, weight: 1.5, color: '#0a3d1a', fillColor: '#1fd15a', fillOpacity: 0.9,
+    });
+    marker.bindTooltip(office.id, { direction: 'top', offset: [0, -4] });
+    marker.on('click', () => _wfoOpenPanel(office));
+    marker.addTo(layer);
+  });
+  _wfoOfficesLayer = layer.addTo(map);
+}
+
+function _wfoJumpToOffice(office) {
+  map.setView([office.lat, office.lon], 7);
+  if (currentMapType !== 'satellite') { setMapType('satellite'); rmActivate('rm-satellite'); }
+}
+
+function _wfoOpenPanel(office) {
+  _wfoCurrentOffice = office;
+  const panel = document.getElementById('wfo-office-panel');
+  if (!panel) return;
+  panel.style.display = 'flex';
+  document.getElementById('wfo-panel-title').textContent = `${office.id} — ${office.name}`;
+  document.getElementById('wfo-alerts-list').innerHTML = '<div class="wfo-loading">Loading alerts…</div>';
+  document.getElementById('wfo-products-list').innerHTML = '<div class="wfo-loading">Loading text products…</div>';
+  document.getElementById('wfo-product-detail').style.display = 'none';
+  _wfoLoadAlerts(office);
+  _wfoLoadProducts(office);
+}
+
+function _wfoClosePanel() {
+  const panel = document.getElementById('wfo-office-panel');
+  if (panel) panel.style.display = 'none';
+  _wfoCurrentOffice = null;
+}
+
+// Alerts aren't queryable by issuing office directly on this endpoint, so this
+// pulls all currently active alerts and matches by city name inside the CAP
+// senderName field (e.g. "NWS Miami FL") - simple, but there's no other
+// office-level field guaranteed present on every alert.
+async function _wfoLoadAlerts(office) {
+  const listEl = document.getElementById('wfo-alerts-list');
+  try {
+    const r = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert', { signal: _abortSignal(15000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (_wfoCurrentOffice !== office) return; // panel moved on to a different office while this was in flight
+    const city = office.name.split(',')[0].split('/')[0].trim().toLowerCase();
+    const matches = (data.features || []).filter(f => (f.properties.senderName || '').toLowerCase().includes(city));
+    if (!matches.length) { listEl.innerHTML = '<div class="wfo-empty">No active alerts from this office.</div>'; return; }
+    listEl.innerHTML = matches.map(f => {
+      const p = f.properties;
+      const expires = p.expires ? new Date(p.expires).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
+      return `<div class="wfo-alert-row">
+        <div class="wfo-alert-event">${p.event || 'Alert'}</div>
+        <div class="wfo-alert-meta">${p.severity || ''} · until ${expires}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.warn('WFO alerts fetch error:', e);
+    if (_wfoCurrentOffice === office) listEl.innerHTML = '<div class="wfo-empty">Alerts unavailable right now.</div>';
+  }
+}
+
+async function _wfoLoadProducts(office) {
+  const listEl = document.getElementById('wfo-products-list');
+  try {
+    const r = await fetch(`https://api.weather.gov/products?office=${office.id}&limit=15`, { signal: _abortSignal(15000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (_wfoCurrentOffice !== office) return;
+    const products = data['@graph'] || [];
+    if (!products.length) { listEl.innerHTML = '<div class="wfo-empty">No recent text products found.</div>'; return; }
+    listEl.innerHTML = products.map(p => {
+      const issued = p.issuanceTime ? new Date(p.issuanceTime).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
+      const pid = (p.id || '').replace(/'/g, "\\'");
+      return `<div class="wfo-product-row" onclick="_wfoShowProductText('${pid}')">
+        <div class="wfo-product-name">${p.productName || p.productCode || 'Text Product'}</div>
+        <div class="wfo-product-meta">${issued}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    console.warn('WFO products fetch error:', e);
+    if (_wfoCurrentOffice === office) listEl.innerHTML = '<div class="wfo-empty">Text products unavailable right now.</div>';
+  }
+}
+
+async function _wfoShowProductText(productId) {
+  const detail = document.getElementById('wfo-product-detail');
+  const body = document.getElementById('wfo-product-detail-body');
+  detail.style.display = 'flex';
+  body.textContent = 'Loading…';
+  try {
+    const r = await fetch(`https://api.weather.gov/products/${productId}`, { signal: _abortSignal(15000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    body.textContent = data.productText || 'No text available.';
+  } catch(e) {
+    console.warn('WFO product text fetch error:', e);
+    body.textContent = 'Could not load this product right now.';
+  }
+}
+
+function _wfoCloseProductDetail() {
+  const detail = document.getElementById('wfo-product-detail');
+  if (detail) detail.style.display = 'none';
+}
+
 // ── AMBIENT WEATHER NETWORK (personal weather stations) ──
 // API docs: https://ambientweather.docs.apiary.io/
 // Keys live near the top of this file (AMBIENT_WEATHER_API_KEY / AMBIENT_WEATHER_APPLICATION_KEY).
@@ -13382,6 +13621,16 @@ function toggleOverlayPill(id) {
     } else {
       clearInterval(_tcRefreshTimer); _tcRefreshTimer = null;
       if (_trafficCamerasLayer) { try { map.removeLayer(_trafficCamerasLayer); } catch(e){} _trafficCamerasLayer = null; }
+    }
+  } else if (id === 'wfo-offices') {
+    _wfoOfficesActive = !_wfoOfficesActive;
+    const pill = document.getElementById('op-wfo-offices');
+    if (pill) pill.classList.toggle('active', _wfoOfficesActive);
+    if (_wfoOfficesActive) {
+      loadWfoOfficesLayer();
+    } else {
+      if (_wfoOfficesLayer) { try { map.removeLayer(_wfoOfficesLayer); } catch(e){} _wfoOfficesLayer = null; }
+      _wfoClosePanel();
     }
   } else if (id === 'ambient-weather') {
     _ambientActive = !_ambientActive;
@@ -28750,6 +28999,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-traffic-cameras" data-ovid="traffic-cameras" title="Traffic Cameras - state DOT live camera feeds (Kansas, Maryland, Oregon, Kentucky, Iowa, South Dakota)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('traffic-cameras')">Traffic Cameras</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-wfo-offices" data-ovid="wfo-offices" title="NWS Forecast Offices - tap an office for its alerts and text products">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wfo-offices')">Forecast Offices</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
     <div class="ov-pill" id="op-ambient-weather" data-ovid="ambient-weather" title="Ambient Weather Network - personal weather stations">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('ambient-weather')">Ambient Weather</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -29180,6 +29432,26 @@ function buildTimelineLabels() {
     <div style="font-family:var(--mono);font-size:8px;color:var(--muted);margin-top:2px;line-height:1.4;">Last 60 days · NWS DAT (preliminary)</div>
   </div>
 
+</div>
+
+<!-- ── NWS FORECAST OFFICE PANEL ──────────────────────────────────── -->
+<div id="wfo-office-panel">
+  <div class="wfo-panel-header">
+    <div id="wfo-panel-title">Office</div>
+    <span class="wfo-close-btn" onclick="_wfoClosePanel()">✕</span>
+  </div>
+  <button class="wfo-jump-btn" onclick="if(_wfoCurrentOffice)_wfoJumpToOffice(_wfoCurrentOffice)">🛰 Jump to Area &amp; View Satellite</button>
+  <div class="wfo-section-label">Active Alerts</div>
+  <div id="wfo-alerts-list" class="wfo-list"></div>
+  <div class="wfo-section-label">Recent Text Products</div>
+  <div id="wfo-products-list" class="wfo-list"></div>
+</div>
+<div id="wfo-product-detail">
+  <div class="wfo-panel-header">
+    <div>Text Product</div>
+    <span class="wfo-close-btn" onclick="_wfoCloseProductDetail()">✕</span>
+  </div>
+  <pre id="wfo-product-detail-body"></pre>
 </div>
 
 <!-- ── CLOUD CAPTURE ─────────────────────────────────────────────── -->
@@ -29658,6 +29930,7 @@ const OV_DESCRIPTIONS = {
   'ambient-weather':  'Personal weather stations from the Ambient Weather Network, showing live temperature, wind, rain, and pressure.',
   'storm-centers':    "Triangles marking storms radar has flagged as rotating (red, possible tornado) or hail-producing (green), straight from NEXRAD's automated detection.",
   'traffic-cameras':  'Live state DOT traffic camera feeds (Kansas, Maryland, Oregon, Kentucky, Iowa, South Dakota) - tap a dot for a live or recently-refreshed still image.',
+  'wfo-offices':      "Dots for every NWS Weather Forecast Office. Tap one to see that office's currently active alerts and its recent text products (forecasts, discussions, statements).",
 };
 
 function _ovInjectInfoButtons() {
