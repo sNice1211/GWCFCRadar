@@ -2776,15 +2776,20 @@ body {
   background: rgba(8,12,16,0.88);
   border: 1px solid rgba(255,255,255,0.15);
   border-radius: 6px;
-  padding: 3px 8px;
+  padding: 4px 9px;
   font-family: var(--mono);
   font-size: 11px;
   color: #fff;
-  white-space: nowrap;
-  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
 }
+#inspector-readout .insp-row { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+#inspector-readout .insp-swatch { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3); }
+#inspector-readout .insp-label { opacity: 0.55; font-size: 9px; }
 #inspector-readout .insp-value { font-weight: 700; }
-#inspector-readout .insp-unit { margin-left: 3px; opacity: 0.7; font-size: 9px; }
+#inspector-readout .insp-unit { margin-left: 1px; opacity: 0.7; font-size: 9px; }
 #tool-hint { display:none !important; }
 .tool-label {
   background: rgba(8,12,16,0.88) !important;
@@ -11714,20 +11719,21 @@ function _bilinearAngle(gridDeg, cols, rows, gx, gy) {
 // Fixed domain both layers render over - like a real WMS layer's tiles, this
 // is anchored to the same geographic box every time, not the current
 // viewport, so panning around just reveals more of the one already-rendered
-// image instead of triggering a re-fetch. Broad CONUS + coastal waters,
-// matching the extent this app already uses for other continent-scale
-// overlays (see CPC_BOUNDS), widened west/east a bit since Waves needs to
-// reach open ocean, not just the coastline.
-const CLIMATE_MAP_BOUNDS = [[15, -140], [55, -50]];
+// image instead of triggering a re-fetch. Covers the whole world (deep
+// Antarctica excluded - not much ocean/air data value down there and it
+// would badly distort an equirectangular projection).
+const WORLD_MAP_BOUNDS = [[-60, -180], [75, 180]];
 
-// Builds the canvas, paints it, and returns a fixed-bounds image overlay.
+// Builds the raw painted canvas (no L.imageOverlay wrapping yet) so callers
+// that need to post-process the pixels - Waves' land mask, see below - can
+// do so before turning it into a data URL.
 // `grid` is sampled south-to-north/west-to-east (row 0 = south), but image
 // rows paint top-to-bottom = north-to-south, so the row index is flipped.
 // Canvas pixel dimensions are kept proportional to the bounds' aspect ratio
 // so the interpolation resolution isn't lopsided on a wide, short box.
-function _paintInterpolatedOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
+function _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn) {
   const latSpan = bounds[1][0] - bounds[0][0], lngSpan = bounds[1][1] - bounds[0][1];
-  const MAXDIM = 360;
+  const MAXDIM = 720; // bumped up from 360 now that bounds span the whole world
   let W, H;
   if (lngSpan >= latSpan) { W = MAXDIM; H = Math.max(40, Math.round(MAXDIM * latSpan / lngSpan)); }
   else                    { H = MAXDIM; W = Math.max(40, Math.round(MAXDIM * lngSpan / latSpan)); }
@@ -11748,7 +11754,99 @@ function _paintInterpolatedOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
     }
   }
   ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+// Builds the canvas, paints it, and returns a fixed-bounds image overlay.
+// Used directly by Air (no land mask needed - AQI is meaningful over land).
+function _paintInterpolatedOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
+  const canvas = _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn);
   return L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: 1, interactive: false });
+}
+
+// ── LAND MASK (Waves only) ───────────────────────────────────────────────────
+// Waves is an ocean-only product. Sparse point-sampling + bilinear
+// interpolation alone can't draw a crisp coastline - a grid cell that spans
+// part bay/part shore just shows whichever value happened to land nearby,
+// which is what caused color to bleed over land or leave gaps at the coast.
+// Fix: rasterize real land polygon geometry onto a mask canvas using the same
+// linear lat/lng projection as the color canvas, then punch land out of the
+// color canvas with destination-out compositing, giving an exact, gap-free
+// coastline instead of a coarse, leaky one.
+let _landGeoJSONPromise = null;
+function _loadLandGeoJSON() {
+  if (!_landGeoJSONPromise) {
+    _landGeoJSONPromise = fetch('https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_110m_land.geojson', { signal: AbortSignal.timeout(20000) })
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .catch(e => { console.warn('Land mask geojson unavailable:', e); return null; });
+  }
+  return _landGeoJSONPromise;
+}
+// Projects [lng,lat] the same way _buildInterpolatedCanvas does (linear
+// equirectangular, row 0 = south painted at the bottom) so the mask lines up
+// pixel-for-pixel with the color canvas.
+function _projectLngLat(lng, lat, bounds, W, H) {
+  const south = bounds[0][0], north = bounds[1][0], west = bounds[0][1], east = bounds[1][1];
+  return [(lng - west) / (east - west) * W, H - (lat - south) / (north - south) * H];
+}
+function _rasterizeLandMask(geojson, bounds, W, H) {
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000';
+  const drawPolygon = (rings) => {
+    ctx.beginPath();
+    rings.forEach(ring => {
+      ring.forEach(([lng, lat], i) => {
+        const [x, y] = _projectLngLat(lng, lat, bounds, W, H);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.closePath();
+    });
+    ctx.fill('evenodd');
+  };
+  (geojson.features || []).forEach(f => {
+    const geom = f && f.geometry;
+    if (!geom) return;
+    if (geom.type === 'Polygon') drawPolygon(geom.coordinates);
+    else if (geom.type === 'MultiPolygon') geom.coordinates.forEach(drawPolygon);
+  });
+  return canvas;
+}
+// Waves-specific version of _paintInterpolatedOverlay that also punches land
+// out of the finished canvas before wrapping it as an image overlay.
+async function _paintWavesOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
+  const canvas = _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn);
+  const geojson = await _loadLandGeoJSON();
+  if (geojson) {
+    try {
+      const mask = _rasterizeLandMask(geojson, bounds, canvas.width, canvas.height);
+      const ctx = canvas.getContext('2d');
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.drawImage(mask, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+    } catch(e) { console.warn('Land mask rasterize failed:', e); }
+  }
+  return L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: 1, interactive: false });
+}
+
+// Splits a big point list into smaller batches and fetches them in parallel -
+// a single request with 900+ comma-separated lat/lon pairs risks hitting URL
+// length/rate limits, especially now that Waves/Air cover the whole world.
+// Order is preserved so chunk results concatenate straight back into the
+// flat row-major grid array the caller expects.
+async function _fetchGridChunked(pts, buildUrl, extractValue, chunkSize) {
+  chunkSize = chunkSize || 150;
+  const chunks = [];
+  for (let i = 0; i < pts.length; i += chunkSize) chunks.push(pts.slice(i, i + chunkSize));
+  const results = await Promise.all(chunks.map(async chunk => {
+    const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(25000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const arr = Array.isArray(data) ? data : [data];
+    return arr.map(extractValue);
+  }));
+  return results.flat();
 }
 
 function _sampleGrid(cols, rows, bounds) {
@@ -11767,7 +11865,8 @@ let _wavesProduct = 'wave-height';
 let _wavesLayer = null;
 let _wavesLoadToken = 0;
 let _wavesRefreshTimer = null;
-const WAVES_COLS = 26, WAVES_ROWS = 16; // wide, low grid to match CLIMATE_MAP_BOUNDS' shape
+let _wavesGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
+const WAVES_COLS = 60, WAVES_ROWS = 34; // world-wide grid; fetched in chunks, see _fetchGridChunked
 
 const WAVES_SUB_BUBBLES = [
   { id: 'wave-height',  icon: '🌊', label: 'Wave Height' },
@@ -11831,7 +11930,7 @@ function toggleWavesSub() {
   wrap.style.display = 'flex';
 }
 
-// Renders once over the fixed CLIMATE_MAP_BOUNDS domain, not the current
+// Renders once over the fixed WORLD_MAP_BOUNDS domain, not the current
 // viewport - panning/zooming the map never re-triggers this, Leaflet just
 // shows the relevant slice of the one already-rendered image, exactly like
 // panning under any other fixed-tile layer. Only re-runs on product change,
@@ -11839,21 +11938,21 @@ function toggleWavesSub() {
 async function _loadWavesLayer() {
   if (!wavesActive) return;
   const token = ++_wavesLoadToken;
-  const pts = _sampleGrid(WAVES_COLS, WAVES_ROWS, CLIMATE_MAP_BOUNDS);
-  const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
-  const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
-  const field  = WAVES_FIELD[_wavesProduct] || 'wave_height';
+  const pts = _sampleGrid(WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS);
+  const field = WAVES_FIELD[_wavesProduct] || 'wave_height';
 
   try {
-    const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
-      `&current=${field}&length_unit=imperial&temperature_unit=fahrenheit`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
+    const grid = await _fetchGridChunked(pts, chunk => {
+      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+      return `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
+        `&current=${field}&length_unit=imperial&temperature_unit=fahrenheit`;
+    }, d => { const v = d?.current?.[field]; return (v == null || !isFinite(v)) ? null : v; }, 150);
     if (token !== _wavesLoadToken) return; // a newer request/toggle already superseded this one
-    const arr  = Array.isArray(data) ? data : [data];
-    const grid = arr.map(d => { const v = d?.current?.[field]; return (v == null || !isFinite(v)) ? null : v; });
-    const layer = _paintInterpolatedOverlay(grid, WAVES_COLS, WAVES_ROWS, CLIMATE_MAP_BOUNDS, _wavesProduct === 'wave-dir', v => _waveColorFor(_wavesProduct, v));
+    const isAngle = _wavesProduct === 'wave-dir';
+    const layer = await _paintWavesOverlay(grid, WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS, isAngle, v => _waveColorFor(_wavesProduct, v));
+    if (token !== _wavesLoadToken) return; // superseded while awaiting the land-mask fetch/rasterize
+    _wavesGridCache = { grid, cols: WAVES_COLS, rows: WAVES_ROWS, isAngle };
     if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} }
     _wavesLayer = layer.addTo(map);
   } catch(e) {
@@ -11867,7 +11966,8 @@ let airActive = false;
 let _airLayer = null;
 let _airLoadToken = 0;
 let _airRefreshTimer = null;
-const AIR_COLS = 26, AIR_ROWS = 16;
+let _airGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
+const AIR_COLS = 60, AIR_ROWS = 34; // world-wide grid; fetched in chunks, see _fetchGridChunked
 const AQI_SCALE = [[0,[0,228,0]],[50,[255,255,0]],[100,[255,126,0]],[150,[255,0,0]],[200,[143,63,151]],[300,[126,0,35]],[500,[126,0,35]]];
 
 function toggleAirLayer() {
@@ -11882,24 +11982,22 @@ function toggleAirLayer() {
   }
 }
 
-// Same fixed-domain approach as Waves - renders once over CLIMATE_MAP_BOUNDS,
+// Same fixed-domain approach as Waves - renders once over WORLD_MAP_BOUNDS,
 // panning/zooming doesn't re-trigger this.
 async function _loadAirLayer() {
   if (!airActive) return;
   const token = ++_airLoadToken;
-  const pts = _sampleGrid(AIR_COLS, AIR_ROWS, CLIMATE_MAP_BOUNDS);
-  const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
-  const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
+  const pts = _sampleGrid(AIR_COLS, AIR_ROWS, WORLD_MAP_BOUNDS);
 
   try {
-    const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}&current=us_aqi`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(20000) });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
+    const grid = await _fetchGridChunked(pts, chunk => {
+      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+      return `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}&current=us_aqi`;
+    }, d => { const v = d?.current?.us_aqi; return (v == null || !isFinite(v)) ? null : v; }, 150);
     if (token !== _airLoadToken) return;
-    const arr  = Array.isArray(data) ? data : [data];
-    const grid = arr.map(d => { const v = d?.current?.us_aqi; return (v == null || !isFinite(v)) ? null : v; });
-    const layer = _paintInterpolatedOverlay(grid, AIR_COLS, AIR_ROWS, CLIMATE_MAP_BOUNDS, false, v => _colorScale(v, AQI_SCALE));
+    _airGridCache = { grid, cols: AIR_COLS, rows: AIR_ROWS, isAngle: false };
+    const layer = _paintInterpolatedOverlay(grid, AIR_COLS, AIR_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, AQI_SCALE));
     if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} }
     _airLayer = layer.addTo(map);
   } catch(e) {
@@ -12298,8 +12396,8 @@ const LAYER_DESCRIPTIONS = {
   ch14: 'Another infrared channel for cloud tops, similar to Clean IR.',
   ch15: 'Infrared channel useful for spotting volcanic ash and dust.',
   ch16: 'Infrared channel tuned to carbon dioxide absorption, used mainly for very high clouds.',
-  waves: 'A smooth color map of ocean conditions from Open-Meteo. Tap again to pick a product, like Wave Height or Sea Surface Temp.',
-  air: 'A smooth US AQI color map from Open-Meteo, covering a broad North America + coastal-waters area.',
+  waves: 'A smooth color map of ocean conditions from Open-Meteo, covering the whole world’s oceans with a real coastline cutout so color never bleeds onto land. Tap again to pick a product, like Wave Height or Sea Surface Temp.',
+  air: 'A smooth worldwide US AQI color map from Open-Meteo.',
   'wave-height':  'Overall combined wave height (wind waves + swell). Blue is calm, red/purple is rough (12+ ft).',
   'wave-period':  'Time between wave crests. Short periods (red) mean choppy local wind waves; long periods (blue/purple) mean organized swell that traveled a long way.',
   'wave-dir':     'The compass direction waves are heading, shown as a color wheel since direction can\'t fit on a straight scale, hue = heading.',
@@ -16497,10 +16595,134 @@ function _inspColorToDbz(r, g, b) {
 }
 
 function _inspSetReadout(value, unit, color) {
+  _inspRenderRows([{ label: '', value, unit, color }]);
+}
+
+function _inspRenderRows(rows) {
   if (!_inspLabelEl) return;
-  _inspLabelEl.querySelector('.insp-value').textContent = value;
-  _inspLabelEl.querySelector('.insp-unit').textContent = unit;
-  if (_inspEl) _inspEl.style.background = color;
+  _inspLabelEl.innerHTML = rows.map(r => `
+    <div class="insp-row">
+      <span class="insp-swatch" style="background:${r.color || 'rgba(120,120,120,0.5)'}"></span>
+      ${r.label ? `<span class="insp-label">${r.label}</span>` : ''}
+      <span class="insp-value">${r.value}</span>
+      <span class="insp-unit">${r.unit || ''}</span>
+    </div>`).join('');
+  if (_inspEl) _inspEl.style.background = (rows[0] && rows[0].color) || 'rgba(120,120,120,0.5)';
+}
+
+// Generic pixel-color sampler - same technique _inspSampleRadarColor uses,
+// generalized to any tile container (a pane, or a specific layer's own
+// .getContainer()) so Satellite and Run Models can reuse it too.
+function _inspSampleColorFrom(container, cx, cy) {
+  if (!container) return null;
+  const imgs = container.querySelectorAll('img');
+  let found = null;
+  imgs.forEach(img => {
+    if (!img.complete || !img.naturalWidth) return;
+    const layer = img.closest('.leaflet-layer');
+    const op = layer ? parseFloat(getComputedStyle(layer).opacity || '1') : 1;
+    if (op < 0.05) return;
+    const rect = img.getBoundingClientRect();
+    if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return;
+    found = img;
+  });
+  if (!found) return null;
+  try {
+    const rect = found.getBoundingClientRect();
+    const canvas = document.createElement('canvas');
+    canvas.width = found.naturalWidth;
+    canvas.height = found.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(found, 0, 0);
+    let x = Math.round((cx - rect.left) / rect.width * found.naturalWidth);
+    let y = Math.round((cy - rect.top) / rect.height * found.naturalHeight);
+    x = Math.max(0, Math.min(canvas.width - 1, x));
+    y = Math.max(0, Math.min(canvas.height - 1, y));
+    const d = ctx.getImageData(x, y, 1, 1).data;
+    if (d[3] < 10) return { transparent: true };
+    return { r: d[0], g: d[1], b: d[2] };
+  } catch (e) {
+    return { tainted: true };
+  }
+}
+
+function _inspRadarRow(center, cx, cy) {
+  // 1) Exact values from the raw mesh (L3 canvas products: CC / ZDR)
+  const meshOk = _lastMeshData && _lastMeshProduct
+    && currentProduct === _lastMeshProduct && _l3Overlay && map.hasLayer(_l3Overlay);
+  if (meshOk) {
+    const value = _inspFindMeshValue(center.lng, center.lat);
+    if (value == null || value !== value) return { label: 'Radar', value: 'No data', color: 'rgba(120,120,120,0.5)' };
+    const unit = INSP_UNITS[_lastMeshProduct] || '';
+    const color = _meshColorFn(_lastMeshProduct)(value) || 'rgba(120,120,120,0.5)';
+    return { label: 'Radar', value: _inspFormatValue(_lastMeshProduct, value), unit, color };
+  }
+  // 2) Reflectivity: read the displayed pixel color, map to NWS dBZ + intensity
+  const isRef = (currentProduct === 'ref' || currentProduct === undefined || currentProduct === null || currentProduct === '');
+  const s = _inspSampleRadarColor(cx, cy);
+  if (s && s.tainted) {
+    _inspEnsureReadableTiles();
+    return { label: 'Radar', value: 'reading…', color: 'rgba(120,120,120,0.5)' };
+  }
+  if (!s) return { label: 'Radar', value: 'No data', unit: 'for this layer', color: 'rgba(120,120,120,0.5)' };
+  if (s.transparent) return { label: 'Radar', value: 'No echo', color: 'rgba(120,120,120,0.35)' };
+  if (isRef) {
+    const meta = _inspColorToDbz(s.r, s.g, s.b);
+    if (meta) return { label: 'Radar', value: meta.dbz + ' dBZ', unit: '· ' + meta.label, color: meta.hex };
+    return { label: 'Radar', value: 'No echo', color: `rgb(${s.r},${s.g},${s.b})` };
+  }
+  return { label: 'Radar', value: '~ color', unit: `rgb(${s.r},${s.g},${s.b})`, color: `rgb(${s.r},${s.g},${s.b})` };
+}
+
+function _inspSatelliteRow(cx, cy) {
+  const container = _goesLayer && _goesLayer.getContainer ? _goesLayer.getContainer() : null;
+  const s = _inspSampleColorFrom(container, cx, cy);
+  if (s && s.tainted) return { label: 'Satellite', value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
+  if (!s) return { label: 'Satellite', value: 'No data', color: 'rgba(120,120,120,0.5)' };
+  if (s.transparent) return { label: 'Satellite', value: 'No image', color: 'rgba(120,120,120,0.35)' };
+  return { label: 'Satellite', value: '~ color', unit: `rgb(${s.r},${s.g},${s.b})`, color: `rgb(${s.r},${s.g},${s.b})` };
+}
+
+function _inspModelsRow(cx, cy) {
+  const container = _iemModelLayer && _iemModelLayer.getContainer ? _iemModelLayer.getContainer() : null;
+  const s = _inspSampleColorFrom(container, cx, cy);
+  if (s && s.tainted) return { label: 'Run Models', value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
+  if (!s) return { label: 'Run Models', value: 'No data', color: 'rgba(120,120,120,0.5)' };
+  if (s.transparent) return { label: 'Run Models', value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  return { label: 'Run Models', value: '~ color', unit: `rgb(${s.r},${s.g},${s.b})`, color: `rgb(${s.r},${s.g},${s.b})` };
+}
+
+// Waves/Air read the EXACT interpolated value from the same grid the color
+// map was painted from (cached when it loaded), not a guessed-from-pixel
+// color, since we already have the real numbers for these two layers.
+function _inspGridValueAt(cache, lat, lng, bounds) {
+  if (!cache || !cache.grid) return null;
+  const south = bounds[0][0], north = bounds[1][0], west = bounds[0][1], east = bounds[1][1];
+  if (lat < south || lat > north || lng < west || lng > east) return null;
+  const gx = (lng - west) / (east - west) * (cache.cols - 1);
+  const gy = (lat - south) / (north - south) * (cache.rows - 1);
+  return cache.isAngle
+    ? _bilinearAngle(cache.grid, cache.cols, cache.rows, gx, gy)
+    : _bilinear(cache.grid, cache.cols, cache.rows, gx, gy);
+}
+
+function _inspWavesRow(center) {
+  const v = _inspGridValueAt(_wavesGridCache, center.lat, center.lng, WORLD_MAP_BOUNDS);
+  const label = (WAVES_SUB_BUBBLES.find(b => b.id === _wavesProduct) || {}).label || 'Waves';
+  if (v == null) return { label, value: 'Land / no data', color: 'rgba(120,120,120,0.35)' };
+  const [r, g, b] = _waveColorFor(_wavesProduct, v);
+  const color = `rgb(${r},${g},${b})`;
+  if (_wavesProduct === 'wave-dir') return { label, value: Math.round(((v % 360) + 360) % 360) + '°', unit: _degToCompass(v), color };
+  if (_wavesProduct === 'wave-period') return { label, value: v.toFixed(1), unit: 's', color };
+  if (_wavesProduct === 'sst') return { label, value: v.toFixed(1), unit: '°F', color };
+  return { label, value: v.toFixed(1), unit: 'ft', color };
+}
+
+function _inspAirRow(center) {
+  const v = _inspGridValueAt(_airGridCache, center.lat, center.lng, WORLD_MAP_BOUNDS);
+  if (v == null) return { label: 'Air', value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  const [r, g, b] = _colorScale(v, AQI_SCALE);
+  return { label: 'Air', value: Math.round(v), unit: 'AQI', color: `rgb(${r},${g},${b})` };
 }
 
 function _inspUpdate() {
@@ -16510,53 +16732,15 @@ function _inspUpdate() {
   const rect = map.getContainer().getBoundingClientRect();
   const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
 
-  const radarOn = (typeof activeLayers !== 'undefined' && activeLayers.nexrad);
-  if (!radarOn) {
-    _inspSetReadout('Radar off', '', 'rgba(120,120,120,0.5)');
-    return;
-  }
+  const rows = [];
+  if (typeof activeLayers !== 'undefined' && activeLayers.nexrad)    rows.push(_inspRadarRow(center, cx, cy));
+  if (typeof activeLayers !== 'undefined' && activeLayers.satellite) rows.push(_inspSatelliteRow(cx, cy));
+  if (typeof wavesActive !== 'undefined' && wavesActive)             rows.push(_inspWavesRow(center));
+  if (typeof airActive !== 'undefined' && airActive)                 rows.push(_inspAirRow(center));
+  if (_iemModelLayer)                                                 rows.push(_inspModelsRow(cx, cy));
 
-  // 1) Exact values from the raw mesh (L3 canvas products: CC / ZDR)
-  const meshOk = _lastMeshData && _lastMeshProduct
-    && currentProduct === _lastMeshProduct && _l3Overlay && map.hasLayer(_l3Overlay);
-  if (meshOk) {
-    const value = _inspFindMeshValue(center.lng, center.lat);
-    if (value == null || value !== value) { // null or NaN (range fold)
-      _inspSetReadout('No data', '', 'rgba(120,120,120,0.5)');
-      return;
-    }
-    const unit = INSP_UNITS[_lastMeshProduct] || '';
-    const color = _meshColorFn(_lastMeshProduct)(value) || 'rgba(120,120,120,0.5)';
-    _inspSetReadout(_inspFormatValue(_lastMeshProduct, value), unit, color);
-    return;
-  }
-
-  // 2) Reflectivity: read the displayed pixel color, map to NWS dBZ + intensity
-  const isRef = (currentProduct === 'ref' || currentProduct === undefined || currentProduct === null || currentProduct === '');
-  const s = _inspSampleRadarColor(cx, cy);
-  if (s && s.tainted) {
-    // Cache tiles aren't CORS-readable - switch to WMS, then the next tick reads fine
-    _inspEnsureReadableTiles();
-    _inspSetReadout('reading…', '', 'rgba(120,120,120,0.5)');
-    return;
-  }
-  if (!s) {
-    _inspSetReadout('No data', 'for this layer', 'rgba(120,120,120,0.5)');
-    return;
-  }
-  if (s.transparent) {
-    _inspSetReadout('No echo', '', 'rgba(120,120,120,0.35)');
-    return;
-  }
-  if (isRef) {
-    const meta = _inspColorToDbz(s.r, s.g, s.b);
-    if (meta) { _inspSetReadout(meta.dbz + ' dBZ', '· ' + meta.label, meta.hex); return; }
-    // A color that isn't part of the reflectivity ramp
-    _inspSetReadout('No echo', '', `rgb(${s.r},${s.g},${s.b})`);
-    return;
-  }
-  // 3) Other image layers (velocity/dual-pol tiles): show the raw color
-  _inspSetReadout('~ color', `rgb(${s.r},${s.g},${s.b})`, `rgb(${s.r},${s.g},${s.b})`);
+  if (!rows.length) { _inspRenderRows([{ label: '', value: 'No layers active', color: 'rgba(120,120,120,0.5)' }]); return; }
+  _inspRenderRows(rows);
 }
 
 function _inspScheduleUpdate() {
@@ -24320,12 +24504,12 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">🌊</div>
       <div class="fc-title">WAVES</div>
-      <p class="fc-body">Tap to choose a product (each has its own ⓘ info button): <strong>Wave Height</strong>, <strong>Period</strong>, <strong>Direction</strong>, <strong>Swell Height</strong>, or <strong>Sea Surface Temp</strong>. Draws as a smooth, continuous color map, powered by Open-Meteo's Marine Weather API, not clickable points. Rendered once over a broad North America + coastal-waters area and fixed in place, like a real map layer, panning and zooming just reveals more of the same image rather than re-drawing it. Refreshes quietly in the background every 10 minutes. Direction uses a color wheel (hue = compass direction) since angles can't be shown on a linear scale.</p>
+      <p class="fc-body">Tap to choose a product (each has its own ⓘ info button): <strong>Wave Height</strong>, <strong>Period</strong>, <strong>Direction</strong>, <strong>Swell Height</strong>, or <strong>Sea Surface Temp</strong>. Draws as a smooth, continuous color map, powered by Open-Meteo's Marine Weather API, not clickable points. Rendered once over the entire world's oceans and fixed in place, like a real map layer, panning and zooming just reveals more of the same image rather than re-drawing it. A real coastline cutout keeps color from ever bleeding onto land. Refreshes quietly in the background every 10 minutes. Direction uses a color wheel (hue = compass direction) since angles can't be shown on a linear scale.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">🌫️</div>
       <div class="fc-title">AIR</div>
-      <p class="fc-body">A smooth US AQI color map (green Good through maroon Hazardous), powered by Open-Meteo's Air Quality API. Same fixed-area, background-refreshing approach as Waves.</p>
+      <p class="fc-body">A smooth, worldwide US AQI color map (green Good through maroon Hazardous), powered by Open-Meteo's Air Quality API. Same fixed-area, background-refreshing approach as Waves.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon">📊</div>
