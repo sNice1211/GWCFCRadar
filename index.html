@@ -12484,6 +12484,219 @@ function _paintAndShowAir(allGrids, token) {
   _airLayer = layer.addTo(map);
 }
 
+// ── TEMPERATURE LAYER (Open-Meteo Forecast API) ──────────────────────────────
+let temperatureActive = false;
+let _temperatureProduct = 'air-temp';
+let _temperatureLayer = null;
+let _temperatureLoadToken = 0;
+let _temperatureRefreshTimer = null;
+let _temperatureGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
+const TEMPERATURE_COLS = 64, TEMPERATURE_ROWS = 36; // world-wide grid; fetched in chunks, see _fetchGridChunked - see WAVES_COLS comment
+
+const TEMPERATURE_SUB_BUBBLES = [
+  { id: 'air-temp',   icon: '🌡️', label: 'Air Temp' },
+  { id: 'feels-like', icon: '🥵', label: 'Feels Like' },
+  { id: 'dew-point',  icon: '💧', label: 'Dew Point' },
+];
+const TEMPERATURE_FIELD = { 'air-temp': 'temperature_2m', 'feels-like': 'apparent_temperature', 'dew-point': 'dew_point_2m' };
+const TEMP_SCALE = [[-20,[130,0,200]],[0,[80,0,180]],[32,[0,120,220]],[50,[0,200,140]],[70,[255,204,0]],[85,[255,110,0]],[100,[210,0,0]]];
+// Dew point isn't "hot/cold" - it's a muggy-air/comfort scale, so it gets its
+// own range even though it's also a temperature-shaped number in °F.
+const DEWPOINT_SCALE = [[20,[80,0,180]],[35,[0,120,220]],[50,[0,190,140]],[60,[255,204,0]],[70,[255,110,0]],[80,[210,0,0]]];
+const TEMPERATURE_SCALES = { 'air-temp': TEMP_SCALE, 'feels-like': TEMP_SCALE, 'dew-point': DEWPOINT_SCALE };
+const TEMPERATURE_UNITS = { 'air-temp': '°F', 'feels-like': '°F', 'dew-point': '°F' };
+function _temperatureColorFor(product, v) {
+  return _colorScale(v, TEMPERATURE_SCALES[product] || TEMP_SCALE);
+}
+
+function toggleTemperatureSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  const back = document.createElement('div');
+  back.className = 'sub-bubble';
+  back.innerHTML = `<span class="sb-icon">←</span><span class="sb-label">Back</span>`;
+  back.onclick = () => { _syncParentBubble('temperature'); renderSubBubbles('regular'); };
+  wrap.appendChild(back);
+  TEMPERATURE_SUB_BUBBLES.forEach(b => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (temperatureActive && _temperatureProduct === b.id ? ' active' : '');
+    el.id = 'sub-' + b.id;
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
+    el.onclick = () => {
+      if (temperatureActive && _temperatureProduct === b.id) {
+        temperatureActive = false;
+        clearInterval(_temperatureRefreshTimer); _temperatureRefreshTimer = null;
+        if (_temperatureLayer) { try { map.removeLayer(_temperatureLayer); } catch(e){} _temperatureLayer = null; }
+        el.classList.remove('active');
+        _syncParentBubble('temperature');
+        return;
+      }
+      TEMPERATURE_SUB_BUBBLES.forEach(x => { const xe = document.getElementById('sub-' + x.id); if (xe) xe.classList.remove('active'); });
+      el.classList.add('active');
+      temperatureActive = true;
+      _temperatureProduct = b.id;
+      _syncParentBubble('temperature');
+      _loadTemperatureLayer();
+      clearInterval(_temperatureRefreshTimer);
+      _temperatureRefreshTimer = setInterval(() => _loadTemperatureLayer(true), 10 * 60 * 1000);
+    };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
+}
+
+let _temperatureAllGrids = null; // {cols, rows, grids: {temperature_2m:[...], ...}} - every product's data, one fetch
+let _temperatureFetchPromise = null; // collapses overlapping fetches from rapid clicking into one in-flight request
+
+// Same fixed-domain approach as Waves/Air - renders once over WORLD_MAP_BOUNDS,
+// panning/zooming doesn't re-trigger this. All 3 Temperature products are
+// fetched together in one request, so switching products just repaints from
+// cache - only an explicit forceRefresh (the periodic background timer) re-fetches.
+async function _loadTemperatureLayer(forceRefresh) {
+  if (!temperatureActive) return;
+  const token = ++_temperatureLoadToken;
+  const cacheValid = _temperatureAllGrids && _temperatureAllGrids.cols === TEMPERATURE_COLS && _temperatureAllGrids.rows === TEMPERATURE_ROWS;
+
+  if (cacheValid && !forceRefresh) {
+    _paintAndShowTemperature(_temperatureAllGrids, token);
+    return;
+  }
+
+  try {
+    if (!_temperatureFetchPromise) {
+      const pts = _sampleGrid(TEMPERATURE_COLS, TEMPERATURE_ROWS, WORLD_MAP_BOUNDS);
+      const fields = Object.values(TEMPERATURE_FIELD);
+      _temperatureFetchPromise = _fetchGridChunked(pts, chunk => {
+        const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+        const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+        return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
+          `&current=${fields.join(',')}&temperature_unit=fahrenheit`;
+      }, fields).finally(() => { _temperatureFetchPromise = null; });
+    }
+    const grids = await _temperatureFetchPromise;
+    if (token !== _temperatureLoadToken) return; // a newer request/toggle already superseded this one
+    _temperatureAllGrids = { cols: TEMPERATURE_COLS, rows: TEMPERATURE_ROWS, grids };
+    _paintAndShowTemperature(_temperatureAllGrids, token);
+  } catch(e) {
+    console.warn('Temperature layer error:', e);
+    showToast('Temperature data unavailable right now', 3000);
+  }
+}
+
+function _paintAndShowTemperature(allGrids, token) {
+  const field = TEMPERATURE_FIELD[_temperatureProduct] || 'temperature_2m';
+  const grid = allGrids.grids[field];
+  _temperatureGridCache = { grid, cols: allGrids.cols, rows: allGrids.rows, isAngle: false };
+  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _temperatureColorFor(_temperatureProduct, v));
+  if (token !== _temperatureLoadToken) return;
+  if (_temperatureLayer) { try { map.removeLayer(_temperatureLayer); } catch(e){} }
+  _temperatureLayer = layer.addTo(map);
+}
+
+// ── PRESSURE LAYER (Open-Meteo Forecast API) ─────────────────────────────────
+let pressureActive = false;
+let _pressureProduct = 'sea-level';
+let _pressureLayer = null;
+let _pressureLoadToken = 0;
+let _pressureRefreshTimer = null;
+let _pressureGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
+const PRESSURE_COLS = 64, PRESSURE_ROWS = 36; // world-wide grid; fetched in chunks, see _fetchGridChunked - see WAVES_COLS comment
+
+const PRESSURE_SUB_BUBBLES = [
+  { id: 'sea-level', icon: '📉', label: 'Sea-Level' },
+  { id: 'surface',   icon: '⛰️', label: 'Surface' },
+];
+const PRESSURE_FIELD = { 'sea-level': 'pressure_msl', surface: 'surface_pressure' };
+// Same units (hPa) for both - surface pressure is just the raw station
+// reading, not normalized to sea level, so it reads lower at high elevation
+// even under identical weather - that's the whole point of showing both.
+const PRESSURE_SCALE = [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]];
+const PRESSURE_UNITS = { 'sea-level': 'hPa', surface: 'hPa' };
+function _pressureColorFor(product, v) {
+  return _colorScale(v, PRESSURE_SCALE);
+}
+
+function togglePressureSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  const back = document.createElement('div');
+  back.className = 'sub-bubble';
+  back.innerHTML = `<span class="sb-icon">←</span><span class="sb-label">Back</span>`;
+  back.onclick = () => { _syncParentBubble('pressure'); renderSubBubbles('regular'); };
+  wrap.appendChild(back);
+  PRESSURE_SUB_BUBBLES.forEach(b => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (pressureActive && _pressureProduct === b.id ? ' active' : '');
+    el.id = 'sub-' + b.id;
+    el.innerHTML = `<span class="sb-icon">${b.icon}</span><span class="sb-label">${b.label}</span>`;
+    el.onclick = () => {
+      if (pressureActive && _pressureProduct === b.id) {
+        pressureActive = false;
+        clearInterval(_pressureRefreshTimer); _pressureRefreshTimer = null;
+        if (_pressureLayer) { try { map.removeLayer(_pressureLayer); } catch(e){} _pressureLayer = null; }
+        el.classList.remove('active');
+        _syncParentBubble('pressure');
+        return;
+      }
+      PRESSURE_SUB_BUBBLES.forEach(x => { const xe = document.getElementById('sub-' + x.id); if (xe) xe.classList.remove('active'); });
+      el.classList.add('active');
+      pressureActive = true;
+      _pressureProduct = b.id;
+      _syncParentBubble('pressure');
+      _loadPressureLayer();
+      clearInterval(_pressureRefreshTimer);
+      _pressureRefreshTimer = setInterval(() => _loadPressureLayer(true), 10 * 60 * 1000);
+    };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
+}
+
+let _pressureAllGrids = null; // {cols, rows, grids: {pressure_msl:[...], surface_pressure:[...]}} - every product's data, one fetch
+let _pressureFetchPromise = null; // collapses overlapping fetches from rapid clicking into one in-flight request
+
+async function _loadPressureLayer(forceRefresh) {
+  if (!pressureActive) return;
+  const token = ++_pressureLoadToken;
+  const cacheValid = _pressureAllGrids && _pressureAllGrids.cols === PRESSURE_COLS && _pressureAllGrids.rows === PRESSURE_ROWS;
+
+  if (cacheValid && !forceRefresh) {
+    _paintAndShowPressure(_pressureAllGrids, token);
+    return;
+  }
+
+  try {
+    if (!_pressureFetchPromise) {
+      const pts = _sampleGrid(PRESSURE_COLS, PRESSURE_ROWS, WORLD_MAP_BOUNDS);
+      const fields = Object.values(PRESSURE_FIELD);
+      _pressureFetchPromise = _fetchGridChunked(pts, chunk => {
+        const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+        const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+        return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}&current=${fields.join(',')}`;
+      }, fields).finally(() => { _pressureFetchPromise = null; });
+    }
+    const grids = await _pressureFetchPromise;
+    if (token !== _pressureLoadToken) return; // a newer request/toggle already superseded this one
+    _pressureAllGrids = { cols: PRESSURE_COLS, rows: PRESSURE_ROWS, grids };
+    _paintAndShowPressure(_pressureAllGrids, token);
+  } catch(e) {
+    console.warn('Pressure layer error:', e);
+    showToast('Pressure data unavailable right now', 3000);
+  }
+}
+
+function _paintAndShowPressure(allGrids, token) {
+  const field = PRESSURE_FIELD[_pressureProduct] || 'pressure_msl';
+  const grid = allGrids.grids[field];
+  _pressureGridCache = { grid, cols: allGrids.cols, rows: allGrids.rows, isAngle: false };
+  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _pressureColorFor(_pressureProduct, v));
+  if (token !== _pressureLoadToken) return;
+  if (_pressureLayer) { try { map.removeLayer(_pressureLayer); } catch(e){} }
+  _pressureLayer = layer.addTo(map);
+}
+
 
 // ── MAP TYPE ──
 let currentMapType = 'dark';
@@ -12885,14 +13098,21 @@ const LAYER_DESCRIPTIONS = {
   pm25:           'Fine particulate matter (PM2.5, µg/m³), particles small enough to get deep into lungs, colored using the EPA\'s PM2.5 health breakpoints. A major driver of wildfire smoke haze.',
   pm10:           'Coarse particulate matter (PM10, µg/m³): dust, pollen, and larger smoke/soot particles, colored using the EPA\'s PM10 health breakpoints.',
   ozone:          'Ground-level ozone (µg/m³), a summer/sunlight-driven pollutant that irritates lungs, colored using the EPA\'s 8-hour ozone health breakpoints.',
+  'air-temp':     'Current 2-meter air temperature. Purple/blue is cold, green/yellow is mild, orange/red is hot.',
+  'feels-like':   'What the temperature actually feels like on skin, factoring in humidity and wind - can read much hotter or colder than the plain air temperature.',
+  'dew-point':    'The temperature air would need to cool to for dew to form - the real measure of how "muggy" it feels, not just how hot. Above ~65°F starts to feel humid, above ~70°F is oppressive.',
+  'sea-level':    'Barometric pressure normalized to sea level (hPa), the standard number used on weather maps to compare highs and lows anywhere regardless of elevation. Purple/blue is low pressure (storms), yellow/orange/red is high pressure (fair weather).',
+  surface:        'Raw station-level barometric pressure (hPa), not adjusted for elevation - reads lower at high elevation under identical weather, so it\'s most useful for comparing a single location over time rather than one place to another.',
 };
 
 const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
   { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
-  { id: 'waves',     icon: '🌊', label: 'Waves',      action: () => toggleWavesSub() },
-  { id: 'air',       icon: '🌫️', label: 'Air',        action: () => toggleAirSub() },
-  { id: 'models',    icon: '📊', label: 'Models',     action: () => toggleModelsSub() },
+  { id: 'waves',       icon: '🌊', label: 'Waves',       action: () => toggleWavesSub() },
+  { id: 'air',         icon: '🌫️', label: 'Air',         action: () => toggleAirSub() },
+  { id: 'temperature', icon: '🌡️', label: 'Temperature', action: () => toggleTemperatureSub() },
+  { id: 'pressure',    icon: '📉', label: 'Pressure',    action: () => togglePressureSub() },
+  { id: 'models',      icon: '📊', label: 'Models',      action: () => toggleModelsSub() },
 ];
 
 const MAIN_BUBBLES = BASE_BUBBLES; // alias for compat
@@ -12908,9 +13128,11 @@ const activeBubbles = {};
 function _getBubbleActive(id) {
   if (id === 'radar')     return !!activeLayers.nexrad;
   if (id === 'satellite') return !!activeLayers.satellite;
-  if (id === 'waves')     return !!wavesActive;
-  if (id === 'air')       return !!airActive;
-  if (id === 'models')    return _runModelsPanelIsOpen() || _spaghettiModelsPanelIsOpen();
+  if (id === 'waves')       return !!wavesActive;
+  if (id === 'air')         return !!airActive;
+  if (id === 'temperature') return !!temperatureActive;
+  if (id === 'pressure')    return !!pressureActive;
+  if (id === 'models')      return _runModelsPanelIsOpen() || _spaghettiModelsPanelIsOpen();
   return !!activeBubbles[id];
 }
 
@@ -17612,6 +17834,22 @@ function _inspAirRow(center) {
   return { label, value, unit, color: `rgb(${r},${g},${b})` };
 }
 
+function _inspTemperatureRow(center) {
+  const label = (TEMPERATURE_SUB_BUBBLES.find(b => b.id === _temperatureProduct) || {}).label || 'Temperature';
+  const v = _inspGridValueAt(_temperatureGridCache, center.lat, center.lng, WORLD_MAP_BOUNDS);
+  if (v == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  const [r, g, b] = _temperatureColorFor(_temperatureProduct, v);
+  return { label, value: Math.round(v), unit: TEMPERATURE_UNITS[_temperatureProduct] || '°F', color: `rgb(${r},${g},${b})` };
+}
+
+function _inspPressureRow(center) {
+  const label = (PRESSURE_SUB_BUBBLES.find(b => b.id === _pressureProduct) || {}).label || 'Pressure';
+  const v = _inspGridValueAt(_pressureGridCache, center.lat, center.lng, WORLD_MAP_BOUNDS);
+  if (v == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  const [r, g, b] = _pressureColorFor(_pressureProduct, v);
+  return { label, value: v.toFixed(1), unit: PRESSURE_UNITS[_pressureProduct] || 'hPa', color: `rgb(${r},${g},${b})` };
+}
+
 function _inspUpdate() {
   _inspRafPending = false;
   if (!_inspEnabled || typeof map === 'undefined') return;
@@ -17624,6 +17862,8 @@ function _inspUpdate() {
   if (typeof activeLayers !== 'undefined' && activeLayers.satellite) rows.push(_inspSatelliteRow(cx, cy));
   if (typeof wavesActive !== 'undefined' && wavesActive)             rows.push(_inspWavesRow(center));
   if (typeof airActive !== 'undefined' && airActive)                 rows.push(_inspAirRow(center));
+  if (typeof temperatureActive !== 'undefined' && temperatureActive) rows.push(_inspTemperatureRow(center));
+  if (typeof pressureActive !== 'undefined' && pressureActive)       rows.push(_inspPressureRow(center));
   if (_iemModelLayer)                                                 rows.push(_inspModelsRow(cx, cy));
 
   if (!rows.length) { _inspRenderRows([{ label: '', value: 'No layers active', color: 'rgba(120,120,120,0.5)' }]); return; }
