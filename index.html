@@ -135,8 +135,8 @@ body {
   cursor: pointer;
 }
 #topbar-logo-img {
-  height: 100px;
-  width: 100px;
+  height: 76px;
+  width: 76px;
   object-fit: contain;
   filter: drop-shadow(0 0 10px rgba(170,0,0,0.7));
   transition: filter 0.25s ease, transform 0.25s ease;
@@ -384,7 +384,14 @@ body {
 #map {
   width: 100%;
   height: 100%;
+  /* Leaflet's own default container background is a light gray, which
+     flashes white/light behind tiles that haven't loaded yet during a
+     fast pan or zoom - since every basemap style here is dark, showing
+     dark instead of light while tiles catch up reads as normal loading
+     rather than a broken/blank map. */
+  background: #0a0c10;
 }
+.leaflet-container { background: #0a0c10; }
 
 /* ── BOTTOM ANIMATION BAR ── */
 #recenter-float {
@@ -1229,7 +1236,7 @@ body {
 /* ── RESPONSIVE: TABLET (≤768px) ── */
 @media (max-width: 768px) {
   /* Logo , shrink significantly */
-  #topbar-logo-img { height: 64px; width: 64px; }
+  #topbar-logo-img { height: 48px; width: 48px; }
 
   /* Tab bubbles , revert to top corners in a row (mobile layout) */
   #tabs-left {
@@ -1362,7 +1369,7 @@ body {
 /* ── RESPONSIVE: SMALL PHONE (≤480px) ── */
 @media (max-width: 480px) {
   /* Logo even smaller on tiny screens */
-  #topbar-logo-img { height: 50px; width: 50px; }
+  #topbar-logo-img { height: 38px; width: 38px; }
 
   /* Tabs smaller */
   #tabs-left { top: 14px; left: 8px; gap: 5px; }
@@ -1865,7 +1872,7 @@ body {
    rules above (those size off --menu-clearance directly, with no fixed
    top offset to run out of room against). */
 @media (max-height: 500px) and (min-width: 769px) {
-  #topbar-logo-img { height: 44px; width: 44px; }
+  #topbar-logo-img { height: 32px; width: 32px; }
   #right-menu, #sub-bubbles { top: 50px; }
   #right-menu, #sub-bubbles { max-height: calc(100vh - var(--menu-clearance, 82px) - 50px); }
 }
@@ -6969,7 +6976,7 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="sev-cmp-labels"></div>
 
     <!-- Build/version stamp - lets you confirm at a glance which deploy you're viewing -->
-    <div id="build-stamp">v5.31 · fix panels overlapping the layer bubbles · 2026-08-03</div>
+    <div id="build-stamp">v6.0 · N-way model compare, saved groups, smoother waves/air · 2026-08-05</div>
 
     <!-- Cam Panel injected at body level via position:fixed --!>
     <div id="model-info">
@@ -7749,7 +7756,10 @@ function initMap() {
   const mtAttr  = '© <a href="https://www.maptiler.com/">MapTiler</a> © <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
   const osmAttr = '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
 
-  const _mtOpts = { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, keepBuffer: _isIOS ? 2 : 4, updateWhenZooming: true };
+  // keepBuffer bumped up so fast pans reveal already-loaded tiles from the
+  // surrounding buffer instead of the (now dark, but still a gap) empty
+  // background while new tiles catch up.
+  const _mtOpts = { attribution: mtAttr, maxZoom: 20, noWrap: true, crossOrigin: true, keepBuffer: _isIOS ? 4 : 8, updateWhenZooming: true };
   const cartoDark  = L.tileLayer(`https://api.maptiler.com/maps/dataviz-dark/{z}/{x}/{y}.webp?key=${MT_KEY}`,  _mtOpts);
   const cartoLight = L.tileLayer(`https://api.maptiler.com/maps/dataviz/{z}/{x}/{y}.webp?key=${MT_KEY}`,       _mtOpts);
   const satellite  = L.tileLayer(`https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MT_KEY}`,         _mtOpts);
@@ -10100,6 +10110,108 @@ async function loadWildfires() {
   }
 }
 
+// ── TRAFFIC CAMERAS (state DOT feeds) ────────────────────────────────────────
+// Data lives in traffic_cameras.json (sibling to this file), a state -> array
+// of {lat, lon, name, facing, stream:{static, video, encoding, format}}
+// mapping. Individual state DOTs govern reuse of their camera feeds
+// differently, some restrict redistribution, so this only ever shows states
+// on an explicit whitelist rather than every state present in the file.
+let _trafficCamerasActive = false;
+let _trafficCamerasLayer = null;
+let _trafficCamerasData = null; // cached after first successful fetch
+const TRAFFIC_CAMERA_STATE_WHITELIST = ['Kansas', 'Maryland', 'Oregon', 'Kentucky', 'Iowa', 'South Dakota'];
+
+function _tcIsLikelyImage(url) { return /\.(jpg|jpeg|png|gif|webp)(?:$|\?|#)/i.test(String(url || '')); }
+function _tcIsLikelyMjpeg(url) { return /mjpeg|mjpg/i.test(String(url || '')); }
+function _tcIsLikelyHls(url) { return /\.m3u8(?:$|\?|#)/i.test(String(url || '')); }
+function _tcIsLikelyDirectVideo(url) { return /\.(mp4|webm|ogg|ogv|mov|m4v)(?:$|\?|#)/i.test(String(url || '')); }
+function _tcAppendCacheBuster(url) { return url + (url.includes('?') ? '&' : '?') + 'cb=' + Date.now(); }
+
+async function _tcFetchData() {
+  if (_trafficCamerasData) return _trafficCamerasData;
+  const r = await fetchWithTimeout('./traffic_cameras.json', 15000);
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  _trafficCamerasData = await r.json();
+  return _trafficCamerasData;
+}
+
+function _tcPopupHtml(cam) {
+  const name = _ccEsc(cam.name || 'Traffic Camera');
+  const facing = cam.facing ? ` looking ${_ccEsc(cam.facing)}` : '';
+  const staticUrl = cam.stream?.static || '';
+  const videoUrl = cam.stream?.video || '';
+  let media = '';
+  if (videoUrl && (_tcIsLikelyHls(videoUrl) || _tcIsLikelyDirectVideo(videoUrl))) {
+    media = `<video controls autoplay muted playsinline style="width:100%;max-height:220px;background:#000;border-radius:6px;" src="${_ccEsc(videoUrl)}"></video>`;
+  } else if (videoUrl && _tcIsLikelyMjpeg(videoUrl)) {
+    media = `<img src="${_ccEsc(videoUrl)}" alt="${name}" style="width:100%;max-height:220px;object-fit:contain;background:#000;border-radius:6px;">`;
+  } else if (staticUrl && _tcIsLikelyImage(staticUrl)) {
+    media = `<img id="tc-img-${cam._id}" src="${_ccEsc(_tcAppendCacheBuster(staticUrl))}" alt="${name}" style="width:100%;max-height:220px;object-fit:contain;background:#000;border-radius:6px;">
+      <div style="font-size:9px;color:#888;margin-top:3px;">Refreshes every 5s</div>`;
+  } else if (staticUrl) {
+    media = `<a href="${_ccEsc(staticUrl)}" target="_blank" rel="noopener noreferrer">Open camera feed</a>`;
+  } else {
+    media = `<div style="color:#888;font-size:11px;">No feed available</div>`;
+  }
+  return `<div class="data-popup-inner" style="--dp-accent:#00c8ff">
+    <div class="dp-header">
+      <span class="dp-header-icon">📷</span>
+      <span class="dp-header-label">${name}${facing}</span>
+    </div>
+    <div class="dp-body">${media}</div>
+  </div>`;
+}
+
+let _tcRefreshTimer = null;
+function _tcStartImageRefresh() {
+  clearInterval(_tcRefreshTimer);
+  _tcRefreshTimer = setInterval(() => {
+    document.querySelectorAll('img[id^="tc-img-"]').forEach(img => {
+      img.src = _tcAppendCacheBuster(img.src.split('?')[0]);
+    });
+  }, 5000);
+}
+
+async function loadTrafficCameras() {
+  updateLoadStatus('Loading traffic cameras…');
+  let data;
+  try {
+    data = await _tcFetchData();
+  } catch(e) {
+    console.warn('Traffic cameras fetch error:', e);
+    updateLoadStatus('Traffic camera data unavailable right now.');
+    setTimeout(() => updateLoadStatus(''), 4000);
+    return;
+  }
+  if (_trafficCamerasLayer) { try { map.removeLayer(_trafficCamerasLayer); } catch(e){} _trafficCamerasLayer = null; }
+
+  const pane = _ovPane('traffic-cameras');
+  const layer = L.layerGroup();
+  let id = 0;
+  TRAFFIC_CAMERA_STATE_WHITELIST.forEach(state => {
+    const cams = data[state];
+    if (!Array.isArray(cams)) return;
+    cams.forEach(cam => {
+      const lat = Number(cam.lat), lon = Number(cam.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      const hasVideo = !!(cam.stream && cam.stream.video);
+      const marker = L.circleMarker([lat, lon], {
+        pane, radius: 4, weight: 1.5,
+        color: hasVideo ? '#00c8ff' : '#888',
+        fillColor: hasVideo ? '#00c8ff' : '#bbb', fillOpacity: 0.9,
+      });
+      const withId = Object.assign({}, cam, { _id: ++id });
+      marker.bindPopup(() => _tcPopupHtml(withId), { className: 'data-popup', maxWidth: 280 });
+      marker.on('popupopen', _tcStartImageRefresh);
+      marker.on('popupclose', () => clearInterval(_tcRefreshTimer));
+      marker.addTo(layer);
+    });
+  });
+
+  _trafficCamerasLayer = layer.addTo(map);
+  updateLoadStatus('');
+}
+
 // ── AMBIENT WEATHER NETWORK (personal weather stations) ──
 // API docs: https://ambientweather.docs.apiary.io/
 // Keys live near the top of this file (AMBIENT_WEATHER_API_KEY / AMBIENT_WEATHER_APPLICATION_KEY).
@@ -11972,12 +12084,30 @@ async function _paintWavesOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
 // every product. This is what lets switching products just repaint from
 // cache with zero new network calls, instead of re-fetching the whole world
 // grid per product tap.
+// Runs a batch of async jobs with limited concurrency (a few in flight at
+// a time) instead of firing all of them at once - a world-wide grid can
+// split into a dozen+ chunks, and blasting all of them simultaneously is
+// far more likely to trip a server-side rate limit than the same total
+// requests spread out with only a handful in flight at once.
+async function _runLimited(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function runOne() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runOne));
+  return results;
+}
+
 async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
   chunkSize = chunkSize || 500;
   const chunks = [];
   for (let i = 0; i < pts.length; i += chunkSize) chunks.push(pts.slice(i, i + chunkSize));
   let anyOk = false;
-  const chunkResults = await Promise.all(chunks.map(async chunk => {
+  const chunkResults = await _runLimited(chunks, 4, async chunk => {
     try {
       const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(25000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -11993,7 +12123,7 @@ async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
       console.warn('Grid chunk fetch failed, treating as no-data for that chunk:', e);
       return chunk.map(() => { const out = {}; fields.forEach(f => out[f] = null); return out; });
     }
-  }));
+  });
   if (!anyOk) throw new Error('All chunks failed');
   const flat = chunkResults.flat();
   const grids = {};
@@ -12026,7 +12156,7 @@ let _wavesGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspect
 // Higher density here directly costs more per one-time fetch (still just a
 // few chunked requests thanks to _fetchGridChunked, and only refetched once
 // per activation/10-min refresh, never per product switch).
-const WAVES_COLS = 90, WAVES_ROWS = 50; // world-wide grid; fetched in chunks, see _fetchGridChunked
+const WAVES_COLS = 64, WAVES_ROWS = 36; // world-wide grid; fetched in chunks, see _fetchGridChunked
 
 const WAVES_SUB_BUBBLES = [
   { id: 'wave-height',  icon: '🌊', label: 'Wave Height' },
@@ -12150,7 +12280,7 @@ let _airLayer = null;
 let _airLoadToken = 0;
 let _airRefreshTimer = null;
 let _airGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
-const AIR_COLS = 90, AIR_ROWS = 50; // world-wide grid; fetched in chunks, see _fetchGridChunked - see WAVES_COLS comment
+const AIR_COLS = 64, AIR_ROWS = 36; // world-wide grid; fetched in chunks, see _fetchGridChunked - see WAVES_COLS comment
 const AQI_SCALE = [[0,[0,228,0]],[50,[255,255,0]],[100,[255,126,0]],[150,[255,0,0]],[200,[143,63,151]],[300,[126,0,35]],[500,[126,0,35]]];
 
 const AIR_SUB_BUBBLES = [
@@ -12891,6 +13021,16 @@ function toggleOverlayPill(id) {
     } else {
       clearInterval(_wildfiresTimer); _wildfiresTimer = null;
       if (_wildfiresLayer) { try { map.removeLayer(_wildfiresLayer); } catch(e){} _wildfiresLayer = null; }
+    }
+  } else if (id === 'traffic-cameras') {
+    _trafficCamerasActive = !_trafficCamerasActive;
+    const pill = document.getElementById('op-traffic-cameras');
+    if (pill) pill.classList.toggle('active', _trafficCamerasActive);
+    if (_trafficCamerasActive) {
+      loadTrafficCameras();
+    } else {
+      clearInterval(_tcRefreshTimer); _tcRefreshTimer = null;
+      if (_trafficCamerasLayer) { try { map.removeLayer(_trafficCamerasLayer); } catch(e){} _trafficCamerasLayer = null; }
     }
   } else if (id === 'ambient-weather') {
     _ambientActive = !_ambientActive;
@@ -14601,7 +14741,7 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
   const chunks = [];
   for (let i = 0; i < pts.length; i += chunkSize) chunks.push(pts.slice(i, i + chunkSize));
   let anyOk = false;
-  const results = await Promise.all(chunks.map(async chunk => {
+  const results = await _runLimited(chunks, 4, async chunk => {
     try {
       const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(30000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -14612,7 +14752,7 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
       console.warn('Ensemble chunk fetch failed, treating as no-data for that chunk:', e);
       return chunk.map(() => null);
     }
-  }));
+  });
   if (!anyOk) throw new Error('All chunks failed');
   return results.flat();
 }
@@ -28226,6 +28366,9 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-wildfires" data-ovid="wildfires" title="Wildfire Reports - active large wildfires, updated in the last 48 hours">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wildfires')">Wildfire Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-traffic-cameras" data-ovid="traffic-cameras" title="Traffic Cameras - state DOT live camera feeds (Kansas, Maryland, Oregon, Kentucky, Iowa, South Dakota)">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('traffic-cameras')">Traffic Cameras</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-ambient-weather" data-ovid="ambient-weather" title="Ambient Weather Network - personal weather stations">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('ambient-weather')">Ambient Weather</span><span class="ov-drag" title="Drag to reorder">⠿</span>
