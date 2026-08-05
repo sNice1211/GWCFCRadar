@@ -11835,17 +11835,30 @@ async function _paintWavesOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
 // length/rate limits, especially now that Waves/Air cover the whole world.
 // Order is preserved so chunk results concatenate straight back into the
 // flat row-major grid array the caller expects.
+// A failed/rate-limited chunk must not sink the whole layer - it degrades to
+// no-data for that chunk's points instead, so one flaky request out of
+// several doesn't make the entire world map report "unavailable". Only if
+// EVERY chunk fails do we throw, since that means the layer genuinely has
+// no data to show.
 async function _fetchGridChunked(pts, buildUrl, extractValue, chunkSize) {
-  chunkSize = chunkSize || 150;
+  chunkSize = chunkSize || 500;
   const chunks = [];
   for (let i = 0; i < pts.length; i += chunkSize) chunks.push(pts.slice(i, i + chunkSize));
+  let anyOk = false;
   const results = await Promise.all(chunks.map(async chunk => {
-    const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(25000) });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
-    const arr = Array.isArray(data) ? data : [data];
-    return arr.map(extractValue);
+    try {
+      const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(25000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      const arr = Array.isArray(data) ? data : [data];
+      anyOk = true;
+      return arr.map(extractValue);
+    } catch (e) {
+      console.warn('Grid chunk fetch failed, treating as no-data for that chunk:', e);
+      return chunk.map(() => null);
+    }
   }));
+  if (!anyOk) throw new Error('All chunks failed');
   return results.flat();
 }
 
@@ -11866,7 +11879,7 @@ let _wavesLayer = null;
 let _wavesLoadToken = 0;
 let _wavesRefreshTimer = null;
 let _wavesGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
-const WAVES_COLS = 60, WAVES_ROWS = 34; // world-wide grid; fetched in chunks, see _fetchGridChunked
+const WAVES_COLS = 48, WAVES_ROWS = 28; // world-wide grid; fetched in chunks, see _fetchGridChunked
 
 const WAVES_SUB_BUBBLES = [
   { id: 'wave-height',  icon: '🌊', label: 'Wave Height' },
@@ -11947,7 +11960,7 @@ async function _loadWavesLayer() {
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       return `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
         `&current=${field}&length_unit=imperial&temperature_unit=fahrenheit`;
-    }, d => { const v = d?.current?.[field]; return (v == null || !isFinite(v)) ? null : v; }, 150);
+    }, d => { const v = d?.current?.[field]; return (v == null || !isFinite(v)) ? null : v; });
     if (token !== _wavesLoadToken) return; // a newer request/toggle already superseded this one
     const isAngle = _wavesProduct === 'wave-dir';
     const layer = await _paintWavesOverlay(grid, WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS, isAngle, v => _waveColorFor(_wavesProduct, v));
@@ -11967,7 +11980,7 @@ let _airLayer = null;
 let _airLoadToken = 0;
 let _airRefreshTimer = null;
 let _airGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
-const AIR_COLS = 60, AIR_ROWS = 34; // world-wide grid; fetched in chunks, see _fetchGridChunked
+const AIR_COLS = 48, AIR_ROWS = 28; // world-wide grid; fetched in chunks, see _fetchGridChunked
 const AQI_SCALE = [[0,[0,228,0]],[50,[255,255,0]],[100,[255,126,0]],[150,[255,0,0]],[200,[143,63,151]],[300,[126,0,35]],[500,[126,0,35]]];
 
 function toggleAirLayer() {
@@ -11994,7 +12007,7 @@ async function _loadAirLayer() {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       return `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}&current=us_aqi`;
-    }, d => { const v = d?.current?.us_aqi; return (v == null || !isFinite(v)) ? null : v; }, 150);
+    }, d => { const v = d?.current?.us_aqi; return (v == null || !isFinite(v)) ? null : v; });
     if (token !== _airLoadToken) return;
     _airGridCache = { grid, cols: AIR_COLS, rows: AIR_ROWS, isAngle: false };
     const layer = _paintInterpolatedOverlay(grid, AIR_COLS, AIR_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, AQI_SCALE));
