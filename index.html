@@ -3652,6 +3652,29 @@ body {
 }
 .sc-point-empty { text-align: center; color: rgba(255,230,200,0.4); padding: 16px 10px; }
 
+/* Spaghetti model track end-label - a small price-tag-style flag connected
+   to the track's endpoint, naming which model that line is. */
+.spag-tag {
+  position: relative;
+  margin-left: 10px;
+  background: var(--spag-color, #888);
+  border: 1.5px solid #000;
+  border-radius: 4px;
+  padding: 2px 7px 2px 9px;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  color: #000;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.55);
+}
+.spag-tag::before {
+  content: '';
+  position: absolute;
+  left: -10px; top: 50%;
+  width: 10px; height: 2px;
+  background: #000;
+  transform: translateY(-50%);
+}
+
 /* ── CANVA-STYLE TEXT ITEMS ── */
 .dtb-cv-wrap {
   position: relative; display: inline-block;
@@ -3915,13 +3938,20 @@ body {
   font-family: var(--mono); font-size: 9px; color: rgba(232,184,0,0.8);
   padding: 0 10px 6px; min-height: 12px;
 }
-#ensemble-canvas { width: 100%; height: 160px; display: block; }
-#ensemble-legend {
-  display: flex; align-items: center; gap: 12px;
-  padding: 4px 10px 10px; font-family: var(--mono); font-size: 8px; color: rgba(212,232,255,0.5);
+#ensemble-playbar-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 2px 10px 8px;
 }
-#ensemble-legend span { display: inline-flex; align-items: center; gap: 4px; }
-#ensemble-legend i { display: inline-block; width: 12px; height: 2px; }
+#ensemble-playbar-row button {
+  background: rgba(232,184,0,0.12); border: 1px solid rgba(232,184,0,0.4);
+  color: #e8b800; border-radius: 6px; width: 28px; height: 26px;
+  font-size: 12px; cursor: pointer; flex-shrink: 0;
+}
+#ensemble-playbar-row button:hover { background: rgba(232,184,0,0.25); }
+#ensemble-frame-label {
+  flex: 1; text-align: center; font-family: var(--mono); font-size: 10px;
+  color: rgba(212,232,255,0.75);
+}
 .ensemble-open-btn {
   width: 100%; margin-top: 8px; padding: 7px 8px;
   font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
@@ -7330,13 +7360,14 @@ body.clean-mode #clean-hint { opacity: 1; }
           </select>
         </div>
       </div>
-      <div id="ensemble-hint">Tap anywhere on the map to sample the ensemble spread at that point.</div>
       <div id="ensemble-status"></div>
-      <canvas id="ensemble-canvas" width="600" height="160"></canvas>
-      <div id="ensemble-legend">
-        <span><i style="background:rgba(0,200,255,0.5)"></i> Members</span>
-        <span><i style="background:#e8b800"></i> Mean</span>
+      <div id="ensemble-playbar-row">
+        <button id="ensemble-play-btn" onclick="_ensembleTogglePlay()">▶</button>
+        <button onclick="_ensembleStep(-1)" title="Previous frame">◀</button>
+        <span id="ensemble-frame-label">--</span>
+        <button onclick="_ensembleStep(1)" title="Next frame">▶</button>
       </div>
+      <div id="ensemble-hint">Ensemble mean plays out on the map across forecast hours - every member averaged together at each point, not a single click-to-sample spot.</div>
     </div>
 </div><!-- /main -->
 
@@ -11709,7 +11740,12 @@ function _mercYToLat(y) {
 function _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn) {
   const south = bounds[0][0], north = bounds[1][0];
   const latSpan = north - south, lngSpan = bounds[1][1] - bounds[0][1];
-  const MAXDIM = 720; // bumped up from 360 now that bounds span the whole world
+  // Output pixel resolution, independent of the data grid (WAVES_COLS/ROWS,
+  // AIR_COLS/ROWS) - bilinear interpolation already makes the gradient
+  // smooth between real sample points, so rendering it at a much finer
+  // pixel grid just removes visible blockiness without fetching any more
+  // real data or changing what the data says.
+  const MAXDIM = 1600;
   let W, H;
   if (lngSpan >= latSpan) { W = MAXDIM; H = Math.max(40, Math.round(MAXDIM * latSpan / lngSpan)); }
   else                    { H = MAXDIM; W = Math.max(40, Math.round(MAXDIM * lngSpan / latSpan)); }
@@ -13928,16 +13964,23 @@ function _sevInit() {
 }
 
 // ── ENSEMBLE SPREAD (Open-Meteo Ensemble API) ────────────────────────────────
-// Point-based: pick a spot on the map, see every ensemble member's forecast
-// for one variable plotted together (the classic "spaghetti plot" look), not
-// a map-wide overlay like the WMS layers above. Shared between the Run
-// Models and Spaghetti Models panels, each just calls _ensembleOpen().
+// Renders the ensemble MEAN for the chosen variable/model as a color-map
+// layer that plays out across forecast hours on the map itself, the same
+// animated-overlay pattern Waves/Air/tropical tracks already use, instead
+// of the old "tap a point, see a line chart" flow. Every animation frame is
+// fetched and painted up front (one chunked round of requests carries every
+// grid point's FULL hourly series - see _fetchGridChunked - so stepping
+// through frames afterward is instant, no per-frame network calls), then
+// play/prev/next just swap which frame's L.imageOverlay is on the map.
 let _ensembleActive = false;
 let _ensembleVar   = 'temperature_2m';
 let _ensembleModel = 'gfs_seamless';
-let _ensembleClickHandler = null;
-let _ensembleLastPoint = null;
-let _ensembleMarker = null;
+let _ensembleLoadToken = 0;
+let _ensembleFrames = null;     // [{layer, timeLabel}]
+let _ensembleFrameIdx = 0;
+let _ensembleCurrentLayer = null;
+let _ensemblePlaying = false;
+let _ensemblePlayTimer = null;
 
 const ENSEMBLE_VAR_LABELS = {
   temperature_2m:  '2m Temperature',
@@ -13946,123 +13989,130 @@ const ENSEMBLE_VAR_LABELS = {
   wind_gusts_10m:  'Wind Gusts',
   surface_pressure:'Surface Pressure',
 };
+const ENSEMBLE_COLS = 30, ENSEMBLE_ROWS = 18;
+const ENSEMBLE_STEP_HOURS = 6;
+const ENSEMBLE_FRAME_COUNT = 9; // 0h, 6h, 12h ... 48h
+const ENSEMBLE_SCALES = {
+  temperature_2m:   [[-20,[80,0,180]],[0,[0,90,220]],[15,[0,200,60]],[25,[255,204,0]],[32,[255,90,0]],[40,[220,0,0]]],
+  precipitation:    [[0,[0,60,140]],[0.02,[0,150,220]],[0.08,[0,220,180]],[0.25,[255,204,0]],[0.6,[255,80,0]],[1.2,[200,0,220]]],
+  wind_speed_10m:   [[0,[0,60,140]],[10,[0,150,220]],[20,[0,220,180]],[35,[255,204,0]],[50,[255,80,0]],[70,[200,0,220]]],
+  wind_gusts_10m:   [[0,[0,60,140]],[15,[0,150,220]],[30,[0,220,180]],[50,[255,204,0]],[70,[255,80,0]],[90,[200,0,220]]],
+  surface_pressure: [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]],
+};
 
 function _ensembleOpen() {
   _ensembleActive = true;
   const panel = document.getElementById('ensemble-panel');
   if (panel) panel.classList.add('open');
-  const status = document.getElementById('ensemble-status');
-  if (status && !_ensembleLastPoint) status.textContent = 'Tap the map to sample a point.';
-  if (!_ensembleClickHandler) {
-    _ensembleClickHandler = e => { if (_ensembleActive) _ensembleSample(e.latlng.lat, e.latlng.lng); };
-  }
-  map.on('click', _ensembleClickHandler);
+  _ensembleLoadFrames();
 }
 
 function _ensembleClose() {
   _ensembleActive = false;
   const panel = document.getElementById('ensemble-panel');
   if (panel) panel.classList.remove('open');
-  if (_ensembleClickHandler) map.off('click', _ensembleClickHandler);
-  if (_ensembleMarker) { try { map.removeLayer(_ensembleMarker); } catch(e){} _ensembleMarker = null; }
+  clearInterval(_ensemblePlayTimer); _ensemblePlayTimer = null; _ensemblePlaying = false;
+  if (_ensembleCurrentLayer) { try { map.removeLayer(_ensembleCurrentLayer); } catch(e){} _ensembleCurrentLayer = null; }
+  _ensembleFrames = null;
 }
 
-function _ensembleVarChange(v)   { _ensembleVar   = v; if (_ensembleLastPoint) _ensembleSample(_ensembleLastPoint.lat, _ensembleLastPoint.lon); }
-function _ensembleModelChange(m) { _ensembleModel = m; if (_ensembleLastPoint) _ensembleSample(_ensembleLastPoint.lat, _ensembleLastPoint.lon); }
+function _ensembleVarChange(v)   { _ensembleVar   = v; _ensembleLoadFrames(); }
+function _ensembleModelChange(m) { _ensembleModel = m; _ensembleLoadFrames(); }
 
-async function _ensembleSample(lat, lon) {
-  _ensembleLastPoint = { lat, lon };
-  if (_ensembleMarker) { try { map.removeLayer(_ensembleMarker); } catch(e){} }
-  _ensembleMarker = L.circleMarker([lat, lon], { radius: 6, color: '#e8b800', fillColor: '#e8b800', fillOpacity: 0.9, weight: 2 }).addTo(map);
-
+async function _ensembleLoadFrames() {
+  const token = ++_ensembleLoadToken;
+  clearInterval(_ensemblePlayTimer); _ensemblePlayTimer = null; _ensemblePlaying = false;
+  const playBtn = document.getElementById('ensemble-play-btn');
+  if (playBtn) playBtn.textContent = '▶';
   const status = document.getElementById('ensemble-status');
-  const canvas = document.getElementById('ensemble-canvas');
-  if (status) status.textContent = 'Loading ensemble data…';
-  if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+  if (status) status.textContent = 'Loading ensemble frames…';
+
+  const pts = _sampleGrid(ENSEMBLE_COLS, ENSEMBLE_ROWS, WORLD_MAP_BOUNDS);
+  const varName = _ensembleVar, model = _ensembleModel;
+  const totalHours = (ENSEMBLE_FRAME_COUNT - 1) * ENSEMBLE_STEP_HOURS;
 
   try {
-    const url = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}` +
-      `&hourly=${_ensembleVar}&models=${_ensembleModel}` +
-      `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&forecast_days=7`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
-    const hourly = data.hourly || {};
-    const time = hourly.time || [];
-    const memberKeys = Object.keys(hourly).filter(k => k.startsWith(_ensembleVar + '_member')).sort();
-    if (!memberKeys.length) throw new Error('no members in response');
-    const members = memberKeys.map(k => hourly[k]);
-    _ensembleDrawChart(canvas, time, members);
-    if (status) status.textContent = `${members.length} members · ${ENSEMBLE_VAR_LABELS[_ensembleVar] || _ensembleVar} · ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+    const locations = await _fetchGridChunkedRaw(pts, chunk => {
+      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+      return `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latStr}&longitude=${lngStr}` +
+        `&hourly=${varName}&models=${model}&forecast_hours=${totalHours + 1}` +
+        `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
+    });
+    if (token !== _ensembleLoadToken) return;
+
+    let sampleTimes = null;
+    const frameGrids = [];
+    for (let f = 0; f < ENSEMBLE_FRAME_COUNT; f++) {
+      const hourIdx = f * ENSEMBLE_STEP_HOURS;
+      const grid = locations.map(loc => {
+        if (!loc || !loc.hourly) return null;
+        if (!sampleTimes && loc.hourly.time) sampleTimes = loc.hourly.time;
+        const memberKeys = Object.keys(loc.hourly).filter(k => k.startsWith(varName + '_member'));
+        if (!memberKeys.length) return null;
+        let sum = 0, n = 0;
+        memberKeys.forEach(k => { const v = loc.hourly[k]?.[hourIdx]; if (v != null && isFinite(v)) { sum += v; n++; } });
+        return n ? sum / n : null;
+      });
+      frameGrids.push(grid);
+    }
+    if (!frameGrids.some(g => g.some(v => v != null))) throw new Error('no ensemble members in response');
+
+    const scale = ENSEMBLE_SCALES[varName] || ENSEMBLE_SCALES.temperature_2m;
+    _ensembleFrames = frameGrids.map((grid, f) => ({
+      layer: _paintInterpolatedOverlay(grid, ENSEMBLE_COLS, ENSEMBLE_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale)),
+      timeLabel: sampleTimes && sampleTimes[f * ENSEMBLE_STEP_HOURS] ? sampleTimes[f * ENSEMBLE_STEP_HOURS].replace('T', ' ') + 'Z' : ('+' + (f * ENSEMBLE_STEP_HOURS) + 'h'),
+    }));
+    if (_ensembleCurrentLayer) { try { map.removeLayer(_ensembleCurrentLayer); } catch(e){} _ensembleCurrentLayer = null; }
+    _ensembleShowFrame(0);
+    if (status) status.textContent = `${ENSEMBLE_VAR_LABELS[varName] || varName} · ensemble mean, ${ENSEMBLE_FRAME_COUNT} frames out to +${totalHours}h`;
   } catch(e) {
-    console.warn('Ensemble fetch error:', e);
-    if (status) status.textContent = 'Could not load that model for this point - try a different model above.';
+    console.warn('Ensemble load error:', e);
+    if (status) status.textContent = 'Ensemble data unavailable right now - try a different model above.';
   }
 }
 
-function _ensembleDrawChart(canvas, time, members) {
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-  if (!members.length || !members[0] || !members[0].length) return;
+// Splits points into batched requests and returns the flat per-location
+// response array in the original point order (order-preserving, same
+// resilience pattern as _fetchGridChunked - a failed chunk degrades to
+// nulls for its points instead of failing the whole animation).
+async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
+  chunkSize = chunkSize || 300;
+  const chunks = [];
+  for (let i = 0; i < pts.length; i += chunkSize) chunks.push(pts.slice(i, i + chunkSize));
+  let anyOk = false;
+  const results = await Promise.all(chunks.map(async chunk => {
+    try {
+      const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(30000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      anyOk = true;
+      return Array.isArray(data) ? data : [data];
+    } catch (e) {
+      console.warn('Ensemble chunk fetch failed, treating as no-data for that chunk:', e);
+      return chunk.map(() => null);
+    }
+  }));
+  if (!anyOk) throw new Error('All chunks failed');
+  return results.flat();
+}
 
-  const padL = 34, padR = 8, padT = 8, padB = 16;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
-  const n = members[0].length;
-  if (n < 2) return;
-
-  let min = Infinity, max = -Infinity;
-  members.forEach(arr => arr.forEach(v => { if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; } }));
-  if (!isFinite(min) || !isFinite(max)) return;
-  if (min === max) { min -= 1; max += 1; }
-  const rangePad = (max - min) * 0.08;
-  min -= rangePad; max += rangePad;
-
-  const xAt = i => padL + (i / (n - 1)) * plotW;
-  const yAt = v => padT + plotH - ((v - min) / (max - min)) * plotH;
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-  ctx.fillStyle   = 'rgba(212,232,255,0.5)';
-  ctx.font = '9px monospace';
-  ctx.lineWidth = 1;
-  for (let g = 0; g <= 3; g++) {
-    const v  = min + (max - min) * g / 3;
-    const yy = yAt(v);
-    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke();
-    ctx.fillText(v.toFixed(0), 2, yy + 3);
-  }
-  for (let g = 0; g <= 3; g++) {
-    const i   = Math.round((n - 1) * g / 3);
-    const lbl = time[i] ? time[i].slice(5, 10) : '';
-    ctx.fillText(lbl, xAt(i) - 12, H - 4);
-  }
-
-  ctx.strokeStyle = 'rgba(0,200,255,0.22)';
-  ctx.lineWidth = 1.2;
-  members.forEach(arr => {
-    ctx.beginPath();
-    let started = false;
-    arr.forEach((v, i) => {
-      if (v == null || !isFinite(v)) return;
-      const px = xAt(i), py = yAt(v);
-      if (!started) { ctx.moveTo(px, py); started = true; } else { ctx.lineTo(px, py); }
-    });
-    ctx.stroke();
-  });
-
-  ctx.strokeStyle = '#e8b800';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  let meanStarted = false;
-  for (let i = 0; i < n; i++) {
-    let sum = 0, cnt = 0;
-    members.forEach(arr => { if (arr[i] != null && isFinite(arr[i])) { sum += arr[i]; cnt++; } });
-    if (!cnt) continue;
-    const px = xAt(i), py = yAt(sum / cnt);
-    if (!meanStarted) { ctx.moveTo(px, py); meanStarted = true; } else { ctx.lineTo(px, py); }
-  }
-  ctx.stroke();
+function _ensembleShowFrame(idx) {
+  if (!_ensembleFrames || !_ensembleFrames.length) return;
+  _ensembleFrameIdx = ((idx % _ensembleFrames.length) + _ensembleFrames.length) % _ensembleFrames.length;
+  if (_ensembleCurrentLayer) { try { map.removeLayer(_ensembleCurrentLayer); } catch(e){} }
+  _ensembleCurrentLayer = _ensembleFrames[_ensembleFrameIdx].layer.addTo(map);
+  const lbl = document.getElementById('ensemble-frame-label');
+  if (lbl) lbl.textContent = _ensembleFrames[_ensembleFrameIdx].timeLabel;
+}
+function _ensembleStep(delta) { _ensembleShowFrame(_ensembleFrameIdx + delta); }
+function _ensembleTogglePlay() {
+  if (!_ensembleFrames || !_ensembleFrames.length) return;
+  _ensemblePlaying = !_ensemblePlaying;
+  const btn = document.getElementById('ensemble-play-btn');
+  if (btn) btn.textContent = _ensemblePlaying ? '⏸' : '▶';
+  clearInterval(_ensemblePlayTimer);
+  if (_ensemblePlaying) _ensemblePlayTimer = setInterval(() => _ensembleShowFrame(_ensembleFrameIdx + 1), 1200);
 }
 
 // ── Toast notification helper ──
@@ -14861,6 +14911,7 @@ function closeSpaghettiModelsPanel() {
   const btn = document.getElementById('sub-spaghetti-models');
   if (btn) btn.classList.remove('active');
   _clearTropTrackLayers();
+  _clearSpagModelTracks();
 }
 
 function _spaghettiModelsPanelIsOpen() {
@@ -15147,6 +15198,7 @@ async function loadNHC5dayOutlook() {
     _tropActiveStorms = [];
   }
   _tropRenderStormList();
+  if (_spaghettiModelsPanelIsOpen()) _spagLoadStormTracks();
 
   // ── Past tracks (semi-transparent) ──────────────────────────────────────
   if (pastTracks?.features?.length) {
@@ -15229,6 +15281,98 @@ function _tropRenderStormList() {
       </div>
     </div>
   `).join('');
+}
+
+// ── SPAGHETTI MODEL TRACKS (real per-model consensus, derived from Open-Meteo Ensemble) ──
+// NHC's own feed only carries the single official consensus track/cone -
+// there's no free API that publishes each individual model's raw guidance
+// track as data. What IS real and fetchable: Open-Meteo's Ensemble API, and
+// an ensemble is fundamentally many possible tracks for the same storm. For
+// each of the 3 global ensembles it exposes, this samples a grid around the
+// storm's current position, averages every member's surface pressure at
+// each forecast hour, and follows the grid point with the lowest mean
+// pressure over time - that model's own implied storm-center path. Real
+// data, genuinely different per model, just not an official NHC/model
+// track product (only 3 global models, not the full classic guidance set).
+const SPAG_MODELS = [
+  { id: 'gfs_seamless',  label: 'GFS',  color: '#29b6f6' },
+  { id: 'icon_seamless', label: 'ICON', color: '#66ff66' },
+  { id: 'gem_global',    label: 'GEM',  color: '#ffb300' },
+];
+const SPAG_GRID_COLS = 12, SPAG_GRID_ROWS = 12;
+const SPAG_GRID_SPAN_DEG = 18; // ± around the storm's current position
+const SPAG_STEP_HOURS = 6;
+const SPAG_FRAME_COUNT = 9; // 0..48h
+let _spagModelTrackLayers = [];
+let _spagLoadToken = 0;
+
+function _clearSpagModelTracks() {
+  _spagModelTrackLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _spagModelTrackLayers = [];
+}
+
+async function _spagLoadStormTracks() {
+  const token = ++_spagLoadToken;
+  _clearSpagModelTracks();
+  if (!_tropActiveStorms.length) return;
+
+  for (const storm of _tropActiveStorms) {
+    if (!isFinite(storm.lat) || !isFinite(storm.lon)) continue;
+    const bounds = [
+      [Math.max(-85, storm.lat - SPAG_GRID_SPAN_DEG / 2), storm.lon - SPAG_GRID_SPAN_DEG / 2],
+      [Math.min(85, storm.lat + SPAG_GRID_SPAN_DEG / 2), storm.lon + SPAG_GRID_SPAN_DEG / 2],
+    ];
+    const pts = _sampleGrid(SPAG_GRID_COLS, SPAG_GRID_ROWS, bounds);
+
+    await Promise.all(SPAG_MODELS.map(async model => {
+      let loc;
+      try {
+        const url = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${pts.map(p=>p.lat.toFixed(2)).join(',')}` +
+          `&longitude=${pts.map(p=>p.lng.toFixed(2)).join(',')}&hourly=surface_pressure&models=${model.id}` +
+          `&forecast_hours=${(SPAG_FRAME_COUNT - 1) * SPAG_STEP_HOURS + 1}`;
+        const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        loc = Array.isArray(data) ? data : [data];
+      } catch(e) {
+        console.warn(`Spaghetti track (${model.label}) fetch failed:`, e);
+        return;
+      }
+      if (token !== _spagLoadToken) return;
+
+      const track = [];
+      for (let f = 0; f < SPAG_FRAME_COUNT; f++) {
+        const hourIdx = f * SPAG_STEP_HOURS;
+        let bestIdx = -1, bestP = Infinity;
+        loc.forEach((l, i) => {
+          if (!l || !l.hourly) return;
+          const keys = Object.keys(l.hourly).filter(k => k.startsWith('surface_pressure_member'));
+          if (!keys.length) return;
+          let sum = 0, n = 0;
+          keys.forEach(k => { const v = l.hourly[k]?.[hourIdx]; if (v != null && isFinite(v)) { sum += v; n++; } });
+          if (!n) return;
+          const mean = sum / n;
+          if (mean < bestP) { bestP = mean; bestIdx = i; }
+        });
+        if (bestIdx >= 0) track.push(pts[bestIdx]);
+      }
+      if (track.length < 2) return;
+
+      const latlngs = track.map(p => [p.lat, p.lng]);
+      // Black casing underneath (weight+2), colored line on top - same
+      // technique the alert polygons/tornado tracks use for a thin but
+      // clearly visible outline.
+      const casing = L.polyline(latlngs, { color: '#000000', weight: 5, opacity: 0.9, interactive: false }).addTo(map);
+      const colored = L.polyline(latlngs, { color: model.color, weight: 3, opacity: 0.95, lineJoin: 'round', lineCap: 'round', interactive: false }).addTo(map);
+      const last = latlngs[latlngs.length - 1];
+      const tagIcon = L.divIcon({
+        className: '', iconAnchor: [-8, 10],
+        html: `<div class="spag-tag" style="--spag-color:${model.color}">${model.label}</div>`,
+      });
+      const tag = L.marker(last, { icon: tagIcon, interactive: false, zIndexOffset: 960 }).addTo(map);
+      _spagModelTrackLayers.push(casing, colored, tag);
+    }));
+  }
 }
 
 function _modelsNHCToggle() {
@@ -24872,6 +25016,11 @@ function lqmSetTZ(tz) {
       <div class="fc-title">ACTIVE STORM LIST</div>
       <p class="fc-body">Every tracked system gets a card in the panel itself, name, storm type, top winds, and basin, so you don't have to hunt for it on the map. Reads "No active storms right now" when the tropics are quiet.</p>
     </div>
+    <div class="feature-card">
+      <div class="fc-icon">🍝</div>
+      <div class="fc-title">SPAGHETTI MODEL TRACKS</div>
+      <p class="fc-body">While a storm is active, three colored lines draw automatically around it, GFS, ICON, and GEM. Each one is that model's own ensemble mean storm-center path: every member's surface pressure is averaged at each point on a grid around the storm, and the line follows wherever the pressure is lowest at each 6-hour step out to +48h, real model data, genuinely different per model. Each line has a thin black outline for visibility (same technique as the alert polygons) and a colored price-tag label at its end naming the model.</p>
+    </div>
   </div>
 
   <div class="callout">
@@ -24933,7 +25082,7 @@ function lqmSetTZ(tz) {
   <p>Use the <strong>Run</strong> selector and hour slider (or ▶ Play) to step through the forecast for whichever model and variable you've picked.</p>
 
   <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;">🎲 Ensemble Spread</h3>
-  <p>Tap <strong>🎲 Ensemble Spread</strong> for a different kind of comparison, not two models side by side, but every member of one model's ensemble at a single point. Pick a <strong>Variable</strong> (2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, or Surface Pressure) and a <strong>Model</strong> (GFS, ICON, or GEM), then tap anywhere on the map. Every ensemble member's forecast for that spot draws as a thin line, the classic "spaghetti plot" look, with a bold gold line for the ensemble mean. Tight, overlapping lines mean high confidence; a wide fan means the models disagree, useful for judging how much to trust a single forecast. Data comes from Open-Meteo's Ensemble API. Tap a different spot, or change the variable/model, to resample.</p>
+  <p>Tap <strong>🎲 Ensemble Spread</strong> to see one model's full ensemble mean play out across the map over time, not a single point you have to click. Pick a <strong>Variable</strong> (2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, or Surface Pressure) and a <strong>Model</strong> (GFS, ICON, or GEM); every member's forecast is averaged together at each point on a world-wide grid, painted as a smooth color map, and split into frames every 6 hours out to +48h. Use ▶ to play through the frames automatically or ◀ / ▶ to step one at a time. Changing the variable or model reloads the animation. Data comes from Open-Meteo's Ensemble API.</p>
 
 
 <section class="section" id="tools">
