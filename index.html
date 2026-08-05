@@ -11887,36 +11887,49 @@ function _hslToRgb(h, s, l) {
 }
 
 // Scalar bilinear interpolation over a flat row-major grid (grid[row*cols+col]).
+// Standard bilinear reduces to a weighted sum of the 4 corners by their area
+// weights (1-tx)(1-ty) etc - so a missing corner is handled by just dropping
+// its weight and renormalizing over whatever corners ARE available, instead
+// of the old behavior of returning one corner's raw value verbatim (which
+// painted a hard-edged flat block wherever any corner was null - a very
+// common case near land, world edges, or any dropped data point - and was
+// the real source of the map looking "blocky"/pixelated, not canvas res).
 function _bilinear(grid, cols, rows, gx, gy) {
   const x0 = Math.max(0, Math.min(cols - 1, Math.floor(gx))), x1 = Math.min(cols - 1, x0 + 1);
   const y0 = Math.max(0, Math.min(rows - 1, Math.floor(gy))), y1 = Math.min(rows - 1, y0 + 1);
   const tx = gx - x0, ty = gy - y0;
-  const v00 = grid[y0 * cols + x0], v10 = grid[y0 * cols + x1];
-  const v01 = grid[y1 * cols + x0], v11 = grid[y1 * cols + x1];
-  if (v00 == null || v10 == null || v01 == null || v11 == null) {
-    const vals = [v00, v10, v01, v11].filter(v => v != null);
-    return vals.length ? vals[0] : null;
-  }
-  const top = v00 + (v10 - v00) * tx, bot = v01 + (v11 - v01) * tx;
-  return top + (bot - top) * ty;
+  const corners = [
+    [grid[y0 * cols + x0], (1 - tx) * (1 - ty)],
+    [grid[y0 * cols + x1], tx * (1 - ty)],
+    [grid[y1 * cols + x0], (1 - tx) * ty],
+    [grid[y1 * cols + x1], tx * ty],
+  ];
+  let sum = 0, wsum = 0;
+  corners.forEach(([v, w]) => { if (v != null) { sum += v * w; wsum += w; } });
+  return wsum > 0 ? sum / wsum : null;
 }
 // Angular data (e.g. wave direction) can't be averaged as plain degrees -
 // 350° and 10° average to 180° that way instead of 0°. Interpolate the unit
-// vector components instead, then recover the angle with atan2.
+// vector components instead (same missing-corner handling as _bilinear),
+// then recover the angle with atan2.
 function _bilinearAngle(gridDeg, cols, rows, gx, gy) {
   const x0 = Math.max(0, Math.min(cols - 1, Math.floor(gx))), x1 = Math.min(cols - 1, x0 + 1);
   const y0 = Math.max(0, Math.min(rows - 1, Math.floor(gy))), y1 = Math.min(rows - 1, y0 + 1);
   const tx = gx - x0, ty = gy - y0;
-  const vecAt = (x, y) => { const d = gridDeg[y * cols + x]; if (d == null) return null; const r = d * Math.PI / 180; return [Math.cos(r), Math.sin(r)]; };
-  const v00 = vecAt(x0, y0), v10 = vecAt(x1, y0), v01 = vecAt(x0, y1), v11 = vecAt(x1, y1);
-  if (!v00 || !v10 || !v01 || !v11) {
-    const vals = [v00, v10, v01, v11].filter(Boolean);
-    return vals.length ? Math.atan2(vals[0][1], vals[0][0]) * 180 / Math.PI : null;
-  }
-  const topX = v00[0] + (v10[0] - v00[0]) * tx, topY = v00[1] + (v10[1] - v00[1]) * tx;
-  const botX = v01[0] + (v11[0] - v01[0]) * tx, botY = v01[1] + (v11[1] - v01[1]) * tx;
-  const x = topX + (botX - topX) * ty, y = topY + (botY - topY) * ty;
-  return Math.atan2(y, x) * 180 / Math.PI;
+  const corners = [
+    [gridDeg[y0 * cols + x0], (1 - tx) * (1 - ty)],
+    [gridDeg[y0 * cols + x1], tx * (1 - ty)],
+    [gridDeg[y1 * cols + x0], (1 - tx) * ty],
+    [gridDeg[y1 * cols + x1], tx * ty],
+  ];
+  let sx = 0, sy = 0, wsum = 0;
+  corners.forEach(([d, w]) => {
+    if (d == null) return;
+    const r = d * Math.PI / 180;
+    sx += Math.cos(r) * w; sy += Math.sin(r) * w; wsum += w;
+  });
+  if (wsum === 0) return null;
+  return Math.atan2(sy, sx) * 180 / Math.PI;
 }
 
 // Fixed domain both layers render over - like a real WMS layer's tiles, this
@@ -12104,30 +12117,41 @@ async function _runLimited(items, limit, worker) {
 
 async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
   chunkSize = chunkSize || 500;
-  const chunks = [];
-  for (let i = 0; i < pts.length; i += chunkSize) chunks.push(pts.slice(i, i + chunkSize));
+  const numChunks = Math.max(1, Math.ceil(pts.length / chunkSize));
+  // Stripe points across chunks round-robin (point i goes to chunk i%numChunks)
+  // instead of slicing consecutive runs. In a row-major world grid, a run of
+  // consecutive points spans several whole rows - so one failed "consecutive"
+  // chunk used to blank out solid horizontal bands across the entire map
+  // width. Striping means a failed chunk's missing points are scattered
+  // one-per-neighborhood across the whole world instead, which _bilinear
+  // smooths right over using the (still-present) surrounding points.
+  const chunkIdx = Array.from({ length: numChunks }, () => []);
+  pts.forEach((p, i) => chunkIdx[i % numChunks].push(i));
+
   let anyOk = false;
-  const chunkResults = await _runLimited(chunks, 4, async chunk => {
+  const grids = {};
+  fields.forEach(f => { grids[f] = new Array(pts.length).fill(null); });
+
+  await _runLimited(chunkIdx, 4, async indices => {
+    const chunkPts = indices.map(i => pts[i]);
     try {
-      const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(25000) });
+      const r = await fetch(buildUrl(chunkPts), { signal: AbortSignal.timeout(25000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const data = await r.json();
       const arr = Array.isArray(data) ? data : [data];
       anyOk = true;
-      return arr.map(d => {
-        const out = {};
-        fields.forEach(f => { const v = d?.current?.[f]; out[f] = (v == null || !isFinite(v)) ? null : v; });
-        return out;
+      arr.forEach((d, j) => {
+        const origIdx = indices[j];
+        fields.forEach(f => {
+          const v = d?.current?.[f];
+          grids[f][origIdx] = (v == null || !isFinite(v)) ? null : v;
+        });
       });
     } catch (e) {
-      console.warn('Grid chunk fetch failed, treating as no-data for that chunk:', e);
-      return chunk.map(() => { const out = {}; fields.forEach(f => out[f] = null); return out; });
+      console.warn('Grid chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
     }
   });
   if (!anyOk) throw new Error('All chunks failed');
-  const flat = chunkResults.flat();
-  const grids = {};
-  fields.forEach(f => { grids[f] = flat.map(o => o[f]); });
   return grids;
 }
 
@@ -14732,29 +14756,35 @@ async function _ensembleLoadFrames() {
   }
 }
 
-// Splits points into batched requests and returns the flat per-location
-// response array in the original point order (order-preserving, same
-// resilience pattern as _fetchGridChunked - a failed chunk degrades to
-// nulls for its points instead of failing the whole animation).
+// Splits points into batched requests and returns the per-location response
+// array in the original point order. Same resilience pattern as
+// _fetchGridChunked - striped (round-robin) chunk assignment so a failed
+// chunk's missing points scatter across the whole map instead of blanking
+// out contiguous rows, and a failed chunk degrades to nulls for its points
+// instead of failing the whole animation.
 async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
   chunkSize = chunkSize || 300;
-  const chunks = [];
-  for (let i = 0; i < pts.length; i += chunkSize) chunks.push(pts.slice(i, i + chunkSize));
+  const numChunks = Math.max(1, Math.ceil(pts.length / chunkSize));
+  const chunkIdx = Array.from({ length: numChunks }, () => []);
+  pts.forEach((p, i) => chunkIdx[i % numChunks].push(i));
+
   let anyOk = false;
-  const results = await _runLimited(chunks, 4, async chunk => {
+  const out = new Array(pts.length).fill(null);
+  await _runLimited(chunkIdx, 4, async indices => {
+    const chunkPts = indices.map(i => pts[i]);
     try {
-      const r = await fetch(buildUrl(chunk), { signal: AbortSignal.timeout(30000) });
+      const r = await fetch(buildUrl(chunkPts), { signal: AbortSignal.timeout(30000) });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const data = await r.json();
+      const arr = Array.isArray(data) ? data : [data];
       anyOk = true;
-      return Array.isArray(data) ? data : [data];
+      arr.forEach((d, j) => { out[indices[j]] = d; });
     } catch (e) {
-      console.warn('Ensemble chunk fetch failed, treating as no-data for that chunk:', e);
-      return chunk.map(() => null);
+      console.warn('Ensemble chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
     }
   });
   if (!anyOk) throw new Error('All chunks failed');
-  return results.flat();
+  return out;
 }
 
 function _ensembleShowFrame(idx) {
