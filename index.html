@@ -135,8 +135,8 @@ body {
   cursor: pointer;
 }
 #topbar-logo-img {
-  height: 130px;
-  width: 130px;
+  height: 100px;
+  width: 100px;
   object-fit: contain;
   filter: drop-shadow(0 0 10px rgba(170,0,0,0.7));
   transition: filter 0.25s ease, transform 0.25s ease;
@@ -1229,7 +1229,7 @@ body {
 /* ── RESPONSIVE: TABLET (≤768px) ── */
 @media (max-width: 768px) {
   /* Logo , shrink significantly */
-  #topbar-logo-img { height: 80px; width: 80px; }
+  #topbar-logo-img { height: 64px; width: 64px; }
 
   /* Tab bubbles , revert to top corners in a row (mobile layout) */
   #tabs-left {
@@ -1362,7 +1362,7 @@ body {
 /* ── RESPONSIVE: SMALL PHONE (≤480px) ── */
 @media (max-width: 480px) {
   /* Logo even smaller on tiny screens */
-  #topbar-logo-img { height: 64px; width: 64px; }
+  #topbar-logo-img { height: 50px; width: 50px; }
 
   /* Tabs smaller */
   #tabs-left { top: 14px; left: 8px; gap: 5px; }
@@ -1865,7 +1865,7 @@ body {
    rules above (those size off --menu-clearance directly, with no fixed
    top offset to run out of room against). */
 @media (max-height: 500px) and (min-width: 769px) {
-  #topbar-logo-img { height: 56px; width: 56px; }
+  #topbar-logo-img { height: 44px; width: 44px; }
   #right-menu, #sub-bubbles { top: 50px; }
   #right-menu, #sub-bubbles { max-height: calc(100vh - var(--menu-clearance, 82px) - 50px); }
 }
@@ -3851,6 +3851,62 @@ body {
 #nwr-rec-body::-webkit-scrollbar { width: 3px; }
 #nwr-rec-body::-webkit-scrollbar-thumb { background: rgba(255,80,80,0.3); }
 @keyframes nwr-blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
+
+/* ── ENSEMBLE SPREAD PANEL (Open-Meteo Ensemble API) ── */
+#ensemble-panel {
+  position: absolute;
+  top: 70px; left: 60px;
+  width: 340px; max-width: calc(100vw - 24px);
+  background: rgb(6,8,12);
+  border: 1px solid rgba(232,184,0,0.4);
+  border-radius: 10px;
+  z-index: 1200;
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 4px 32px rgba(232,184,0,0.15), 0 2px 12px rgba(0,0,0,0.7);
+}
+#ensemble-panel.open { display: flex; }
+#ensemble-panel-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px 8px;
+  border-bottom: 1px solid rgba(232,184,0,0.18);
+  background: rgba(50,38,0,0.6);
+}
+#ensemble-panel-title {
+  font-family: var(--mono); font-size: 12px; font-weight: 700;
+  letter-spacing: 1.5px; color: #e8b800; flex: 1;
+}
+#ensemble-panel-close {
+  background: rgba(232,184,0,0.15); border: 1px solid rgba(232,184,0,0.35);
+  color: var(--text); border-radius: 5px; padding: 2px 8px;
+  cursor: pointer; font-size: 14px; line-height: 1.4;
+}
+#ensemble-panel-close:hover { background: rgba(232,184,0,0.4); }
+#ensemble-controls { display: flex; gap: 6px; padding: 8px 10px 4px; }
+#ensemble-controls .sev-dd-wrap select { font-size: 9px; }
+#ensemble-hint {
+  font-family: var(--mono); font-size: 9px; color: rgba(212,232,255,0.45);
+  padding: 2px 10px 6px; line-height: 1.4;
+}
+#ensemble-status {
+  font-family: var(--mono); font-size: 9px; color: rgba(232,184,0,0.8);
+  padding: 0 10px 6px; min-height: 12px;
+}
+#ensemble-canvas { width: 100%; height: 160px; display: block; }
+#ensemble-legend {
+  display: flex; align-items: center; gap: 12px;
+  padding: 4px 10px 10px; font-family: var(--mono); font-size: 8px; color: rgba(212,232,255,0.5);
+}
+#ensemble-legend span { display: inline-flex; align-items: center; gap: 4px; }
+#ensemble-legend i { display: inline-block; width: 12px; height: 2px; }
+.ensemble-open-btn {
+  width: 100%; margin-top: 8px; padding: 7px 8px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
+  background: rgba(232,184,0,0.1); border: 1px solid rgba(232,184,0,0.4);
+  color: #e8b800; border-radius: 7px; cursor: pointer;
+}
+.ensemble-open-btn:hover { background: rgba(232,184,0,0.22); }
 
 /* ── FORECAST MODAL ── */
 #forecast-modal {
@@ -6898,6 +6954,7 @@ body.clean-mode #clean-hint { opacity: 1; }
         </div>
         <div id="sev-frame-grid"></div>
         <div id="sev-panel-body"></div>
+        <button class="ensemble-open-btn" onclick="_ensembleOpen()">🎲 Ensemble Spread</button>
       </div>
 
 
@@ -6906,6 +6963,7 @@ body.clean-mode #clean-hint { opacity: 1; }
         <p id="trop-intro">The National Hurricane Center's official forecast track, cone, and any areas being watched for development. Same live feed as the <b>NHC Outlook</b> overlay pill, kept in sync.</p>
         <div id="trop-storm-status">Loading active storms…</div>
         <div id="trop-storm-list"></div>
+        <button class="ensemble-open-btn" onclick="_ensembleOpen()">🎲 Check Ensemble Spread Near a Point</button>
       </div>
     </div>
 
@@ -7285,6 +7343,41 @@ body.clean-mode #clean-hint { opacity: 1; }
         <button id="nwr-rec-close" onclick="_nwrCloseRecPanel()">✕</button>
       </div>
       <div id="nwr-rec-body"></div>
+    </div>
+    <!-- Ensemble Spread Panel (Open-Meteo Ensemble API) -->
+    <div id="ensemble-panel">
+      <div id="ensemble-panel-header">
+        <span style="font-size:14px;line-height:1">🎲</span>
+        <span id="ensemble-panel-title">ENSEMBLE SPREAD</span>
+        <button id="ensemble-panel-close" onclick="_ensembleClose()">✕</button>
+      </div>
+      <div id="ensemble-controls">
+        <div class="sev-dd-wrap">
+          <label class="sev-dd-label">Variable</label>
+          <select id="ensemble-var-sel" onchange="_ensembleVarChange(this.value)">
+            <option value="temperature_2m">2m Temperature</option>
+            <option value="precipitation">Precipitation</option>
+            <option value="wind_speed_10m">10m Wind Speed</option>
+            <option value="wind_gusts_10m">Wind Gusts</option>
+            <option value="surface_pressure">Surface Pressure</option>
+          </select>
+        </div>
+        <div class="sev-dd-wrap">
+          <label class="sev-dd-label">Model</label>
+          <select id="ensemble-model-sel" onchange="_ensembleModelChange(this.value)">
+            <option value="gfs_seamless">GFS (US)</option>
+            <option value="icon_seamless">ICON (Germany)</option>
+            <option value="gem_global">GEM (Canada)</option>
+          </select>
+        </div>
+      </div>
+      <div id="ensemble-hint">Tap anywhere on the map to sample the ensemble spread at that point.</div>
+      <div id="ensemble-status"></div>
+      <canvas id="ensemble-canvas" width="600" height="160"></canvas>
+      <div id="ensemble-legend">
+        <span><i style="background:rgba(0,200,255,0.5)"></i> Members</span>
+        <span><i style="background:#e8b800"></i> Mean</span>
+      </div>
     </div>
 </div><!-- /main -->
 
@@ -11546,6 +11639,180 @@ function toggleTempSub() {}
 let sstBarbActive = false, sstMapActive = false;
 let _sstBarbLayer = null, _sstMapLayer = null;
 
+// ── WAVES LAYER (Open-Meteo Marine Weather API) ──────────────────────────────
+// Point API, not a tile service, so this samples a grid of points across the
+// current view (same technique the old SST layer used) and batches them into
+// one request via Open-Meteo's comma-separated lat/lon multi-point support.
+let wavesActive = false;
+let _wavesLayer = null;
+
+function _waveColor(ft) {
+  if (ft == null) return '#888888';
+  if (ft > 12) return '#dd00ff';
+  if (ft > 8)  return '#ff2a2a';
+  if (ft > 5)  return '#ff8800';
+  if (ft > 2)  return '#ffcc00';
+  return '#00c8ff';
+}
+
+function toggleWavesLayer() {
+  wavesActive = !wavesActive;
+  if (wavesActive) {
+    _loadWavesLayer();
+  } else if (_wavesLayer) {
+    try { map.removeLayer(_wavesLayer); } catch(e){}
+    _wavesLayer = null;
+  }
+}
+
+async function _loadWavesLayer() {
+  if (!wavesActive) return;
+  const myLayer = L.layerGroup();
+  if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} }
+  _wavesLayer = myLayer;
+  myLayer.addTo(map);
+
+  const bounds = map.getBounds();
+  const ROWS = 7, COLS = 7;
+  const south = bounds.getSouth(), north = bounds.getNorth();
+  const west  = bounds.getWest(),  east  = bounds.getEast();
+  const pts = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      pts.push({ lat: south + (north - south) * r / (ROWS - 1),
+                 lng: west  + (east  - west)  * c / (COLS - 1) });
+  const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
+  const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
+
+  try {
+    const url = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
+      `&current=wave_height,wave_direction,wave_period,swell_wave_height&length_unit=imperial`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const arr = Array.isArray(data) ? data : [data];
+    if (!wavesActive || myLayer !== _wavesLayer) return; // stale response, layer already replaced/off
+    arr.forEach((d, i) => {
+      const cur = d?.current;
+      const wh = cur?.wave_height;
+      if (wh == null) return; // land / no marine data at this point
+      const pt  = pts[i];
+      const col = _waveColor(wh);
+      const wd  = cur.wave_direction, wp = cur.wave_period, swh = cur.swell_wave_height;
+      const m = L.circleMarker([pt.lat, pt.lng], { radius: 7, color: col, fillColor: col, fillOpacity: 0.85, weight: 1 });
+      m.bindPopup(`<div class="data-popup-inner" style="--dp-accent:#00c8ff">
+        <div class="dp-header">
+          <span class="dp-header-icon">🌊</span>
+          <span class="dp-header-label">Waves</span>
+          <span class="dp-header-sub">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</span>
+        </div>
+        <div class="dp-body">
+          <div class="dp-row"><span>Wave Height</span><b style="color:${col}">${wh.toFixed(1)} ft</b></div>
+          ${wp  != null ? `<div class="dp-row"><span>Period</span><b>${wp.toFixed(0)} s</b></div>` : ''}
+          ${wd  != null ? `<div class="dp-row"><span>Direction</span><b>${_degToCompass(wd)}</b></div>` : ''}
+          ${swh != null ? `<div class="dp-row"><span>Swell Height</span><b>${swh.toFixed(1)} ft</b></div>` : ''}
+        </div>
+      </div>`, { className: 'data-popup', maxWidth: 220 });
+      m.addTo(myLayer);
+    });
+  } catch(e) {
+    console.warn('Waves layer error:', e);
+    showToast('Wave data unavailable right now', 3000);
+  }
+}
+// Wired up inside init() below, after initMap() actually creates `map` -
+// this script runs at parse time, long before init()/initMap() are called.
+
+// ── AIR QUALITY LAYER (Open-Meteo Air Quality API) ───────────────────────────
+let airActive = false;
+let _airLayer = null;
+
+function _aqiColor(aqi) {
+  if (aqi == null) return '#888888';
+  if (aqi <= 50)  return '#00e400';
+  if (aqi <= 100) return '#ffff00';
+  if (aqi <= 150) return '#ff7e00';
+  if (aqi <= 200) return '#ff0000';
+  if (aqi <= 300) return '#8f3f97';
+  return '#7e0023';
+}
+function _aqiLabel(aqi) {
+  if (aqi == null) return 'Unknown';
+  if (aqi <= 50)  return 'Good';
+  if (aqi <= 100) return 'Moderate';
+  if (aqi <= 150) return 'Unhealthy (Sensitive Groups)';
+  if (aqi <= 200) return 'Unhealthy';
+  if (aqi <= 300) return 'Very Unhealthy';
+  return 'Hazardous';
+}
+
+function toggleAirLayer() {
+  airActive = !airActive;
+  if (airActive) {
+    _loadAirLayer();
+  } else if (_airLayer) {
+    try { map.removeLayer(_airLayer); } catch(e){}
+    _airLayer = null;
+  }
+}
+
+async function _loadAirLayer() {
+  if (!airActive) return;
+  const myLayer = L.layerGroup();
+  if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} }
+  _airLayer = myLayer;
+  myLayer.addTo(map);
+
+  const bounds = map.getBounds();
+  const ROWS = 7, COLS = 7;
+  const south = bounds.getSouth(), north = bounds.getNorth();
+  const west  = bounds.getWest(),  east  = bounds.getEast();
+  const pts = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      pts.push({ lat: south + (north - south) * r / (ROWS - 1),
+                 lng: west  + (east  - west)  * c / (COLS - 1) });
+  const latStr = pts.map(p => p.lat.toFixed(3)).join(',');
+  const lngStr = pts.map(p => p.lng.toFixed(3)).join(',');
+
+  try {
+    const url = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${latStr}&longitude=${lngStr}` +
+      `&current=us_aqi,pm2_5,pm10,ozone`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(12000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const arr = Array.isArray(data) ? data : [data];
+    if (!airActive || myLayer !== _airLayer) return; // stale response
+    arr.forEach((d, i) => {
+      const cur = d?.current;
+      const aqi = cur?.us_aqi;
+      if (aqi == null) return;
+      const pt  = pts[i];
+      const col = _aqiColor(aqi);
+      const pm25 = cur.pm2_5, pm10 = cur.pm10, ozone = cur.ozone;
+      const m = L.circleMarker([pt.lat, pt.lng], { radius: 7, color: col, fillColor: col, fillOpacity: 0.85, weight: 1 });
+      m.bindPopup(`<div class="data-popup-inner" style="--dp-accent:${col}">
+        <div class="dp-header">
+          <span class="dp-header-icon">🌫️</span>
+          <span class="dp-header-label">Air Quality</span>
+          <span class="dp-header-sub">${pt.lat.toFixed(2)}°, ${pt.lng.toFixed(2)}°</span>
+        </div>
+        <div class="dp-body">
+          <div class="dp-row"><span>US AQI</span><b style="color:${col}">${Math.round(aqi)} · ${_aqiLabel(aqi)}</b></div>
+          ${pm25  != null ? `<div class="dp-row"><span>PM2.5</span><b>${pm25.toFixed(1)} µg/m³</b></div>` : ''}
+          ${pm10  != null ? `<div class="dp-row"><span>PM10</span><b>${pm10.toFixed(1)} µg/m³</b></div>` : ''}
+          ${ozone != null ? `<div class="dp-row"><span>Ozone</span><b>${ozone.toFixed(0)} µg/m³</b></div>` : ''}
+        </div>
+      </div>`, { className: 'data-popup', maxWidth: 220 });
+      m.addTo(myLayer);
+    });
+  } catch(e) {
+    console.warn('Air layer error:', e);
+    showToast('Air quality data unavailable right now', 3000);
+  }
+}
+// Wired up inside init() below, after initMap() actually creates `map`.
+
 
 // ── MAP TYPE ──
 let currentMapType = 'dark';
@@ -11941,6 +12208,8 @@ const LAYER_DESCRIPTIONS = {
 const BASE_BUBBLES = [
   { id: 'radar',     icon: '📡', label: 'Radar',     action: () => toggleRadarSub() },
   { id: 'satellite', icon: '🛰', label: 'Satellite',  action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
+  { id: 'waves',     icon: '🌊', label: 'Waves',      action: () => toggleWavesLayer() },
+  { id: 'air',       icon: '🌫️', label: 'Air',        action: () => toggleAirLayer() },
   { id: 'models',    icon: '📊', label: 'Models',     action: () => toggleModelsPanel() },
 ];
 
@@ -13559,6 +13828,144 @@ function _sevToggleCompare() {
   window.addEventListener('pointercancel', () => { dragging = false; });
 })();
 
+// ── ENSEMBLE SPREAD (Open-Meteo Ensemble API) ────────────────────────────────
+// Point-based: pick a spot on the map, see every ensemble member's forecast
+// for one variable plotted together (the classic "spaghetti plot" look), not
+// a map-wide overlay like the WMS layers above. Shared between the Run
+// Models and Spaghetti Models panels, each just calls _ensembleOpen().
+let _ensembleActive = false;
+let _ensembleVar   = 'temperature_2m';
+let _ensembleModel = 'gfs_seamless';
+let _ensembleClickHandler = null;
+let _ensembleLastPoint = null;
+let _ensembleMarker = null;
+
+const ENSEMBLE_VAR_LABELS = {
+  temperature_2m:  '2m Temperature',
+  precipitation:   'Precipitation',
+  wind_speed_10m:  '10m Wind Speed',
+  wind_gusts_10m:  'Wind Gusts',
+  surface_pressure:'Surface Pressure',
+};
+
+function _ensembleOpen() {
+  _ensembleActive = true;
+  const panel = document.getElementById('ensemble-panel');
+  if (panel) panel.classList.add('open');
+  const status = document.getElementById('ensemble-status');
+  if (status && !_ensembleLastPoint) status.textContent = 'Tap the map to sample a point.';
+  if (!_ensembleClickHandler) {
+    _ensembleClickHandler = e => { if (_ensembleActive) _ensembleSample(e.latlng.lat, e.latlng.lng); };
+  }
+  map.on('click', _ensembleClickHandler);
+}
+
+function _ensembleClose() {
+  _ensembleActive = false;
+  const panel = document.getElementById('ensemble-panel');
+  if (panel) panel.classList.remove('open');
+  if (_ensembleClickHandler) map.off('click', _ensembleClickHandler);
+  if (_ensembleMarker) { try { map.removeLayer(_ensembleMarker); } catch(e){} _ensembleMarker = null; }
+}
+
+function _ensembleVarChange(v)   { _ensembleVar   = v; if (_ensembleLastPoint) _ensembleSample(_ensembleLastPoint.lat, _ensembleLastPoint.lon); }
+function _ensembleModelChange(m) { _ensembleModel = m; if (_ensembleLastPoint) _ensembleSample(_ensembleLastPoint.lat, _ensembleLastPoint.lon); }
+
+async function _ensembleSample(lat, lon) {
+  _ensembleLastPoint = { lat, lon };
+  if (_ensembleMarker) { try { map.removeLayer(_ensembleMarker); } catch(e){} }
+  _ensembleMarker = L.circleMarker([lat, lon], { radius: 6, color: '#e8b800', fillColor: '#e8b800', fillOpacity: 0.9, weight: 2 }).addTo(map);
+
+  const status = document.getElementById('ensemble-status');
+  const canvas = document.getElementById('ensemble-canvas');
+  if (status) status.textContent = 'Loading ensemble data…';
+  if (canvas) canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+
+  try {
+    const url = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}` +
+      `&hourly=${_ensembleVar}&models=${_ensembleModel}` +
+      `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch&forecast_days=7`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const hourly = data.hourly || {};
+    const time = hourly.time || [];
+    const memberKeys = Object.keys(hourly).filter(k => k.startsWith(_ensembleVar + '_member')).sort();
+    if (!memberKeys.length) throw new Error('no members in response');
+    const members = memberKeys.map(k => hourly[k]);
+    _ensembleDrawChart(canvas, time, members);
+    if (status) status.textContent = `${members.length} members · ${ENSEMBLE_VAR_LABELS[_ensembleVar] || _ensembleVar} · ${lat.toFixed(2)}°, ${lon.toFixed(2)}°`;
+  } catch(e) {
+    console.warn('Ensemble fetch error:', e);
+    if (status) status.textContent = 'Could not load that model for this point - try a different model above.';
+  }
+}
+
+function _ensembleDrawChart(canvas, time, members) {
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!members.length || !members[0] || !members[0].length) return;
+
+  const padL = 34, padR = 8, padT = 8, padB = 16;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = members[0].length;
+  if (n < 2) return;
+
+  let min = Infinity, max = -Infinity;
+  members.forEach(arr => arr.forEach(v => { if (v != null && isFinite(v)) { if (v < min) min = v; if (v > max) max = v; } }));
+  if (!isFinite(min) || !isFinite(max)) return;
+  if (min === max) { min -= 1; max += 1; }
+  const rangePad = (max - min) * 0.08;
+  min -= rangePad; max += rangePad;
+
+  const xAt = i => padL + (i / (n - 1)) * plotW;
+  const yAt = v => padT + plotH - ((v - min) / (max - min)) * plotH;
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillStyle   = 'rgba(212,232,255,0.5)';
+  ctx.font = '9px monospace';
+  ctx.lineWidth = 1;
+  for (let g = 0; g <= 3; g++) {
+    const v  = min + (max - min) * g / 3;
+    const yy = yAt(v);
+    ctx.beginPath(); ctx.moveTo(padL, yy); ctx.lineTo(W - padR, yy); ctx.stroke();
+    ctx.fillText(v.toFixed(0), 2, yy + 3);
+  }
+  for (let g = 0; g <= 3; g++) {
+    const i   = Math.round((n - 1) * g / 3);
+    const lbl = time[i] ? time[i].slice(5, 10) : '';
+    ctx.fillText(lbl, xAt(i) - 12, H - 4);
+  }
+
+  ctx.strokeStyle = 'rgba(0,200,255,0.22)';
+  ctx.lineWidth = 1.2;
+  members.forEach(arr => {
+    ctx.beginPath();
+    let started = false;
+    arr.forEach((v, i) => {
+      if (v == null || !isFinite(v)) return;
+      const px = xAt(i), py = yAt(v);
+      if (!started) { ctx.moveTo(px, py); started = true; } else { ctx.lineTo(px, py); }
+    });
+    ctx.stroke();
+  });
+
+  ctx.strokeStyle = '#e8b800';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  let meanStarted = false;
+  for (let i = 0; i < n; i++) {
+    let sum = 0, cnt = 0;
+    members.forEach(arr => { if (arr[i] != null && isFinite(arr[i])) { sum += arr[i]; cnt++; } });
+    if (!cnt) continue;
+    const px = xAt(i), py = yAt(sum / cnt);
+    if (!meanStarted) { ctx.moveTo(px, py); meanStarted = true; } else { ctx.lineTo(px, py); }
+  }
+  ctx.stroke();
+}
+
 // ── Toast notification helper ──
 function showToast(msg, durationMs) {
   let t = document.getElementById('_toast');
@@ -14107,6 +14514,8 @@ async function init() {
     _ovApplyMapOrder(); // re-apply saved overlay order now that map panes exist
     updateLegend('ref');
     renderSubBubbles('regular');
+    map.on('moveend', () => { if (wavesActive) _loadWavesLayer(); });
+    map.on('moveend', () => { if (airActive)   _loadAirLayer(); });
   } catch(e) {
     console.warn('Map init error:', e);
   }
@@ -23715,14 +24124,14 @@ function lqmSetTZ(tz) {
     <div class="section-icon">📡</div>
     <div>
       <div class="section-title">LAYERS</div>
-      <div class="section-sub">Radar, Satellite &amp; Models, tap a bubble to toggle</div>
+      <div class="section-sub">Radar, Satellite, Waves, Air &amp; Models, tap a bubble to toggle</div>
     </div>
   </div>
 
-  <p>The left side of the screen holds three floating bubble buttons: <strong>Radar</strong>, <strong>Satellite</strong>, and <strong>Models</strong>. Tap a bubble to turn it on, it glows cyan when active. Radar and Satellite each open a secondary sub-menu of products, and are mutually exclusive, turning one on disables the other. On phones this row relocates to the bottom of the screen.</p>
+  <p>The left side of the screen holds five floating bubble buttons: <strong>Radar</strong>, <strong>Satellite</strong>, <strong>Waves</strong>, <strong>Air</strong>, and <strong>Models</strong>. Tap a bubble to turn it on, it glows cyan when active. Radar and Satellite each open a secondary sub-menu of products, and are mutually exclusive, turning one on disables the other. On phones this row relocates to the bottom of the screen.</p>
 
   <div class="ui-diagram">
-    <div class="ui-diagram-title">The three main bubbles, active bubble glows cyan</div>
+    <div class="ui-diagram-title">The five main bubbles, active bubble glows cyan</div>
     <div class="layer-demo">
       <div class="layer-row-demo active">
         <span class="lr-icon">📡</span> Radar
@@ -23731,6 +24140,14 @@ function lqmSetTZ(tz) {
       <div class="layer-row-demo">
         <span class="lr-icon">🛰</span> Satellite
         <span class="lr-badge info">GOES</span>
+      </div>
+      <div class="layer-row-demo">
+        <span class="lr-icon">🌊</span> Waves
+        <span class="lr-badge info">MARINE</span>
+      </div>
+      <div class="layer-row-demo">
+        <span class="lr-icon">🌫️</span> Air
+        <span class="lr-badge info">AQI</span>
       </div>
       <div class="layer-row-demo">
         <span class="lr-icon">📊</span> Models
@@ -23751,9 +24168,19 @@ function lqmSetTZ(tz) {
       <p class="fc-body">Tap to pick from GOES's full set of ABI channels, visible, water vapor (upper/mid/low), and infrared, then choose a region: Auto, East CONUS, West CONUS, Alaska, Hawaii, Caribbean, or East/West Full Disk. Radar and Satellite are mutually exclusive, enabling one disables the other.</p>
     </div>
     <div class="feature-card">
+      <div class="fc-icon">🌊</div>
+      <div class="fc-title">WAVES</div>
+      <p class="fc-body">Samples a grid of points across the visible map from Open-Meteo's Marine Weather API. Colored dots show wave height (blue calm through purple 12+ ft), click one for period, direction, and swell height. Re-samples automatically as you pan.</p>
+    </div>
+    <div class="feature-card">
+      <div class="fc-icon">🌫️</div>
+      <div class="fc-title">AIR</div>
+      <p class="fc-body">Same grid-sampling approach, powered by Open-Meteo's Air Quality API. Dots are colored by the standard EPA US AQI scale (green Good through maroon Hazardous), click one for AQI, PM2.5, PM10, and ozone.</p>
+    </div>
+    <div class="feature-card">
       <div class="fc-icon">📊</div>
       <div class="fc-title">MODELS</div>
-      <p class="fc-body">Opens the unified Models panel covering both <strong>📈 Run Models</strong> (a point-forecast model viewer with A/B compare) and <strong>🌀 Spaghetti Models</strong> (NHC's official track, cone, and active storms). See the <a href="#models">Models</a> section below.</p>
+      <p class="fc-body">Opens the unified Models panel covering both <strong>📈 Run Models</strong> (a point-forecast model viewer with A/B compare and ensemble spread) and <strong>🌀 Spaghetti Models</strong> (NHC's official track, cone, and active storms). See the <a href="#models">Models</a> section below.</p>
     </div>
   </div>
 
@@ -24072,6 +24499,11 @@ function lqmSetTZ(tz) {
       <p class="fc-body">Every tracked system gets a card in the panel itself, name, storm type, top winds, and basin, so you don't have to hunt for it on the map. Reads "No active storms right now" when the tropics are quiet.</p>
     </div>
   </div>
+
+  <div class="callout">
+    <div class="callout-icon">🎲</div>
+    <div class="callout-body"><strong>Check Ensemble Spread Near a Point:</strong> tap this button to see how much the individual ensemble members disagree on temperature, wind, or precipitation anywhere near the storm's forecast path, the same tool available under <a href="#models">Run Models</a>.</div>
+  </div>
 </section>
 
 
@@ -24128,6 +24560,9 @@ function lqmSetTZ(tz) {
 
   <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;">⇄ Compare Two Models or Runs</h3>
   <p>Tap <strong>⇄ Compare</strong> to pick a second Model, Product, and Run ("B"), rendered as its own layer on the map. A draggable divider splits the screen, drag it left/right to swipe between A on the left and B on the right, both labeled at the top of the map. Both sides step through the same forecast-hour slider, comparing two runs of the same model, or two entirely different models, at a matching lead time.</p>
+
+  <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;">🎲 Ensemble Spread</h3>
+  <p>Tap <strong>🎲 Ensemble Spread</strong> for a different kind of comparison, not two models side by side, but every member of one model's ensemble at a single point. Pick a <strong>Variable</strong> (2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, or Surface Pressure) and a <strong>Model</strong> (GFS, ICON, or GEM), then tap anywhere on the map. Every ensemble member's forecast for that spot draws as a thin line, the classic "spaghetti plot" look, with a bold gold line for the ensemble mean. Tight, overlapping lines mean high confidence; a wide fan means the models disagree, useful for judging how much to trust a single forecast. Data comes from Open-Meteo's Ensemble API. Tap a different spot, or change the variable/model, to resample.</p>
 
 
 <section class="section" id="tools">
