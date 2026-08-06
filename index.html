@@ -11997,7 +11997,11 @@ function _windColor(kph) {
 
 function _degToCompass(deg) {
   const dirs = ['N','NE','E','SE','S','SW','W','NW'];
-  return dirs[Math.round(deg / 45) % 8];
+  // _bilinearAngle (and raw atan2 math generally) can return a negative
+  // equivalent for anything above 180deg (e.g. 270 -> -90) - normalize into
+  // 0-360 first so JS's %, which can return negative for a negative
+  // dividend, doesn't index dirs[] with a negative number and return undefined.
+  return dirs[((Math.round(deg / 45) % 8) + 8) % 8];
 }
 
 // toggleTempSub no longer used - Stations is now a direct METAR toggle
@@ -12890,25 +12894,22 @@ function _paintAndShowPressure(allGrids, token) {
 }
 
 // ── WIND LAYER (Open-Meteo Forecast API) ─────────────────────────────────────
-// Unlike Waves/Air/Temperature/Pressure above, Wind doesn't paint a static
-// color image - it animates a field of particles that flow with the wind,
-// redrawn every frame. The data source is the same Open-Meteo Forecast API
-// Temperature/Pressure already use, just two different fields: wind speed and
-// wind direction. Both products (Surface Winds and the Jet Stream) go through
-// Open-Meteo's `hourly` param and read hour 0 ("now") instead of the lighter
-// `current` param Temperature/Pressure use - `current` only exposes a handful
-// of near-surface fields, and the Jet Stream needs a pressure-level field
-// (wind at 250 hPa, roughly 34,000 ft) that only `hourly` can return. Using
-// `hourly` for both keeps one fetch code path for both products.
+// Same fixed-domain, painted-color-map approach as Waves/Air/Temperature/
+// Pressure above - Surface Winds and the Jet Stream are just two wind speed
+// fields. Both go through Open-Meteo's `hourly` param and read hour 0 ("now")
+// instead of the lighter `current` param Temperature/Pressure use - `current`
+// only exposes a handful of near-surface fields, and the Jet Stream needs a
+// pressure-level field (wind at 250 hPa, roughly 34,000 ft) that only
+// `hourly` can return. Using `hourly` for both keeps one fetch code path.
+// The animated flow particles live separately as the "Wind Particles" map
+// overlay below, so they can be toggled independently of this color map.
 let windActive = false;
 let _windProduct = 'wind-surface';
+let _windLayer = null;
 let _windLoadToken = 0;
 let _windRefreshTimer = null;
-let _windCanvas = null;
-let _windRafId = null;
-let _windLastFrameTime = null;
-let _windParticles = [];
-let _windGrid = null; // {cols, rows, u, v, product} - u/v are eastward/northward mph components
+let _windGridCache = null; // {grid, dirGrid, cols, rows} - read by the Inspector tool for exact values
+let _windFetchedProduct = null; // which product _windGridCache actually holds
 const WIND_COLS = 64, WIND_ROWS = 36; // world-wide grid; fetched in chunks, see _fetchGridChunkedRaw
 
 const WIND_SUB_BUBBLES = [
@@ -12921,13 +12922,10 @@ const WIND_FIELDS = {
 };
 // mph. Surface winds live in the low end of this scale, the jet stream's
 // 80-150+ mph core lives in the high end - one scale covers both sensibly.
+// Also shared by the Wind Particles overlay below, so particle color always
+// matches this layer's color map.
 const WIND_SPEED_SCALE = [[0,[60,60,180]],[8,[0,140,220]],[20,[0,200,120]],[35,[255,204,0]],[55,[255,110,0]],[80,[220,0,0]],[120,[190,0,220]]];
-const WIND_PARTICLE_COUNT = 800;
-// Not a real-time physical speed - exaggerated so the flow is actually
-// visible on screen within a couple of seconds, same trick every wind-
-// particle map (Windy, earth.nullschool) uses rather than animating at the
-// wind's true real-world pace.
-const WIND_ANIM_SCALE = 0.00028;
+function _windColorFor(v) { return _colorScale(v, WIND_SPEED_SCALE); }
 
 function toggleWindSub() {
   const wrap = document.getElementById('sub-bubbles');
@@ -12944,7 +12942,9 @@ function toggleWindSub() {
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
       if (windActive && _windProduct === b.id) {
-        _stopWindLayer();
+        windActive = false;
+        clearInterval(_windRefreshTimer); _windRefreshTimer = null;
+        if (_windLayer) { try { map.removeLayer(_windLayer); } catch(e){} _windLayer = null; }
         el.classList.remove('active');
         _syncParentBubble('wind');
         return;
@@ -12964,28 +12964,123 @@ function toggleWindSub() {
   wrap.style.display = 'flex';
 }
 
-function _stopWindLayer() {
-  windActive = false;
-  clearInterval(_windRefreshTimer); _windRefreshTimer = null;
-  if (_windRafId) { cancelAnimationFrame(_windRafId); _windRafId = null; }
-  map.off('resize', _windResizeCanvas);
-  if (_windCanvas) { try { _windCanvas.remove(); } catch(e){} _windCanvas = null; }
-  _windParticles = [];
-  _windGrid = null;
+// Same fixed-domain approach as Temperature/Pressure - renders once over
+// WORLD_MAP_BOUNDS, panning/zooming doesn't re-trigger this. Unlike those,
+// Wind's two products need different Open-Meteo query params (see WIND_FIELDS
+// above) so they can't be batched into one request the way Temperature's 3
+// fields are - each product keeps its own cached grid instead.
+async function _loadWindLayer(forceRefresh) {
+  if (!windActive) return;
+  const token = ++_windLoadToken;
+  const cacheValid = _windGridCache && _windFetchedProduct === _windProduct;
+
+  if (cacheValid && !forceRefresh) {
+    _paintAndShowWind(token);
+    return;
+  }
+
+  try {
+    const fields = WIND_FIELDS[_windProduct];
+    const pts = _sampleGrid(WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS);
+    const locations = await _fetchGridChunkedRaw(pts, chunk => {
+      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+      return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
+        `&hourly=${fields.speed},${fields.dir}&forecast_days=1&wind_speed_unit=mph`;
+    }, 300);
+    if (token !== _windLoadToken) return;
+
+    const grid = new Array(pts.length).fill(null);
+    const dirGrid = new Array(pts.length).fill(null);
+    locations.forEach((loc, i) => {
+      const s = loc?.hourly?.[fields.speed]?.[0];
+      const d = loc?.hourly?.[fields.dir]?.[0];
+      if (s == null || !isFinite(s)) return;
+      grid[i] = s;
+      if (d != null && isFinite(d)) dirGrid[i] = d;
+    });
+    if (!grid.some(v => v != null)) throw new Error('no wind data in response');
+    _windGridCache = { grid, dirGrid, cols: WIND_COLS, rows: WIND_ROWS };
+    _windFetchedProduct = _windProduct;
+    _paintAndShowWind(token);
+  } catch(e) {
+    console.warn('Wind layer error:', e);
+    showToast('Wind data unavailable right now', 3000);
+  }
 }
 
-function _windResizeCanvas() {
-  if (!_windCanvas) return;
+function _paintAndShowWind(token) {
+  const layer = _paintInterpolatedOverlay(_windGridCache.grid, WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS, false, _windColorFor);
+  if (token !== _windLoadToken) return;
+  if (_windLayer) { try { map.removeLayer(_windLayer); } catch(e){} }
+  _windLayer = layer.addTo(map);
+}
+
+// ── WIND PARTICLES (map overlay, Open-Meteo Forecast API) ───────────────────
+// A field of animated particles that flow with the real Surface Wind (10m)
+// direction and speed, redrawn every frame - purely visual, on top of
+// whatever else is on the map. This lives with the other overlay pills
+// (Lightning, Alerts, etc.) rather than the Wind layer above, so it can be
+// toggled independently of - and at the same time as - any Layer, including
+// the Wind color map itself. Speed/Intensity/Thickness are user-adjustable
+// in Settings (see lqmSetWindPt* further down) instead of fixed constants.
+let _windPtActive = false;
+let _windPtCanvas = null;
+let _windPtRafId = null;
+let _windPtLastFrameTime = null;
+let _windPtParticles = [];
+let _windPtGrid = null; // {cols, rows, u, v} - eastward/northward mph components
+let _windPtLoadToken = 0;
+let _windPtRefreshTimer = null;
+const WINDPT_COUNT = 800;
+// Not a real-time physical speed - exaggerated so the flow is actually
+// visible on screen within a couple of seconds, same trick every wind-
+// particle map (Windy, earth.nullschool) uses rather than animating at the
+// wind's true real-world pace. The Settings "Speed" slider multiplies this.
+const WINDPT_BASE_ANIM_SCALE = 0.00028;
+let _windPtSpeed = 1;       // Settings: 0.25 - 3 (x)
+let _windPtIntensity = 0.7; // Settings: 0.2 - 1, drives both trail opacity and how slowly trails fade
+let _windPtThickness = 1.3; // Settings: 0.5 - 4 (px)
+
+function _windPtStart() {
+  _windPtActive = true;
+  if (!_windPtCanvas) {
+    _windPtCanvas = document.createElement('canvas');
+    _windPtCanvas.id = 'wind-particles-canvas';
+    _windPtCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:490;opacity:1';
+    const size = map.getSize();
+    _windPtCanvas.width = size.x; _windPtCanvas.height = size.y;
+    map.getContainer().appendChild(_windPtCanvas);
+    map.on('resize', _windPtResizeCanvas);
+  }
+  if (!_windPtRafId) { _windPtLastFrameTime = null; _windPtRafId = requestAnimationFrame(_windPtAnimTick); }
+  _windPtLoad();
+  clearInterval(_windPtRefreshTimer);
+  _windPtRefreshTimer = setInterval(() => _windPtLoad(true), 10 * 60 * 1000);
+}
+
+function _windPtStop() {
+  _windPtActive = false;
+  clearInterval(_windPtRefreshTimer); _windPtRefreshTimer = null;
+  if (_windPtRafId) { cancelAnimationFrame(_windPtRafId); _windPtRafId = null; }
+  map.off('resize', _windPtResizeCanvas);
+  if (_windPtCanvas) { try { _windPtCanvas.remove(); } catch(e){} _windPtCanvas = null; }
+  _windPtParticles = [];
+  _windPtGrid = null;
+}
+
+function _windPtResizeCanvas() {
+  if (!_windPtCanvas) return;
   const size = map.getSize();
-  _windCanvas.width = size.x;
-  _windCanvas.height = size.y;
+  _windPtCanvas.width = size.x;
+  _windPtCanvas.height = size.y;
 }
 
 // Drops a particle at a random point within the current view (clamped to
 // WORLD_MAP_BOUNDS, since there's no wind data past it) with a fresh random
 // lifespan - used both for the first seeding pass and to recycle a particle
 // that has aged out or drifted off-screen.
-function _windRespawn(p, bounds) {
+function _windPtRespawn(p, bounds) {
   const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
   const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
   p.lat = south + Math.random() * (north - south);
@@ -12994,23 +13089,23 @@ function _windRespawn(p, bounds) {
   p.life = 40 + Math.random() * 80;
 }
 
-function _windSeedParticles() {
+function _windPtSeedParticles() {
   const bounds = map.getBounds();
-  _windParticles = [];
-  for (let i = 0; i < WIND_PARTICLE_COUNT; i++) {
+  _windPtParticles = [];
+  for (let i = 0; i < WINDPT_COUNT; i++) {
     const p = {};
-    _windRespawn(p, bounds);
+    _windPtRespawn(p, bounds);
     p.age = Math.floor(Math.random() * p.life); // stagger ages so particles don't all reset in sync
-    _windParticles.push(p);
+    _windPtParticles.push(p);
   }
 }
 
-function _windGridCoord(lat, lng) {
+function _windPtGridCoord(lat, lng) {
   const south = WORLD_MAP_BOUNDS[0][0], north = WORLD_MAP_BOUNDS[1][0];
   const west  = WORLD_MAP_BOUNDS[0][1], east  = WORLD_MAP_BOUNDS[1][1];
   return [
-    (lng - west) / (east - west) * (_windGrid.cols - 1),
-    (lat - south) / (north - south) * (_windGrid.rows - 1),
+    (lng - west) / (east - west) * (_windPtGrid.cols - 1),
+    (lat - south) / (north - south) * (_windPtGrid.rows - 1),
   ];
 }
 
@@ -13018,97 +13113,87 @@ function _windGridCoord(lat, lng) {
 // destination-in composite, which scales down alpha only - no black tint -
 // since this canvas sits transparently over the map, not on an opaque
 // background), then advects and redraws every particle one small step along
-// the wind field sampled at its position.
-function _windAnimTick(now) {
-  if (!windActive || !_windCanvas) { _windRafId = null; return; }
-  const dtMs = _windLastFrameTime ? Math.min(now - _windLastFrameTime, 100) : 16.7;
-  _windLastFrameTime = now;
-  const ctx = _windCanvas.getContext('2d');
-  const w = _windCanvas.width, h = _windCanvas.height;
+// the wind field sampled at its position. Runs continuously from
+// _windPtStart() until _windPtStop(), independent of whether data has
+// finished loading yet (particles just sit still with nothing to advect).
+function _windPtAnimTick(now) {
+  if (!_windPtActive || !_windPtCanvas) { _windPtRafId = null; return; }
+  const dtMs = _windPtLastFrameTime ? Math.min(now - _windPtLastFrameTime, 100) : 16.7;
+  _windPtLastFrameTime = now;
+  const ctx = _windPtCanvas.getContext('2d');
+  const w = _windPtCanvas.width, h = _windPtCanvas.height;
 
+  // Higher Intensity = trails persist longer (slower fade) as well as more
+  // opaque strokes - the same lever windy-style maps use to make the flow
+  // read as either a wispy hint or a bold streak.
+  const fadeKeep = 0.90 + _windPtIntensity * 0.08; // Intensity 0.2->0.916, 1.0->0.98
   ctx.globalCompositeOperation = 'destination-in';
-  ctx.fillStyle = 'rgba(0,0,0,0.93)';
+  ctx.fillStyle = `rgba(0,0,0,${fadeKeep})`;
   ctx.fillRect(0, 0, w, h);
   ctx.globalCompositeOperation = 'source-over';
 
-  if (_windGrid) {
+  if (_windPtGrid) {
     const bounds = map.getBounds();
-    const stepScale = WIND_ANIM_SCALE * (dtMs / 16.7);
-    _windParticles.forEach(p => {
+    const stepScale = WINDPT_BASE_ANIM_SCALE * _windPtSpeed * (dtMs / 16.7);
+    const strokeAlpha = 0.4 + _windPtIntensity * 0.5; // Intensity 0.2->0.5, 1.0->0.9
+    _windPtParticles.forEach(p => {
       const prevPoint = map.latLngToContainerPoint([p.lat, p.lng]);
-      const [gx, gy] = _windGridCoord(p.lat, p.lng);
-      const u = _bilinear(_windGrid.u, _windGrid.cols, _windGrid.rows, gx, gy);
-      const v = _bilinear(_windGrid.v, _windGrid.cols, _windGrid.rows, gx, gy);
-      if (u == null || v == null) { _windRespawn(p, bounds); return; }
+      const [gx, gy] = _windPtGridCoord(p.lat, p.lng);
+      const u = _bilinear(_windPtGrid.u, _windPtGrid.cols, _windPtGrid.rows, gx, gy);
+      const v = _bilinear(_windPtGrid.v, _windPtGrid.cols, _windPtGrid.rows, gx, gy);
+      if (u == null || v == null) { _windPtRespawn(p, bounds); return; }
       p.lat += v * stepScale;
       p.lng += u * stepScale / Math.cos(p.lat * Math.PI / 180);
       p.age++;
       const inView = p.lat >= WORLD_MAP_BOUNDS[0][0] && p.lat <= WORLD_MAP_BOUNDS[1][0] && bounds.pad(0.15).contains([p.lat, p.lng]);
-      if (p.age > p.life || !inView) { _windRespawn(p, bounds); return; }
+      if (p.age > p.life || !inView) { _windPtRespawn(p, bounds); return; }
       const newPoint = map.latLngToContainerPoint([p.lat, p.lng]);
-      const [r, g, b] = _colorScale(Math.hypot(u, v), WIND_SPEED_SCALE);
-      ctx.strokeStyle = `rgba(${r},${g},${b},0.85)`;
-      ctx.lineWidth = 1.3;
+      const [r, g, b] = _windColorFor(Math.hypot(u, v));
+      ctx.strokeStyle = `rgba(${r},${g},${b},${strokeAlpha})`;
+      ctx.lineWidth = _windPtThickness;
       ctx.beginPath();
       ctx.moveTo(prevPoint.x, prevPoint.y);
       ctx.lineTo(newPoint.x, newPoint.y);
       ctx.stroke();
     });
   }
-  _windRafId = requestAnimationFrame(_windAnimTick);
+  _windPtRafId = requestAnimationFrame(_windPtAnimTick);
 }
 
-async function _loadWindLayer(forceRefresh) {
-  if (!windActive) return;
-  const token = ++_windLoadToken;
+async function _windPtLoad(forceRefresh) {
+  if (!_windPtActive) return;
+  if (!forceRefresh && _windPtGrid) return; // the animation loop keeps using the cached field
+  const token = ++_windPtLoadToken;
+  try {
+    const fields = WIND_FIELDS['wind-surface'];
+    const pts = _sampleGrid(WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS);
+    const locations = await _fetchGridChunkedRaw(pts, chunk => {
+      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+      return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
+        `&hourly=${fields.speed},${fields.dir}&forecast_days=1&wind_speed_unit=mph`;
+    }, 300);
+    if (token !== _windPtLoadToken) return;
 
-  if (!_windCanvas) {
-    _windCanvas = document.createElement('canvas');
-    _windCanvas.id = 'wind-particles-canvas';
-    _windCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:490;opacity:1';
-    const size = map.getSize();
-    _windCanvas.width = size.x; _windCanvas.height = size.y;
-    map.getContainer().appendChild(_windCanvas);
-    map.on('resize', _windResizeCanvas);
+    const u = new Array(pts.length).fill(null);
+    const v = new Array(pts.length).fill(null);
+    locations.forEach((loc, i) => {
+      const s = loc?.hourly?.[fields.speed]?.[0];
+      const d = loc?.hourly?.[fields.dir]?.[0];
+      if (s == null || d == null || !isFinite(s) || !isFinite(d)) return;
+      // Wind direction is meteorological "from" convention (0deg = blowing
+      // FROM the north), so the actual movement heading is direction+180.
+      const rad = (d + 180) * Math.PI / 180;
+      u[i] = s * Math.sin(rad);
+      v[i] = s * Math.cos(rad);
+    });
+    if (!u.some(x => x != null)) throw new Error('no wind data in response');
+    _windPtGrid = { cols: WIND_COLS, rows: WIND_ROWS, u, v };
+    _windPtSeedParticles();
+  } catch(e) {
+    console.warn('Wind Particles overlay error:', e);
+    showToast('Wind particle data unavailable right now', 3000);
   }
-
-  const alreadyLoaded = _windGrid && _windGrid.product === _windProduct;
-  if (!forceRefresh && alreadyLoaded) {
-    // Nothing new to fetch - the animation loop (started below) keeps using the cached field.
-  } else {
-    try {
-      const fields = WIND_FIELDS[_windProduct];
-      const pts = _sampleGrid(WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS);
-      const locations = await _fetchGridChunkedRaw(pts, chunk => {
-        const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-        const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-        return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
-          `&hourly=${fields.speed},${fields.dir}&forecast_days=1&wind_speed_unit=mph`;
-      }, 300);
-      if (token !== _windLoadToken) return;
-
-      const u = new Array(pts.length).fill(null);
-      const v = new Array(pts.length).fill(null);
-      locations.forEach((loc, i) => {
-        const s = loc?.hourly?.[fields.speed]?.[0];
-        const d = loc?.hourly?.[fields.dir]?.[0];
-        if (s == null || d == null || !isFinite(s) || !isFinite(d)) return;
-        // Wind direction is meteorological "from" convention (0deg = blowing
-        // FROM the north), so the actual movement heading is direction+180.
-        const rad = (d + 180) * Math.PI / 180;
-        u[i] = s * Math.sin(rad);
-        v[i] = s * Math.cos(rad);
-      });
-      if (!u.some(x => x != null)) throw new Error('no wind data in response');
-      _windGrid = { cols: WIND_COLS, rows: WIND_ROWS, u, v, product: _windProduct };
-      _windSeedParticles();
-    } catch(e) {
-      console.warn('Wind layer error:', e);
-      showToast('Wind data unavailable right now', 3000);
-      return;
-    }
-  }
-  if (!_windRafId) { _windLastFrameTime = null; _windRafId = requestAnimationFrame(_windAnimTick); }
 }
 
 // ── MAP TYPE ──
@@ -13480,9 +13565,9 @@ const LAYER_DESCRIPTIONS = {
   air:            'Air quality - overall AQI, PM2.5, PM10, and ozone - shown as a smooth color map. Tap a product below to pick which one.',
   temperature:    'Current temperature conditions - air temperature, feels-like, and dew point - shown as a smooth color map. Tap a product below to pick which one.',
   pressure:       'Barometric pressure - sea-level (the standard weather-map number) or raw surface/station pressure - shown as a smooth color map. Tap a product below to pick which one.',
-  wind:           'Animated wind particles flowing across the map, colored by speed and powered by Open-Meteo. Tap a product below to pick Surface Winds or the Jet Stream.',
-  'wind-surface': 'Surface-level (10m) wind from Open-Meteo\'s Forecast API, animated as flowing particles colored by speed, blue/green calm through yellow/orange/red for strong wind.',
-  'wind-jet':     'Winds at the 250 hPa pressure level (roughly 34,000 ft) - the jet stream, the fast-moving upper-air river of wind that steers most weather systems.',
+  wind:           'Wind speed shown as a smooth color map, just like Waves and Air, powered by Open-Meteo. Tap a product below to pick Surface Winds or the Jet Stream. For an animated flow effect instead, see the Wind Particles overlay pill.',
+  'wind-surface': 'Surface-level (10m) wind speed from Open-Meteo\'s Forecast API, blue/green for calm through yellow/orange/red/purple for very strong wind.',
+  'wind-jet':     'Wind speed at the 250 hPa pressure level (roughly 34,000 ft) - the jet stream, the fast-moving upper-air river of wind that steers most weather systems.',
   radar:      'Turns on NEXRAD radar. Tap again to pick which radar product to show, like Reflectivity or Velocity.',
   satellite:  'Turns on GOES satellite imagery. Tap again to pick a channel, like Visible, Infrared, or Water Vapor.',
   models:     'Opens the Models panel, covering severe weather guidance (SPC Outlooks, HRRR, NAM) and tropical guidance (hurricane tracks, spaghetti models).',
@@ -13603,6 +13688,10 @@ function toggleOverlayPill(id) {
     toggleLayer('lightning');
     const pill = document.getElementById('op-lightning');
     if (pill) pill.classList.toggle('active', activeLayers.lightning);
+  } else if (id === 'wind-particles') {
+    if (_windPtActive) _windPtStop(); else _windPtStart();
+    const pill = document.getElementById('op-wind-particles');
+    if (pill) pill.classList.toggle('active', _windPtActive);
   } else if (id === 'wx-alerts') {
     toggleAlertsPanel();
     const panel = document.getElementById('alerts-panel');
@@ -17942,20 +18031,18 @@ function _inspPressureRow(center) {
   return { label, value: v.toFixed(2), unit: PRESSURE_UNITS[_pressureProduct] || 'hPa', color: `rgb(${r},${g},${b})` };
 }
 
-// Wind's u/v grid isn't a single scalar like the others, so it doesn't fit
-// _inspGridValueAt - interpolate both components, then recover speed/direction.
 function _inspWindRow(center) {
   const label = (WIND_SUB_BUBBLES.find(b => b.id === _windProduct) || {}).label || 'Wind';
-  if (!_windGrid) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
-  if (center.lat < WORLD_MAP_BOUNDS[0][0] || center.lat > WORLD_MAP_BOUNDS[1][0]) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
-  const [gx, gy] = _windGridCoord(center.lat, center.lng);
-  const u = _bilinear(_windGrid.u, _windGrid.cols, _windGrid.rows, gx, gy);
-  const v = _bilinear(_windGrid.v, _windGrid.cols, _windGrid.rows, gx, gy);
-  if (u == null || v == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
-  const speed = Math.hypot(u, v);
-  const fromDir = ((Math.atan2(u, v) * 180 / Math.PI) + 180 + 360) % 360; // movement heading -> meteorological "from" direction
-  const [r, g, b] = _colorScale(speed, WIND_SPEED_SCALE);
-  return { label, value: Math.round(speed), unit: `mph ${_degToCompass(fromDir)}`, color: `rgb(${r},${g},${b})` };
+  const speed = _inspGridValueAt(_windGridCache, center.lat, center.lng, WORLD_MAP_BOUNDS);
+  if (speed == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  const [r, g, b] = _windColorFor(speed);
+  let unit = 'mph';
+  if (_windGridCache.dirGrid) {
+    const dirCache = { grid: _windGridCache.dirGrid, cols: _windGridCache.cols, rows: _windGridCache.rows, isAngle: true };
+    const dir = _inspGridValueAt(dirCache, center.lat, center.lng, WORLD_MAP_BOUNDS);
+    if (dir != null) unit += ' ' + _degToCompass(dir);
+  }
+  return { label, value: Math.round(speed), unit, color: `rgb(${r},${g},${b})` };
 }
 
 function _inspUpdate() {
@@ -24665,6 +24752,35 @@ function selectProduct(p) {
     </div>
   </div>
 
+  <!-- ─── WIND PARTICLES ─── -->
+  <div class="lqm-settings-group">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg> Wind Particles</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Speed</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptspeed" min="25" max="300" value="100" step="25"
+          class="lqm-slider" oninput="lqmSetWindPtSpeed(this.value)">
+        <span id="lqm-windptspeed-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.00x</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Intensity</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptintensity" min="20" max="100" value="70" step="5"
+          class="lqm-slider" oninput="lqmSetWindPtIntensity(this.value)">
+        <span id="lqm-windptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">70%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Thickness</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptthickness" min="5" max="40" value="13" step="1"
+          class="lqm-slider" oninput="lqmSetWindPtThickness(this.value)">
+        <span id="lqm-windptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.3px</span>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── AI ─── -->
   <div class="lqm-settings-group">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-robot></use></svg> AI Chat</div>
@@ -25809,7 +25925,7 @@ function lqmSetTZ(tz) {
       </div>
       <div class="layer-row-demo">
         <span class="lr-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg></span> Wind
-        <span class="lr-badge info">PARTICLES</span>
+        <span class="lr-badge info">SPEED</span>
       </div>
       <div class="layer-row-demo">
         <span class="lr-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-bar></use></svg></span> Models
@@ -25842,7 +25958,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg></div>
       <div class="fc-title">WIND</div>
-      <p class="fc-body">Tap to choose <strong>Surface Winds</strong> (10m) or the <strong>Jet Stream</strong> (250mb, roughly 34,000 ft), both from Open-Meteo's Forecast API. Unlike the other layers, this one animates: hundreds of small particles stream across the map along the real wind direction, colored blue/green for calm through yellow/orange/red/purple for very strong wind. Refreshes every 10 minutes in the background, same as Waves and Air.</p>
+      <p class="fc-body">Tap to choose <strong>Surface Winds</strong> (10m) or the <strong>Jet Stream</strong> (250mb, roughly 34,000 ft), both from Open-Meteo's Forecast API, drawn as a smooth color map exactly like Waves and Air: blue/green for calm through yellow/orange/red/purple for very strong wind. Refreshes every 10 minutes in the background. Want an animated flow instead of a static color map? See the <strong>Wind Particles</strong> overlay pill in <a href="#overlays">Overlays</a> below.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-bar></use></svg></div>
@@ -25951,6 +26067,11 @@ function lqmSetTZ(tz) {
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-bolt></use></svg></div>
       <div class="fc-title">LIGHTNING STRIKES</div>
       <p class="fc-body">Plots live lightning strike locations as they occur, real-time strike data.</p>
+    </div>
+    <div class="feature-card">
+      <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg></div>
+      <div class="fc-title">WIND PARTICLES</div>
+      <p class="fc-body">An animated flow of small particles that streams across the map along the real Surface Wind (10m) direction, colored blue/green for calm through yellow/orange/red/purple for strong wind. Independent of the Wind layer's color map above, both can be on together. Tune <strong>Speed</strong>, <strong>Intensity</strong>, and <strong>Thickness</strong> under <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gear></use></svg> Settings → Wind Particles.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-radio></use></svg></div>
@@ -27880,6 +28001,24 @@ function lqmSetAlertOpacity(val) {
   if (pane) pane.style.opacity = val/100;
 }
 
+function lqmSetWindPtSpeed(val) {
+  const mult = val / 100;
+  document.getElementById('lqm-windptspeed-val').textContent = mult.toFixed(2) + 'x';
+  try { localStorage.setItem('lqm_windptspeed', val); } catch(e){}
+  _windPtSpeed = mult;
+}
+function lqmSetWindPtIntensity(val) {
+  document.getElementById('lqm-windptintensity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_windptintensity', val); } catch(e){}
+  _windPtIntensity = val / 100;
+}
+function lqmSetWindPtThickness(val) {
+  const px = val / 10;
+  document.getElementById('lqm-windptthickness-val').textContent = px.toFixed(1) + 'px';
+  try { localStorage.setItem('lqm_windptthickness', val); } catch(e){}
+  _windPtThickness = px;
+}
+
 // Extend lqmToggleSetting for new options
 const _origLqmToggle = lqmToggleSetting;
 lqmToggleSetting = function(key, val) {
@@ -27931,6 +28070,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ls) { const el=document.getElementById('lqm-set-loopspeed'); if(el){el.value=ls;lqmSetLoopSpeed(ls);} }
     const ao = localStorage.getItem('lqm_alertopacity');
     if (ao) { const el=document.getElementById('lqm-set-alertopacity'); if(el){el.value=ao;lqmSetAlertOpacity(ao);} }
+    const wps = localStorage.getItem('lqm_windptspeed');
+    if (wps) { const el=document.getElementById('lqm-set-windptspeed'); if(el){el.value=wps;lqmSetWindPtSpeed(wps);} }
+    const wpi = localStorage.getItem('lqm_windptintensity');
+    if (wpi) { const el=document.getElementById('lqm-set-windptintensity'); if(el){el.value=wpi;lqmSetWindPtIntensity(wpi);} }
+    const wpt = localStorage.getItem('lqm_windptthickness');
+    if (wpt) { const el=document.getElementById('lqm-set-windptthickness'); if(el){el.value=wpt;lqmSetWindPtThickness(wpt);} }
     if (localStorage.getItem('lqm_crosshair')==='1') { document.getElementById('lqm-set-crosshair').checked=true; document.body.classList.add('gwcfc-crosshair'); }
     if (localStorage.getItem('lqm_contrast')==='1')  { document.getElementById('lqm-set-contrast').checked=true; }
     if (localStorage.getItem('lqm_coords')==='1')    { const el=document.getElementById('lqm-set-coords'); if(el){el.checked=true;lqmToggleSetting('coords',true);} }
@@ -28763,6 +28908,9 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning Strikes - real-time strike data">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning Strikes</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-wind-particles" data-ovid="wind-particles" title="Wind Particles - animated flow showing real-time Surface Wind direction and speed">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wind-particles')">Wind Particles</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-cloudcam" data-ovid="cloudcam" title="Cloud Capture - submit weather photos to the map">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('cloudcam')">Cloud Capture</span><span class="ov-drag" title="Drag to reorder">⠿</span>
