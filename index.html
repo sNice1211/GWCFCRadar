@@ -7435,7 +7435,6 @@ let goesLayer = null;
 let alertsLayer = null, spcLayer = null, lightningMarkers = [];
 let radarFrames = [], currentFrame = 0, playing = false, playTimer = null;
 let animSpeed = 1.5, radarOpacity = 0.85;
-let _pendingFrameTick = null, _pendingCanadaTick = null;
 let currentProduct = 'ref', currentModel = 'gfs', currentModelVar = 'precip';
 
 // ── AMBIENT WEATHER NETWORK CREDENTIALS ─────────────────────────────
@@ -8178,53 +8177,6 @@ function _switchSlotToWms(i) {
   l.addTo(map);
   _radarLayerPool[i] = l;
   // Do NOT reveal here - wait for tiles to load first (immediate setOpacity showed blank)
-}
-
-// Pre-warm browser HTTP cache + SW cache for tiles at a specific zoom level.
-// Uses map center + viewport size to compute the tile range that would be visible
-// at zoom z (different from current zoom when pre-warming for zoom-out/in).
-// priority: 'high' for the current frame's tiles, 'low' otherwise.
-function _prefetchRadarTilesAtZoom(tileKey, z, priority) {
-  if (!map) return;
-  try {
-    z = Math.min(Math.max(z, 2), 9); // IEM tile cache: z2–z9
-    const center   = map.getCenter();
-    const size     = map.getSize();
-    const crs      = map.options.crs;
-    const clamp    = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-    const nTiles   = 1 << z;
-    const centerPt = crs.latLngToPoint(center, z);
-    // High-priority (current frame): 1 tile padding; background: no padding
-    const pad = priority === 'high' ? 256 : 0;
-    const x0 = clamp(Math.floor((centerPt.x - size.x / 2 - pad) / 256), 0, nTiles - 1);
-    const x1 = clamp(Math.floor((centerPt.x + size.x / 2 + pad) / 256), 0, nTiles - 1);
-    const y0 = clamp(Math.floor((centerPt.y - size.y / 2 - pad) / 256), 0, nTiles - 1);
-    const y1 = clamp(Math.floor((centerPt.y + size.y / 2 + pad) / 256), 0, nTiles - 1);
-    const base = `${IEM_TILE_BASE}${tileKey}/${z}/`;
-    for (let x = x0; x <= x1; x++) {
-      for (let y = y0; y <= y1; y++) {
-        const img = new Image();
-        if (priority) img.fetchPriority = priority;
-        img.src = base + `${x}/${y}.png`;
-      }
-    }
-  } catch(_) {}
-}
-
-// Pre-warm current zoom only for background frames; current frame also warms
-// 3 zoom levels below so zoom-out transitions hit cache. isCurrentFrame=true → high-priority.
-function _prefetchRadarTiles(tileKey, isCurrentFrame) {
-  if (!map) return;
-  const curZ = Math.min(map.getZoom(), 9);
-  _prefetchRadarTilesAtZoom(tileKey, curZ, isCurrentFrame ? 'high' : 'low');
-  // Only pre-warm lower zooms for the visible frame - doing it for all frames
-  // multiplies request count by 4x and caused ~9000 tile fetches on load.
-  if (isCurrentFrame) {
-    for (let dz = 1; dz <= 3; dz++) {
-      const z = curZ - dz;
-      if (z >= 2) setTimeout(() => _prefetchRadarTilesAtZoom(tileKey, z, 'low'), dz * 300);
-    }
-  }
 }
 
 
@@ -10762,21 +10714,6 @@ async function loadStormCenters() {
 let tropicalLayers = [];
 let _tropActiveStorms = [];  // populated by loadTropical()
 
-// Storm type display config
-const TROP_TYPE_STYLE = {
-  'HU':  { color: '#ff2200', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', ring: 14, name: 'Hurricane'           },
-  'TY':  { color: '#ff2200', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', ring: 14, name: 'Typhoon'             },
-  'ST':  { color: '#ff0000', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', ring: 16, name: 'Super Typhoon'       },
-  'TS':  { color: '#ff8800', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', ring: 11, name: 'Tropical Storm'      },
-  'TD':  { color: '#ffdd00', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-bolt></use></svg>', ring: 9,  name: 'Tropical Depression' },
-  'SD':  { color: '#ffdd00', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-bolt></use></svg>', ring: 9,  name: 'Subtropical Dep.'    },
-  'SS':  { color: '#ff8800', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', ring: 11, name: 'Subtropical Storm'   },
-  'EX':  { color: '#aaaaff', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-fog></use></svg>', ring: 9,  name: 'Extratropical'       },
-  'LO':  { color: '#aaaaaa', label: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg>', ring: 7,  name: 'Remnant Low'         },
-  'DB':  { color: '#008CBA', label: '◎', ring: 7,  name: 'Disturbance'         },
-  'WV':  { color: '#008CBA', label: '~', ring: 7,  name: 'Tropical Wave'       },
-};
-
 // ─────────────────────────────────────────────────────────────────────────────
 // TROPICAL TRACK DRAWING UTILITIES
 // drawTrackWithTag() draws a colored line + label on the map.
@@ -11145,10 +11082,6 @@ function _ltgStop() {
   _ltgMarkers.clear();
   lightningFlash = [];
 }
-
-// Stubs kept so existing toggle-off code doesn't break
-let _ltgSocket = null;
-let _ltgReconnectTimer = null;
 
 
 function updateModelInfo(model) {
@@ -12075,7 +12008,6 @@ function toggleTempSub() {}
 // below still read them, so the click-to-inspect path degrades to "never fires"
 // rather than throwing on an undefined variable.
 let sstBarbActive = false, sstMapActive = false;
-let _sstBarbLayer = null, _sstMapLayer = null;
 
 // ── SHARED: interpolated color-map overlay (Waves + Air both use this) ──────
 // Open-Meteo's marine/air-quality endpoints are point APIs, not tile servers,
@@ -13901,393 +13833,10 @@ async function _loadChasers() {
   } catch(e) { console.warn('[chasers] all sources failed:', e.message); }
 }
 
-// ── PRECIP SUB-MENU ──
-const _precipLayers = {};
-let _precipActive = {};
-
-function _loadPrecipType(type) {
-  // Use MRMS/Iowa Mesonet WMS for precipitation type overlays
-  const PRECIP_WMS = {
-    rain:  { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi', layer: 'nexrad-n0q-wmst', label: 'Rain', color: '#2196F3' },
-    snow:  { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/mrms/mrms.cgi',    layer: 'mrms_snow',     label: 'Snow', color: '#90CAF9' },
-    hail:  { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi', layer: 'nexrad-n0q-wmst', label: 'Hail', color: '#FFEB3B' },
-    sleet: { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi', layer: 'nexrad-n0q-wmst', label: 'Sleet', color: '#9C27B0' },
-    tstorm:{ url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q-t.cgi', layer: 'nexrad-n0q-wmst', label: 'T-Storms', color: '#FF5722' },
-    tsnow: { url: 'https://mesonet.agron.iastate.edu/cgi-bin/wms/mrms/mrms.cgi',    layer: 'mrms_snow',     label: 'T-Snow', color: '#CE93D8' }
-  };
-  const cfg = PRECIP_WMS[type];
-  if (!cfg) return;
-  if (_precipLayers[type]) { map.removeLayer(_precipLayers[type]); delete _precipLayers[type]; }
-  _precipLayers[type] = L.tileLayer.wms(cfg.url, {
-    layers: cfg.layer, format: 'image/png', transparent: true,
-    opacity: 0.75, attribution: 'Iowa Mesonet'
-  }).addTo(map);
-}
-
-function _removePrecipType(type) {
-  if (_precipLayers[type]) { map.removeLayer(_precipLayers[type]); delete _precipLayers[type]; }
-}
-
 // ── PRESSURE SUB-MENU ──
-
-// Marching-squares linear interpolation helper
-function _isoInterp(v0, v1, level) {
-  if (v1 === v0) return 0.5;
-  return (level - v0) / (v1 - v0);
-}
-
-// ── SHARED WEATHER GRID ─────────────────────────────────────────────────────
-// One 10×10 Open-Meteo fetch powers BOTH pressure isolines AND wind barbs.
-// Cache key = map center rounded to 8°. TTL = 30 minutes.
-let _wxGrid = { pts: [], lats: [], lngs: [], time: 0, clat: 999, clon: 999 };
-let _wxGridFetching = null; // in-flight promise dedup
-
-function toggleTropicalModelPanel() {
-  const panel = document.getElementById('tropical-model-panel');
-  if (!panel) return;
-  const isVisible = panel.style.display === 'flex' || panel.style.display === 'block';
-  panel.style.display = isVisible ? 'none' : 'flex';
-  activeBubbles['models'] = !isVisible;
-  const btn = document.getElementById('sub-models');
-  if (btn) btn.classList.toggle('active', !isVisible);
-  if (!isVisible) {
-    _tropInit();
-  } else {
-    if (typeof _ttStopPlay === 'function') _ttStopPlay();
-  }
-}
-
-// ── TROPICAL MODEL VIEWER (Tropical Tidbits-style) ──
-// Loads pre-rendered model imagery from Tropical Tidbits, falling back
-// to NCEP MAG (NOMADS) if the primary source blocks the request.
-// Mimics tropicaltidbits.com/analysis/models with model/region/parameter/run/frame controls.
 
 const pad  = n => String(n).padStart(2,'0');
 const pad3 = n => String(n).padStart(3,'0');
-
-// Models , frame step in hours, max frame index, which sources to try
-const TT_MODELS = {
-  gfs:        { label: 'GFS',            step: 6,  maxFrame: 41, lag: 4 },
-  ecmwf:      { label: 'ECMWF (Euro)',   step: 6,  maxFrame: 41, lag: 7 },
-  'gefs-avg': { label: 'GEFS Mean',      step: 6,  maxFrame: 41, lag: 5 },
-  cmc:        { label: 'CMC (Canadian)', step: 6,  maxFrame: 41, lag: 7 },
-  icon:       { label: 'ICON (German)',  step: 6,  maxFrame: 31, lag: 5 },
-  nam:        { label: 'NAM',            step: 3,  maxFrame: 29, lag: 3 },
-  rap:        { label: 'RAP',            step: 1,  maxFrame: 21, lag: 2 },
-  hwrf:       { label: 'HWRF',           step: 3,  maxFrame: 43, lag: 5 },
-  'hafs-a':   { label: 'HAFS-A',         step: 3,  maxFrame: 43, lag: 5 },
-  'hafs-b':   { label: 'HAFS-B',         step: 3,  maxFrame: 43, lag: 5 },
-  ukmet:      { label: 'UKMET',          step: 6,  maxFrame: 41, lag: 8 },
-  'aifs':     { label: 'ECMWF AIFS',     step: 6,  maxFrame: 41, lag: 8 },
-};
-
-const TT_REGIONS = [
-  { id: 'natl',   label: 'Atlantic Basin' },
-  { id: 'wlant',  label: 'W. Atlantic / US East' },
-  { id: 'epac',   label: 'East Pacific' },
-  { id: 'cpac',   label: 'Central Pacific' },
-  { id: 'wpac',   label: 'West Pacific' },
-  { id: 'shem',   label: 'Southern Hemisphere' },
-  { id: 'indian', label: 'Indian Ocean' },
-  { id: 'global', label: 'Global' }
-];
-
-// Default parameter set , works on most models
-const TT_PARAMS_DEFAULT = [
-  { id: 'mslp_pcpn', label: 'MSLP + 6h Precip' },
-  { id: 'z500_vort', label: '500mb Vort + Hgt' },
-  { id: 'uv200',     label: '200mb Wind (Jet)' },
-  { id: 'uv850',     label: '850mb Wind' },
-  { id: 'T2m',       label: '2m Temperature' },
-  { id: 'td2m',      label: '2m Dew Point' },
-  { id: 'sfcwind',   label: 'Surface Wind' },
-  { id: 'cape_cin',  label: 'CAPE / CIN' },
-  { id: 'prec_t',    label: 'Total Precip' },
-  { id: 'prec_acc',  label: '24h Precip Accum' },
-  { id: 'tcwv',      label: 'Precipitable Water' },
-  { id: 'temp_850',  label: '850mb Temperature' },
-  { id: 'rh_700',    label: '700mb Rel. Humidity' },
-  { id: 'snowfall',  label: 'Snow Accumulation' },
-];
-
-// ECMWF parameter naming differs slightly
-const TT_PARAMS_ECMWF = [
-  { id: 'mslp_uv850', label: 'MSLP + 850mb Wind' },
-  { id: 'z500_vort',  label: '500mb Vort + Hgt' },
-  { id: 'uv200',      label: '200mb Wind (Jet)' },
-  { id: 'uv850',      label: '850mb Wind' },
-  { id: 'T2m',        label: '2m Temperature' },
-  { id: 'td2m',       label: '2m Dew Point' },
-  { id: 'sfcwind',    label: 'Surface Wind' },
-  { id: 'cape_cin',   label: 'CAPE / CIN' },
-  { id: 'prec_t',     label: 'Total Precip' },
-  { id: 'tcwv',       label: 'Precipitable Water' },
-  { id: 'temp_850',   label: '850mb Temperature' },
-];
-
-// NAM-specific param list (3h steps, 84h range)
-const TT_PARAMS_NAM = [
-  { id: 'mslp_pcpn', label: 'MSLP + 6h Precip' },
-  { id: 'z500_vort', label: '500mb Vort + Hgt' },
-  { id: 'uv850',     label: '850mb Wind' },
-  { id: 'T2m',       label: '2m Temperature' },
-  { id: 'td2m',      label: '2m Dew Point' },
-  { id: 'sfcwind',   label: 'Surface Wind' },
-  { id: 'cape_cin',  label: 'CAPE / CIN' },
-  { id: 'prec_t',    label: 'Total Precip' },
-  { id: 'tcwv',      label: 'Precipitable Water' },
-  { id: 'temp_850',  label: '850mb Temperature' },
-  { id: 'snowfall',  label: 'Snow Accumulation' },
-];
-
-let _ttModel  = 'gfs';
-let _ttRegion = 'natl';
-let _ttParam  = 'mslp_pcpn';
-let _ttRun    = '';
-let _ttFrame  = 1;
-let _ttPlaying = false;
-let _ttPlayTimer = null;
-let _ttLoadToken = 0;
-
-function _ttGetParams() {
-  if (_ttModel === 'ecmwf' || _ttModel === 'aifs') return TT_PARAMS_ECMWF;
-  if (_ttModel === 'nam' || _ttModel === 'rap') return TT_PARAMS_NAM;
-  return TT_PARAMS_DEFAULT;
-}
-
-function _ttGenerateRuns() {
-  // Generate last 8 model run timestamps (00z, 06z, 12z, 18z cycles)
-  const lagH = TT_MODELS[_ttModel]?.lag || 5;
-  const now = new Date();
-  const adj = new Date(now.getTime() - lagH * 3600000);
-  let hr = adj.getUTCHours();
-  hr = hr - (hr % 6);
-  const runs = [];
-  const start = new Date(Date.UTC(adj.getUTCFullYear(), adj.getUTCMonth(), adj.getUTCDate(), hr, 0, 0));
-  for (let i = 0; i < 8; i++) {
-    const t = new Date(start.getTime() - i * 6 * 3600000);
-    const stamp = `${t.getUTCFullYear()}${pad(t.getUTCMonth()+1)}${pad(t.getUTCDate())}${pad(t.getUTCHours())}`;
-    const lbl = (i === 0 ? 'Latest · ' : '') + `${pad(t.getUTCMonth()+1)}/${pad(t.getUTCDate())} ${pad(t.getUTCHours())}z`;
-    runs.push({ value: stamp, label: lbl });
-  }
-  return runs;
-}
-
-function _ttBuildUrls() {
-  // Returns ordered list of {src, url} candidates , try in order until one loads.
-  const m = _ttModel, p = _ttParam, r = _ttRegion, run = _ttRun, fh = _ttFrame;
-  const urls = [];
-
-  // 1. Tropical Tidbits (primary, best look)
-  urls.push({
-    src: 'Tropical Tidbits',
-    url: `https://www.tropicaltidbits.com/analysis/models/${m}/${run}/${m}_${p}_${r}_${fh}.png`
-  });
-
-  // 2. NCEP MAG / NOMADS (fallback , only certain models & params)
-  const magModel = ({ gfs: 'gfs', 'gefs-avg': 'gefs', nam: 'nam', rap: 'rap' })[m];
-  const magParam = ({
-    mslp_pcpn:  'mslp_thk_precip',
-    mslp_uv850: '850_wind',
-    z500_vort:  '500_vort_ht',
-    uv200:      '250_wind',
-    uv850:      '850_wind',
-    T2m:        '2m_temp',
-    td2m:       '2m_dewpt',
-    sfcwind:    'sfc_wind',
-    cape_cin:   'cape_cin',
-    prec_t:     'total_precip',
-    prec_acc:   '24hr_precip',
-    tcwv:       'pwat',
-    temp_850:   '850_temp',
-    rh_700:     '700_rh',
-    snowfall:   'snowfall',
-  })[p];
-  const magRegion = ({
-    natl:   'tatl',
-    wlant:  'tatl',
-    epac:   'tpac',
-    cpac:   'tpac',
-    wpac:   'wpac',
-    global: 'global',
-    shem:   'shem',
-    indian: 'indian'
-  })[r] || 'namer';
-  const magFrame = String((fh - 1) * (TT_MODELS[m]?.step || 6)).padStart(3, '0');
-  if (magModel && magParam) {
-    urls.push({
-      src: 'NCEP MAG',
-      url: `https://mag.ncep.noaa.gov/data/${magModel}/${run}/${magModel}_${magRegion}_${magFrame}_${magParam}.gif`
-    });
-  }
-
-  return urls;
-}
-
-function _ttForecastValid() {
-  if (!_ttRun || _ttRun.length < 10) return '-';
-  const step = TT_MODELS[_ttModel]?.step || 6;
-  const fhHours = (_ttFrame - 1) * step; // frame 1 = analysis (T+0)
-  const yr = parseInt(_ttRun.slice(0,4));
-  const mo = parseInt(_ttRun.slice(4,6)) - 1;
-  const da = parseInt(_ttRun.slice(6,8));
-  const hr = parseInt(_ttRun.slice(8,10));
-  const baseTime = Date.UTC(yr, mo, da, hr);
-  const valid = new Date(baseTime + fhHours * 3600000);
-  const days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  return `${days[valid.getUTCDay()]} ${pad(valid.getUTCMonth()+1)}/${pad(valid.getUTCDate())} ${pad(valid.getUTCHours())}z (+${fhHours}h)`;
-}
-
-function _ttLoad() {
-  const img      = document.getElementById('tt-image');
-  const loader   = document.getElementById('tt-loader');
-  const errBox   = document.getElementById('tt-error');
-  const srcLbl   = document.getElementById('tt-src');
-  const validLbl = document.getElementById('tt-valid');
-  const runLbl   = document.getElementById('tt-run-info');
-  const frameLbl = document.getElementById('tt-frame-label');
-  if (!img) return;
-
-  _ttLoadToken++;
-  const myToken = _ttLoadToken;
-  const candidates = _ttBuildUrls();
-
-  loader.classList.add('show');
-  errBox.classList.remove('show');
-  img.classList.add('hidden');
-
-  if (validLbl) validLbl.textContent = _ttForecastValid();
-  if (runLbl)   runLbl.textContent   = _ttRun
-    ? `${_ttRun.slice(0,4)}-${_ttRun.slice(4,6)}-${_ttRun.slice(6,8)} ${_ttRun.slice(8,10)}z`
-    : '-';
-
-  const step = TT_MODELS[_ttModel]?.step || 6;
-  const fhHours = (_ttFrame - 1) * step;
-  if (frameLbl) frameLbl.textContent = `F+${fhHours}h`;
-
-  let idx = 0;
-  function tryNext() {
-    if (myToken !== _ttLoadToken) return; // a newer load superseded
-    if (idx >= candidates.length) {
-      loader.classList.remove('show');
-      errBox.classList.add('show');
-      if (srcLbl) srcLbl.textContent = 'Unavailable';
-      return;
-    }
-    const candidate = candidates[idx++];
-    const probe = new Image();
-    probe.referrerPolicy = 'no-referrer';
-    probe.crossOrigin = 'anonymous';
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      tryNext();
-    }, 8000);
-    probe.onload = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (myToken !== _ttLoadToken) return;
-      img.src = candidate.url;
-      img.classList.remove('hidden');
-      loader.classList.remove('show');
-      if (srcLbl) srcLbl.textContent = candidate.src;
-    };
-    probe.onerror = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (myToken !== _ttLoadToken) return;
-      tryNext();
-    };
-    probe.src = candidate.url;
-  }
-  tryNext();
-}
-
-function _ttStep(d) {
-  const max = TT_MODELS[_ttModel]?.maxFrame || 41;
-  let next = _ttFrame + d;
-  if (next < 1)   next = max;
-  if (next > max) next = 1;
-  _ttFrame = next;
-  const sl = document.getElementById('tt-frame-slider');
-  if (sl) sl.value = String(next);
-  _ttLoad();
-}
-
-
-function _ttStopPlay() {
-  if (_ttPlayTimer) { clearInterval(_ttPlayTimer); _ttPlayTimer = null; }
-  _ttPlaying = false;
-  const btn = document.getElementById('tt-play');
-  if (btn) {
-    btn.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Play';
-    btn.classList.remove('playing');
-  }
-}
-
-function _ttPopulateDropdowns(rebuildParamsAndRuns) {
-  const modelSel  = document.getElementById('tt-model');
-  const regionSel = document.getElementById('tt-region');
-  const paramSel  = document.getElementById('tt-param');
-  const runSel    = document.getElementById('tt-run');
-  const slider    = document.getElementById('tt-frame-slider');
-
-  if (modelSel && !modelSel.options.length) {
-    Object.entries(TT_MODELS).forEach(([id, cfg]) => {
-      const opt = document.createElement('option');
-      opt.value = id; opt.textContent = cfg.label;
-      modelSel.appendChild(opt);
-    });
-  }
-  if (modelSel) modelSel.value = _ttModel;
-
-  if (regionSel && !regionSel.options.length) {
-    TT_REGIONS.forEach(r => {
-      const opt = document.createElement('option');
-      opt.value = r.id; opt.textContent = r.label;
-      regionSel.appendChild(opt);
-    });
-  }
-  if (regionSel) regionSel.value = _ttRegion;
-
-  if (paramSel && (rebuildParamsAndRuns || !paramSel.options.length)) {
-    paramSel.innerHTML = '';
-    _ttGetParams().forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p.id; opt.textContent = p.label;
-      paramSel.appendChild(opt);
-    });
-  }
-  if (paramSel) paramSel.value = _ttParam;
-
-  if (runSel && (rebuildParamsAndRuns || !runSel.options.length)) {
-    runSel.innerHTML = '';
-    const runs = _ttGenerateRuns();
-    runs.forEach(r => {
-      const opt = document.createElement('option');
-      opt.value = r.value; opt.textContent = r.label;
-      runSel.appendChild(opt);
-    });
-    if (!_ttRun || rebuildParamsAndRuns) _ttRun = runs[0].value;
-  }
-  if (runSel) runSel.value = _ttRun;
-
-  const cfg = TT_MODELS[_ttModel];
-  if (slider && cfg) {
-    slider.max = String(cfg.maxFrame);
-    if (_ttFrame > cfg.maxFrame) _ttFrame = 1;
-    slider.value = String(_ttFrame);
-  }
-}
-
-// Public init , called by toggleTropicalModelPanel when opening
-function _tropInit() {
-  _ttPopulateDropdowns(false);
-  _ttLoad();
-}
 
 // ── IEM MODEL WMS ENGINE ─────────────────────────────────────────────────────
 // Uses Iowa Environmental Mesonet WMS tile services (mesonet.agron.iastate.edu).
@@ -15370,9 +14919,6 @@ function showToast(msg, durationMs) {
   t._tid = setTimeout(() => { t.style.opacity = '0'; }, durationMs || 3000);
 }
 
-// Play through forecast frames; if none available, show a clear message.
-let _fcstPlayTimer = null;
-
 const RADAR_SUB_BUBBLES = [
   { id:'reflectivity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
   { id:'velocity',     icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
@@ -16012,135 +15558,6 @@ function _clearTropTrackLayers() {
   _tropTrackLayers = [];
 }
 
-function _fnv3SwitchTab(tab) {
-  const atcfBody      = document.getElementById('fnv3-atcf-body');
-  const runmodelsBody = document.getElementById('fnv3-runmodels-body');
-  document.querySelectorAll('.fnv3-tab').forEach(t =>
-    t.classList.toggle('active', t.id === 'fnv3-tab-' + tab));
-  if (atcfBody)      atcfBody.style.display      = tab === 'spaghetti' ? 'block' : 'none';
-  if (runmodelsBody) runmodelsBody.style.display  = tab === 'runmodels' ? 'block' : 'none';
-  if (tab === 'spaghetti') {
-    _clearTropTrackLayers();
-  } else {
-    _clearTropTrackLayers();
-    if (tab === 'runmodels') _magInit();
-  }
-}
-
-// ── RUN MODELS ────────────────────────────────────────────────────────────────
-
-const MAG_FH_STEPS = [0,6,12,18,24,30,36,42,48,54,60,66,72,78,84,90,96,102,108,114,120];
-
-// NCEP MAG , government server, publicly accessible, no hotlink protection
-const MAG_PKG = {
-  mslp_precip:  'mslp_thk_precip',
-  '850wind':    '850_wind',
-  '200wind':    '250_wind',
-  wind_shear:   '200_850_shear',
-  precip_water: 'pwat',
-  z500_vort:    '500_vort_ht',
-  t2m:          '2m_temp',
-};
-const MAG_REGION = { namer: 'namer', tropatl: 'tatl', epac: 'tpac', nhem: 'nhem' };
-
-let _magCurrentPkg    = 'mslp_precip';
-let _magCurrentModel  = 'gfs';
-let _magCurrentRegion = 'tropatl';
-let _magCurrentCycle  = '00';
-let _magCurrentFh     = 0;
-let _magLoadToken     = 0;
-
-function _magAutoSelectCycle() {
-  const h = new Date().getUTCHours();
-  if (h >= 22) return '18';
-  if (h >= 16) return '12';
-  if (h >= 10) return '06';
-  if (h >= 4)  return '00';
-  return '18';
-}
-
-function _magBuildRun(cycle) {
-  const cc = parseInt(cycle, 10);
-  const now = new Date();
-  const d   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), cc));
-  if (d > now) d.setUTCDate(d.getUTCDate() - 1);
-  return `${d.getUTCFullYear()}${String(d.getUTCMonth()+1).padStart(2,'0')}${String(d.getUTCDate()).padStart(2,'0')}${String(cc).padStart(2,'0')}`;
-}
-
-function _magBuildUrl(model, pkg, region, cycle, fhIdx) {
-  if (!MAG_PKG[pkg]) return null;
-  const run    = _magBuildRun(cycle);
-  const fhr    = String(MAG_FH_STEPS[fhIdx] ?? 0).padStart(3, '0');
-  const reg    = MAG_REGION[region] || 'tatl';
-  return `https://mag.ncep.noaa.gov/data/${model}/${run}/${model}_${reg}_${fhr}_${MAG_PKG[pkg]}.gif`;
-}
-
-function _magSetPkg(pkg) {
-  _magCurrentPkg = pkg;
-  document.querySelectorAll('#mag-product-tabs .trop-stab').forEach(t =>
-    t.classList.toggle('active', t.dataset.pkg === pkg));
-  _magUpdate();
-}
-
-function _magFhChange(val) {
-  _magCurrentFh = parseInt(val, 10);
-  const fh = MAG_FH_STEPS[_magCurrentFh] ?? 0;
-  const lbl = document.getElementById('mag-fh-label');
-  if (lbl) lbl.textContent = 'F' + String(fh).padStart(3, '0');
-  _magUpdate();
-}
-
-function _magUpdate() {
-  const modelSel  = document.getElementById('mag-model-sel');
-  const cycleSel  = document.getElementById('mag-cycle-sel');
-  const regionSel = document.getElementById('mag-region-sel');
-  if (modelSel)  _magCurrentModel  = modelSel.value;
-  if (cycleSel)  _magCurrentCycle  = cycleSel.value;
-  if (regionSel) _magCurrentRegion = regionSel.value;
-
-  const url = _magBuildUrl(_magCurrentModel, _magCurrentPkg, _magCurrentRegion, _magCurrentCycle, _magCurrentFh);
-  const img = document.getElementById('mag-img');
-  const st  = document.getElementById('mag-img-status');
-  const dbg = document.getElementById('mag-debug-url');
-
-  if (!url) { if (st) st.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-warning></use></svg> Product not available.'; return; }
-
-  // Show URL as a clickable link for debugging
-  if (dbg) dbg.innerHTML = `<a href="${url}" target="_blank" rel="noopener" style="color:rgba(0,140,186,0.45)">${url}</a>`;
-  if (st) st.textContent = 'Loading…';
-  if (img) img.style.display = 'none';
-
-  const token = ++_magLoadToken;
-
-  // wsrv.nl fetches the image server-side and relays the bytes , bypasses MAG hotlink blocks
-  const proxyUrl = 'https://wsrv.nl/?url=' + encodeURIComponent(url) + '&n=-1';
-
-  img.onload = () => {
-    if (token !== _magLoadToken) return;
-    img.style.display = 'block';
-    if (st) st.textContent = '';
-  };
-  img.onerror = () => {
-    if (token !== _magLoadToken) return;
-    if (st) st.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-warning></use></svg> Run not available , try a different cycle or hour.';
-  };
-  img.src = proxyUrl;
-}
-
-function _magInit() {
-  const c = _magAutoSelectCycle();
-  _magCurrentCycle = c;
-  _magCurrentFh    = 0;
-  const cycleSel = document.getElementById('mag-cycle-sel');
-  if (cycleSel) cycleSel.value = c;
-  const slider = document.getElementById('mag-fh-slider');
-  if (slider) { slider.max = MAG_FH_STEPS.length - 1; slider.value = 0; }
-  const lbl = document.getElementById('mag-fh-label');
-  if (lbl) lbl.textContent = 'F000';
-  _magUpdate();
-}
-// ── END RUN MODELS ────────────────────────────────────────────────────────────
-
 // ── RUN MODELS PANEL & SPAGHETTI MODELS PANEL ────────────────────────────────
 // Two fully independent panels - each with its own DOM, its own open/closed
 // state, its own sidebar sub-bubble - rather than one shared panel with a
@@ -16746,14 +16163,6 @@ function _modelsNHCToggle() {
 }
 // ── END UNIFIED MODELS PANEL ─────────────────────────────────────────────────
 
-
-function closeFNV3Panel() {
-  const panel = document.getElementById('fnv3-panel'); if (panel) panel.style.display = 'none';
-  _clearTropTrackLayers();
-  const magImg = document.getElementById('mag-img');
-  if (magImg) magImg.src = '';
-}
-// ── END FNV3 ────────────────────────────────────────────────────────────────
 
 // Run init() on window.load, or after 2 s if load never fires (e.g. CDN timeout).
 window.addEventListener('load', function(){ if(!window._gwInit){window._gwInit=true;init();} });
@@ -18025,10 +17434,6 @@ function _inspColorToDbz(r, g, b) {
   }
   if (best < 0 || bestD > 6000) return null; // too far from any radar color
   return NWS_DBZ_META[best];
-}
-
-function _inspSetReadout(value, unit, color) {
-  _inspRenderRows([{ label: '', value, unit, color }]);
 }
 
 function _inspRenderRows(rows) {
@@ -19588,10 +18993,6 @@ function _ttbMakeIcon(cat, selected) {
   return L.divIcon({ className: '', html, iconAnchor: [half, half] });
 }
 
-function _ttbMakeMarker(latlng, cat, selected) {
-  return L.marker(latlng, { icon: _ttbMakeIcon(cat, selected), interactive: true });
-}
-
 // ── ANIMATION CONTROLS ──
 let playingBack = false, playBackTimer = null;
 let _rafPlayId = null, _rafLastTs = 0;
@@ -19801,9 +19202,6 @@ let _refSiteLoaded = [];
 let _refSiteFrames = [];     // timing frames for single-site REF
 let _refSiteTick   = null;   // stale-interval guard for _showSingleSiteRefFrame
 let _refSiteGen    = 0;      // generation counter; incremented on each _loadSingleSiteRef call
-
-// ── S3 panel state ──
-let _s3CurrentStation = null;
 
 // ── NEXRAD station list with lat/lon for nearest-station lookup ──
 const NEXRAD_STATIONS = [
@@ -20980,13 +20378,6 @@ let _nwrStationCache = [];      // {call, lat, lon, stream} populated by loadNWR
 let _nwrAudioDetectEnabled = false;
 let _nwrAudioMonitor = null; // {call, status, audio, ctx, analyser, _stop}
 
-function _nwrToggleAudioDetect(val) {
-  _nwrAudioDetectEnabled = val;
-  try { localStorage.setItem('nwr_audiodetect', val ? '1' : '0'); } catch(e) {}
-  if (val) _nwrStartAudioDetect(); else _nwrStopAudioDetect();
-  _nwrRenderRecPanel();
-}
-
 function _nwrStartAudioDetect() {
   _nwrStopAudioDetect();
   if (!_nwrStationCache.length) {
@@ -21717,12 +21108,6 @@ async function loadNWRStations() {
 }
 
 
-
-// ── NEXRAD LEVEL III STATION PANEL ──
-// Shows L3 product info when a station is selected; links to NOAA Radar Viewer.
-
-function openS3Panel(stationId) {}
-function closeS3Panel() {}
 
 
 const CITIES = [
@@ -24390,16 +23775,6 @@ async function openForecastModal(city) {
 }
 
 
-// ── SIDEBAR / PANEL TOGGLES ──
-
-function toggleAskPanel() {
-  const panel = document.getElementById('ask-panel');
-  const tab   = document.getElementById('ask-pull-tab');
-  const isOpen = panel.classList.contains('open');
-  panel.classList.toggle('open', !isOpen);
-  tab.classList.toggle('open', !isOpen);
-}
-
 
 // ── PRODUCTS ──
 function selectProduct(p) {
@@ -25507,7 +24882,6 @@ async function _aiExecuteAction(action) {
       currentProduct = 'ref';
     }
     if (typeof _loadSingleSiteRef === 'function') _loadSingleSiteRef(st.id);
-    if (typeof openS3Panel === 'function') openS3Panel(st.id);
     map.flyTo([st.lat, st.lon], Math.max(map.getZoom(), 8), { duration: 1.2 });
     return `Opened ${st.id.toUpperCase()} radar.`;
   }
@@ -27059,32 +26433,6 @@ function lqmCloseEditView() {
   document.getElementById('lqm-view-profile').style.display = '';
 }
 
-function lqmToggleProfileEdit() {
-  const panel = document.getElementById('lqm-profile-edit');
-  const isOpen = panel.classList.toggle('open');
-  if (isOpen) {
-    // Pre-fill name
-    const nameEl = document.getElementById('lqm-edit-name');
-    if (nameEl && _currentUser) nameEl.value = _currentUser.displayName || '';
-    // Build emoji grid once
-    const grid = document.getElementById('lqm-emoji-grid');
-    if (grid && !grid.children.length) {
-      _PROFILE_EMOJIS.forEach(e => {
-        const btn = document.createElement('button');
-        btn.className = 'lqm-emoji-opt' + (e === _selectedEmoji ? ' selected' : '');
-        btn.textContent = e;
-        btn.onclick = () => selectProfileEmoji(e);
-        grid.appendChild(btn);
-      });
-    } else if (grid) {
-      // Refresh selection state
-      grid.querySelectorAll('.lqm-emoji-opt').forEach(b => {
-        b.classList.toggle('selected', b.textContent === _selectedEmoji);
-      });
-    }
-  }
-}
-
 function selectProfileEmoji(emoji) {
   _selectedEmoji = emoji;
   document.querySelectorAll('.lqm-emoji-opt').forEach(b => {
@@ -27864,8 +27212,12 @@ function lqmCloseProfile() {
 }
 
 // ── TUTORIAL OPEN/CLOSE UPDATED ──────────────────────────────
-// Patch closeTutorial to also handle Escape properly
-const _origCloseTutorial = closeTutorial;
+// Escape closes the tutorial modal while it's open
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('tutorial-modal-overlay')?.classList.contains('open')) {
+    closeTutorial();
+  }
+});
 
 // ── INIT ─────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -28076,7 +27428,6 @@ lqmCloseSearch = function() {
 };
 
 // Also enhance lqmDoSearch to use location + save recent
-const _origLqmDoSearch = lqmDoSearch;
 lqmDoSearch = async function() {
   const inp = document.getElementById('lqm-search-input');
   const status = document.getElementById('lqm-search-status');
