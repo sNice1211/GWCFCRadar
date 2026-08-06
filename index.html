@@ -4035,22 +4035,6 @@ body {
 #nwr-rec-body::-webkit-scrollbar-thumb { background: rgba(255,80,80,0.3); }
 @keyframes nwr-blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
 
-/* ── SPAGHETTI MODELS: ENSEMBLE MEAN LAYER (Open-Meteo Ensemble API) ── */
-#sev-ens-row { display: flex; gap: 6px; padding: 6px 0 2px; }
-#sev-ens-row .sev-dd-wrap select { font-size: 9px; }
-#sev-ens-status {
-  font-family: var(--mono); font-size: 9px; color: rgba(232,184,0,0.8);
-  padding: 4px 0 2px; min-height: 12px;
-}
-.sev-ens-btn {
-  width: 100%; margin-top: 6px; padding: 7px 8px;
-  font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
-  background: rgba(232,184,0,0.1); border: 1px solid rgba(232,184,0,0.4);
-  color: #e8b800; border-radius: 7px; cursor: pointer;
-}
-.sev-ens-btn:hover { background: rgba(232,184,0,0.22); }
-.sev-ens-btn.active { background: rgba(232,184,0,0.4); color: #fff; }
-
 /* ── Compare (N-way model+run swipe) - sized to match a primary action
    instead of a small corner toggle ── */
 #sev-compare-btn {
@@ -7046,6 +7030,9 @@ body.clean-mode #clean-hint { opacity: 1; }
             <option value="hrdps">HRDPS (Hi-Res N. America)</option>
             <option value="ndfd">NWS NDFD (US Forecast)</option>
             <option value="hrrr">HRRR (18h)</option>
+            <option value="gfs_ens">GFS Ensemble Mean (NOAA)</option>
+            <option value="icon_ens">ICON Ensemble Mean (DWD)</option>
+            <option value="gem_ens">GEM Ensemble Mean (ECCC)</option>
           </select>
         </div>
         <div class="sev-dd-wrap">
@@ -7089,30 +7076,6 @@ body.clean-mode #clean-hint { opacity: 1; }
           <button class="sev-group-btn" id="sev-save-btn" onclick="_sevSaveGroup()" title="Save the current comparison slots under this name"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-save></use></svg> Save</button>
         </div>
       </div>
-      <div style="border-top:1px solid rgba(255,255,255,0.08);margin:8px 0 4px;"></div>
-      <div class="sev-dd-label"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Ensemble Mean Layer</div>
-      <div id="sev-ens-row">
-        <div class="sev-dd-wrap">
-          <label class="sev-dd-label">Product</label>
-          <select id="sev-ens-var-sel" onchange="_sevEnsVarChange(this.value)">
-            <option value="temperature_2m">2m Temperature</option>
-            <option value="precipitation">Precipitation</option>
-            <option value="wind_speed_10m">10m Wind Speed</option>
-            <option value="wind_gusts_10m">Wind Gusts</option>
-            <option value="surface_pressure">Surface Pressure</option>
-          </select>
-        </div>
-        <div class="sev-dd-wrap">
-          <label class="sev-dd-label">Ensemble Model</label>
-          <select id="sev-ens-model-sel" onchange="_sevEnsModelChange(this.value)">
-            <option value="gfs_seamless">GFS (NOAA, US)</option>
-            <option value="icon_seamless">ICON (DWD, Germany)</option>
-            <option value="gem_global">GEM (ECCC, Canada)</option>
-          </select>
-        </div>
-      </div>
-      <button id="sev-ens-toggle-btn" class="sev-ens-btn" onclick="_sevEnsToggle()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Show Ensemble Mean on Map</button>
-      <div id="sev-ens-status"></div>
     </div>
 
     <!-- SPAGHETTI MODELS: fully independent panel (NHC official track/cone/invests) -->
@@ -14153,11 +14116,25 @@ function _sevRender() {
   if(_sevSection === 'dwd')   { _sevRenderDWD(body);   return; }
   if(GEOMET_LAYERS[_sevSection]) { _sevRenderGeoMet(body); return; }
   if(_sevSection === 'ndfd')  { _sevRenderNDFD(body);  return; }
+  if(SEV_ENSEMBLE_SECTIONS[_sevSection]) { _sevRenderEnsemble(body); return; }
   const ok = _sevRenderIEM(body);
   if(!ok && body && body.innerHTML.includes('⟳')) body.innerHTML=`<div class="trop-model-err">Nothing loaded for this one.</div>`;
 }
 
 let _sevPlaying = false, _sevPlayTimer = null;
+
+// Open-Meteo Ensemble API model ids, keyed by the same dropdown values
+// #sev-model-sel offers, so every place that already switches behavior on
+// _sevSection (products, run list, forecast range, rendering) just adds one
+// lookup here instead of three separate special cases.
+const SEV_ENSEMBLE_SECTIONS = { gfs_ens: 'gfs_seamless', icon_ens: 'icon_seamless', gem_ens: 'gem_global' };
+const SEV_ENS_PRODUCT_LIST = [
+  {v:'temperature_2m',l:'2m Temperature'},
+  {v:'precipitation',l:'Precipitation'},
+  {v:'wind_speed_10m',l:'10m Wind Speed'},
+  {v:'wind_gusts_10m',l:'Wind Gusts'},
+  {v:'surface_pressure',l:'Surface Pressure'},
+];
 
 const SEV_PRODUCTS = {
   hrrr:  [{v:'refc',l:'Reflectivity'},{v:'precip',l:'Precip Type'}],
@@ -14169,8 +14146,11 @@ const SEV_PRODUCTS = {
   hrdps: [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'},{v:'snow',l:'Snow Depth'}],
   // NWS NDFD - the official US forecast grid (CONUS).
   ndfd:  [{v:'temp',l:'Temperature'},{v:'maxt',l:'Max Temp'},{v:'td',l:'Dew Point'},{v:'wind',l:'Wind Speed'},{v:'wdir',l:'Wind Direction'},{v:'sky',l:'Sky Cover'},{v:'pop12',l:'Precip Chance'},{v:'qpf',l:'Precip Amount'},{v:'snow',l:'Snow Amount'},{v:'wx',l:'Weather Type'}],
+  gfs_ens:  SEV_ENS_PRODUCT_LIST,
+  icon_ens: SEV_ENS_PRODUCT_LIST,
+  gem_ens:  SEV_ENS_PRODUCT_LIST,
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp', gfs_ens:'temperature_2m', icon_ens:'temperature_2m', gem_ens:'temperature_2m'};
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -14193,6 +14173,12 @@ const SEV_RUN_CFG = {
   dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
   hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; GeoMet serves the latest run
   ndfd:  { cycleH: 1,  lagH: 1,   maxRuns: 1  }, // continuously updated; anchor to the current hour
+  // Open-Meteo's ensemble endpoint has no concept of picking a past run - it
+  // only ever answers with "now". Same single-entry pattern as NDFD above,
+  // just with zero lag since there's nothing to wait on.
+  gfs_ens:  { cycleH: 1, lagH: 0, maxRuns: 1 },
+  icon_ens: { cycleH: 1, lagH: 0, maxRuns: 1 },
+  gem_ens:  { cycleH: 1, lagH: 0, maxRuns: 1 },
 };
 
 function _sevPopulateRuns() {
@@ -14236,7 +14222,7 @@ const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov',
 
 function _sevFcastDateTime(frame) {
   if (!_sevRun || _sevRun.length < 10) return { date: '-', flbl: 'F+000' };
-  const step = _sevSection === 'ecmwf' ? 6 : 3;
+  const step = _sevStepHoursFor(_sevSection);
   const hrs = frame * step;
   const runMs = Date.UTC(
     parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1,
@@ -14262,7 +14248,7 @@ function _sevBuildFrameGrid() {
   const cols = Math.ceil(Math.sqrt(total));
   grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
   grid.innerHTML = '';
-  const step = _sevSection === 'ecmwf' ? 6 : 3;
+  const step = _sevStepHoursFor(_sevSection);
   for (let i = 0; i <= max; i++) {
     const hrs = i * step;
     const btn = document.createElement('button');
@@ -14412,7 +14398,7 @@ let _sevDraggingIdx = -1;
 let _sevGroups = {}; // name -> [{section,var,run}, ...], persisted to localStorage
 let _sevCurrentGroup = '';
 
-const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR' };
+const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR', gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble' };
 
 // Per-model forecast range, shared by A (via _sevMaxFrame/_sevStartFrame
 // below) and every extra slot, so both A and every comparison slot clamp
@@ -14422,7 +14408,12 @@ function _sevMaxFrameFor(section) {
   if (section === 'dwd')   return 30;
   if (section === 'hrdps') return 16; // 16 × 3h = 48h
   if (section === 'ndfd')  return 32; // 32 × 3h = 96h
+  if (SEV_ENSEMBLE_SECTIONS[section]) return SEV_ENS_MAX_FRAME; // 8 × 6h = 48h
   return 6; // hrrr
+}
+// ecmwf and every ensemble model publish 6-hourly steps; everything else here is 3-hourly.
+function _sevStepHoursFor(section) {
+  return (section === 'ecmwf' || SEV_ENSEMBLE_SECTIONS[section]) ? 6 : 3;
 }
 function _sevMinFrameFor(section, variable) {
   if (section === 'dwd' && DWD_MIN_FRAME[variable]) return DWD_MIN_FRAME[variable];
@@ -14813,25 +14804,22 @@ function _sevToggleCompare() {
   }
 }
 
-// ── RUN MODELS: ENSEMBLE MEAN LAYER (Open-Meteo Ensemble API) ───────────────
-// A persistent world-map color layer for the chosen Product's current
-// ensemble mean from the chosen Ensemble Model (GFS/ICON/GEM) - the same
-// fixed-domain, periodically-refreshed pattern Waves/Air already use.
-// The grid here is intentionally much smaller than Waves/Air's (which fetch
-// one lightweight `current` value per point): an ensemble response carries
+// ── RUN MODELS: ENSEMBLE (Open-Meteo Ensemble API) ──────────────────────────
+// Ensemble is just another entry in the main Model dropdown (SEV_ENSEMBLE_SECTIONS
+// maps its section id to the Open-Meteo model id) and gets the same Run/playbar/
+// frame-grid animation as every other model. The one real difference is how the
+// map layer is produced: instead of swapping a WMS tile URL, we fetch a small
+// grid of points once, average every "_memberNN" key per forecast hour into a
+// mean, and paint one color-map image per frame - then cache all of those
+// frames together so stepping through F+000..F+048 for the same model/product
+// is instant (no re-fetch) until the model, product, or run actually changes.
+// The grid/chunk sizes are intentionally small: an ensemble response carries
 // every member's full hourly series for every point in a chunk, so a large
 // grid means each chunk request is transferring/computing far more data and
 // is more likely to time out. Keeping the grid small and the chunks small
 // (more, lighter requests, run in parallel) is what actually makes this
 // reliable rather than the "unavailable" message the point-forecast Ensemble
 // Spread tool used to show when it lived in the Spaghetti Models panel.
-let _sevEnsActive = false;
-let _sevEnsVar   = 'temperature_2m';
-let _sevEnsModel = 'gfs_seamless';
-let _sevEnsLoadToken = 0;
-let _sevEnsLayer = null;
-let _sevEnsRefreshTimer = null;
-
 const SEV_ENS_VAR_LABELS = {
   temperature_2m:  '2m Temperature',
   precipitation:   'Precipitation',
@@ -14839,8 +14827,9 @@ const SEV_ENS_VAR_LABELS = {
   wind_gusts_10m:  'Wind Gusts',
   surface_pressure:'Surface Pressure',
 };
-const SEV_ENS_MODEL_LABELS = { gfs_seamless: 'GFS', icon_seamless: 'ICON', gem_global: 'GEM' };
 const SEV_ENS_COLS = 18, SEV_ENS_ROWS = 11;
+const SEV_ENS_MAX_FRAME = 8;  // 9 frames: F+000 .. F+048 at a 6h step
+const SEV_ENS_STEP_H = 6;
 const SEV_ENS_SCALES = {
   temperature_2m:   [[-20,[80,0,180]],[0,[0,90,220]],[15,[0,200,60]],[25,[255,204,0]],[32,[255,90,0]],[40,[220,0,0]]],
   precipitation:    [[0,[0,60,140]],[0.02,[0,150,220]],[0.08,[0,220,180]],[0.25,[255,204,0]],[0.6,[255,80,0]],[1.2,[200,0,220]]],
@@ -14849,32 +14838,34 @@ const SEV_ENS_SCALES = {
   surface_pressure: [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]],
 };
 
-function _sevEnsToggle() {
-  _sevEnsActive = !_sevEnsActive;
-  const btn = document.getElementById('sev-ens-toggle-btn');
-  const status = document.getElementById('sev-ens-status');
-  if (_sevEnsActive) {
-    if (btn) { btn.classList.add('active'); btn.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Hide Ensemble Mean Layer'; }
-    _sevEnsLoadLayer();
-    clearInterval(_sevEnsRefreshTimer);
-    _sevEnsRefreshTimer = setInterval(() => _sevEnsLoadLayer(true), 10 * 60 * 1000);
-  } else {
-    if (btn) { btn.classList.remove('active'); btn.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Show Ensemble Mean on Map'; }
-    clearInterval(_sevEnsRefreshTimer); _sevEnsRefreshTimer = null;
-    if (_sevEnsLayer) { try { map.removeLayer(_sevEnsLayer); } catch(e){} _sevEnsLayer = null; }
-    if (status) status.textContent = '';
+// All 9 frames' painted layers for the currently-loaded section|var combo -
+// stepping the frame slider just swaps which cached layer is shown, no
+// network call, as long as the model/product hasn't changed underneath it.
+let _sevEnsFrames = null;
+let _sevEnsFramesKey = '';
+let _sevEnsLoadToken = 0;
+
+function _sevEnsCacheKey() { return `${_sevSection}|${_sevVar}`; }
+
+function _sevEnsShowFrame(body, frames) {
+  const f = frames[_sevFrame];
+  if (f && f.layer) {
+    _sevOverlayLayer = f.layer.addTo(map);
+    if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.85)">${f.statusText}</div>`;
+  } else if (body) {
+    body.innerHTML = `<div class="trop-model-err">No ensemble data for this forecast hour.</div>`;
   }
 }
-function _sevEnsVarChange(v)   { _sevEnsVar   = v; if (_sevEnsActive) _sevEnsLoadLayer(true); }
-function _sevEnsModelChange(m) { _sevEnsModel = m; if (_sevEnsActive) _sevEnsLoadLayer(true); }
 
-async function _sevEnsLoadLayer(forceRefresh) {
-  if (!_sevEnsActive) return;
+async function _sevRenderEnsemble(body) {
+  const key = _sevEnsCacheKey();
+  if (_sevEnsFramesKey === key && _sevEnsFrames) { _sevEnsShowFrame(body, _sevEnsFrames); return; }
+
+  const model = SEV_ENSEMBLE_SECTIONS[_sevSection];
+  const modelLabel = SEV_MODEL_LABELS[_sevSection] || model;
+  const varName = _sevVar;
+  if (body) body.innerHTML = `<div class="trop-model-err">⟳ Loading ${modelLabel} ensemble mean…</div>`;
   const token = ++_sevEnsLoadToken;
-  const status = document.getElementById('sev-ens-status');
-  const varName = _sevEnsVar, model = _sevEnsModel;
-  const modelLabel = SEV_ENS_MODEL_LABELS[model] || model;
-  if (status) status.textContent = `Loading ${modelLabel} ensemble mean…`;
 
   const pts = _sampleGrid(SEV_ENS_COLS, SEV_ENS_ROWS, WORLD_MAP_BOUNDS);
   try {
@@ -14882,30 +14873,38 @@ async function _sevEnsLoadLayer(forceRefresh) {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       return `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latStr}&longitude=${lngStr}` +
-        `&hourly=${varName}&models=${model}&forecast_days=1` +
+        `&hourly=${varName}&models=${model}&forecast_days=3` +
         `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
     }, 15);
     if (token !== _sevEnsLoadToken) return;
 
-    const grid = locations.map(loc => {
-      if (!loc || !loc.hourly) return null;
-      const memberKeys = Object.keys(loc.hourly).filter(k => k.startsWith(varName + '_member'));
-      if (!memberKeys.length) return null;
-      let sum = 0, n = 0;
-      memberKeys.forEach(k => { const v = loc.hourly[k]?.[0]; if (v != null && isFinite(v)) { sum += v; n++; } });
-      return n ? sum / n : null;
-    });
-    if (!grid.some(v => v != null)) throw new Error('no ensemble members in response');
-
     const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
-    const layer = _paintInterpolatedOverlay(grid, SEV_ENS_COLS, SEV_ENS_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale));
+    const frames = [];
+    for (let i = 0; i <= SEV_ENS_MAX_FRAME; i++) {
+      const hourIdx = i * SEV_ENS_STEP_H;
+      const grid = locations.map(loc => {
+        if (!loc || !loc.hourly) return null;
+        const memberKeys = Object.keys(loc.hourly).filter(k => k.startsWith(varName + '_member'));
+        if (!memberKeys.length) return null;
+        let sum = 0, n = 0;
+        memberKeys.forEach(k => { const v = loc.hourly[k]?.[hourIdx]; if (v != null && isFinite(v)) { sum += v; n++; } });
+        return n ? sum / n : null;
+      });
+      if (!grid.some(v => v != null)) { frames.push(null); continue; }
+      const layer = _paintInterpolatedOverlay(grid, SEV_ENS_COLS, SEV_ENS_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale));
+      const { date, flbl } = _sevFcastDateTime(i);
+      frames.push({ layer, statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
+    }
+    if (!frames.some(f => f)) throw new Error('no ensemble members in response');
     if (token !== _sevEnsLoadToken) return;
-    if (_sevEnsLayer) { try { map.removeLayer(_sevEnsLayer); } catch(e){} }
-    _sevEnsLayer = layer.addTo(map);
-    if (status) status.textContent = `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} ensemble mean, now`;
+
+    _sevEnsFrames = frames;
+    _sevEnsFramesKey = key;
+    _sevEnsShowFrame(body, frames);
   } catch(e) {
     console.warn('Run Models ensemble layer error:', e);
-    if (status) status.textContent = `${modelLabel} ensemble data unavailable right now - try a different model.`;
+    if (token !== _sevEnsLoadToken) return;
+    if (body) body.innerHTML = `<div class="trop-model-err">${modelLabel} ensemble data unavailable right now - try a different model.</div>`;
   }
 }
 
@@ -25974,12 +25973,14 @@ function lqmSetTZ(tz) {
       <div class="fc-title">NWS NDFD (US Forecast)</div>
       <p class="fc-body">The official US forecast grid. Temperature, Max Temp, Dew Point, Wind Speed/Direction, Sky Cover, Precip Chance/Amount, Snow Amount, and Weather Type.</p>
     </div>
+    <div class="feature-card">
+      <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg></div>
+      <div class="fc-title">Ensemble Mean (GFS / ICON / GEM)</div>
+      <p class="fc-body">Pick any of the three Ensemble Mean entries to see that model's members averaged into one smooth color layer, out to F+048 in 6h steps. Variables: 2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, Surface Pressure.</p>
+    </div>
   </div>
 
-  <p>Use the <strong>Run</strong> selector and hour slider (or <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Play) to step through the forecast for whichever model and variable you've picked.</p>
-
-  <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Ensemble Mean Layer</h3>
-  <p>Below the Compare button, pick a <strong>Product</strong> (2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, or Surface Pressure) and an <strong>Ensemble Model</strong> (GFS from NOAA, ICON from DWD Germany, or GEM from ECCC Canada), then tap <strong>Show Ensemble Mean on Map</strong> for a smooth color layer of that exact model's current ensemble mean, right on the map, refreshing every 10 minutes like the Waves and Air layers. Tap it again to hide it.</p>
+  <p>Use the <strong>Run</strong> selector and hour slider (or <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Play) to step through the forecast for whichever model and variable you've picked, this works the same way for the Ensemble Mean models too, since Open-Meteo's ensemble data only ever has one "Latest" run, the Run selector just shows that single entry.</p>
 
   <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> Compare Runs / Models</h3>
   <p>Tap <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> Compare Runs / Models</strong> inside Run Models to split the map into side-by-side panes, each an independent Model/Product/Run combination, so you can compare two different models (or two runs of the same model) at the same forecast hour without switching back and forth. Drag the <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> divider on the map to resize either side; <strong>+ Add Comparison</strong> adds another pane. Under <strong>Saved Comparisons</strong>, type a name and hit <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-save></use></svg> Save</strong> to store the current set of panes, then reload it later from the dropdown, edit any pane afterward and it detaches from the saved name until you save it again.</p>
