@@ -1403,6 +1403,7 @@ body {
   }
   .sub-bubble-main .sb-label { display: none; }
   .sub-bubble-main .sb-icon { font-size: 15px; }
+  .sub-bubble-main .sb-drag { display: none; }
 
   /* Active main bubble , show its label again so you can tell what's on */
   .sub-bubble-main.active {
@@ -1413,6 +1414,7 @@ body {
   }
   .sub-bubble-main.active .sb-label { display: inline; }
   .sub-bubble-main.active .sb-icon { font-size: 13px; }
+  .sub-bubble-main.active .sb-drag { display: flex; }
 
   /* Float buttons , tighter on tiny screens */
   #lqm-ai-btn { bottom: var(--fab-bottom, 80px); width: 40px; height: 40px; }
@@ -1765,6 +1767,15 @@ body {
   transform: translateY(-2px);
 }
 .sub-bubble .sb-icon { font-size: 13px; }
+.sub-bubble-main.dragging { opacity: 0.45; border-style: dashed; }
+.sb-drag {
+  flex-shrink: 0; cursor: grab; touch-action: none;
+  padding: 2px 3px; margin: -4px -6px -4px 2px;
+  color: rgba(255,255,255,0.35); font-size: 12px; line-height: 0.7; letter-spacing: 1px;
+  display: flex; align-items: center;
+}
+.sb-drag:hover { color: #ffd700; }
+.sb-drag:active { cursor: grabbing; }
 
 /* ── SATELLITE REGION SELECTOR ── */
 #sat-region-row {
@@ -15463,10 +15474,28 @@ function hideSubBubbles() {
   if (wrap) { wrap.innerHTML = ''; wrap.style.display = 'none'; }
 }
 
+// Same fixed set of layer buttons (BASE_BUBBLES) is reused across every tab,
+// so their custom order is saved once, not per-tab, and applied here before
+// rendering.
+const SB_ORDER_KEY = 'gwcfc_bubble_order';
+function _sbApplyOrder(bubbles) {
+  let order = [];
+  try { order = JSON.parse(localStorage.getItem(SB_ORDER_KEY) || '[]'); } catch(e) {}
+  if (!Array.isArray(order) || !order.length) return bubbles;
+  const byId = new Map(bubbles.map(b => [b.id, b]));
+  const ordered = order.map(id => byId.get(id)).filter(Boolean);
+  bubbles.forEach(b => { if (!order.includes(b.id)) ordered.push(b); });
+  return ordered;
+}
+function _sbSaveOrder() {
+  const ids = Array.from(document.querySelectorAll('#sub-bubbles .sub-bubble-main')).map(el => el.id.replace(/^sub-/, ''));
+  try { localStorage.setItem(SB_ORDER_KEY, JSON.stringify(ids)); } catch(e) {}
+}
+
 function renderSubBubbles(tab) {
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
-  const bubbles = TAB_BUBBLES[tab] || [];
+  const bubbles = _sbApplyOrder(TAB_BUBBLES[tab] || []);
   bubbles.forEach(b => {
     const el = document.createElement('div');
     const isActive = _getBubbleActive(b.id);
@@ -15481,10 +15510,52 @@ function renderSubBubbles(tab) {
       b.action();
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
+    const drag = document.createElement('span');
+    drag.className = 'sb-drag';
+    drag.title = 'Drag to reorder';
+    drag.textContent = '⠿';
+    el.appendChild(drag);
     wrap.appendChild(el);
   });
   wrap.style.display = bubbles.length ? 'flex' : 'none';
 }
+
+// Same pointer-based drag-reorder as the overlay pills list (_ovDragInit),
+// vertical (clientY) since #sub-bubbles is a column, same as that list.
+(function _sbDragInit() {
+  let drag = null;
+  function rows() { return Array.from(document.querySelectorAll('#sub-bubbles .sub-bubble-main')); }
+  function onDown(e) {
+    const handle = e.target.closest('.sb-drag'); if (!handle) return;
+    const row = handle.closest('.sub-bubble-main'); if (!row) return;
+    e.preventDefault();
+    drag = { row };
+    row.classList.add('dragging');
+    try { handle.setPointerCapture(e.pointerId); } catch(_) {}
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp, { once: true });
+    document.addEventListener('pointercancel', onUp, { once: true });
+  }
+  function onMove(e) {
+    if (!drag) return;
+    const wrap = document.getElementById('sub-bubbles'); if (!wrap) return;
+    const others = rows().filter(r => r !== drag.row);
+    let placed = false;
+    for (const sib of others) {
+      const rect = sib.getBoundingClientRect();
+      if (e.clientY < rect.top + rect.height / 2) { wrap.insertBefore(drag.row, sib); placed = true; break; }
+    }
+    if (!placed) wrap.appendChild(drag.row);
+  }
+  function onUp() {
+    if (!drag) return;
+    drag.row.classList.remove('dragging');
+    drag = null;
+    document.removeEventListener('pointermove', onMove);
+    _sbSaveOrder();
+  }
+  document.addEventListener('pointerdown', onDown);
+})();
 
 
 const TAB_SECTIONS = {
@@ -18084,14 +18155,14 @@ function _inspRadarRow(center, cx, cy) {
   return { label: 'Radar', value: '~ color', unit: `rgb(${s.r},${s.g},${s.b})`, color: `rgb(${s.r},${s.g},${s.b})` };
 }
 
-// Satellite (GOES) and Run Models are third-party colorized WMS imagery with
-// no client-side lookup table to decode a pixel color back into a physical
-// value, so unlike Radar/Waves/Air this can only ever report what's on
-// screen, not a calibrated reading. Most IR/water-vapor channels are
-// rendered close to grayscale (r/g/b nearly equal), so for those we report
-// a genuine 0-100% brightness instead of an opaque "~ color" placeholder;
-// truly colorized/enhanced imagery gets a clearly-labeled color swatch
-// instead of pretending the RGB triplet is itself a "value".
+// Run Models is third-party colorized WMS imagery with no client-side
+// lookup table to decode a pixel color back into a physical value, so
+// unlike Radar/Waves/Air this can only ever report what's on screen, not a
+// calibrated reading. Most channels are rendered close to grayscale (r/g/b
+// nearly equal), so for those we report a genuine 0-100% brightness instead
+// of an opaque "~ color" placeholder; truly colorized/enhanced imagery gets
+// a clearly-labeled color swatch instead of pretending the RGB triplet is
+// itself a "value".
 function _inspPixelRow(label, s) {
   if (s && s.tainted) return { label, value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
   if (!s) return { label, value: 'No data', color: 'rgba(120,120,120,0.5)' };
@@ -18104,9 +18175,43 @@ function _inspPixelRow(label, s) {
   return { label, value: 'Color', unit: color, color };
 }
 
+// GOES IR window/absorption channels (07, 11-16) render brightness
+// temperature as grayscale: warm ground/ocean/low cloud is dark, cold high
+// cloud tops are light gray to white - the same "Clean IR" convention used
+// across virtually every public GOES viewer, including IEM's own. That
+// grayscale majority of the image decodes to a real linear brightness
+// temperature here. ch01-ch06 are reflected-sunlight visible/near-IR
+// channels, not temperature at all - a bright pixel there can be a warm low
+// cloud or a cold cirrus deck, so those correctly keep the brightness/color
+// readout instead of a fabricated temperature. Water vapor (08-10) uses a
+// distinct, less-standardized palette this isn't calibrated against, so it
+// also keeps the brightness/color readout rather than guess wrong.
+const GOES_IR_WINDOW_CHANNELS = new Set(['ch07', 'ch11', 'ch12', 'ch13', 'ch14', 'ch15', 'ch16']);
+const GOES_IR_WARM_C = 40;   // black end of the grayscale ramp
+const GOES_IR_COLD_C = -80;  // white end of the grayscale ramp, before any colorized cold-top bands
+
 function _inspSatelliteRow(cx, cy) {
   const container = _goesLayer && _goesLayer.getContainer ? _goesLayer.getContainer() : null;
-  return _inspPixelRow('Satellite', _inspSampleColorFrom(container, cx, cy));
+  const s = _inspSampleColorFrom(container, cx, cy);
+  if (s && s.tainted) return { label: 'Satellite', value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
+  if (!s) return { label: 'Satellite', value: 'No data', color: 'rgba(120,120,120,0.5)' };
+  if (s.transparent) return { label: 'Satellite', value: 'No image', color: 'rgba(120,120,120,0.35)' };
+  const color = `rgb(${s.r},${s.g},${s.b})`;
+
+  if (GOES_IR_WINDOW_CHANNELS.has(_goesProductId)) {
+    const maxC = Math.max(s.r, s.g, s.b), minC = Math.min(s.r, s.g, s.b);
+    if (maxC - minC <= 18) {
+      const brightness = (s.r + s.g + s.b) / 3; // 0 (black/warm) .. 255 (white/cold)
+      const tempC = GOES_IR_WARM_C + (GOES_IR_COLD_C - GOES_IR_WARM_C) * (brightness / 255);
+      return { label: 'Satellite', value: `≈${fmtTemp(tempC * 9 / 5 + 32)}`, unit: 'IR brightness temp', color };
+    }
+    // Colorized pixel on an IR channel - almost always a provider-specific
+    // palette highlighting the coldest overshooting storm tops. Not
+    // reverse-engineered to an exact degree here, so this stays qualitative
+    // rather than a fabricated precise number.
+    return { label: 'Satellite', value: 'Extreme Cold Top', unit: color, color };
+  }
+  return _inspPixelRow('Satellite', s);
 }
 
 function _inspModelsRow(cx, cy) {
