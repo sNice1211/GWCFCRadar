@@ -2795,15 +2795,32 @@ body {
   font-size: 11px;
   color: #fff;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  align-items: flex-start;
+  align-items: center;
+  gap: 8px;
 }
+#inspector-readout-rows { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
 #inspector-readout .insp-row { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 #inspector-readout .insp-swatch { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3); }
 #inspector-readout .insp-label { opacity: 0.55; font-size: 9px; }
 #inspector-readout .insp-value { font-weight: 700; }
 #inspector-readout .insp-unit { margin-left: 1px; opacity: 0.7; font-size: 9px; }
+/* The one clickable piece inside an otherwise pointer-events:none readout,
+   so it doesn't block map panning underneath it. */
+#inspector-pin-btn {
+  pointer-events: auto;
+  flex-shrink: 0;
+  background: rgba(232,184,0,0.15);
+  border: 1px solid rgba(232,184,0,0.5);
+  color: #e8b800;
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 13px;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+#inspector-pin-btn:hover { background: rgba(232,184,0,0.3); }
+#inspector-pin-btn:active { transform: scale(0.92); }
 #tool-hint { display:none !important; }
 .tool-label {
   background: rgba(8,12,16,0.88) !important;
@@ -17964,6 +17981,7 @@ function _scClosePanel() {
 // just reports "no data" instead of throwing.
 let _inspEnabled = false;
 let _inspEl = null, _inspLabelEl = null, _inspRafPending = false, _inspInterval = null;
+let _inspLastRows = [];
 const INSP_UNITS = { ref: 'dBZ', vel: 'mph', cc: '', zdr: 'dB' };
 
 function _inspQuadContains(mesh, k, lon, lat) {
@@ -18081,13 +18099,15 @@ function _inspSetReadout(value, unit, color) {
 
 function _inspRenderRows(rows) {
   if (!_inspLabelEl) return;
-  _inspLabelEl.innerHTML = rows.map(r => `
+  const rowsEl = document.getElementById('inspector-readout-rows');
+  if (rowsEl) rowsEl.innerHTML = rows.map(r => `
     <div class="insp-row">
       <span class="insp-swatch" style="background:${r.color || 'rgba(120,120,120,0.5)'}"></span>
       ${r.label ? `<span class="insp-label">${r.label}</span>` : ''}
       <span class="insp-value">${r.value}</span>
       <span class="insp-unit">${r.unit || ''}</span>
     </div>`).join('');
+  _inspLastRows = rows;
   if (_inspEl) _inspEl.style.background = (rows[0] && rows[0].color) || 'rgba(120,120,120,0.5)';
 }
 
@@ -18315,7 +18335,16 @@ function _inspEnable() {
 
   _inspLabelEl = document.createElement('div');
   _inspLabelEl.id = 'inspector-readout';
-  _inspLabelEl.innerHTML = '<span class="insp-value">--</span><span class="insp-unit"></span>';
+  const rowsEl = document.createElement('div');
+  rowsEl.id = 'inspector-readout-rows';
+  rowsEl.innerHTML = '<span class="insp-value">--</span><span class="insp-unit"></span>';
+  const pinBtn = document.createElement('button');
+  pinBtn.id = 'inspector-pin-btn';
+  pinBtn.title = 'Save this point with the layer readings currently shown here';
+  pinBtn.textContent = '📌';
+  pinBtn.onclick = _inspSavePinAtCenter;
+  _inspLabelEl.appendChild(rowsEl);
+  _inspLabelEl.appendChild(pinBtn);
   document.body.appendChild(_inspLabelEl);
 
   map.on('move', _inspScheduleUpdate);
@@ -18334,6 +18363,87 @@ function _inspDisable() {
   if (_inspLabelEl) { _inspLabelEl.remove(); _inspLabelEl = null; }
   _inspRestoreTiles(); // put reflectivity back on the fast tile cache
 }
+
+// ── INSPECTOR PINS ────────────────────────────────────────────────────────
+// Saves the crosshair's current point plus a snapshot of every layer
+// reading shown at that moment (whatever _inspLastRows holds from the most
+// recent _inspRenderRows call) - a little bookmark of "what was active here
+// and what it read." Pins persist across reloads and stay on the map even
+// with the Inspector tool off, since they're a saved record, not a live tool.
+const INSP_PINS_KEY = 'gwcfc_insp_pins';
+let _inspPins = [];
+let _inspPinsLayer = null;
+
+function _inspLoadPins() {
+  try { _inspPins = JSON.parse(localStorage.getItem(INSP_PINS_KEY) || '[]'); } catch(e) { _inspPins = []; }
+}
+function _inspSavePins() {
+  try { localStorage.setItem(INSP_PINS_KEY, JSON.stringify(_inspPins)); } catch(e) {}
+}
+
+function _inspSavePinAtCenter() {
+  if (typeof map === 'undefined' || !map) return;
+  const center = map.getCenter();
+  const rows = _inspLastRows.map(r => ({ label: r.label, value: r.value, unit: r.unit, color: r.color }));
+  _inspPins.push({ lat: center.lat, lng: center.lng, ts: Date.now(), rows });
+  _inspSavePins();
+  _inspRenderPinsLayer();
+  if (typeof showToast === 'function') {
+    showToast(`📌 Point saved with ${rows.length} layer reading${rows.length === 1 ? '' : 's'}`, 2200);
+  }
+}
+
+function _inspRenderPinsLayer() {
+  if (typeof map === 'undefined' || !map) return;
+  if (_inspPinsLayer) { try { map.removeLayer(_inspPinsLayer); } catch(e) {} }
+  const layer = L.layerGroup();
+  _inspPins.forEach((pin, idx) => {
+    const marker = L.circleMarker([pin.lat, pin.lng], {
+      radius: 6, weight: 1.5, color: '#000', fillColor: '#e8b800', fillOpacity: 0.95, zIndexOffset: 500,
+    });
+    marker.bindPopup(() => _inspPinPopupHtml(idx), { className: 'data-popup', maxWidth: 260 });
+    marker.addTo(layer);
+  });
+  _inspPinsLayer = layer.addTo(map);
+}
+
+function _inspPinPopupHtml(idx) {
+  const pin = _inspPins[idx];
+  if (!pin) return '<div class="data-popup-inner"><div class="dp-body"><div class="dp-row"><span>Pin removed</span></div></div></div>';
+  const when = new Date(pin.ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const rowsHtml = pin.rows.length
+    ? pin.rows.map(r => `<div class="dp-row"><span>${_escapeHtml(r.label || 'Value')}</span><b>${_escapeHtml(String(r.value))}${r.unit ? ' ' + _escapeHtml(String(r.unit)) : ''}</b></div>`).join('')
+    : `<div class="dp-row"><span>No layers were active</span></div>`;
+  return `<div class="data-popup-inner" style="--dp-accent:#e8b800">
+    <div class="dp-header">
+      <span class="dp-header-icon">📌</span>
+      <span class="dp-header-label">Inspector Pin</span>
+      <span class="dp-header-sub">${when}</span>
+    </div>
+    <div class="dp-body">
+      ${rowsHtml}
+      <div class="dp-row"><span>Coords</span><b>${pin.lat.toFixed(3)}°, ${pin.lng.toFixed(3)}°</b></div>
+      <div class="dp-row wfo-link" onclick="_inspRemovePin(${idx})"><span>🗑 Remove pin</span></div>
+    </div>
+  </div>`;
+}
+
+function _inspRemovePin(idx) {
+  _inspPins.splice(idx, 1);
+  _inspSavePins();
+  _inspRenderPinsLayer();
+  if (typeof map !== 'undefined' && map) map.closePopup();
+}
+
+(function _inspPinsInit() {
+  function attach() {
+    if (typeof map === 'undefined' || !map) { setTimeout(attach, 300); return; }
+    _inspLoadPins();
+    _inspRenderPinsLayer();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);
+  else attach();
+})();
 
 function _scRenderCone() {
   // Clear previous cone + decorations
