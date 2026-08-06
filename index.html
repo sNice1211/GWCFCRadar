@@ -584,9 +584,10 @@ body {
   cursor: pointer; background: rgba(0,140,186,0.08); font-size: 12px;
 }
 .cc-drop:hover { background: rgba(0,140,186,0.16); }
-.cc-photo-btns { display: flex; gap: 8px; }
-.cc-photo-btns .cc-btn { flex: 1; }
+.cc-photo-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.cc-photo-btns .cc-btn { flex: 1; min-width: 90px; }
 #cc-preview { width: 100%; border-radius: 10px; display: none; max-height: 200px; object-fit: cover; }
+#cc-preview-vid { width: 100%; border-radius: 10px; display: none; max-height: 200px; background: #000; }
 .cc-label { font-size: 11px; font-weight: 700; color: #008CBA; letter-spacing: 0.5px; }
 .cc-cats { display: flex; flex-wrap: wrap; gap: 6px; }
 .cc-cat {
@@ -614,7 +615,9 @@ body {
 .cc-verdict.denied   { background: rgba(255,26,0,0.12);   border: 1px solid rgba(255,26,0,0.4); }
 /* Review list */
 .cc-review-item { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid rgba(0,140,186,0.25); }
-.cc-review-item img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.cc-review-item img, .cc-review-item video { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; flex-shrink: 0; background: #000; }
+.cc-ri-thumb { position: relative; width: 64px; height: 64px; flex-shrink: 0; }
+.cc-ri-thumb img { width: 100%; height: 100%; }
 .cc-ri-meta { flex: 1; min-width: 0; font-size: 11px; }
 .cc-ri-actions { display: flex; gap: 6px; margin-top: 6px; }
 .cc-ri-actions button { padding: 4px 8px; font-size: 11px; border-radius: 6px; cursor: pointer; border: 1px solid; }
@@ -628,10 +631,16 @@ body {
 .cc-photo-marker {
   width: 40px; height: 40px; border-radius: 8px; border: 2px solid #008CBA;
   background-size: cover; background-position: center; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+  position: relative;
 }
-.cc-popup img { width: 200px; max-width: 60vw; border-radius: 8px; display: block; }
+.cc-vid-badge {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.28); border-radius: 6px; color: #fff;
+}
+.cc-popup img, .cc-popup video { width: 200px; max-width: 60vw; border-radius: 8px; display: block; background: #000; }
 .cc-popup .cc-pop-cat { font-weight: 700; color: #008CBA; margin-top: 6px; font-size: 12px; }
 .cc-popup .cc-pop-cap { font-size: 11px; color: #333; margin-top: 2px; }
+.cc-popup .cc-pop-note { font-size: 10px; color: #888; margin-top: 4px; font-style: italic; }
 #cc-map-hint {
   display: none; position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
   z-index: 3001; background: #008CBA; color: #fff; font-family: var(--display); font-weight: 700;
@@ -25714,7 +25723,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-camera></use></svg></div>
       <div class="fc-title">CLOUD CAPTURE</div>
-      <p class="fc-body">Submit your own weather photos to the map, and see photos other users have submitted nearby.</p>
+      <p class="fc-body">Submit your own weather photos or videos to the map, and see what other users have submitted nearby. A video's first frame becomes its thumbnail and goes through the same AI check a photo would; the clip itself stays on the device that submitted it (up to 60 MB), so its marker plays back there, and shows the thumbnail with a note everywhere else.</p>
     </div>
   </div>
 
@@ -28997,11 +29006,14 @@ function buildTimelineLabels() {
     <div class="cc-body" id="cc-submit-panel">
       <div class="cc-photo-btns">
         <button type="button" class="cc-btn secondary" onclick="document.getElementById('cc-file-cam').click()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-camera></use></svg> Take Photo</button>
-        <button type="button" class="cc-btn secondary" onclick="document.getElementById('cc-file-up').click()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-image></use></svg> Upload</button>
+        <button type="button" class="cc-btn secondary" onclick="document.getElementById('cc-file-up').click()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-image></use></svg> Upload Photo</button>
+        <button type="button" class="cc-btn secondary" onclick="document.getElementById('cc-file-vid').click()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Upload Video</button>
       </div>
       <input type="file" id="cc-file-cam" accept="image/*" capture="environment" style="display:none" onchange="_ccFile(this)">
       <input type="file" id="cc-file-up" accept="image/*" style="display:none" onchange="_ccFile(this)">
+      <input type="file" id="cc-file-vid" accept="video/*" style="display:none" onchange="_ccFile(this)">
       <img id="cc-preview" alt="preview">
+      <video id="cc-preview-vid" controls playsinline></video>
       <div class="cc-label">CATEGORY</div>
       <div class="cc-cats" id="cc-cats"></div>
       <div class="cc-label">LOCATION</div>
@@ -29011,7 +29023,7 @@ function buildTimelineLabels() {
       </div>
       <textarea id="cc-caption" placeholder="Optional caption…" maxlength="200"></textarea>
       <div id="cc-verdict-box"></div>
-      <button class="cc-btn full" id="cc-submit-btn" onclick="_ccSubmit()" disabled>Submit photo</button>
+      <button class="cc-btn full" id="cc-submit-btn" onclick="_ccSubmit()" disabled>Submit</button>
       <div id="cc-mode-note" style="font-size:9px;color:var(--muted);text-align:center;line-height:1.4">Reviewed by AI · shared to the live map</div>
     </div>
     <div class="cc-body" id="cc-review-panel" style="display:none">
@@ -29029,7 +29041,7 @@ function buildTimelineLabels() {
 // (which needs a server-side API key). Verdict → approved / pending / denied, with a
 // manual Review tab to override. Swap _ccClassify for a backend AI call when ready.
 const CC_CATS = ['Clouds','Flooding','Hail','Wind','Tornado','Other'];
-let _ccState = { dataUrl: null, category: null, loc: null };
+let _ccState = { dataUrl: null, category: null, loc: null, mediaType: null, videoBlob: null };
 let _ccLayer = null;
 let _ccDB = null;
 
@@ -29069,9 +29081,16 @@ async function _ccAll(){
 }
 // Always cache locally (so it posts here), then best-effort share to the backend.
 async function _ccPut(rec){
-  try { await _ccLocalPut(rec); } catch(e){}
+  try { await _ccLocalPut(rec); } catch(e){}   // full record, including videoBlob, stored locally
   const col = _ccRemote();
-  if (col){ try { await col.doc(rec.id).set(rec); } catch(e){ console.warn('[cloudcam] remote write failed (kept local):', e.message); } }
+  if (col){
+    // videoBlob never leaves this device - Firestore can't hold it (and
+    // wouldn't accept a Blob in a doc anyway), so only the poster image +
+    // metadata get shared. Other devices see the marker/thumbnail; only the
+    // device that actually has the clip can play it back.
+    const { videoBlob, ...remoteRec } = rec;
+    try { await col.doc(rec.id).set(remoteRec); } catch(e){ console.warn('[cloudcam] remote write failed (kept local):', e.message); }
+  }
 }
 async function _ccDelete(id){
   try { await _ccLocalDelete(id); } catch(e){}
@@ -29225,9 +29244,20 @@ async function _ccRenderLayer(){
   const all = await _ccAll();
   for (const rec of all){
     if (rec.status!=='approved' || !isFinite(rec.lat)) continue;
-    const icon = L.divIcon({ className:'', html:`<div class="cc-photo-marker" style="background-image:url('${rec.img}')"></div>`, iconSize:[40,40], iconAnchor:[20,40] });
+    const isVideo = rec.type === 'video';
+    const badge = isVideo ? `<div class="cc-vid-badge"><svg class=svgi width=1.4em height=1.4em style=vertical-align:-.15em><use href=#ic-play></use></svg></div>` : '';
+    const icon = L.divIcon({ className:'', html:`<div class="cc-photo-marker" style="background-image:url('${rec.img}')">${badge}</div>`, iconSize:[40,40], iconAnchor:[20,40] });
     const m = L.marker([rec.lat, rec.lng], { icon, pane: (typeof _ovPane==='function' ? _ovPane('cloudcam') : undefined) });
-    m.bindPopup(`<div class="cc-popup"><img src="${rec.img}"><div class="cc-pop-cat">${_ccEsc(rec.category)}</div>${rec.caption?`<div class="cc-pop-cap">${_ccEsc(rec.caption)}</div>`:''}<div style="font-size:9px;color:#888;margin-top:3px">${new Date(rec.ts).toLocaleString()}</div></div>`);
+    // rec.videoBlob only exists on the device that actually submitted the
+    // clip (see _ccPut) - only that device can offer real playback here.
+    let objUrl = null;
+    const media = (isVideo && rec.videoBlob)
+      ? (objUrl = URL.createObjectURL(rec.videoBlob), `<video src="${objUrl}" controls playsinline></video>`)
+      : isVideo
+        ? `<img src="${rec.img}"><div class="cc-pop-note">Video only available on the device that submitted it.</div>`
+        : `<img src="${rec.img}">`;
+    m.bindPopup(`<div class="cc-popup">${media}<div class="cc-pop-cat">${_ccEsc(rec.category)}</div>${rec.caption?`<div class="cc-pop-cap">${_ccEsc(rec.caption)}</div>`:''}<div style="font-size:9px;color:#888;margin-top:3px">${new Date(rec.ts).toLocaleString()}</div></div>`);
+    if (objUrl) m.on('popupclose', () => URL.revokeObjectURL(objUrl));
     _ccLayer.addLayer(m);
   }
 }
@@ -29246,6 +29276,11 @@ function _ccUpdateSubmitEnabled(){ const b=document.getElementById('cc-submit-bt
 
 function _ccFile(input){
   const f=input.files&&input.files[0]; if(!f) return;
+  if (f.type && f.type.startsWith('video/')) _ccFileVideo(f);
+  else _ccFileImage(f);
+}
+
+function _ccFileImage(f){
   const reader=new FileReader();
   reader.onload=e=>{
     const img=new Image();
@@ -29258,13 +29293,49 @@ function _ccFile(input){
       let url=render(820,0.62);
       if (url.length > 820000) url=render(680,0.5);   // still too big → shrink further
       if (url.length > 820000) url=render(560,0.45);
-      _ccState.dataUrl=url;
+      _ccState.dataUrl=url; _ccState.mediaType='photo'; _ccState.videoBlob=null;
       const pv=document.getElementById('cc-preview'); if(pv){ pv.src=url; pv.style.display='block'; }
+      const vp=document.getElementById('cc-preview-vid'); if(vp){ vp.pause(); vp.removeAttribute('src'); vp.style.display='none'; }
       _ccUpdateSubmitEnabled();
     };
     img.src=e.target.result;
   };
   reader.readAsDataURL(f);
+}
+
+// Videos are too big for a data-URL/Firestore doc, so the clip itself only
+// ever lives in this device's IndexedDB (see _ccPut, which strips videoBlob
+// before any remote write) - grabbing a frame as a JPEG poster is what
+// actually gets shared: it's what other devices' map markers/popups show,
+// and it's what the same AI moderation photos go through runs against too,
+// since it's a real frame straight out of the clip.
+const CC_MAX_VIDEO_BYTES = 60 * 1024 * 1024; // 60 MB - generous for a short clip, still IndexedDB-friendly
+function _ccFileVideo(f){
+  if (f.size > CC_MAX_VIDEO_BYTES) { alert('Video is too large (max 60 MB) - trim it or pick a shorter clip.'); return; }
+  const url = URL.createObjectURL(f);
+  const v = document.createElement('video');
+  v.preload = 'metadata'; v.muted = true; v.playsInline = true;
+  const grabPoster = () => {
+    const max = 820;
+    let w = v.videoWidth || 480, h = v.videoHeight || 270;
+    if (w > h && w > max) { h = Math.round(h * max / w); w = max; } else if (h > max) { w = Math.round(w * max / h); h = max; }
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(v, 0, 0, w, h);
+    _ccState.dataUrl = c.toDataURL('image/jpeg', 0.62);
+    _ccState.mediaType = 'video';
+    _ccState.videoBlob = f;
+    const pv = document.getElementById('cc-preview'); if (pv) { pv.src = _ccState.dataUrl; pv.style.display = 'none'; }
+    const vp = document.getElementById('cc-preview-vid'); if (vp) { vp.src = url; vp.style.display = 'block'; }
+    _ccUpdateSubmitEnabled();
+  };
+  v.onloadeddata = () => {
+    const seekTo = Math.min(0.3, (v.duration || 1) * 0.1);
+    if (seekTo <= 0) { grabPoster(); return; }
+    v.onseeked = grabPoster;
+    v.currentTime = seekTo;
+  };
+  v.onerror = () => { alert('Could not read that video file.'); URL.revokeObjectURL(url); };
+  v.src = url;
 }
 
 function _ccGetGPS(){
@@ -29300,7 +29371,7 @@ async function _ccSubmit(){
 
   // 1) Pull the real radar + forecast at the photo's location for the AI to cross-check.
   const ctx = await _ccGatherContext(_ccState.loc.lat, _ccState.loc.lng);
-  if (box) box.innerHTML='<b><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-robot></use></svg> AI verifying photo…</b>';
+  if (box) box.innerHTML='<b><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-robot></use></svg> AI verifying ' + (_ccState.mediaType==='video' ? 'video frame' : 'photo') + '…</b>';
 
   // 2) Real AI moderation (real vs AI-generated + consistency); fall back to heuristic if it fails.
   let cls;
@@ -29312,9 +29383,12 @@ async function _ccSubmit(){
     cls.aiGenerated = false; cls.consistent = true;
   }
   const status = cls.verdict==='approved' ? 'approved' : cls.verdict==='denied' ? 'denied' : 'pending';
+  const isVideo = _ccState.mediaType === 'video';
   const rec={
     id:'cc_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
     img:_ccState.dataUrl, category: cls.category || _ccState.category,
+    type: isVideo ? 'video' : 'photo', hasVideo: isVideo,
+    videoBlob: isVideo ? _ccState.videoBlob : undefined,
     lat:_ccState.loc.lat, lng:_ccState.loc.lng,
     caption:(document.getElementById('cc-caption').value||'').trim().slice(0,200),
     ts:Date.now(), status, aiReason:cls.reason,
@@ -29336,10 +29410,11 @@ async function _ccSubmit(){
 }
 
 function _ccResetForm(keepVerdict){
-  _ccState.dataUrl=null; _ccState.category=null;
+  _ccState.dataUrl=null; _ccState.category=null; _ccState.mediaType=null; _ccState.videoBlob=null;
   const pv=document.getElementById('cc-preview'); if(pv){ pv.src=''; pv.style.display='none'; }
+  const vp=document.getElementById('cc-preview-vid'); if(vp){ vp.pause(); vp.removeAttribute('src'); vp.style.display='none'; }
   const cap=document.getElementById('cc-caption'); if(cap) cap.value='';
-  ['cc-file-cam','cc-file-up'].forEach(id=>{ const fi=document.getElementById(id); if(fi) fi.value=''; });
+  ['cc-file-cam','cc-file-up','cc-file-vid'].forEach(id=>{ const fi=document.getElementById(id); if(fi) fi.value=''; });
   if(!keepVerdict){ const vb=document.getElementById('cc-verdict-box'); if(vb){ vb.className=''; vb.innerHTML=''; } }
   _ccRenderCats(); _ccUpdateSubmitEnabled(); _ccGetGPS();
 }
@@ -29389,8 +29464,12 @@ async function _ccRenderReview(){
   list.innerHTML=lockBar;
   all.forEach(rec=>{
     const item=document.createElement('div'); item.className='cc-review-item';
-    item.innerHTML=`<img src="${rec.img}" alt="">`+
+    const thumb = (rec.type==='video' && rec.videoBlob)
+      ? `<video src="${URL.createObjectURL(rec.videoBlob)}" muted></video>`
+      : `<img src="${rec.img}" alt="">`;
+    item.innerHTML=thumb+
       `<div class="cc-ri-meta"><span class="cc-badge ${rec.status}">${rec.status}</span> <b>${_ccEsc(rec.category)}</b>`+
+      (rec.type==='video'?` <span class="cc-badge pending">VIDEO</span>`:'')+
       (rec.aiGenerated?` <span class="cc-badge denied">AI-GEN</span>`:'')+
       (rec.consistent===false?` <span class="cc-badge denied">MISMATCH</span>`:'')+
       `<div style="color:var(--muted);margin-top:2px">${_ccEsc(rec.aiReason||'')}</div>`+
