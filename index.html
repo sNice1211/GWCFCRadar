@@ -3525,6 +3525,7 @@ body {
    two stay visually attached without turning into a separate panel. */
 #stormcone-toolbar {
   display: none;
+  flex-direction: column;
   position: absolute;
   bottom: calc(90px + env(safe-area-inset-bottom, 0px));
   left: 50%;
@@ -3534,17 +3535,19 @@ body {
   border: 1px solid rgba(170,0,0,0.35);
   border-radius: 12px;
   padding: 6px 10px;
-  align-items: center;
   gap: 6px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.7);
   white-space: nowrap;
-  flex-wrap: nowrap;
   user-select: none;
   max-width: calc(100vw - 16px);
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
 #stormcone-toolbar.visible { display: flex; }
+/* Header row (drag + title + close) and each control row below it */
+.sc-tb-header { display: flex; align-items: center; gap: 6px; }
+.sc-tb-header #stormcone-close { margin-left: auto; }
+.sc-tb-row { display: flex; align-items: center; gap: 6px; }
 #sc-speed-input {
   width: 44px;
   background: rgba(255,255,255,0.07);
@@ -3703,11 +3706,21 @@ body {
   font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 4px; box-shadow: none;
 }
 .sc-dot-time.leaflet-tooltip::before { display: none; }
-.sc-point-line2 { display: flex; align-items: center; gap: 6px; padding: 0 12px 6px; }
-.sc-point-select {
-  flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 9px; padding: 3px 2px;
+.sc-cat-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 0 12px 6px; }
+.sc-cat-btn {
+  width: 100%; aspect-ratio: 1; border-radius: 6px; border: 1.5px solid transparent;
+  background: rgba(255,255,255,0.05); cursor: pointer; display: flex; align-items: center; justify-content: center;
+  padding: 1px; transition: all 0.15s; opacity: 0.6; -webkit-tap-highlight-color: transparent;
 }
+.sc-cat-btn img { width: 80%; height: 80%; object-fit: contain; pointer-events: none; }
+.sc-cat-btn:hover { opacity: 0.9; background: rgba(255,255,255,0.1); }
+.sc-cat-btn.active {
+  opacity: 1; border-color: rgba(255,255,255,0.6); background: rgba(255,255,255,0.12); transform: scale(1.08);
+  box-shadow: 0 0 8px var(--ttb-glow, transparent);
+}
+.sc-cat-none { font-size: 11px; color: rgba(255,230,200,0.5); }
+.sc-point-line2 { display: flex; align-items: center; gap: 6px; padding: 0 12px 6px; }
+.sc-point-speed-lbl { font-size: 9px; color: rgba(255,230,200,0.55); flex: 1; }
 .sc-point-speed {
   width: 50px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
   border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 10px; text-align: center; padding: 3px 2px;
@@ -18356,7 +18369,6 @@ function _scRenderPointsPanel() {
     const cat   = (_scTrack.pointCats   && _scTrack.pointCats[idx])   || '';
     const speed = (_scTrack.pointSpeeds && _scTrack.pointSpeeds[idx]);
     const selected = _scEditingPointIdx === idx;
-    const catOptions = SC_CAT_LABELS.map(([k, label]) => `<option value="${k}"${k === cat ? ' selected' : ''}>${label}</option>`).join('');
     return `
       <div class="sc-point-row${selected ? ' selected' : ''}" onclick="_scOnDotClick(${idx})">
         <div class="sc-point-line1">
@@ -18365,12 +18377,28 @@ function _scRenderPointsPanel() {
           <input type="number" class="sc-point-input" min="-10" max="10" step="0.5" value="${curve}"
             onclick="event.stopPropagation()" oninput="_scSetPointCurve(${idx}, this.value)">
         </div>
+        <div class="sc-cat-grid">${_scCatButtonsHtml(idx, cat)}</div>
         <div class="sc-point-line2">
-          <select class="sc-point-select" onclick="event.stopPropagation()" onchange="_scSetPointCat(${idx}, this.value)">${catOptions}</select>
+          <label class="sc-point-speed-lbl">Speed override</label>
           <input type="number" class="sc-point-speed" min="1" step="1" placeholder="mph" value="${speed != null ? speed : ''}"
             onclick="event.stopPropagation()" oninput="_scSetPointSpeed(${idx}, this.value)">
         </div>
       </div>`;
+  }).join('');
+}
+// Same icon picker as the old Track Maker's category toolbar, just laid out
+// as a compact grid to fit the narrow points popover - clicking an icon
+// assigns that category to this dot exactly like clicking a Track Maker
+// category button used to assign it to the next placed waypoint.
+function _scCatButtonsHtml(idx, currentCat) {
+  return SC_CAT_LABELS.map(([k, label]) => {
+    if (!k) {
+      return `<button type="button" class="sc-cat-btn sc-cat-none${!currentCat ? ' active' : ''}" onclick="event.stopPropagation();_scSetPointCat(${idx},'')" title="No icon">✕</button>`;
+    }
+    const ic = TTB_ICONS[k];
+    return `<button type="button" class="sc-cat-btn${currentCat === k ? ' active' : ''}" onclick="event.stopPropagation();_scSetPointCat(${idx},'${k}')" title="${label}" style="--ttb-glow:${ic.color}88;">
+      <img src="data:image/png;base64,${ic.b64}">
+    </button>`;
   }).join('');
 }
 // Selecting a dot (map click or list row click) opens the Points popover so
@@ -28686,34 +28714,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <!-- STORM CONE TOOLBAR: same bar style as Draw/Text/Polygon -->
 <div id="stormcone-toolbar">
-  <div class="dtb-drag" id="stormcone-drag" title="Drag to move"><span></span><span></span><span></span></div>
-  <span class="dtb-label">
-    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 L5 19 A8 8 0 0 0 19 19 Z"/></svg>
-    STORM CONE
-  </span>
-  <div class="dtb-sep"></div>
-  <label for="sc-speed-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">MPH</label>
-  <input type="number" id="sc-speed-input" min="1" step="1" value="35" oninput="_scOnSpeedChange()">
-  <div class="dtb-sep"></div>
-  <label for="sc-curve-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">CURVE</label>
-  <input type="number" id="sc-curve-input" min="-10" max="10" step="0.5" value="0" oninput="_scOnCurveChange()" title="Cone path curvature (-10 to 10)">
-  <div class="dtb-sep"></div>
-  <label for="sc-dots-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">DOTS</label>
-  <input type="number" id="sc-dots-input" min="0" max="20" step="1" value="8" oninput="_scOnDotsChange()" title="Dots along cone edges">
-  <div class="dtb-sep"></div>
-  <label for="sc-offset-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">OFFSET</label>
-  <input type="number" id="sc-offset-input" min="-50" max="50" step="5" value="0" oninput="_scOnOffsetChange()" title="Storm center line offset (%)">
-  <div class="dtb-sep"></div>
-  <button class="dtb-btn" id="sc-style-btn" onclick="_scToggleStyle(event)" title="Cone colors &amp; opacity">🎨 Style</button>
-  <button class="dtb-btn" id="sc-points-btn" onclick="_scTogglePoints(event)" title="Edit curve at individual dots">〜 Points</button>
-  <div class="dtb-sep"></div>
-  <button class="dtb-btn" id="sc-new-btn" onclick="_scNew()" title="Start a new cone">+ New</button>
-  <button class="dtb-btn" id="sc-results-btn" onclick="_scToggleResults(event)" title="Show city list">☰ Cities</button>
-  <div class="dtb-sep"></div>
-  <button class="dtb-btn" id="sc-anim-btn" onclick="_scToggleAnim()" title="Animate the storm moving along the cone, at each dot's speed">▶ Animate</button>
-  <button class="dtb-btn" id="sc-save-btn" onclick="_scSaveImage()" title="Save the cone as a PNG">💾 Save</button>
-  <!-- Close -->
-  <button id="stormcone-close" onclick="deactivateTool()" title="Exit storm cone mode">✕</button>
+  <div class="sc-tb-header">
+    <div class="dtb-drag" id="stormcone-drag" title="Drag to move"><span></span><span></span><span></span></div>
+    <span class="dtb-label">
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 L5 19 A8 8 0 0 0 19 19 Z"/></svg>
+      STORM CONE
+    </span>
+    <button id="stormcone-close" onclick="deactivateTool()" title="Exit storm cone mode">✕</button>
+  </div>
+  <div class="sc-tb-row">
+    <label for="sc-speed-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">MPH</label>
+    <input type="number" id="sc-speed-input" min="1" step="1" value="35" oninput="_scOnSpeedChange()">
+    <div class="dtb-sep"></div>
+    <label for="sc-curve-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">CURVE</label>
+    <input type="number" id="sc-curve-input" min="-10" max="10" step="0.5" value="0" oninput="_scOnCurveChange()" title="Cone path curvature (-10 to 10)">
+    <div class="dtb-sep"></div>
+    <label for="sc-dots-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">DOTS</label>
+    <input type="number" id="sc-dots-input" min="0" max="20" step="1" value="8" oninput="_scOnDotsChange()" title="Dots along cone edges">
+    <div class="dtb-sep"></div>
+    <label for="sc-offset-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">OFFSET</label>
+    <input type="number" id="sc-offset-input" min="-50" max="50" step="5" value="0" oninput="_scOnOffsetChange()" title="Storm center line offset (%)">
+  </div>
+  <div class="sc-tb-row">
+    <button class="dtb-btn" id="sc-style-btn" onclick="_scToggleStyle(event)" title="Cone colors &amp; opacity">🎨 Style</button>
+    <button class="dtb-btn" id="sc-points-btn" onclick="_scTogglePoints(event)" title="Edit icon, curve, and speed at individual dots">〜 Points</button>
+    <div class="dtb-sep"></div>
+    <button class="dtb-btn" id="sc-anim-btn" onclick="_scToggleAnim()" title="Animate the storm moving along the cone, at each dot's speed">▶ Animate</button>
+    <button class="dtb-btn" id="sc-save-btn" onclick="_scSaveImage()" title="Save the cone as a PNG">💾 Save</button>
+    <div class="dtb-sep"></div>
+    <button class="dtb-btn" id="sc-results-btn" onclick="_scToggleResults(event)" title="Show city list">☰ Cities</button>
+    <button class="dtb-btn" id="sc-new-btn" onclick="_scNew()" title="Start a new cone">+ New</button>
+  </div>
 </div>
 <div id="stormcone-status">Click and drag on the map to draw a storm cone.</div>
 
