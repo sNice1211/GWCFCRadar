@@ -3997,71 +3997,24 @@ body {
 #nwr-rec-body::-webkit-scrollbar-thumb { background: rgba(255,80,80,0.3); }
 @keyframes nwr-blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
 
-/* ── ENSEMBLE SPREAD PANEL (Open-Meteo Ensemble API) ── */
-#ensemble-panel {
-  position: absolute;
-  top: 70px; left: 60px;
-  width: 340px; max-width: calc(100vw - 24px);
-  background: rgb(6,8,12);
-  border: 1px solid rgba(232,184,0,0.4);
-  border-radius: 10px;
-  z-index: 1200;
-  display: none;
-  flex-direction: column;
-  overflow: hidden;
-  box-shadow: 0 4px 32px rgba(232,184,0,0.15), 0 2px 12px rgba(0,0,0,0.7);
-}
-#ensemble-panel.open { display: flex; }
-#ensemble-panel-header {
-  display: flex; align-items: center; gap: 8px;
-  padding: 9px 12px 8px;
-  border-bottom: 1px solid rgba(232,184,0,0.18);
-  background: rgba(50,38,0,0.6);
-}
-#ensemble-panel-title {
-  font-family: var(--mono); font-size: 12px; font-weight: 700;
-  letter-spacing: 1.5px; color: #e8b800; flex: 1;
-}
-#ensemble-panel-close {
-  background: rgba(232,184,0,0.15); border: 1px solid rgba(232,184,0,0.35);
-  color: var(--text); border-radius: 5px; padding: 2px 8px;
-  cursor: pointer; font-size: 14px; line-height: 1.4;
-}
-#ensemble-panel-close:hover { background: rgba(232,184,0,0.4); }
-#ensemble-controls { display: flex; gap: 6px; padding: 8px 10px 4px; }
-#ensemble-controls .sev-dd-wrap select { font-size: 9px; }
-#ensemble-hint {
-  font-family: var(--mono); font-size: 9px; color: rgba(212,232,255,0.45);
-  padding: 2px 10px 6px; line-height: 1.4;
-}
-#ensemble-status {
+/* ── SPAGHETTI MODELS: ENSEMBLE MEAN LAYER (Open-Meteo Ensemble API) ── */
+#spag-ens-row { display: flex; gap: 6px; padding: 6px 0 2px; }
+#spag-ens-row .sev-dd-wrap select { font-size: 9px; }
+#spag-ens-status {
   font-family: var(--mono); font-size: 9px; color: rgba(232,184,0,0.8);
-  padding: 0 10px 6px; min-height: 12px;
+  padding: 4px 0 2px; min-height: 12px;
 }
-#ensemble-playbar-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 2px 10px 8px;
-}
-#ensemble-playbar-row button {
-  background: rgba(232,184,0,0.12); border: 1px solid rgba(232,184,0,0.4);
-  color: #e8b800; border-radius: 6px; width: 28px; height: 26px;
-  font-size: 12px; cursor: pointer; flex-shrink: 0;
-}
-#ensemble-playbar-row button:hover { background: rgba(232,184,0,0.25); }
-#ensemble-frame-label {
-  flex: 1; text-align: center; font-family: var(--mono); font-size: 10px;
-  color: rgba(212,232,255,0.75);
-}
-.ensemble-open-btn {
-  width: 100%; margin-top: 8px; padding: 7px 8px;
+.spag-ens-btn {
+  width: 100%; margin-top: 6px; padding: 7px 8px;
   font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
   background: rgba(232,184,0,0.1); border: 1px solid rgba(232,184,0,0.4);
   color: #e8b800; border-radius: 7px; cursor: pointer;
 }
-.ensemble-open-btn:hover { background: rgba(232,184,0,0.22); }
+.spag-ens-btn:hover { background: rgba(232,184,0,0.22); }
+.spag-ens-btn.active { background: rgba(232,184,0,0.4); color: #fff; }
 
-/* ── Compare (N-way model+run swipe) - moved to Ensemble Spread's old spot,
-   sized to match a primary action instead of a small corner toggle ── */
+/* ── Compare (N-way model+run swipe) - sized to match a primary action
+   instead of a small corner toggle ── */
 #sev-compare-btn {
   width: 100%; margin-top: 8px; padding: 11px 8px;
   font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .04em;
@@ -7102,7 +7055,30 @@ body.clean-mode #clean-hint { opacity: 1; }
       <p id="trop-intro">The National Hurricane Center's official forecast track, cone, and any areas being watched for development. Same live feed as the <b>NHC Outlook</b> overlay pill, kept in sync.</p>
       <div id="trop-storm-status">Loading active storms…</div>
       <div id="trop-storm-list"></div>
-      <button class="ensemble-open-btn" onclick="_ensembleOpen()">🎲 Check Ensemble Spread Near a Point</button>
+      <div style="border-top:1px solid rgba(255,255,255,0.08);margin:8px 0 4px;"></div>
+      <div class="sev-dd-label">🎲 Ensemble Mean Layer</div>
+      <div id="spag-ens-row">
+        <div class="sev-dd-wrap">
+          <label class="sev-dd-label">Product</label>
+          <select id="spag-ens-var-sel" onchange="_spagEnsVarChange(this.value)">
+            <option value="temperature_2m">2m Temperature</option>
+            <option value="precipitation">Precipitation</option>
+            <option value="wind_speed_10m">10m Wind Speed</option>
+            <option value="wind_gusts_10m">Wind Gusts</option>
+            <option value="surface_pressure">Surface Pressure</option>
+          </select>
+        </div>
+        <div class="sev-dd-wrap">
+          <label class="sev-dd-label">Model</label>
+          <select id="spag-ens-model-sel" onchange="_spagEnsModelChange(this.value)">
+            <option value="gfs_seamless">GFS</option>
+            <option value="icon_seamless">ICON</option>
+            <option value="gem_global">GEM</option>
+          </select>
+        </div>
+      </div>
+      <button id="spag-ens-toggle-btn" class="spag-ens-btn" onclick="_spagEnsToggle()">🎲 Show Ensemble Mean on Map</button>
+      <div id="spag-ens-status"></div>
     </div>
 
     <!-- Alerts Panel -->
@@ -7411,42 +7387,6 @@ body.clean-mode #clean-hint { opacity: 1; }
         <button id="nwr-rec-close" onclick="_nwrCloseRecPanel()">✕</button>
       </div>
       <div id="nwr-rec-body"></div>
-    </div>
-    <!-- Ensemble Spread Panel (Open-Meteo Ensemble API) -->
-    <div id="ensemble-panel">
-      <div id="ensemble-panel-header">
-        <span style="font-size:14px;line-height:1">🎲</span>
-        <span id="ensemble-panel-title">ENSEMBLE SPREAD</span>
-        <button id="ensemble-panel-close" onclick="_ensembleClose()">✕</button>
-      </div>
-      <div id="ensemble-controls">
-        <div class="sev-dd-wrap">
-          <label class="sev-dd-label">Variable</label>
-          <select id="ensemble-var-sel" onchange="_ensembleVarChange(this.value)">
-            <option value="temperature_2m">2m Temperature</option>
-            <option value="precipitation">Precipitation</option>
-            <option value="wind_speed_10m">10m Wind Speed</option>
-            <option value="wind_gusts_10m">Wind Gusts</option>
-            <option value="surface_pressure">Surface Pressure</option>
-          </select>
-        </div>
-        <div class="sev-dd-wrap">
-          <label class="sev-dd-label">Model</label>
-          <select id="ensemble-model-sel" onchange="_ensembleModelChange(this.value)">
-            <option value="gfs_seamless">GFS (US)</option>
-            <option value="icon_seamless">ICON (Germany)</option>
-            <option value="gem_global">GEM (Canada)</option>
-          </select>
-        </div>
-      </div>
-      <div id="ensemble-status"></div>
-      <div id="ensemble-playbar-row">
-        <button id="ensemble-play-btn" onclick="_ensembleTogglePlay()">▶</button>
-        <button onclick="_ensembleStep(-1)" title="Previous frame">◀</button>
-        <span id="ensemble-frame-label">--</span>
-        <button onclick="_ensembleStep(1)" title="Next frame">▶</button>
-      </div>
-      <div id="ensemble-hint">Ensemble mean plays out on the map across forecast hours - every member averaged together at each point, not a single click-to-sample spot.</div>
     </div>
 </div><!-- /main -->
 
@@ -15266,36 +15206,29 @@ function _sevToggleCompare() {
   }
 }
 
-// ── ENSEMBLE SPREAD (Open-Meteo Ensemble API) ────────────────────────────────
-// Renders the ensemble MEAN for the chosen variable/model as a color-map
-// layer that plays out across forecast hours on the map itself, the same
-// animated-overlay pattern Waves/Air/tropical tracks already use, instead
-// of the old "tap a point, see a line chart" flow. Every animation frame is
-// fetched and painted up front (one chunked round of requests carries every
-// grid point's FULL hourly series - see _fetchGridChunked - so stepping
-// through frames afterward is instant, no per-frame network calls), then
-// play/prev/next just swap which frame's L.imageOverlay is on the map.
-let _ensembleActive = false;
-let _ensembleVar   = 'temperature_2m';
-let _ensembleModel = 'gfs_seamless';
-let _ensembleLoadToken = 0;
-let _ensembleFrames = null;     // [{layer, timeLabel}]
-let _ensembleFrameIdx = 0;
-let _ensembleCurrentLayer = null;
-let _ensemblePlaying = false;
-let _ensemblePlayTimer = null;
+// ── SPAGHETTI MODELS: ENSEMBLE MEAN LAYER (Open-Meteo Ensemble API) ─────────
+// A persistent world-map color layer for the chosen Product's current
+// ensemble mean from the chosen Model (GFS/ICON/GEM) - the same fixed-domain,
+// periodically-refreshed pattern Waves/Air already use, instead of the old
+// separate "tap a point, see a line chart" Ensemble Spread panel. Lives
+// inside the Spaghetti Models panel since it shares the same Open-Meteo
+// Ensemble API as the per-storm spaghetti tracks below.
+let _spagEnsActive = false;
+let _spagEnsVar   = 'temperature_2m';
+let _spagEnsModel = 'gfs_seamless';
+let _spagEnsLoadToken = 0;
+let _spagEnsLayer = null;
+let _spagEnsRefreshTimer = null;
 
-const ENSEMBLE_VAR_LABELS = {
+const SPAG_ENS_VAR_LABELS = {
   temperature_2m:  '2m Temperature',
   precipitation:   'Precipitation',
   wind_speed_10m:  '10m Wind Speed',
   wind_gusts_10m:  'Wind Gusts',
   surface_pressure:'Surface Pressure',
 };
-const ENSEMBLE_COLS = 30, ENSEMBLE_ROWS = 18;
-const ENSEMBLE_STEP_HOURS = 6;
-const ENSEMBLE_FRAME_COUNT = 9; // 0h, 6h, 12h ... 48h
-const ENSEMBLE_SCALES = {
+const SPAG_ENS_COLS = 30, SPAG_ENS_ROWS = 18;
+const SPAG_ENS_SCALES = {
   temperature_2m:   [[-20,[80,0,180]],[0,[0,90,220]],[15,[0,200,60]],[25,[255,204,0]],[32,[255,90,0]],[40,[220,0,0]]],
   precipitation:    [[0,[0,60,140]],[0.02,[0,150,220]],[0.08,[0,220,180]],[0.25,[255,204,0]],[0.6,[255,80,0]],[1.2,[200,0,220]]],
   wind_speed_10m:   [[0,[0,60,140]],[10,[0,150,220]],[20,[0,220,180]],[35,[255,204,0]],[50,[255,80,0]],[70,[200,0,220]]],
@@ -15303,80 +15236,63 @@ const ENSEMBLE_SCALES = {
   surface_pressure: [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]],
 };
 
-function _ensembleOpen() {
-  _ensembleActive = true;
-  const panel = document.getElementById('ensemble-panel');
-  if (panel) panel.classList.add('open');
-  _ensembleLoadFrames();
+function _spagEnsToggle() {
+  _spagEnsActive = !_spagEnsActive;
+  const btn = document.getElementById('spag-ens-toggle-btn');
+  const status = document.getElementById('spag-ens-status');
+  if (_spagEnsActive) {
+    if (btn) { btn.classList.add('active'); btn.textContent = '🎲 Hide Ensemble Mean Layer'; }
+    _spagEnsLoadLayer();
+    clearInterval(_spagEnsRefreshTimer);
+    _spagEnsRefreshTimer = setInterval(() => _spagEnsLoadLayer(true), 10 * 60 * 1000);
+  } else {
+    if (btn) { btn.classList.remove('active'); btn.textContent = '🎲 Show Ensemble Mean on Map'; }
+    clearInterval(_spagEnsRefreshTimer); _spagEnsRefreshTimer = null;
+    if (_spagEnsLayer) { try { map.removeLayer(_spagEnsLayer); } catch(e){} _spagEnsLayer = null; }
+    if (status) status.textContent = '';
+  }
 }
+function _spagEnsVarChange(v)   { _spagEnsVar   = v; if (_spagEnsActive) _spagEnsLoadLayer(true); }
+function _spagEnsModelChange(m) { _spagEnsModel = m; if (_spagEnsActive) _spagEnsLoadLayer(true); }
 
-function _ensembleClose() {
-  _ensembleActive = false;
-  const panel = document.getElementById('ensemble-panel');
-  if (panel) panel.classList.remove('open');
-  clearInterval(_ensemblePlayTimer); _ensemblePlayTimer = null; _ensemblePlaying = false;
-  if (_ensembleCurrentLayer) { try { map.removeLayer(_ensembleCurrentLayer); } catch(e){} _ensembleCurrentLayer = null; }
-  _ensembleFrames = null;
-}
+async function _spagEnsLoadLayer(forceRefresh) {
+  if (!_spagEnsActive) return;
+  const token = ++_spagEnsLoadToken;
+  const status = document.getElementById('spag-ens-status');
+  if (status) status.textContent = 'Loading ensemble mean…';
 
-function _ensembleVarChange(v)   { _ensembleVar   = v; _ensembleLoadFrames(); }
-function _ensembleModelChange(m) { _ensembleModel = m; _ensembleLoadFrames(); }
-
-async function _ensembleLoadFrames() {
-  const token = ++_ensembleLoadToken;
-  clearInterval(_ensemblePlayTimer); _ensemblePlayTimer = null; _ensemblePlaying = false;
-  const playBtn = document.getElementById('ensemble-play-btn');
-  if (playBtn) playBtn.textContent = '▶';
-  const status = document.getElementById('ensemble-status');
-  if (status) status.textContent = 'Loading ensemble frames…';
-
-  const pts = _sampleGrid(ENSEMBLE_COLS, ENSEMBLE_ROWS, WORLD_MAP_BOUNDS);
-  const varName = _ensembleVar, model = _ensembleModel;
-  const totalHours = (ENSEMBLE_FRAME_COUNT - 1) * ENSEMBLE_STEP_HOURS;
-  // forecast_days is the parameter documented across every Open-Meteo forecast
-  // endpoint - forecast_hours isn't confirmed supported on the ensemble
-  // endpoint specifically, and an unrecognized param there means every
-  // request 400s, which is exactly what silently broke this feature.
-  const forecastDays = Math.ceil((totalHours + 1) / 24) + 1;
-
+  const pts = _sampleGrid(SPAG_ENS_COLS, SPAG_ENS_ROWS, WORLD_MAP_BOUNDS);
+  const varName = _spagEnsVar, model = _spagEnsModel;
   try {
     const locations = await _fetchGridChunkedRaw(pts, chunk => {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       return `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latStr}&longitude=${lngStr}` +
-        `&hourly=${varName}&models=${model}&forecast_days=${forecastDays}` +
+        `&hourly=${varName}&models=${model}&forecast_days=1` +
         `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
     });
-    if (token !== _ensembleLoadToken) return;
+    if (token !== _spagEnsLoadToken) return;
 
-    let sampleTimes = null;
-    const frameGrids = [];
-    for (let f = 0; f < ENSEMBLE_FRAME_COUNT; f++) {
-      const hourIdx = f * ENSEMBLE_STEP_HOURS;
-      const grid = locations.map(loc => {
-        if (!loc || !loc.hourly) return null;
-        if (!sampleTimes && loc.hourly.time) sampleTimes = loc.hourly.time;
-        const memberKeys = Object.keys(loc.hourly).filter(k => k.startsWith(varName + '_member'));
-        if (!memberKeys.length) return null;
-        let sum = 0, n = 0;
-        memberKeys.forEach(k => { const v = loc.hourly[k]?.[hourIdx]; if (v != null && isFinite(v)) { sum += v; n++; } });
-        return n ? sum / n : null;
-      });
-      frameGrids.push(grid);
-    }
-    if (!frameGrids.some(g => g.some(v => v != null))) throw new Error('no ensemble members in response');
+    const grid = locations.map(loc => {
+      if (!loc || !loc.hourly) return null;
+      const memberKeys = Object.keys(loc.hourly).filter(k => k.startsWith(varName + '_member'));
+      if (!memberKeys.length) return null;
+      let sum = 0, n = 0;
+      memberKeys.forEach(k => { const v = loc.hourly[k]?.[0]; if (v != null && isFinite(v)) { sum += v; n++; } });
+      return n ? sum / n : null;
+    });
+    if (!grid.some(v => v != null)) throw new Error('no ensemble members in response');
 
-    const scale = ENSEMBLE_SCALES[varName] || ENSEMBLE_SCALES.temperature_2m;
-    _ensembleFrames = frameGrids.map((grid, f) => ({
-      layer: _paintInterpolatedOverlay(grid, ENSEMBLE_COLS, ENSEMBLE_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale)),
-      timeLabel: sampleTimes && sampleTimes[f * ENSEMBLE_STEP_HOURS] ? sampleTimes[f * ENSEMBLE_STEP_HOURS].replace('T', ' ') + 'Z' : ('+' + (f * ENSEMBLE_STEP_HOURS) + 'h'),
-    }));
-    if (_ensembleCurrentLayer) { try { map.removeLayer(_ensembleCurrentLayer); } catch(e){} _ensembleCurrentLayer = null; }
-    _ensembleShowFrame(0);
-    if (status) status.textContent = `${ENSEMBLE_VAR_LABELS[varName] || varName} · ensemble mean, ${ENSEMBLE_FRAME_COUNT} frames out to +${totalHours}h`;
+    const scale = SPAG_ENS_SCALES[varName] || SPAG_ENS_SCALES.temperature_2m;
+    const layer = _paintInterpolatedOverlay(grid, SPAG_ENS_COLS, SPAG_ENS_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale));
+    if (token !== _spagEnsLoadToken) return;
+    if (_spagEnsLayer) { try { map.removeLayer(_spagEnsLayer); } catch(e){} }
+    _spagEnsLayer = layer.addTo(map);
+    const modelLabel = model.replace('_seamless', '').replace('_global', '').toUpperCase();
+    if (status) status.textContent = `${SPAG_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} ensemble mean, now`;
   } catch(e) {
-    console.warn('Ensemble load error:', e);
-    if (status) status.textContent = 'Ensemble data unavailable right now - try a different model above.';
+    console.warn('Spaghetti ensemble layer error:', e);
+    if (status) status.textContent = 'Ensemble data unavailable right now - try a different model.';
   }
 }
 
@@ -15385,7 +15301,7 @@ async function _ensembleLoadFrames() {
 // _fetchGridChunked - striped (round-robin) chunk assignment so a failed
 // chunk's missing points scatter across the whole map instead of blanking
 // out contiguous rows, and a failed chunk degrades to nulls for its points
-// instead of failing the whole animation.
+// instead of failing the whole layer.
 async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
   chunkSize = chunkSize || 300;
   const numChunks = Math.max(1, Math.ceil(pts.length / chunkSize));
@@ -15412,24 +15328,6 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
   });
   if (!anyOk) throw new Error('All chunks failed');
   return out;
-}
-
-function _ensembleShowFrame(idx) {
-  if (!_ensembleFrames || !_ensembleFrames.length) return;
-  _ensembleFrameIdx = ((idx % _ensembleFrames.length) + _ensembleFrames.length) % _ensembleFrames.length;
-  if (_ensembleCurrentLayer) { try { map.removeLayer(_ensembleCurrentLayer); } catch(e){} }
-  _ensembleCurrentLayer = _ensembleFrames[_ensembleFrameIdx].layer.addTo(map);
-  const lbl = document.getElementById('ensemble-frame-label');
-  if (lbl) lbl.textContent = _ensembleFrames[_ensembleFrameIdx].timeLabel;
-}
-function _ensembleStep(delta) { _ensembleShowFrame(_ensembleFrameIdx + delta); }
-function _ensembleTogglePlay() {
-  if (!_ensembleFrames || !_ensembleFrames.length) return;
-  _ensemblePlaying = !_ensemblePlaying;
-  const btn = document.getElementById('ensemble-play-btn');
-  if (btn) btn.textContent = _ensemblePlaying ? '⏸' : '▶';
-  clearInterval(_ensemblePlayTimer);
-  if (_ensemblePlaying) _ensemblePlayTimer = setInterval(() => _ensembleShowFrame(_ensembleFrameIdx + 1), 1200);
 }
 
 // ── Toast notification helper ──
@@ -26156,7 +26054,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon">📊</div>
       <div class="fc-title">MODELS</div>
-      <p class="fc-body">Tap to choose between its two sub-bubbles: <strong>📈 Run Models</strong> (a point-forecast model viewer with ensemble spread) and <strong>🌀 Spaghetti Models</strong> (NHC's official track, cone, and active storms). Each opens its own independent panel - they don't share a panel or state, and both can be open at once. See the <a href="#models">Models</a> section below.</p>
+      <p class="fc-body">Tap to choose between its two sub-bubbles: <strong>📈 Run Models</strong> (a point-forecast model viewer) and <strong>🌀 Spaghetti Models</strong> (NHC's official track, cone, active storms, and an ensemble mean layer). Each opens its own independent panel - they don't share a panel or state, and both can be open at once. See the <a href="#models">Models</a> section below.</p>
     </div>
   </div>
 
@@ -26488,7 +26386,7 @@ function lqmSetTZ(tz) {
 
   <div class="callout">
     <div class="callout-icon">🎲</div>
-    <div class="callout-body"><strong>Check Ensemble Spread Near a Point:</strong> tap this button to see how much the individual ensemble members disagree on temperature, wind, or precipitation anywhere near the storm's forecast path, the same tool available under <a href="#models">Run Models</a>.</div>
+    <div class="callout-body"><strong>Ensemble Mean Layer:</strong> pick a <strong>Product</strong> (2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, or Surface Pressure) and a <strong>Model</strong> (GFS, ICON, or GEM), then tap <strong>Show Ensemble Mean on Map</strong> for a smooth color layer of that model's current ensemble mean, right on the map, refreshing every 10 minutes like the Waves and Air layers. Tap it again to hide it.</div>
   </div>
 </section>
 
@@ -26543,9 +26441,6 @@ function lqmSetTZ(tz) {
   </div>
 
   <p>Use the <strong>Run</strong> selector and hour slider (or ▶ Play) to step through the forecast for whichever model and variable you've picked.</p>
-
-  <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;">🎲 Ensemble Spread</h3>
-  <p>Tap <strong>🎲 Ensemble Spread</strong> to see one model's full ensemble mean play out across the map over time, not a single point you have to click. Pick a <strong>Variable</strong> (2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, or Surface Pressure) and a <strong>Model</strong> (GFS, ICON, or GEM); every member's forecast is averaged together at each point on a world-wide grid, painted as a smooth color map, and split into frames every 6 hours out to +48h. Use ▶ to play through the frames automatically or ◀ / ▶ to step one at a time. Changing the variable or model reloads the animation. Data comes from Open-Meteo's Ensemble API.</p>
 
   <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;">⇄ Compare Runs / Models</h3>
   <p>Tap <strong>⇄ Compare Runs / Models</strong> inside Run Models to split the map into side-by-side panes, each an independent Model/Product/Run combination, so you can compare two different models (or two runs of the same model) at the same forecast hour without switching back and forth. Drag the ⇄ divider on the map to resize either side; <strong>+ Add Comparison</strong> adds another pane. Under <strong>Saved Comparisons</strong>, type a name and hit <strong>💾 Save</strong> to store the current set of panes, then reload it later from the dropdown, edit any pane afterward and it detaches from the saved name until you save it again.</p>
