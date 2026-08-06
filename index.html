@@ -3685,12 +3685,13 @@ body {
   border-radius: 6px; font-family: var(--mono); font-size: 10px; padding: 5px 10px; cursor: pointer;
 }
 .sc-point-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 12px;
+  display: flex; flex-direction: column;
+  padding: 6px 0;
   border-bottom: 1px solid rgba(255,255,255,0.04);
   cursor: pointer;
 }
 .sc-point-row.selected { background: rgba(74,158,255,0.15); }
+.sc-point-line1 { display: flex; align-items: center; gap: 8px; padding: 0 12px 6px; }
 .sc-point-label { flex: 1; color: rgba(255,230,200,0.75); }
 .sc-point-curve { color: rgba(255,230,200,0.45); font-family: var(--mono); font-size: 9px; width: 32px; text-align: right; }
 .sc-point-input {
@@ -3698,6 +3699,20 @@ body {
   border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 10px; text-align: center; padding: 3px 2px;
 }
 .sc-point-empty { text-align: center; color: rgba(255,230,200,0.4); padding: 16px 10px; }
+.sc-dot-time.leaflet-tooltip {
+  background: rgba(0,0,0,0.75); border: 1px solid rgba(255,224,102,0.5); color: #ffe066;
+  font-family: var(--mono); font-size: 9px; padding: 1px 5px; border-radius: 4px; box-shadow: none;
+}
+.sc-dot-time.leaflet-tooltip::before { display: none; }
+.sc-point-line2 { display: flex; align-items: center; gap: 6px; padding: 0 12px 6px; }
+.sc-point-select {
+  flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 9px; padding: 3px 2px;
+}
+.sc-point-speed {
+  width: 50px; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 10px; text-align: center; padding: 3px 2px;
+}
 
 /* Spaghetti model track end-label - a small price-tag-style flag connected
    to the track's endpoint, naming which model that line is. */
@@ -17689,6 +17704,12 @@ const SC_ARC_SEGMENTS = 28;
 const SC_MIN_TRACK_MILES = 1;
 const SC_DEFAULT_SPEED_MPH = 35;
 const SC_MIN_CAP_RADIUS_MILES = 5;
+// Same category keys as Track Maker's TTB_ICONS, for the per-dot icon picker.
+const SC_CAT_LABELS = [
+  ['', 'None'], ['cat5', 'Cat 5'], ['cat4', 'Cat 4'], ['cat3', 'Cat 3'], ['cat2', 'Cat 2'], ['cat1', 'Cat 1'],
+  ['s', 'Subtropical Storm'], ['ss', 'Subtropical Depression'], ['td', 'Tropical Depression'],
+  ['low', 'Low / Remnant'], ['x', 'Extratropical'],
+];
 
 let _scTrack    = null;  // { start, end, heading, distanceMiles, capRadiusMiles, ring, ..., pointCurves }
 let _scPolygon  = null;  // L.polygon layer for the current cone
@@ -17746,8 +17767,11 @@ function _scInterpLatLng(a, b, f) {
 // Build a cone that follows the ACTUAL drawn path, so different sections can curve
 // differently. `path` is the array of latlngs the pointer travelled through.
 // `existingPointCurves` preserves per-point curvatures from previous builds.
-function _scBuildTrack(path, existingPointCurves) {
+function _scBuildTrack(path, existing) {
   if (!path || path.length === 0) return null;
+  const existingPointCurves = existing && existing.pointCurves;
+  const existingPointCats   = existing && existing.pointCats;
+  const existingPointSpeeds = existing && existing.pointSpeeds;
 
   // Drop near-duplicate consecutive points so the geometry is stable
   const pts = [path[0]];
@@ -17781,6 +17805,10 @@ function _scBuildTrack(path, existingPointCurves) {
     // First-time initialization: all zeros
     for (let i = 0; i <= N; i++) pointCurves.push(0);
   }
+  // Per-dot storm category icon (null = no icon, plain dot) and per-dot speed
+  // override in mph (null = inherit the global MPH field for that leg onward).
+  const pointCats   = (existingPointCats   && existingPointCats.length   === N + 1) ? [...existingPointCats]   : new Array(N + 1).fill(null);
+  const pointSpeeds = (existingPointSpeeds && existingPointSpeeds.length === N + 1) ? [...existingPointSpeeds] : new Array(N + 1).fill(null);
 
   // 1) Resample the drawn path into N+1 evenly-spaced center points (arc-length),
   //    which both smooths the input and lets the cone follow every bend you drew.
@@ -17862,7 +17890,34 @@ function _scBuildTrack(path, existingPointCurves) {
   });
 
   return { start, end, heading, distanceMiles, capRadiusMiles, ring,
-           center, centerLine, leftEdges, rightEdges, path: pts, pointCurves };
+           center, centerLine, leftEdges, rightEdges, path: pts, pointCurves, pointCats, pointSpeeds };
+}
+
+// Cumulative travel time (hours) at every resampled index 0..SC_ARC_SEGMENTS
+// along the track. Speed starts at the global MPH field; a dot's speed
+// override takes effect for the leg arriving at that dot and every leg
+// after it, until the next override - so a dot's speed describes how fast
+// the storm was moving to reach that point, same as a real advisory's
+// movement speed.
+function _scCumulativeTimes(track, globalSpeedMph) {
+  const N = SC_ARC_SEGMENTS;
+  const times = new Array(N + 1).fill(0);
+  if (!track || !track.distanceMiles) return times;
+  const segMiles = track.distanceMiles / N;
+  let speed = globalSpeedMph > 0 ? globalSpeedMph : SC_DEFAULT_SPEED_MPH;
+  for (let i = 1; i <= N; i++) {
+    const override = track.pointSpeeds && track.pointSpeeds[i];
+    if (override != null && override > 0) speed = override;
+    times[i] = times[i - 1] + segMiles / speed;
+  }
+  return times;
+}
+
+function _scFormatOffset(hours) {
+  if (!Number.isFinite(hours) || hours <= 0) return '+0h';
+  if (hours < 24) return `+${hours < 10 ? hours.toFixed(1) : Math.round(hours)}h`;
+  const d = Math.floor(hours / 24), h = Math.round(hours % 24);
+  return `+${d}d${h ? ' ' + h + 'h' : ''}`;
 }
 
 function _scFormatEta(hours) {
@@ -18326,22 +18381,32 @@ function _scRenderCone() {
 
   // Dots along the storm track (the center line, inside the cone). Each one
   // maps to a specific index in _scTrack.pointCurves - clickable so a dot
-  // can be selected for per-point curve editing in the Points popover.
+  // can be selected for per-point curve/category/speed editing in the Points
+  // popover. A dot with a category assigned renders as that category's
+  // Track Maker icon instead of a plain circle; every dot shows its running
+  // time offset (+Nh) from the cone's start, computed with whatever
+  // per-dot speed overrides are set upstream of it.
   const dots = (typeof _scGetDots === 'function') ? _scGetDots() : 0;
   const path = _scTrack.centerLine;
   if (dots > 0 && path && path.length > 1) {
     const markers = [];
     const N = path.length - 1;
+    const times = _scCumulativeTimes(_scTrack, _scGetSpeedMph());
     for (let d = 1; d <= dots; d++) {
       const t = d / (dots + 1);
       const i = Math.round(t * N);
       const pt = path[i];
       if (!pt) continue;
       const selected = _scEditingPointIdx === i;
-      const marker = L.circleMarker(pt, {
-        radius: selected ? 7 : 4, color: selected ? '#4a9eff' : _scStyle.dotStroke, weight: selected ? 2.5 : 1.5,
-        fillColor: _scStyle.dotFill, fillOpacity: 0.95, interactive: true, bubblingMouseEvents: false,
-      }).on('click', () => _scOnDotClick(i));
+      const cat = _scTrack.pointCats && _scTrack.pointCats[i];
+      const marker = cat
+        ? L.marker(pt, { icon: _ttbMakeIcon(cat, selected), interactive: true })
+        : L.circleMarker(pt, {
+            radius: selected ? 7 : 4, color: selected ? '#4a9eff' : _scStyle.dotStroke, weight: selected ? 2.5 : 1.5,
+            fillColor: _scStyle.dotFill, fillOpacity: 0.95, interactive: true, bubblingMouseEvents: false,
+          });
+      marker.on('click', () => _scOnDotClick(i));
+      marker.bindTooltip(_scFormatOffset(times[i]), { permanent: true, direction: 'top', offset: [0, cat ? -14 : -6], className: 'sc-dot-time' });
       markers.push(marker);
       _scDotIndices.push(i);
     }
@@ -18427,13 +18492,23 @@ function _scRenderPointsPanel() {
   }
   list.innerHTML = _scDotIndices.map((idx, n) => {
     const curve = (_scTrack.pointCurves && _scTrack.pointCurves[idx]) || 0;
+    const cat   = (_scTrack.pointCats   && _scTrack.pointCats[idx])   || '';
+    const speed = (_scTrack.pointSpeeds && _scTrack.pointSpeeds[idx]);
     const selected = _scEditingPointIdx === idx;
+    const catOptions = SC_CAT_LABELS.map(([k, label]) => `<option value="${k}"${k === cat ? ' selected' : ''}>${label}</option>`).join('');
     return `
       <div class="sc-point-row${selected ? ' selected' : ''}" onclick="_scOnDotClick(${idx})">
-        <span class="sc-point-label">Dot ${n + 1}</span>
-        <span class="sc-point-curve">${curve > 0 ? '+' : ''}${curve}</span>
-        <input type="number" class="sc-point-input" min="-10" max="10" step="0.5" value="${curve}"
-          onclick="event.stopPropagation()" oninput="_scSetPointCurve(${idx}, this.value)">
+        <div class="sc-point-line1">
+          <span class="sc-point-label">Dot ${n + 1}</span>
+          <span class="sc-point-curve">${curve > 0 ? '+' : ''}${curve}</span>
+          <input type="number" class="sc-point-input" min="-10" max="10" step="0.5" value="${curve}"
+            onclick="event.stopPropagation()" oninput="_scSetPointCurve(${idx}, this.value)">
+        </div>
+        <div class="sc-point-line2">
+          <select class="sc-point-select" onclick="event.stopPropagation()" onchange="_scSetPointCat(${idx}, this.value)">${catOptions}</select>
+          <input type="number" class="sc-point-speed" min="1" step="1" placeholder="mph" value="${speed != null ? speed : ''}"
+            onclick="event.stopPropagation()" oninput="_scSetPointSpeed(${idx}, this.value)">
+        </div>
       </div>`;
   }).join('');
 }
@@ -18449,7 +18524,23 @@ function _scSetPointCurve(idx, value) {
   const v = Number(value);
   const pointCurves = [...(_scTrack.pointCurves || [])];
   pointCurves[idx] = Number.isFinite(v) ? Math.max(-10, Math.min(10, v)) : 0;
-  _scTrack = _scBuildTrack(_scTrack.path, pointCurves);
+  _scTrack = _scBuildTrack(_scTrack.path, { ..._scTrack, pointCurves });
+  _scRenderCone();
+  _scComputeAndShowResults();
+}
+function _scSetPointCat(idx, cat) {
+  if (!_scTrack || !_scTrack.pointCats) return;
+  const pointCats = [...(_scTrack.pointCats || [])];
+  pointCats[idx] = cat || null;
+  _scTrack = _scBuildTrack(_scTrack.path, { ..._scTrack, pointCats });
+  _scRenderCone();
+}
+function _scSetPointSpeed(idx, value) {
+  if (!_scTrack || !_scTrack.pointSpeeds) return;
+  const v = Number(value);
+  const pointSpeeds = [...(_scTrack.pointSpeeds || [])];
+  pointSpeeds[idx] = (value === '' || !Number.isFinite(v) || v <= 0) ? null : v;
+  _scTrack = _scBuildTrack(_scTrack.path, { ..._scTrack, pointSpeeds });
   _scRenderCone();
   _scComputeAndShowResults();
 }
@@ -18541,13 +18632,13 @@ function _scFinishDrag() {
 }
 
 function _scOnSpeedChange() {
-  if (_scTrack) _scComputeAndShowResults();
+  if (_scTrack) { _scRenderCone(); _scComputeAndShowResults(); }
 }
 
 function _scOnCurveChange() {
   // Curvature reshapes the cone, so rebuild geometry from the same drawn path.
-  // Preserve per-point curvatures so they don't get reset.
-  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path, _scTrack.pointCurves); _scRenderCone(); _scComputeAndShowResults(); }
+  // Preserve per-point curvatures/categories/speeds so they don't get reset.
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path, _scTrack); _scRenderCone(); _scComputeAndShowResults(); }
 }
 
 function _scOnDotsChange() {
@@ -18559,8 +18650,8 @@ function _scOnDotsChange() {
 
 function _scOnOffsetChange() {
   // Offset moves the center line, rebuild + re-render.
-  // Preserve per-point curvatures.
-  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path, _scTrack.pointCurves); _scRenderCone(); }
+  // Preserve per-point curvatures/categories/speeds.
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path, _scTrack); _scRenderCone(); }
 }
 
 function _scGetCurve() {
@@ -18581,12 +18672,20 @@ function _scGetOffset() {
 function _scComputeAndShowResults() {
   if (!_scTrack) return;
   const speed = _scGetSpeedMph();
+  const times = _scCumulativeTimes(_scTrack, speed);
+  const N = SC_ARC_SEGMENTS;
   const matches = [];
 
   for (const city of CITIES) {
     if (!_ptInPoly(city.lat, city.lon, _scTrack.ring)) continue;
     const distanceMiles = map.distance(_scTrack.start, L.latLng(city.lat, city.lon)) / 1609.344;
-    matches.push({ ...city, distanceMiles, etaHours: distanceMiles / speed });
+    // Find where along the track this distance falls, so a city near a
+    // slower (or faster) per-dot segment gets that segment's speed instead
+    // of one uniform average for the whole track.
+    const idx = _scTrack.distanceMiles > 0
+      ? Math.max(0, Math.min(N, Math.round(N * distanceMiles / _scTrack.distanceMiles)))
+      : 0;
+    matches.push({ ...city, distanceMiles, etaHours: times[idx] });
   }
   matches.sort((a, b) => a.etaHours - b.etaHours);
   _scRenderResults(matches, speed);
