@@ -3998,20 +3998,20 @@ body {
 @keyframes nwr-blink { 0%,100%{opacity:1} 50%{opacity:0.15} }
 
 /* ── SPAGHETTI MODELS: ENSEMBLE MEAN LAYER (Open-Meteo Ensemble API) ── */
-#spag-ens-row { display: flex; gap: 6px; padding: 6px 0 2px; }
-#spag-ens-row .sev-dd-wrap select { font-size: 9px; }
-#spag-ens-status {
+#sev-ens-row { display: flex; gap: 6px; padding: 6px 0 2px; }
+#sev-ens-row .sev-dd-wrap select { font-size: 9px; }
+#sev-ens-status {
   font-family: var(--mono); font-size: 9px; color: rgba(232,184,0,0.8);
   padding: 4px 0 2px; min-height: 12px;
 }
-.spag-ens-btn {
+.sev-ens-btn {
   width: 100%; margin-top: 6px; padding: 7px 8px;
   font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
   background: rgba(232,184,0,0.1); border: 1px solid rgba(232,184,0,0.4);
   color: #e8b800; border-radius: 7px; cursor: pointer;
 }
-.spag-ens-btn:hover { background: rgba(232,184,0,0.22); }
-.spag-ens-btn.active { background: rgba(232,184,0,0.4); color: #fff; }
+.sev-ens-btn:hover { background: rgba(232,184,0,0.22); }
+.sev-ens-btn.active { background: rgba(232,184,0,0.4); color: #fff; }
 
 /* ── Compare (N-way model+run swipe) - sized to match a primary action
    instead of a small corner toggle ── */
@@ -7051,6 +7051,30 @@ body.clean-mode #clean-hint { opacity: 1; }
           <button class="sev-group-btn" id="sev-save-btn" onclick="_sevSaveGroup()" title="Save the current comparison slots under this name"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-save></use></svg> Save</button>
         </div>
       </div>
+      <div style="border-top:1px solid rgba(255,255,255,0.08);margin:8px 0 4px;"></div>
+      <div class="sev-dd-label"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Ensemble Mean Layer</div>
+      <div id="sev-ens-row">
+        <div class="sev-dd-wrap">
+          <label class="sev-dd-label">Product</label>
+          <select id="sev-ens-var-sel" onchange="_sevEnsVarChange(this.value)">
+            <option value="temperature_2m">2m Temperature</option>
+            <option value="precipitation">Precipitation</option>
+            <option value="wind_speed_10m">10m Wind Speed</option>
+            <option value="wind_gusts_10m">Wind Gusts</option>
+            <option value="surface_pressure">Surface Pressure</option>
+          </select>
+        </div>
+        <div class="sev-dd-wrap">
+          <label class="sev-dd-label">Ensemble Model</label>
+          <select id="sev-ens-model-sel" onchange="_sevEnsModelChange(this.value)">
+            <option value="gfs_seamless">GFS (NOAA, US)</option>
+            <option value="icon_seamless">ICON (DWD, Germany)</option>
+            <option value="gem_global">GEM (ECCC, Canada)</option>
+          </select>
+        </div>
+      </div>
+      <button id="sev-ens-toggle-btn" class="sev-ens-btn" onclick="_sevEnsToggle()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Show Ensemble Mean on Map</button>
+      <div id="sev-ens-status"></div>
     </div>
 
     <!-- SPAGHETTI MODELS: fully independent panel (NHC official track/cone/invests) -->
@@ -7075,30 +7099,6 @@ body.clean-mode #clean-hint { opacity: 1; }
       <p id="trop-intro">The National Hurricane Center's official forecast track, cone, and any areas being watched for development. Same live feed as the <b>NHC Outlook</b> overlay pill, kept in sync.</p>
       <div id="trop-storm-status">Loading active storms…</div>
       <div id="trop-storm-list"></div>
-      <div style="border-top:1px solid rgba(255,255,255,0.08);margin:8px 0 4px;"></div>
-      <div class="sev-dd-label"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Ensemble Mean Layer</div>
-      <div id="spag-ens-row">
-        <div class="sev-dd-wrap">
-          <label class="sev-dd-label">Product</label>
-          <select id="spag-ens-var-sel" onchange="_spagEnsVarChange(this.value)">
-            <option value="temperature_2m">2m Temperature</option>
-            <option value="precipitation">Precipitation</option>
-            <option value="wind_speed_10m">10m Wind Speed</option>
-            <option value="wind_gusts_10m">Wind Gusts</option>
-            <option value="surface_pressure">Surface Pressure</option>
-          </select>
-        </div>
-        <div class="sev-dd-wrap">
-          <label class="sev-dd-label">Model</label>
-          <select id="spag-ens-model-sel" onchange="_spagEnsModelChange(this.value)">
-            <option value="gfs_seamless">GFS</option>
-            <option value="icon_seamless">ICON</option>
-            <option value="gem_global">GEM</option>
-          </select>
-        </div>
-      </div>
-      <button id="spag-ens-toggle-btn" class="spag-ens-btn" onclick="_spagEnsToggle()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Show Ensemble Mean on Map</button>
-      <div id="spag-ens-status"></div>
     </div>
 
     <!-- Alerts Panel -->
@@ -14775,29 +14775,35 @@ function _sevToggleCompare() {
   }
 }
 
-// ── SPAGHETTI MODELS: ENSEMBLE MEAN LAYER (Open-Meteo Ensemble API) ─────────
+// ── RUN MODELS: ENSEMBLE MEAN LAYER (Open-Meteo Ensemble API) ───────────────
 // A persistent world-map color layer for the chosen Product's current
-// ensemble mean from the chosen Model (GFS/ICON/GEM) - the same fixed-domain,
-// periodically-refreshed pattern Waves/Air already use, instead of the old
-// separate "tap a point, see a line chart" Ensemble Spread panel. Lives
-// inside the Spaghetti Models panel since it shares the same Open-Meteo
-// Ensemble API as the per-storm spaghetti tracks below.
-let _spagEnsActive = false;
-let _spagEnsVar   = 'temperature_2m';
-let _spagEnsModel = 'gfs_seamless';
-let _spagEnsLoadToken = 0;
-let _spagEnsLayer = null;
-let _spagEnsRefreshTimer = null;
+// ensemble mean from the chosen Ensemble Model (GFS/ICON/GEM) - the same
+// fixed-domain, periodically-refreshed pattern Waves/Air already use.
+// The grid here is intentionally much smaller than Waves/Air's (which fetch
+// one lightweight `current` value per point): an ensemble response carries
+// every member's full hourly series for every point in a chunk, so a large
+// grid means each chunk request is transferring/computing far more data and
+// is more likely to time out. Keeping the grid small and the chunks small
+// (more, lighter requests, run in parallel) is what actually makes this
+// reliable rather than the "unavailable" message the point-forecast Ensemble
+// Spread tool used to show when it lived in the Spaghetti Models panel.
+let _sevEnsActive = false;
+let _sevEnsVar   = 'temperature_2m';
+let _sevEnsModel = 'gfs_seamless';
+let _sevEnsLoadToken = 0;
+let _sevEnsLayer = null;
+let _sevEnsRefreshTimer = null;
 
-const SPAG_ENS_VAR_LABELS = {
+const SEV_ENS_VAR_LABELS = {
   temperature_2m:  '2m Temperature',
   precipitation:   'Precipitation',
   wind_speed_10m:  '10m Wind Speed',
   wind_gusts_10m:  'Wind Gusts',
   surface_pressure:'Surface Pressure',
 };
-const SPAG_ENS_COLS = 30, SPAG_ENS_ROWS = 18;
-const SPAG_ENS_SCALES = {
+const SEV_ENS_MODEL_LABELS = { gfs_seamless: 'GFS', icon_seamless: 'ICON', gem_global: 'GEM' };
+const SEV_ENS_COLS = 18, SEV_ENS_ROWS = 11;
+const SEV_ENS_SCALES = {
   temperature_2m:   [[-20,[80,0,180]],[0,[0,90,220]],[15,[0,200,60]],[25,[255,204,0]],[32,[255,90,0]],[40,[220,0,0]]],
   precipitation:    [[0,[0,60,140]],[0.02,[0,150,220]],[0.08,[0,220,180]],[0.25,[255,204,0]],[0.6,[255,80,0]],[1.2,[200,0,220]]],
   wind_speed_10m:   [[0,[0,60,140]],[10,[0,150,220]],[20,[0,220,180]],[35,[255,204,0]],[50,[255,80,0]],[70,[200,0,220]]],
@@ -14805,33 +14811,34 @@ const SPAG_ENS_SCALES = {
   surface_pressure: [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]],
 };
 
-function _spagEnsToggle() {
-  _spagEnsActive = !_spagEnsActive;
-  const btn = document.getElementById('spag-ens-toggle-btn');
-  const status = document.getElementById('spag-ens-status');
-  if (_spagEnsActive) {
+function _sevEnsToggle() {
+  _sevEnsActive = !_sevEnsActive;
+  const btn = document.getElementById('sev-ens-toggle-btn');
+  const status = document.getElementById('sev-ens-status');
+  if (_sevEnsActive) {
     if (btn) { btn.classList.add('active'); btn.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Hide Ensemble Mean Layer'; }
-    _spagEnsLoadLayer();
-    clearInterval(_spagEnsRefreshTimer);
-    _spagEnsRefreshTimer = setInterval(() => _spagEnsLoadLayer(true), 10 * 60 * 1000);
+    _sevEnsLoadLayer();
+    clearInterval(_sevEnsRefreshTimer);
+    _sevEnsRefreshTimer = setInterval(() => _sevEnsLoadLayer(true), 10 * 60 * 1000);
   } else {
     if (btn) { btn.classList.remove('active'); btn.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Show Ensemble Mean on Map'; }
-    clearInterval(_spagEnsRefreshTimer); _spagEnsRefreshTimer = null;
-    if (_spagEnsLayer) { try { map.removeLayer(_spagEnsLayer); } catch(e){} _spagEnsLayer = null; }
+    clearInterval(_sevEnsRefreshTimer); _sevEnsRefreshTimer = null;
+    if (_sevEnsLayer) { try { map.removeLayer(_sevEnsLayer); } catch(e){} _sevEnsLayer = null; }
     if (status) status.textContent = '';
   }
 }
-function _spagEnsVarChange(v)   { _spagEnsVar   = v; if (_spagEnsActive) _spagEnsLoadLayer(true); }
-function _spagEnsModelChange(m) { _spagEnsModel = m; if (_spagEnsActive) _spagEnsLoadLayer(true); }
+function _sevEnsVarChange(v)   { _sevEnsVar   = v; if (_sevEnsActive) _sevEnsLoadLayer(true); }
+function _sevEnsModelChange(m) { _sevEnsModel = m; if (_sevEnsActive) _sevEnsLoadLayer(true); }
 
-async function _spagEnsLoadLayer(forceRefresh) {
-  if (!_spagEnsActive) return;
-  const token = ++_spagEnsLoadToken;
-  const status = document.getElementById('spag-ens-status');
-  if (status) status.textContent = 'Loading ensemble mean…';
+async function _sevEnsLoadLayer(forceRefresh) {
+  if (!_sevEnsActive) return;
+  const token = ++_sevEnsLoadToken;
+  const status = document.getElementById('sev-ens-status');
+  const varName = _sevEnsVar, model = _sevEnsModel;
+  const modelLabel = SEV_ENS_MODEL_LABELS[model] || model;
+  if (status) status.textContent = `Loading ${modelLabel} ensemble mean…`;
 
-  const pts = _sampleGrid(SPAG_ENS_COLS, SPAG_ENS_ROWS, WORLD_MAP_BOUNDS);
-  const varName = _spagEnsVar, model = _spagEnsModel;
+  const pts = _sampleGrid(SEV_ENS_COLS, SEV_ENS_ROWS, WORLD_MAP_BOUNDS);
   try {
     const locations = await _fetchGridChunkedRaw(pts, chunk => {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
@@ -14839,8 +14846,8 @@ async function _spagEnsLoadLayer(forceRefresh) {
       return `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latStr}&longitude=${lngStr}` +
         `&hourly=${varName}&models=${model}&forecast_days=1` +
         `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
-    });
-    if (token !== _spagEnsLoadToken) return;
+    }, 15);
+    if (token !== _sevEnsLoadToken) return;
 
     const grid = locations.map(loc => {
       if (!loc || !loc.hourly) return null;
@@ -14852,16 +14859,15 @@ async function _spagEnsLoadLayer(forceRefresh) {
     });
     if (!grid.some(v => v != null)) throw new Error('no ensemble members in response');
 
-    const scale = SPAG_ENS_SCALES[varName] || SPAG_ENS_SCALES.temperature_2m;
-    const layer = _paintInterpolatedOverlay(grid, SPAG_ENS_COLS, SPAG_ENS_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale));
-    if (token !== _spagEnsLoadToken) return;
-    if (_spagEnsLayer) { try { map.removeLayer(_spagEnsLayer); } catch(e){} }
-    _spagEnsLayer = layer.addTo(map);
-    const modelLabel = model.replace('_seamless', '').replace('_global', '').toUpperCase();
-    if (status) status.textContent = `${SPAG_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} ensemble mean, now`;
+    const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
+    const layer = _paintInterpolatedOverlay(grid, SEV_ENS_COLS, SEV_ENS_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale));
+    if (token !== _sevEnsLoadToken) return;
+    if (_sevEnsLayer) { try { map.removeLayer(_sevEnsLayer); } catch(e){} }
+    _sevEnsLayer = layer.addTo(map);
+    if (status) status.textContent = `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} ensemble mean, now`;
   } catch(e) {
-    console.warn('Spaghetti ensemble layer error:', e);
-    if (status) status.textContent = 'Ensemble data unavailable right now - try a different model.';
+    console.warn('Run Models ensemble layer error:', e);
+    if (status) status.textContent = `${modelLabel} ensemble data unavailable right now - try a different model.`;
   }
 }
 
@@ -14870,32 +14876,41 @@ async function _spagEnsLoadLayer(forceRefresh) {
 // _fetchGridChunked - striped (round-robin) chunk assignment so a failed
 // chunk's missing points scatter across the whole map instead of blanking
 // out contiguous rows, and a failed chunk degrades to nulls for its points
-// instead of failing the whole layer.
+// instead of failing the whole layer. Defaults to a much smaller chunk size
+// than _fetchGridChunked's 300 - an ensemble response carries every member's
+// full hourly series per point, so a chunk that size here would be a huge,
+// slow payload; smaller/more chunks in parallel finish faster and are less
+// likely to hit the timeout below.
 async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
-  chunkSize = chunkSize || 300;
+  chunkSize = chunkSize || 20;
   const numChunks = Math.max(1, Math.ceil(pts.length / chunkSize));
   const chunkIdx = Array.from({ length: numChunks }, () => []);
   pts.forEach((p, i) => chunkIdx[i % numChunks].push(i));
 
   let anyOk = false;
+  let lastErr = null;
   const out = new Array(pts.length).fill(null);
-  await _runLimited(chunkIdx, 4, async indices => {
+  await _runLimited(chunkIdx, 6, async indices => {
     const chunkPts = indices.map(i => pts[i]);
     await _globalFetchAcquire();
     try {
-      const r = await fetch(buildUrl(chunkPts), { signal: AbortSignal.timeout(30000) });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const r = await fetch(buildUrl(chunkPts), { signal: AbortSignal.timeout(45000) });
+      if (!r.ok) {
+        const body = await r.text().catch(() => '');
+        throw new Error(`HTTP ${r.status}${body ? ' - ' + body.slice(0, 200) : ''}`);
+      }
       const data = await r.json();
       const arr = Array.isArray(data) ? data : [data];
       anyOk = true;
       arr.forEach((d, j) => { out[indices[j]] = d; });
     } catch (e) {
+      lastErr = e;
       console.warn('Ensemble chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
     } finally {
       _globalFetchRelease();
     }
   });
-  if (!anyOk) throw new Error('All chunks failed');
+  if (!anyOk) throw lastErr || new Error('All chunks failed');
   return out;
 }
 
@@ -25777,11 +25792,6 @@ function lqmSetTZ(tz) {
       <p class="fc-body">While a storm is active, three colored lines draw automatically around it, GFS, ICON, and GEM. Each one is that model's own ensemble mean storm-center path: every member's surface pressure is averaged at each point on a grid around the storm, and the line follows wherever the pressure is lowest at each 6-hour step out to +48h, real model data, genuinely different per model. Each line has a thin black outline for visibility (same technique as the alert polygons) and a colored price-tag label at its end naming the model.</p>
     </div>
   </div>
-
-  <div class="callout">
-    <div class="callout-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg></div>
-    <div class="callout-body"><strong>Ensemble Mean Layer:</strong> pick a <strong>Product</strong> (2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, or Surface Pressure) and a <strong>Model</strong> (GFS, ICON, or GEM), then tap <strong>Show Ensemble Mean on Map</strong> for a smooth color layer of that model's current ensemble mean, right on the map, refreshing every 10 minutes like the Waves and Air layers. Tap it again to hide it.</div>
-  </div>
 </section>
 
 
@@ -25835,6 +25845,9 @@ function lqmSetTZ(tz) {
   </div>
 
   <p>Use the <strong>Run</strong> selector and hour slider (or <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Play) to step through the forecast for whichever model and variable you've picked.</p>
+
+  <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg> Ensemble Mean Layer</h3>
+  <p>Below the Compare button, pick a <strong>Product</strong> (2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, or Surface Pressure) and an <strong>Ensemble Model</strong> (GFS from NOAA, ICON from DWD Germany, or GEM from ECCC Canada), then tap <strong>Show Ensemble Mean on Map</strong> for a smooth color layer of that exact model's current ensemble mean, right on the map, refreshing every 10 minutes like the Waves and Air layers. Tap it again to hide it.</p>
 
   <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> Compare Runs / Models</h3>
   <p>Tap <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> Compare Runs / Models</strong> inside Run Models to split the map into side-by-side panes, each an independent Model/Product/Run combination, so you can compare two different models (or two runs of the same model) at the same forecast hour without switching back and forth. Drag the <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> divider on the map to resize either side; <strong>+ Add Comparison</strong> adds another pane. Under <strong>Saved Comparisons</strong>, type a name and hit <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-save></use></svg> Save</strong> to store the current set of panes, then reload it later from the dropdown, edit any pane afterward and it detaches from the saved name until you save it again.</p>
