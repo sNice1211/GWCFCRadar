@@ -6476,6 +6476,9 @@ body.gwcfc-crosshair #map::after {
   font-family: var(--display); font-weight: 700; font-size: 10px; letter-spacing: 1px;
   color: #dc143c; text-align: center; text-transform: uppercase; margin-bottom: 1px;
 }
+.ov-panel-header-row { display: flex; align-items: center; gap: 4px; margin-bottom: 1px; }
+.ov-panel-header-row .dtb-drag { padding: 0 2px; margin-bottom: 0; }
+.ov-panel-header-row [class$="-float-title"] { flex: 1; margin-bottom: 0; }
 
 /* Button row */
 .spc-picker-row { display: flex; gap: 4px; }
@@ -6933,13 +6936,14 @@ body.clean-mode #clean-hint { opacity: 1; }
 <!-- Credits Modal -->
 <div id="credits-modal" onclick="if(event.target===this)lqmCloseCredits()" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.72);display:none;align-items:center;justify-content:center;">
   <div id="credits-panel" style="background:#0d1117;border:1px solid rgba(255,255,255,0.1);border-radius:16px;width:min(420px,92vw);max-height:80vh;overflow-y:auto;box-shadow:0 8px 48px rgba(0,0,0,0.8);">
-    <div style="padding:18px 20px 14px;border-bottom:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:space-between;">
-      <div style="font-family:var(--display);font-size:15px;color:#d4e8ff;letter-spacing:1.5px;">★ CREDITS</div>
+    <div id="credits-drag" style="padding:18px 20px 14px;border-bottom:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;gap:8px;justify-content:space-between;cursor:grab;">
+      <span class="dtb-drag" style="padding:0;">⠿</span>
+      <div style="font-family:var(--display);font-size:15px;color:#d4e8ff;letter-spacing:1.5px;flex:1;">★ CREDITS</div>
       <button onclick="lqmCloseCredits()" style="background:none;border:none;color:rgba(255,255,255,0.4);font-size:18px;cursor:pointer;line-height:1;padding:2px 6px;">&times;</button>
     </div>
     <div style="padding:16px 20px 20px;font-family:var(--mono);font-size:11px;line-height:1.8;color:rgba(255,255,255,0.65);">
       <div style="font-size:13px;color:#d4e8ff;font-family:var(--display);letter-spacing:1px;margin-bottom:4px;">GWCFCRadar</div>
-      <div style="color:rgba(255,255,255,0.35);margin-bottom:18px;">Built by Ralph &mdash; Greater West-Central Florida</div>
+      <div style="color:rgba(255,255,255,0.35);margin-bottom:18px;">Built by Ralph, Greater West-Central Florida</div>
 
       <div style="font-size:9px;color:rgba(255,255,255,0.3);letter-spacing:1.5px;margin-bottom:8px;">DATA SOURCES</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:18px;">
@@ -24709,6 +24713,7 @@ function selectProduct(p) {
       <span id="lqm-ai-header-title">ASTURIO AI</span>
       <span id="lqm-ai-header-sub">POWERED BY GEMINI</span>
     </div>
+    <div class="dtb-drag" id="lqm-ai-drag" title="Drag to move" style="margin-left:auto;">⠿</div>
     <div id="lqm-ai-header-btns">
       <button class="ai-hdr-btn" onclick="_aiNewChat()" title="New conversation">+ New</button>
       <button id="lqm-ai-close" onclick="lqmCloseAI()">✕</button>
@@ -24741,6 +24746,7 @@ function selectProduct(p) {
 </div>
 
 <div id="lqm-settings-overlay">
+  <div class="dtb-drag" id="lqm-settings-drag" title="Drag to move" style="width:100%;justify-content:center;padding:0 0 4px;">⠿</div>
   <button id="lqm-settings-close" onclick="lqmCloseSettings()">✕</button>
   <div class="lqm-settings-title">⚙ Settings</div>
 
@@ -25904,7 +25910,8 @@ function lqmSetTZ(tz) {
 <div id="tutorial-modal-overlay" onclick="if(event.target===this)closeTutorial()">
   <div id="tutorial-modal-inner">
     <div id="tut-dialog-header">
-      <span id="tut-dialog-title">📡 GWCFC RADAR · Tutorial</span>
+      <div class="dtb-drag" id="tut-dialog-drag" title="Drag to move">⠿</div>
+      <span id="tut-dialog-title" style="flex:1;">📡 GWCFC RADAR · Tutorial</span>
       <button id="tut-close-btn" onclick="closeTutorial()" title="Close Tutorial">✕</button>
     </div>
     <div id="tut-scroll-area">
@@ -28297,17 +28304,26 @@ function _makeDraggable(el, handle) {
   let active = false, ox = 0, oy = 0;
   handle.style.cursor = 'grab';
 
+  // setProperty(...,'important') rather than plain el.style.x= assignment,
+  // so this still wins against a handful of panels (the tutorial modal) that
+  // pin position/width with their own !important stylesheet rules.
+  function _set(prop, val) { el.style.setProperty(prop, val, 'important'); }
+
   function _start(e) {
     if (e.target !== handle && e.target.closest &&
         e.target.closest('button,input,select,a,label')) return;
     active = true;
     const r = el.getBoundingClientRect();
-    el.style.position = 'fixed';
-    el.style.left = r.left + 'px';
-    el.style.top  = r.top  + 'px';
-    el.style.right  = 'auto';
-    el.style.bottom = 'auto';
-    el.style.transform = 'none';
+    // Kill any open/close CSS transition first so removing the centering
+    // transform below takes effect instantly instead of easing over time,
+    // which would make the panel visually lag behind the cursor.
+    _set('transition', 'none');
+    _set('position', 'fixed');
+    _set('left', r.left + 'px');
+    _set('top',  r.top  + 'px');
+    _set('right',  'auto');
+    _set('bottom', 'auto');
+    _set('transform', 'none');
     const cx = e.touches ? e.touches[0].clientX : e.clientX;
     const cy = e.touches ? e.touches[0].clientY : e.clientY;
     ox = cx - r.left;
@@ -28322,8 +28338,8 @@ function _makeDraggable(el, handle) {
     const cy = e.touches ? e.touches[0].clientY : e.clientY;
     const x = Math.max(0, Math.min(window.innerWidth  - el.offsetWidth,  cx - ox));
     const y = Math.max(0, Math.min(window.innerHeight - el.offsetHeight, cy - oy));
-    el.style.left = x + 'px';
-    el.style.top  = y + 'px';
+    _set('left', x + 'px');
+    _set('top',  y + 'px');
     e.preventDefault();
   }
   function _end() {
@@ -28598,6 +28614,18 @@ document.addEventListener('DOMContentLoaded', () => {
   _makeDraggable(document.getElementById('run-models-panel'),       document.getElementById('run-models-drag'));
   _makeDraggable(document.getElementById('spaghetti-models-panel'), document.getElementById('spaghetti-models-drag'));
   _makeDraggable(document.getElementById('dist-toolbar'),        document.getElementById('dist-drag-handle'));
+  _makeDraggable(document.getElementById('spc-controls'),        document.getElementById('spc-drag'));
+  _makeDraggable(document.getElementById('wpc-controls'),        document.getElementById('wpc-drag'));
+  _makeDraggable(document.getElementById('fw-controls'),         document.getElementById('fw-drag'));
+  _makeDraggable(document.getElementById('cpc-controls'),        document.getElementById('cpc-drag'));
+  _makeDraggable(document.getElementById('storm-reports-panel'), document.getElementById('storm-reports-drag'));
+  _makeDraggable(document.getElementById('meso-panel'),          document.getElementById('meso-drag'));
+  _makeDraggable(document.getElementById('tornado-tracks-panel'), document.getElementById('tornado-tracks-drag'));
+  _makeDraggable(document.getElementById('cc-modal'), document.getElementById('cc-drag'));
+  _makeDraggable(document.getElementById('credits-panel'),        document.getElementById('credits-drag'));
+  _makeDraggable(document.getElementById('lqm-ai-overlay'),       document.getElementById('lqm-ai-drag'));
+  _makeDraggable(document.getElementById('lqm-settings-overlay'), document.getElementById('lqm-settings-drag'));
+  _makeDraggable(document.getElementById('tutorial-modal-inner'), document.getElementById('tut-dialog-drag'));
   // Restore NWR recordings from archive on page load
   _nwrLoadArchive();
 });
@@ -29425,7 +29453,7 @@ function buildTimelineLabels() {
 <div id="overlay-panel-stack">
 
   <div id="spc-controls">
-    <div class="spc-float-title">⚠ SPC Outlook</div>
+    <div class="ov-panel-header-row"><div class="dtb-drag" id="spc-drag" title="Drag to move">⠿</div><div class="spc-float-title">⚠ SPC Outlook</div></div>
     <div class="spc-picker-row">
       <button class="spc-pick-btn active" id="spc-d1" onclick="_spcPickDay(1)">D1</button>
       <button class="spc-pick-btn" id="spc-d2" onclick="_spcPickDay(2)">D2</button>
@@ -29454,7 +29482,7 @@ function buildTimelineLabels() {
   </div>
 
   <div id="wpc-controls">
-    <div class="wpc-float-title">🌧 WPC Rainfall</div>
+    <div class="ov-panel-header-row"><div class="dtb-drag" id="wpc-drag" title="Drag to move">⠿</div><div class="wpc-float-title">🌧 WPC Rainfall</div></div>
     <div class="spc-picker-row">
       <button class="spc-pick-btn active" id="wpc-d1" onclick="_wpcPickDay(1)">Day 1</button>
       <button class="spc-pick-btn"        id="wpc-d2" onclick="_wpcPickDay(2)">Day 2</button>
@@ -29470,7 +29498,7 @@ function buildTimelineLabels() {
   </div>
 
   <div id="fw-controls">
-    <div class="fw-float-title">🔥 Fire Weather</div>
+    <div class="ov-panel-header-row"><div class="dtb-drag" id="fw-drag" title="Drag to move">⠿</div><div class="fw-float-title">🔥 Fire Weather</div></div>
     <div class="spc-picker-row">
       <button class="spc-pick-btn active" id="fw-d1" onclick="_fwPickDay(1)">Day 1</button>
       <button class="spc-pick-btn"        id="fw-d2" onclick="_fwPickDay(2)">Day 2</button>
@@ -29484,7 +29512,7 @@ function buildTimelineLabels() {
   </div>
 
   <div id="cpc-controls">
-    <div class="cpc-float-title">📊 CPC Outlooks</div>
+    <div class="ov-panel-header-row"><div class="dtb-drag" id="cpc-drag" title="Drag to move">⠿</div><div class="cpc-float-title">📊 CPC Outlooks</div></div>
     <div class="cpc-type-cols">
       <div class="cpc-type-col">
         <div class="cpc-type-col-h">🌡️ Temperature</div>
@@ -29509,7 +29537,7 @@ function buildTimelineLabels() {
   </div>
 
   <div id="storm-reports-panel">
-    <div class="rpt-float-title">⚡ Storm Reports</div>
+    <div class="ov-panel-header-row"><div class="dtb-drag" id="storm-reports-drag" title="Drag to move">⠿</div><div class="rpt-float-title">⚡ Storm Reports</div></div>
     <div class="spc-picker-row">
       <button class="spc-pick-btn active" id="rpt-tor"  onclick="_rptToggleType('tor')">🌪 Tor</button>
       <button class="spc-pick-btn active" id="rpt-hail" onclick="_rptToggleType('hail')">🧊 Hail</button>
@@ -29528,14 +29556,14 @@ function buildTimelineLabels() {
   </div>
 
   <div id="meso-panel">
-    <div class="meso-float-title">🌀 Meso Discussions</div>
+    <div class="ov-panel-header-row"><div class="dtb-drag" id="meso-drag" title="Drag to move">⠿</div><div class="meso-float-title">🌀 Meso Discussions</div></div>
     <div class="ov-panel-legend">
       <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:rgba(255,140,0,0.25);border:2px dashed #ff8c00"></div>Active MCD</div>
     </div>
   </div>
 
   <div id="tornado-tracks-panel">
-    <div class="tt-float-title">🌪 Tornado Tracks</div>
+    <div class="ov-panel-header-row"><div class="dtb-drag" id="tornado-tracks-drag" title="Drag to move">⠿</div><div class="tt-float-title">🌪 Tornado Tracks</div></div>
     <div class="ov-panel-legend">
       <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#8cbf26"></div>EF0</div>
       <div class="ov-panel-row"><div class="ov-panel-swatch" style="background:#ffd700"></div>EF1</div>
@@ -29555,6 +29583,7 @@ function buildTimelineLabels() {
 <div id="cc-modal-backdrop" onclick="if(event.target===this)_ccClose()">
   <div id="cc-modal">
     <div class="cc-head">
+      <div class="dtb-drag" id="cc-drag" title="Drag to move">⠿</div>
       <div class="cc-title">📸 Cloud Capture</div>
       <button class="cc-x" onclick="_ccClose()" aria-label="Close">✕</button>
     </div>
