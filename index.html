@@ -12889,6 +12889,227 @@ function _paintAndShowPressure(allGrids, token) {
   _pressureLayer = layer.addTo(map);
 }
 
+// ── WIND LAYER (Open-Meteo Forecast API) ─────────────────────────────────────
+// Unlike Waves/Air/Temperature/Pressure above, Wind doesn't paint a static
+// color image - it animates a field of particles that flow with the wind,
+// redrawn every frame. The data source is the same Open-Meteo Forecast API
+// Temperature/Pressure already use, just two different fields: wind speed and
+// wind direction. Both products (Surface Winds and the Jet Stream) go through
+// Open-Meteo's `hourly` param and read hour 0 ("now") instead of the lighter
+// `current` param Temperature/Pressure use - `current` only exposes a handful
+// of near-surface fields, and the Jet Stream needs a pressure-level field
+// (wind at 250 hPa, roughly 34,000 ft) that only `hourly` can return. Using
+// `hourly` for both keeps one fetch code path for both products.
+let windActive = false;
+let _windProduct = 'wind-surface';
+let _windLoadToken = 0;
+let _windRefreshTimer = null;
+let _windCanvas = null;
+let _windRafId = null;
+let _windLastFrameTime = null;
+let _windParticles = [];
+let _windGrid = null; // {cols, rows, u, v, product} - u/v are eastward/northward mph components
+const WIND_COLS = 64, WIND_ROWS = 36; // world-wide grid; fetched in chunks, see _fetchGridChunkedRaw
+
+const WIND_SUB_BUBBLES = [
+  { id: 'wind-surface', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>', label: 'Surface Winds' },
+  { id: 'wind-jet',     icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-plane></use></svg>', label: 'Jet Stream (250mb)' },
+];
+const WIND_FIELDS = {
+  'wind-surface': { speed: 'wind_speed_10m',     dir: 'wind_direction_10m' },
+  'wind-jet':     { speed: 'wind_speed_250hPa',  dir: 'wind_direction_250hPa' },
+};
+// mph. Surface winds live in the low end of this scale, the jet stream's
+// 80-150+ mph core lives in the high end - one scale covers both sensibly.
+const WIND_SPEED_SCALE = [[0,[60,60,180]],[8,[0,140,220]],[20,[0,200,120]],[35,[255,204,0]],[55,[255,110,0]],[80,[220,0,0]],[120,[190,0,220]]];
+const WIND_PARTICLE_COUNT = 800;
+// Not a real-time physical speed - exaggerated so the flow is actually
+// visible on screen within a couple of seconds, same trick every wind-
+// particle map (Windy, earth.nullschool) uses rather than animating at the
+// wind's true real-world pace.
+const WIND_ANIM_SCALE = 0.00028;
+
+function toggleWindSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  const back = document.createElement('div');
+  back.className = 'sub-bubble';
+  back.innerHTML = `<span class="sb-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(180deg)><use href=#ic-arrow></use></svg></span><span class="sb-label">Back</span>`;
+  back.onclick = () => { _syncParentBubble('wind'); renderSubBubbles('regular'); };
+  wrap.appendChild(back);
+  WIND_SUB_BUBBLES.forEach(b => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (windActive && _windProduct === b.id ? ' active' : '');
+    el.id = 'sub-' + b.id;
+    el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
+    el.onclick = () => {
+      if (windActive && _windProduct === b.id) {
+        _stopWindLayer();
+        el.classList.remove('active');
+        _syncParentBubble('wind');
+        return;
+      }
+      WIND_SUB_BUBBLES.forEach(x => { const xe = document.getElementById('sub-' + x.id); if (xe) xe.classList.remove('active'); });
+      el.classList.add('active');
+      windActive = true;
+      _windProduct = b.id;
+      _syncParentBubble('wind');
+      _loadWindLayer();
+      clearInterval(_windRefreshTimer);
+      _windRefreshTimer = setInterval(() => _loadWindLayer(true), 10 * 60 * 1000);
+    };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
+}
+
+function _stopWindLayer() {
+  windActive = false;
+  clearInterval(_windRefreshTimer); _windRefreshTimer = null;
+  if (_windRafId) { cancelAnimationFrame(_windRafId); _windRafId = null; }
+  map.off('resize', _windResizeCanvas);
+  if (_windCanvas) { try { _windCanvas.remove(); } catch(e){} _windCanvas = null; }
+  _windParticles = [];
+  _windGrid = null;
+}
+
+function _windResizeCanvas() {
+  if (!_windCanvas) return;
+  const size = map.getSize();
+  _windCanvas.width = size.x;
+  _windCanvas.height = size.y;
+}
+
+// Drops a particle at a random point within the current view (clamped to
+// WORLD_MAP_BOUNDS, since there's no wind data past it) with a fresh random
+// lifespan - used both for the first seeding pass and to recycle a particle
+// that has aged out or drifted off-screen.
+function _windRespawn(p, bounds) {
+  const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
+  const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
+  p.lat = south + Math.random() * (north - south);
+  p.lng = bounds.getWest() + Math.random() * (bounds.getEast() - bounds.getWest());
+  p.age = 0;
+  p.life = 40 + Math.random() * 80;
+}
+
+function _windSeedParticles() {
+  const bounds = map.getBounds();
+  _windParticles = [];
+  for (let i = 0; i < WIND_PARTICLE_COUNT; i++) {
+    const p = {};
+    _windRespawn(p, bounds);
+    p.age = Math.floor(Math.random() * p.life); // stagger ages so particles don't all reset in sync
+    _windParticles.push(p);
+  }
+}
+
+function _windGridCoord(lat, lng) {
+  const south = WORLD_MAP_BOUNDS[0][0], north = WORLD_MAP_BOUNDS[1][0];
+  const west  = WORLD_MAP_BOUNDS[0][1], east  = WORLD_MAP_BOUNDS[1][1];
+  return [
+    (lng - west) / (east - west) * (_windGrid.cols - 1),
+    (lat - south) / (north - south) * (_windGrid.rows - 1),
+  ];
+}
+
+// One requestAnimationFrame tick: fades the existing trail slightly (via a
+// destination-in composite, which scales down alpha only - no black tint -
+// since this canvas sits transparently over the map, not on an opaque
+// background), then advects and redraws every particle one small step along
+// the wind field sampled at its position.
+function _windAnimTick(now) {
+  if (!windActive || !_windCanvas) { _windRafId = null; return; }
+  const dtMs = _windLastFrameTime ? Math.min(now - _windLastFrameTime, 100) : 16.7;
+  _windLastFrameTime = now;
+  const ctx = _windCanvas.getContext('2d');
+  const w = _windCanvas.width, h = _windCanvas.height;
+
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = 'rgba(0,0,0,0.93)';
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = 'source-over';
+
+  if (_windGrid) {
+    const bounds = map.getBounds();
+    const stepScale = WIND_ANIM_SCALE * (dtMs / 16.7);
+    _windParticles.forEach(p => {
+      const prevPoint = map.latLngToContainerPoint([p.lat, p.lng]);
+      const [gx, gy] = _windGridCoord(p.lat, p.lng);
+      const u = _bilinear(_windGrid.u, _windGrid.cols, _windGrid.rows, gx, gy);
+      const v = _bilinear(_windGrid.v, _windGrid.cols, _windGrid.rows, gx, gy);
+      if (u == null || v == null) { _windRespawn(p, bounds); return; }
+      p.lat += v * stepScale;
+      p.lng += u * stepScale / Math.cos(p.lat * Math.PI / 180);
+      p.age++;
+      const inView = p.lat >= WORLD_MAP_BOUNDS[0][0] && p.lat <= WORLD_MAP_BOUNDS[1][0] && bounds.pad(0.15).contains([p.lat, p.lng]);
+      if (p.age > p.life || !inView) { _windRespawn(p, bounds); return; }
+      const newPoint = map.latLngToContainerPoint([p.lat, p.lng]);
+      const [r, g, b] = _colorScale(Math.hypot(u, v), WIND_SPEED_SCALE);
+      ctx.strokeStyle = `rgba(${r},${g},${b},0.85)`;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(prevPoint.x, prevPoint.y);
+      ctx.lineTo(newPoint.x, newPoint.y);
+      ctx.stroke();
+    });
+  }
+  _windRafId = requestAnimationFrame(_windAnimTick);
+}
+
+async function _loadWindLayer(forceRefresh) {
+  if (!windActive) return;
+  const token = ++_windLoadToken;
+
+  if (!_windCanvas) {
+    _windCanvas = document.createElement('canvas');
+    _windCanvas.id = 'wind-particles-canvas';
+    _windCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:490;opacity:1';
+    const size = map.getSize();
+    _windCanvas.width = size.x; _windCanvas.height = size.y;
+    map.getContainer().appendChild(_windCanvas);
+    map.on('resize', _windResizeCanvas);
+  }
+
+  const alreadyLoaded = _windGrid && _windGrid.product === _windProduct;
+  if (!forceRefresh && alreadyLoaded) {
+    // Nothing new to fetch - the animation loop (started below) keeps using the cached field.
+  } else {
+    try {
+      const fields = WIND_FIELDS[_windProduct];
+      const pts = _sampleGrid(WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS);
+      const locations = await _fetchGridChunkedRaw(pts, chunk => {
+        const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+        const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+        return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
+          `&hourly=${fields.speed},${fields.dir}&forecast_days=1&wind_speed_unit=mph`;
+      }, 300);
+      if (token !== _windLoadToken) return;
+
+      const u = new Array(pts.length).fill(null);
+      const v = new Array(pts.length).fill(null);
+      locations.forEach((loc, i) => {
+        const s = loc?.hourly?.[fields.speed]?.[0];
+        const d = loc?.hourly?.[fields.dir]?.[0];
+        if (s == null || d == null || !isFinite(s) || !isFinite(d)) return;
+        // Wind direction is meteorological "from" convention (0deg = blowing
+        // FROM the north), so the actual movement heading is direction+180.
+        const rad = (d + 180) * Math.PI / 180;
+        u[i] = s * Math.sin(rad);
+        v[i] = s * Math.cos(rad);
+      });
+      if (!u.some(x => x != null)) throw new Error('no wind data in response');
+      _windGrid = { cols: WIND_COLS, rows: WIND_ROWS, u, v, product: _windProduct };
+      _windSeedParticles();
+    } catch(e) {
+      console.warn('Wind layer error:', e);
+      showToast('Wind data unavailable right now', 3000);
+      return;
+    }
+  }
+  if (!_windRafId) { _windLastFrameTime = null; _windRafId = requestAnimationFrame(_windAnimTick); }
+}
 
 // ── MAP TYPE ──
 let currentMapType = 'satellite';
@@ -13259,6 +13480,9 @@ const LAYER_DESCRIPTIONS = {
   air:            'Air quality - overall AQI, PM2.5, PM10, and ozone - shown as a smooth color map. Tap a product below to pick which one.',
   temperature:    'Current temperature conditions - air temperature, feels-like, and dew point - shown as a smooth color map. Tap a product below to pick which one.',
   pressure:       'Barometric pressure - sea-level (the standard weather-map number) or raw surface/station pressure - shown as a smooth color map. Tap a product below to pick which one.',
+  wind:           'Animated wind particles flowing across the map, colored by speed and powered by Open-Meteo. Tap a product below to pick Surface Winds or the Jet Stream.',
+  'wind-surface': 'Surface-level (10m) wind from Open-Meteo\'s Forecast API, animated as flowing particles colored by speed, blue/green calm through yellow/orange/red for strong wind.',
+  'wind-jet':     'Winds at the 250 hPa pressure level (roughly 34,000 ft) - the jet stream, the fast-moving upper-air river of wind that steers most weather systems.',
   radar:      'Turns on NEXRAD radar. Tap again to pick which radar product to show, like Reflectivity or Velocity.',
   satellite:  'Turns on GOES satellite imagery. Tap again to pick a channel, like Visible, Infrared, or Water Vapor.',
   models:     'Opens the Models panel, covering severe weather guidance (SPC Outlooks, HRRR, NAM) and tropical guidance (hurricane tracks, spaghetti models).',
@@ -13305,6 +13529,7 @@ const SB_ICON_RADAR = '<svg viewBox="0 0 24 24" width="14" height="14" fill="non
 const SB_ICON_SATELLITE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="6" height="6" rx="1"/><line x1="2" y1="6" x2="7" y2="11"/><line x1="2" y1="12" x2="7" y2="7"/><line x1="22" y1="6" x2="17" y2="11"/><line x1="22" y1="12" x2="17" y2="7"/><line x1="12" y1="15" x2="12" y2="21"/><path d="M9 21h6"/></svg>';
 const SB_ICON_WAVES = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 8c1.5 1.5 3 1.5 4.5 0S9 6.5 10.5 8s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0"/><path d="M2 14c1.5 1.5 3 1.5 4.5 0S9 12.5 10.5 14s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0"/><path d="M2 20c1.5 1.5 3 1.5 4.5 0S9 18.5 10.5 20s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0"/></svg>';
 const SB_ICON_AIR = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 7h15a3 3 0 1 0-2.5-4.6"/><path d="M2 12h18a3 3 0 1 1-2.5 4.6"/><path d="M2 17h12"/></svg>';
+const SB_ICON_WIND = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 7h15a3 3 0 1 0-2.5-4.6"/><path d="M2 12h18a3 3 0 1 1-2.5 4.6"/><path d="M2 17h12"/></svg>';
 const SB_ICON_TEMP = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a2 2 0 0 0-2 2v9.5a4 4 0 1 0 4 0V5a2 2 0 0 0-2-2z"/><circle cx="12" cy="17.5" r="2" fill="currentColor" stroke="none"/></svg>';
 const SB_ICON_PRESSURE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18a8 8 0 1 1 16 0"/><line x1="12" y1="18" x2="16" y2="12"/><circle cx="12" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="4" y1="18" x2="2.5" y2="18"/><line x1="20" y1="18" x2="21.5" y2="18"/></svg>';
 const SB_ICON_MODELS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="20" x2="5" y2="13"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="19" y1="20" x2="19" y2="4"/><line x1="2" y1="20" x2="22" y2="20"/></svg>';
@@ -13314,6 +13539,7 @@ const BASE_BUBBLES = [
   { id: 'satellite',   icon: SB_ICON_SATELLITE, label: 'Satellite',   action: () => { if (!activeLayers.satellite) { _disableRadar(); activeLayers.satellite = true; loadGoesLayer(); } toggleSatelliteSub(); } },
   { id: 'waves',       icon: SB_ICON_WAVES,     label: 'Waves',       action: () => toggleWavesSub() },
   { id: 'air',         icon: SB_ICON_AIR,       label: 'Air',         action: () => toggleAirSub() },
+  { id: 'wind',        icon: SB_ICON_WIND,      label: 'Wind',        action: () => toggleWindSub() },
   { id: 'temperature', icon: SB_ICON_TEMP,      label: 'Temperature', action: () => toggleTemperatureSub() },
   { id: 'pressure',    icon: SB_ICON_PRESSURE,  label: 'Pressure',    action: () => togglePressureSub() },
   { id: 'models',      icon: SB_ICON_MODELS,    label: 'Models',      action: () => toggleModelsSub() },
@@ -13334,6 +13560,7 @@ function _getBubbleActive(id) {
   if (id === 'satellite') return !!activeLayers.satellite;
   if (id === 'waves')       return !!wavesActive;
   if (id === 'air')         return !!airActive;
+  if (id === 'wind')        return !!windActive;
   if (id === 'temperature') return !!temperatureActive;
   if (id === 'pressure')    return !!pressureActive;
   if (id === 'models')      return _runModelsPanelIsOpen() || _spaghettiModelsPanelIsOpen();
@@ -17715,6 +17942,22 @@ function _inspPressureRow(center) {
   return { label, value: v.toFixed(2), unit: PRESSURE_UNITS[_pressureProduct] || 'hPa', color: `rgb(${r},${g},${b})` };
 }
 
+// Wind's u/v grid isn't a single scalar like the others, so it doesn't fit
+// _inspGridValueAt - interpolate both components, then recover speed/direction.
+function _inspWindRow(center) {
+  const label = (WIND_SUB_BUBBLES.find(b => b.id === _windProduct) || {}).label || 'Wind';
+  if (!_windGrid) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  if (center.lat < WORLD_MAP_BOUNDS[0][0] || center.lat > WORLD_MAP_BOUNDS[1][0]) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  const [gx, gy] = _windGridCoord(center.lat, center.lng);
+  const u = _bilinear(_windGrid.u, _windGrid.cols, _windGrid.rows, gx, gy);
+  const v = _bilinear(_windGrid.v, _windGrid.cols, _windGrid.rows, gx, gy);
+  if (u == null || v == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  const speed = Math.hypot(u, v);
+  const fromDir = ((Math.atan2(u, v) * 180 / Math.PI) + 180 + 360) % 360; // movement heading -> meteorological "from" direction
+  const [r, g, b] = _colorScale(speed, WIND_SPEED_SCALE);
+  return { label, value: Math.round(speed), unit: `mph ${_degToCompass(fromDir)}`, color: `rgb(${r},${g},${b})` };
+}
+
 function _inspUpdate() {
   _inspRafPending = false;
   if (!_inspEnabled || typeof map === 'undefined') return;
@@ -17727,6 +17970,7 @@ function _inspUpdate() {
   if (typeof activeLayers !== 'undefined' && activeLayers.satellite) rows.push(_inspSatelliteRow(cx, cy));
   if (typeof wavesActive !== 'undefined' && wavesActive)             rows.push(_inspWavesRow(center));
   if (typeof airActive !== 'undefined' && airActive)                 rows.push(_inspAirRow(center));
+  if (typeof windActive !== 'undefined' && windActive)               rows.push(_inspWindRow(center));
   if (typeof temperatureActive !== 'undefined' && temperatureActive) rows.push(_inspTemperatureRow(center));
   if (typeof pressureActive !== 'undefined' && pressureActive)       rows.push(_inspPressureRow(center));
   if (_iemModelLayer)                                                 rows.push(_inspModelsRow(cx, cy));
@@ -25538,14 +25782,14 @@ function lqmSetTZ(tz) {
     <div class="section-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg></div>
     <div>
       <div class="section-title">LAYERS</div>
-      <div class="section-sub">Radar, Satellite, Waves, Air &amp; Models, tap a bubble to toggle</div>
+      <div class="section-sub">Radar, Satellite, Waves, Air, Wind &amp; Models, tap a bubble to toggle</div>
     </div>
   </div>
 
-  <p>The left side of the screen holds five floating bubble buttons: <strong>Radar</strong>, <strong>Satellite</strong>, <strong>Waves</strong>, <strong>Air</strong>, and <strong>Models</strong>. Tap a bubble to turn it on, it glows cyan when active. Radar, Satellite, and Waves each open a secondary sub-menu of products, tap the same product again to turn it off. Radar and Satellite are mutually exclusive, turning one on disables the other. On phones this row relocates to the bottom of the screen.</p>
+  <p>The left side of the screen holds six floating bubble buttons: <strong>Radar</strong>, <strong>Satellite</strong>, <strong>Waves</strong>, <strong>Air</strong>, <strong>Wind</strong>, and <strong>Models</strong>. Tap a bubble to turn it on, it glows cyan when active. Radar, Satellite, Waves, Air, and Wind each open a secondary sub-menu of products, tap the same product again to turn it off. Radar and Satellite are mutually exclusive, turning one on disables the other. On phones this row relocates to the bottom of the screen.</p>
 
   <div class="ui-diagram">
-    <div class="ui-diagram-title">The five main bubbles, active bubble glows cyan</div>
+    <div class="ui-diagram-title">The six main bubbles, active bubble glows cyan</div>
     <div class="layer-demo">
       <div class="layer-row-demo active">
         <span class="lr-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg></span> Radar
@@ -25562,6 +25806,10 @@ function lqmSetTZ(tz) {
       <div class="layer-row-demo">
         <span class="lr-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-fog></use></svg></span> Air
         <span class="lr-badge info">AQI</span>
+      </div>
+      <div class="layer-row-demo">
+        <span class="lr-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg></span> Wind
+        <span class="lr-badge info">PARTICLES</span>
       </div>
       <div class="layer-row-demo">
         <span class="lr-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-bar></use></svg></span> Models
@@ -25590,6 +25838,11 @@ function lqmSetTZ(tz) {
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-fog></use></svg></div>
       <div class="fc-title">AIR</div>
       <p class="fc-body">Tap to choose a product (each has its own <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-info></use></svg> info button): <strong>US AQI</strong> (overall 0-500 index), <strong>PM2.5</strong>, <strong>PM10</strong>, or <strong>Ozone</strong>, all colored using EPA health breakpoints (green Good through maroon Hazardous). Powered by Open-Meteo's Air Quality API. Same worldwide, fixed-area, background-refreshing approach as Waves.</p>
+    </div>
+    <div class="feature-card">
+      <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg></div>
+      <div class="fc-title">WIND</div>
+      <p class="fc-body">Tap to choose <strong>Surface Winds</strong> (10m) or the <strong>Jet Stream</strong> (250mb, roughly 34,000 ft), both from Open-Meteo's Forecast API. Unlike the other layers, this one animates: hundreds of small particles stream across the map along the real wind direction, colored blue/green for calm through yellow/orange/red/purple for very strong wind. Refreshes every 10 minutes in the background, same as Waves and Air.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-bar></use></svg></div>
