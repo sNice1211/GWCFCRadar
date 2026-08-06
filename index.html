@@ -7059,6 +7059,11 @@ body.clean-mode #clean-hint { opacity: 1; }
       <div id="sev-panel-body"></div>
       <button id="sev-compare-btn" onclick="_sevToggleCompare()" title="Compare multiple models or runs side by side">⇄ Compare Runs / Models</button>
       <div id="sev-compare-panel" style="display:none">
+        <div class="sev-section-label">Comparisons</div>
+        <div id="sev-slots-container"><!-- one .sev-slot-row per extra comparison slot, built by _sevRenderSlotRows() --></div>
+        <button id="sev-add-slot-btn" onclick="_sevAddSlot()">+ Add Comparison</button>
+        <div id="sev-compare-hint">Drag a ⇄ divider on the map to resize that comparison. All sides step through the same forecast-hour slider above (each clamped to what its own model actually has available).</div>
+        <div class="sev-section-divider"></div>
         <div class="sev-section-label">Saved Comparisons</div>
         <div id="sev-group-row">
           <select id="sev-group-sel" onchange="_sevLoadGroup(this.value)"><option value="">No group loaded</option></select>
@@ -7068,11 +7073,6 @@ body.clean-mode #clean-hint { opacity: 1; }
           <input type="text" id="sev-save-name-input" placeholder="Name this comparison…" onkeydown="if(event.key==='Enter'){_sevSaveGroup();}">
           <button class="sev-group-btn" id="sev-save-btn" onclick="_sevSaveGroup()" title="Save the current comparison slots under this name">💾 Save</button>
         </div>
-        <div class="sev-section-divider"></div>
-        <div class="sev-section-label">Comparisons</div>
-        <div id="sev-slots-container"><!-- one .sev-slot-row per extra comparison slot, built by _sevRenderSlotRows() --></div>
-        <button id="sev-add-slot-btn" onclick="_sevAddSlot()">+ Add Comparison</button>
-        <div id="sev-compare-hint">Drag a ⇄ divider on the map to resize that comparison. All sides step through the same forecast-hour slider above (each clamped to what its own model actually has available).</div>
       </div>
     </div>
 
@@ -15106,8 +15106,12 @@ function _sevRenderSlotRows() {
     const runSel = document.getElementById('sev-slot-run-' + slot.id);
     if (runSel) {
       const first = _sevPopulateRunsFor(slot.section, runSel);
-      if (!slot.run) slot.run = first;
-      if ([...runSel.options].some(o => o.value === slot.run)) runSel.value = slot.run;
+      // A saved comparison's run can rotate out of availability (model runs
+      // cycle every few hours) - fall back to the latest run instead of
+      // silently trying to render a dead one, and correct slot.run itself
+      // so the layer that actually gets drawn matches what the dropdown shows.
+      if (!slot.run || ![...runSel.options].some(o => o.value === slot.run)) slot.run = first;
+      runSel.value = slot.run;
     }
   });
 }
