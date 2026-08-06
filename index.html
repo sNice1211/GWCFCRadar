@@ -13028,6 +13028,8 @@ let _windPtActive = false;
 let _windPtCanvas = null;
 let _windPtRafId = null;
 let _windPtLastFrameTime = null;
+let _windPtAnchorLatLng = null; // a fixed geographic point the canvas raster is re-aligned to every frame, see _windPtAnimTick
+let _windPtLastAnchorPt = null;
 let _windPtParticles = [];
 let _windPtGrid = null; // {cols, rows, u, v} - eastward/northward mph components
 let _windPtLoadToken = 0;
@@ -13052,7 +13054,10 @@ function _windPtStart() {
     _windPtCanvas.width = size.x; _windPtCanvas.height = size.y;
     map.getContainer().appendChild(_windPtCanvas);
     map.on('resize', _windPtResizeCanvas);
+    map.on('zoomstart', _windPtOnZoomStart);
   }
+  _windPtAnchorLatLng = map.getCenter();
+  _windPtLastAnchorPt = null;
   if (!_windPtRafId) { _windPtLastFrameTime = null; _windPtRafId = requestAnimationFrame(_windPtAnimTick); }
   _windPtLoad();
   clearInterval(_windPtRefreshTimer);
@@ -13064,9 +13069,12 @@ function _windPtStop() {
   clearInterval(_windPtRefreshTimer); _windPtRefreshTimer = null;
   if (_windPtRafId) { cancelAnimationFrame(_windPtRafId); _windPtRafId = null; }
   map.off('resize', _windPtResizeCanvas);
+  map.off('zoomstart', _windPtOnZoomStart);
   if (_windPtCanvas) { try { _windPtCanvas.remove(); } catch(e){} _windPtCanvas = null; }
   _windPtParticles = [];
   _windPtGrid = null;
+  _windPtAnchorLatLng = null;
+  _windPtLastAnchorPt = null;
 }
 
 function _windPtResizeCanvas() {
@@ -13074,6 +13082,19 @@ function _windPtResizeCanvas() {
   const size = map.getSize();
   _windPtCanvas.width = size.x;
   _windPtCanvas.height = size.y;
+  _windPtLastAnchorPt = null; // canvas just got cleared by the width/height assignment above - nothing to shift from
+}
+
+// Panning can't be re-rendered from the wind data alone (the raster is
+// already-painted pixels, not geography), so a zoom - which rescales rather
+// than just shifting - clears it outright instead of drawing it stretched to
+// the wrong scale. _windPtAnimTick's per-frame pan compensation (below)
+// handles ordinary panning smoothly without needing this for every move.
+function _windPtOnZoomStart() {
+  if (!_windPtCanvas) return;
+  _windPtCanvas.getContext('2d').clearRect(0, 0, _windPtCanvas.width, _windPtCanvas.height);
+  _windPtAnchorLatLng = map.getCenter();
+  _windPtLastAnchorPt = null;
 }
 
 // Drops a particle at a random point within the current view (clamped to
@@ -13109,7 +13130,11 @@ function _windPtGridCoord(lat, lng) {
   ];
 }
 
-// One requestAnimationFrame tick: fades the existing trail slightly (via a
+// One requestAnimationFrame tick: first re-anchors the existing trail raster
+// to the map's current position (so the canvas - which is just already-
+// painted pixels, not geography - visibly pans along with the map instead
+// of staying frozen in its old screen position while new particles get
+// drawn in the new, correct spot), then fades the trail slightly (via a
 // destination-in composite, which scales down alpha only - no black tint -
 // since this canvas sits transparently over the map, not on an opaque
 // background), then advects and redraws every particle one small step along
@@ -13122,6 +13147,28 @@ function _windPtAnimTick(now) {
   _windPtLastFrameTime = now;
   const ctx = _windPtCanvas.getContext('2d');
   const w = _windPtCanvas.width, h = _windPtCanvas.height;
+
+  // Re-anchor: how far has the map panned (in screen pixels) since last
+  // frame? Tracked via one fixed lat/lng's container point rather than any
+  // 'move' event, so it stays correct whether the pan came from a drag, an
+  // inertia glide, a recenter button, or anything else. Shifting the whole
+  // canvas by that delta (via a self-draw with the 'copy' composite, which
+  // replaces pixels outright instead of blending, so freshly-revealed edges
+  // come in transparent rather than smeared) keeps every existing trail
+  // pixel sitting over the same real-world spot it was drawn at.
+  if (_windPtAnchorLatLng) {
+    const anchorPt = map.latLngToContainerPoint(_windPtAnchorLatLng);
+    if (_windPtLastAnchorPt) {
+      const dx = Math.round(anchorPt.x - _windPtLastAnchorPt.x);
+      const dy = Math.round(anchorPt.y - _windPtLastAnchorPt.y);
+      if (dx || dy) {
+        ctx.globalCompositeOperation = 'copy';
+        ctx.drawImage(_windPtCanvas, dx, dy);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+    _windPtLastAnchorPt = anchorPt;
+  }
 
   // Higher Intensity = trails persist longer (slower fade) as well as more
   // opaque strokes - the same lever windy-style maps use to make the flow
