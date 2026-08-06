@@ -4039,16 +4039,28 @@ body {
 #sev-compare-hint { font-family: var(--mono); font-size: 8px; color: rgba(255,255,255,0.35); line-height: 1.4; margin-top: 4px; }
 
 /* Group presets (saved sets of comparison slots) */
-#sev-group-row { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
+.sev-section-label {
+  font-family: var(--display); font-size: 8px; letter-spacing: 1.2px; text-transform: uppercase;
+  color: rgba(232,184,0,0.55); margin-bottom: 5px;
+}
+.sev-section-divider { border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0 8px; }
+#sev-group-row { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
 #sev-group-row select {
   flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
   border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 9px; padding: 3px 4px;
 }
+#sev-save-row { display: flex; align-items: center; gap: 5px; }
+#sev-save-row input {
+  flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 5px; color: #fff; font-family: var(--mono); font-size: 9px; padding: 4px 6px;
+}
+#sev-save-row input::placeholder { color: rgba(255,255,255,0.3); }
 .sev-group-btn {
   background: rgba(232,184,0,0.12); border: 1px solid rgba(232,184,0,0.4);
-  color: #e8b800; border-radius: 5px; width: 24px; height: 24px; font-size: 12px;
-  cursor: pointer; flex-shrink: 0;
+  color: #e8b800; border-radius: 5px; height: 24px; font-size: 12px;
+  cursor: pointer; flex-shrink: 0; padding: 0 8px; font-family: var(--mono);
 }
+#sev-group-delete-btn { width: 24px; padding: 0; }
 .sev-group-btn:hover { background: rgba(232,184,0,0.25); }
 
 /* One row per extra comparison slot */
@@ -7088,11 +7100,17 @@ body.clean-mode #clean-hint { opacity: 1; }
       <div id="sev-panel-body"></div>
       <button id="sev-compare-btn" onclick="_sevToggleCompare()" title="Compare multiple models or runs side by side">⇄ Compare Runs / Models</button>
       <div id="sev-compare-panel" style="display:none">
+        <div class="sev-section-label">Saved Comparisons</div>
         <div id="sev-group-row">
           <select id="sev-group-sel" onchange="_sevLoadGroup(this.value)"><option value="">No group loaded</option></select>
-          <button class="sev-group-btn" onclick="_sevPromptSaveGroup()" title="Save current comparison slots as a named group">💾</button>
-          <button class="sev-group-btn" onclick="_sevDeleteCurrentGroup()" title="Delete the selected group">🗑</button>
+          <button class="sev-group-btn" id="sev-group-delete-btn" onclick="_sevDeleteCurrentGroup()" title="Delete the selected group" style="display:none">🗑</button>
         </div>
+        <div id="sev-save-row">
+          <input type="text" id="sev-save-name-input" placeholder="Name this comparison…" onkeydown="if(event.key==='Enter'){_sevSaveGroup();}">
+          <button class="sev-group-btn" id="sev-save-btn" onclick="_sevSaveGroup()" title="Save the current comparison slots under this name">💾 Save</button>
+        </div>
+        <div class="sev-section-divider"></div>
+        <div class="sev-section-label">Comparisons</div>
         <div id="sev-slots-container"><!-- one .sev-slot-row per extra comparison slot, built by _sevRenderSlotRows() --></div>
         <button id="sev-add-slot-btn" onclick="_sevAddSlot()">+ Add Comparison</button>
         <div id="sev-compare-hint">Drag a ⇄ divider on the map to resize that comparison. All sides step through the same forecast-hour slider above (each clamped to what its own model actually has available).</div>
@@ -15266,20 +15284,25 @@ function _sevSaveGroupsToStorage() {
 }
 function _sevSyncGroupSelector() {
   const sel = document.getElementById('sev-group-sel');
+  const delBtn = document.getElementById('sev-group-delete-btn');
+  const nameInput = document.getElementById('sev-save-name-input');
   if (!sel) return;
   const names = Object.keys(_sevGroups);
   sel.innerHTML = '<option value="">No group loaded</option>' + names.map(n => `<option value="${_ccEsc(n)}">${_ccEsc(n)}</option>`).join('');
   sel.value = _sevCurrentGroup || '';
+  if (delBtn) delBtn.style.display = _sevCurrentGroup ? '' : 'none';
+  if (nameInput) nameInput.value = _sevCurrentGroup || '';
 }
-function _sevPromptSaveGroup() {
-  if (!_sevExtraSlots.length) { showToast('Add at least one comparison before saving a group', 2500); return; }
-  const name = prompt('Save the current comparison slots as a group named:', _sevCurrentGroup || '');
-  if (!name) return;
+function _sevSaveGroup() {
+  if (!_sevExtraSlots.length) { showToast('Add at least one comparison before saving', 2500); return; }
+  const input = document.getElementById('sev-save-name-input');
+  const name = (input?.value || '').trim();
+  if (!name) { showToast('Type a name for this comparison first', 2500); return; }
   _sevGroups[name] = _sevExtraSlots.map(s => ({ section: s.section, var: s.var, run: s.run }));
   _sevCurrentGroup = name;
   _sevSaveGroupsToStorage();
   _sevSyncGroupSelector();
-  showToast(`Saved comparison group "${name}"`, 2500);
+  showToast(`Saved "${name}"`, 2000);
 }
 function _sevDeleteCurrentGroup() {
   const sel = document.getElementById('sev-group-sel');
@@ -15291,7 +15314,7 @@ function _sevDeleteCurrentGroup() {
   _sevSyncGroupSelector();
 }
 function _sevLoadGroup(name) {
-  if (!name) { _sevCurrentGroup = ''; return; }
+  if (!name) { _sevCurrentGroup = ''; _sevSyncGroupSelector(); return; }
   const cfg = _sevGroups[name];
   if (!cfg) return;
   _sevExtraSlots.forEach(slot => {
@@ -15301,6 +15324,7 @@ function _sevLoadGroup(name) {
   });
   _sevExtraSlots = cfg.map(c => _sevMakeSlot(c.section, c.var, c.run));
   _sevCurrentGroup = name;
+  _sevSyncGroupSelector();
   _sevRecalcEvenSplits();
   _sevRenderSlotRows();
   _sevBuildDividerDOM();
