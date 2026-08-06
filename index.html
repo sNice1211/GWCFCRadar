@@ -3574,6 +3574,35 @@ body {
 .sc-tb-header { display: flex; align-items: center; gap: 6px; }
 .sc-tb-header #stormcone-close { margin-left: auto; }
 .sc-tb-row { display: flex; align-items: center; gap: 6px; }
+/* Multi-cone list - same row/id/delete pattern as the Radius Tool's
+   #rtb-list, so drawing several cones manages exactly like several radii:
+   each gets its own colored id badge, is individually selectable to bring
+   its speed/curve/dots/offset/style back into the toolbar for editing, and
+   individually removable instead of only an all-or-nothing clear. */
+#sc-tb-list:not(:empty) { width: 100%; }
+.sc-cone-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 0;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  width: 100%;
+}
+.sc-cone-id {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.5px; width: 24px; flex-shrink: 0; text-align: center;
+}
+.sc-cone-label {
+  flex: 1; font-family: var(--mono); font-size: 10px;
+  color: rgba(255,255,255,0.6); cursor: pointer; padding: 3px 0;
+}
+.sc-cone-row.active .sc-cone-label { color: #fff; font-weight: 700; }
+.sc-cone-label:hover { color: #fff; }
+.sc-cone-del {
+  width: 22px; height: 22px; border-radius: 5px; flex-shrink: 0;
+  background: transparent; border: 1px solid rgba(255,80,80,0.3);
+  color: rgba(255,100,100,0.7); cursor: pointer; font-size: 11px;
+  display: flex; align-items: center; justify-content: center;
+}
+.sc-cone-del:hover { background: rgba(255,60,60,0.18); color: #fff; }
 #sc-speed-input {
   width: 44px;
   background: rgba(255,255,255,0.07);
@@ -17038,7 +17067,10 @@ let _scDotLayer = null;  // L.layerGroup of edge dots
 let _scDrawing  = false;
 let _scStartLatLng = null;
 let _scDragPath = [];    // latlngs captured during the current drag
-let _scCones    = [];    // committed cones that stay on the map: {track,polygon,centerLine,dotLayer}
+let _scCones    = [];    // committed cones that stay on the map: {id,color,track,polygon,centerLine,dotLayer,speed,curve,dots,offset,style}
+let _scNextConeId = 1;   // next C{n} id - same running-counter pattern as _radiusNextId
+let _scActiveConeId    = null; // id assigned to whichever cone is currently being drawn/edited
+let _scActiveConeColor = null;
 let _scEditingPointIdx = null; // pointCurves index of the dot currently selected for per-point curve editing
 let _scDotIndices = [];  // parallel to the dots currently rendered: which pointCurves index each one represents
 let _scFirstPoint = null; // first clicked point for click-to-point mode
@@ -18112,11 +18144,16 @@ function _scFinishDrag() {
     _scSetStatus('Track too short , drag farther to draw a cone.');
     return;
   }
+  if (_scActiveConeId == null) {
+    _scActiveConeId = _scNextConeId++;
+    _scActiveConeColor = _RADIUS_COLORS[(_scActiveConeId - 1) % _RADIUS_COLORS.length];
+  }
   _scComputeAndShowResults();
+  _scRebuildConeList();
 }
 
 function _scOnSpeedChange() {
-  if (_scTrack) { _scRenderCone(); _scComputeAndShowResults(); }
+  if (_scTrack) { _scRenderCone(); _scComputeAndShowResults(); _scRebuildConeList(); }
 }
 
 function _scOnCurveChange() {
@@ -18328,12 +18365,22 @@ function _scSaveImage() {
 }
 
 // Freeze the active cone in place (keeps its layers on the map) so a new one
-// can be drawn on top without erasing it.
+// can be drawn on top without erasing it. Snapshots the full per-cone
+// config (speed/curve/dots/offset/style), not just the rendered layers, so
+// _scSelectCone() can bring a committed cone back for editing later - the
+// same thing a Radius Tool row lets you do with its one parameter, just
+// covering every parameter storm cones actually have.
 function _scCommitCurrent() {
   if (!_scTrack) return;
-  _scCones.push({ track: _scTrack, polygon: _scPolygon, centerLine: _scCenterLine, dotLayer: _scDotLayer });
+  _scCones.push({
+    id: _scActiveConeId, color: _scActiveConeColor,
+    track: _scTrack, polygon: _scPolygon, centerLine: _scCenterLine, dotLayer: _scDotLayer,
+    speed: _scGetSpeedMph(), curve: _scGetCurve(), dots: _scGetDots(), offset: _scGetOffset(),
+    style: { ..._scStyle },
+  });
   // Detach references so _scRenderCone() won't remove these committed layers
   _scTrack = null; _scPolygon = null; _scCenterLine = null; _scDotLayer = null;
+  _scActiveConeId = null; _scActiveConeColor = null;
 }
 
 function _scNew() {
@@ -18343,6 +18390,7 @@ function _scNew() {
   _scEditingPointIdx = null;
   _scClosePointsPanel();
   _scSetStatus('Click and drag on the map to draw a new storm cone.');
+  _scRebuildConeList();
 }
 
 // Remove every cone (active + committed) - used by "Clear all drawings"
@@ -18350,10 +18398,85 @@ function _scClearAll() {
   _scCones.forEach(c => [c.polygon, c.centerLine, c.dotLayer].forEach(l => { if (l) { try { map.removeLayer(l); } catch(e){} } }));
   _scCones = [];
   _scTrack = null;
+  _scActiveConeId = null; _scActiveConeColor = null; _scNextConeId = 1;
   _scEditingPointIdx = null;
   _scRenderCone();
   _scClosePanel();
   _scClosePointsPanel();
+  _scRebuildConeList();
+}
+
+// ── MULTI-CONE LIST (same row/select/delete pattern as the Radius Tool's
+// #rtb-list) ─────────────────────────────────────────────────────────────
+function _scRebuildConeList() {
+  const el = document.getElementById('sc-tb-list');
+  if (!el) return;
+  const rows = [];
+  _scCones.forEach(c => {
+    rows.push(`<div class="sc-cone-row">
+      <span class="sc-cone-id" style="color:${c.color}">C${c.id}</span>
+      <span class="sc-cone-label" onclick="_scSelectCone(${c.id})" title="Select to edit this cone's speed, curve, dots, offset, and style">${c.speed} mph &middot; edit</span>
+      <button class="sc-cone-del" onclick="_scDeleteCone(${c.id})" title="Remove this cone">&#x2715;</button>
+    </div>`);
+  });
+  if (_scTrack && _scActiveConeId != null) {
+    rows.push(`<div class="sc-cone-row active">
+      <span class="sc-cone-id" style="color:${_scActiveConeColor}">C${_scActiveConeId}</span>
+      <span class="sc-cone-label">active - editing above</span>
+      <button class="sc-cone-del" onclick="_scDeleteCone(${_scActiveConeId})" title="Remove this cone">&#x2715;</button>
+    </div>`);
+  }
+  el.innerHTML = rows.join('');
+}
+
+// Bring a previously-committed cone back into the toolbar for editing -
+// removes its frozen layers (they get redrawn fresh by _scRenderCone),
+// restores its speed/curve/dots/offset into the toolbar inputs and its
+// style into _scStyle, and commits whatever cone was active beforehand so
+// it isn't lost.
+function _scSelectCone(id) {
+  const idx = _scCones.findIndex(c => c.id === id);
+  if (idx === -1) return;
+  const target = _scCones[idx];
+  _scCones.splice(idx, 1);
+  if (_scTrack) _scCommitCurrent(); // stash whatever's currently active first
+
+  [target.polygon, target.centerLine, target.dotLayer].forEach(l => { if (l) { try { map.removeLayer(l); } catch(e){} } });
+  _scTrack = target.track;
+  _scActiveConeId = target.id;
+  _scActiveConeColor = target.color;
+  _scStyle = { ...target.style };
+  const speedEl  = document.getElementById('sc-speed-input');
+  const curveEl  = document.getElementById('sc-curve-input');
+  const dotsEl   = document.getElementById('sc-dots-input');
+  const offsetEl = document.getElementById('sc-offset-input');
+  if (speedEl)  speedEl.value  = target.speed;
+  if (curveEl)  curveEl.value  = target.curve;
+  if (dotsEl)   dotsEl.value   = target.dots;
+  if (offsetEl) offsetEl.value = target.offset;
+  _scEditingPointIdx = null;
+  _scRenderCone();
+  _scComputeAndShowResults();
+  _scRebuildConeList();
+}
+
+function _scDeleteCone(id) {
+  if (id === _scActiveConeId) {
+    [_scPolygon, _scCenterLine, _scDotLayer].forEach(l => { if (l) { try { map.removeLayer(l); } catch(e){} } });
+    _scTrack = null; _scPolygon = null; _scCenterLine = null; _scDotLayer = null;
+    _scActiveConeId = null; _scActiveConeColor = null;
+    _scEditingPointIdx = null;
+    _scClosePanel();
+    _scClosePointsPanel();
+    _scRebuildConeList();
+    return;
+  }
+  const idx = _scCones.findIndex(c => c.id === id);
+  if (idx === -1) return;
+  const c = _scCones[idx];
+  [c.polygon, c.centerLine, c.dotLayer].forEach(l => { if (l) { try { map.removeLayer(l); } catch(e){} } });
+  _scCones.splice(idx, 1);
+  _scRebuildConeList();
 }
 
 
@@ -25891,7 +26014,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(-90deg)><use href=#ic-arrow></use></svg></div>
       <div class="fc-title">STORM CONE</div>
-      <p class="fc-body">Click and drag to draw a storm threat cone, similar to an NHC forecast cone but for any storm, and see which cities fall inside it, with distance, ETA, and arrival time for each. Set an <strong>MPH</strong> speed, <strong>CURVE</strong>, dot count, and center-line <strong>OFFSET</strong> from the toolbar. <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-palette></use></svg> Style</strong> customizes the cone's outline, fill, center line, and dot colors plus opacity. <strong>〜 Points</strong> opens a popover listing every dot along the cone, each with its own curve value, a category icon picker (the same TD-through-Cat-5 icons hurricane tracks use, click one to assign it to that dot), and a speed override, so different legs of the cone can move at different speeds. Every dot shows a running <strong>+Nh</strong> time label on the map. <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Animate</strong> walks a storm icon along the path at those real relative speeds, and <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-save></use></svg> Save</strong> exports the cone as a PNG.</p>
+      <p class="fc-body">Click and drag to draw a storm threat cone, similar to an NHC forecast cone but for any storm, and see which cities fall inside it, with distance, ETA, and arrival time for each. Set an <strong>MPH</strong> speed, <strong>CURVE</strong>, dot count, and center-line <strong>OFFSET</strong> from the toolbar. <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-palette></use></svg> Style</strong> customizes the cone's outline, fill, center line, and dot colors plus opacity. <strong>〜 Points</strong> opens a popover listing every dot along the cone, each with its own curve value, a category icon picker (the same TD-through-Cat-5 icons hurricane tracks use, click one to assign it to that dot), and a speed override, so different legs of the cone can move at different speeds. Every dot shows a running <strong>+Nh</strong> time label on the map. <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Animate</strong> walks a storm icon along the path at those real relative speeds, and <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-save></use></svg> Save</strong> exports the cone as a PNG. Tap <strong>+ New</strong> to draw another cone without losing the first, same idea as adding another <strong>Radius Ring</strong>: every cone gets its own colored row in the list below the toolbar, tap a row to bring that exact cone's speed, curve, dots, offset, and style back into the controls above for editing, or tap its <strong>✕</strong> to remove just that one.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-search></use></svg></div>
@@ -28312,6 +28435,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <button class="dtb-btn" id="sc-results-btn" onclick="_scToggleResults(event)" title="Show city list"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-menu></use></svg> Cities</button>
     <button class="dtb-btn" id="sc-new-btn" onclick="_scNew()" title="Start a new cone">+ New</button>
   </div>
+  <div id="sc-tb-list"></div>
 </div>
 <div id="stormcone-status">Click and drag on the map to draw a storm cone.</div>
 
