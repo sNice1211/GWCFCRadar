@@ -10324,7 +10324,7 @@ const WFO_OFFICES = [
 let _wfoOfficesActive = false, _wfoOfficesLayer = null;
 // State for whichever office popup is currently open, so the product-detail
 // view and the "back" link can re-render without re-fetching.
-let _wfoActivePopup = null, _wfoActiveOffice = null, _wfoActiveAlerts = [], _wfoActiveProducts = [];
+let _wfoActivePopup = null, _wfoActiveOffice = null, _wfoActiveAlerts = { active: [], past: [] }, _wfoActiveProducts = [];
 
 function _escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
@@ -10350,13 +10350,6 @@ function loadWfoOfficesLayer() {
   _wfoOfficesLayer = layer.addTo(map);
 }
 
-function _wfoJumpToOffice(id) {
-  const office = WFO_OFFICES.find(o => o.id === id);
-  if (!office) return;
-  map.setView([office.lat, office.lon], 7);
-  if (currentMapType !== 'satellite') { setMapType('satellite'); rmActivate('rm-satellite'); }
-}
-
 function _wfoLoadingHtml(office) {
   return `<div class="data-popup-inner" style="--dp-accent:#1fd15a">
     <div class="dp-header">
@@ -10368,12 +10361,17 @@ function _wfoLoadingHtml(office) {
   </div>`;
 }
 
+function _wfoAlertRow(f) {
+  const p = f.properties;
+  const expires = p.expires ? new Date(p.expires).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
+  return `<div class="dp-row"><span>${_escapeHtml(p.event || 'Alert')}</span><b>until ${expires}</b></div>`;
+}
+
 function _wfoOfficeHtml(office, alerts, products) {
-  const alertsHtml = alerts.length ? alerts.map(f => {
-    const p = f.properties;
-    const expires = p.expires ? new Date(p.expires).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
-    return `<div class="dp-row"><span>${_escapeHtml(p.event || 'Alert')}</span><b>until ${expires}</b></div>`;
-  }).join('') : `<div class="dp-row"><span>No active alerts</span></div>`;
+  const activeHtml = alerts.active.length ? alerts.active.map(_wfoAlertRow).join('')
+    : `<div class="dp-row"><span>No active alerts</span></div>`;
+  const pastHtml = alerts.past.length ? alerts.past.map(_wfoAlertRow).join('')
+    : `<div class="dp-row"><span>No past alerts</span></div>`;
 
   const productsHtml = products.length ? products.map(p => {
     const issued = p.issuanceTime ? new Date(p.issuanceTime).toLocaleString('en-US', { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '?';
@@ -10389,11 +10387,11 @@ function _wfoOfficeHtml(office, alerts, products) {
     </div>
     <div class="dp-body">
       <div class="dp-section">Active Alerts</div>
-      ${alertsHtml}
+      ${activeHtml}
+      <div class="dp-section">Past Alerts (48h)</div>
+      ${pastHtml}
       <div class="dp-section">Recent Text Products</div>
       ${productsHtml}
-      <div class="dp-section">Quick Look</div>
-      <div class="dp-row wfo-link" onclick="_wfoJumpToOffice(&quot;${office.id}&quot;)"><span>🛰 Jump to Area &amp; View Satellite</span></div>
     </div>
   </div>`;
 }
@@ -10405,7 +10403,7 @@ function _wfoOpenPopup(marker, office) {
     .openOn(map);
   _wfoActivePopup = popup;
   _wfoActiveOffice = office;
-  _wfoActiveAlerts = [];
+  _wfoActiveAlerts = { active: [], past: [] };
   _wfoActiveProducts = [];
 
   Promise.all([_wfoFetchAlerts(office), _wfoFetchProducts(office)]).then(([alerts, products]) => {
@@ -10417,19 +10415,26 @@ function _wfoOpenPopup(marker, office) {
 }
 
 // Alerts aren't queryable by issuing office directly on this endpoint, so this
-// pulls all currently active alerts and matches by city name inside the CAP
-// senderName field (e.g. "NWS Miami FL") - simple, but there's no other
-// office-level field guaranteed present on every alert.
+// pulls everything sent in the last 48h and matches by city name inside the
+// CAP senderName field (e.g. "NWS Miami FL") - simple, but there's no other
+// office-level field guaranteed present on every alert. Splits into
+// still-active vs already-expired so both can get their own section.
 async function _wfoFetchAlerts(office) {
   try {
-    const r = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert', { signal: _abortSignal(15000) });
+    const start = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const r = await fetch(`https://api.weather.gov/alerts?status=actual&message_type=alert&start=${encodeURIComponent(start)}&limit=200`, { signal: _abortSignal(15000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     const city = office.name.split(',')[0].split('/')[0].trim().toLowerCase();
-    return (data.features || []).filter(f => (f.properties.senderName || '').toLowerCase().includes(city));
+    const matches = (data.features || []).filter(f => (f.properties.senderName || '').toLowerCase().includes(city));
+    const now = Date.now();
+    const active = matches.filter(f => !f.properties.expires || new Date(f.properties.expires).getTime() > now);
+    const past = matches.filter(f => f.properties.expires && new Date(f.properties.expires).getTime() <= now)
+      .sort((a, b) => new Date(b.properties.expires) - new Date(a.properties.expires));
+    return { active, past };
   } catch(e) {
     console.warn('WFO alerts fetch error:', e);
-    return [];
+    return { active: [], past: [] };
   }
 }
 
