@@ -83,7 +83,7 @@ setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.tra
 
 /* Contain repaints inside panels so they don't trigger full-page layout */
 #lqm-settings-overlay, #top-search-bar,
-#tutorial-modal-inner, #radar-color-editor,
+#tutorial-modal-inner,
 #alerts-panel, #eas-panel, #fnv3-panel,
 #severe-model-panel, #tropical-model-panel,
 #gwcfc-auth-modal, #draw-toolbar, #text-toolbar, #stormcone-toolbar, #stormcone-panel,
@@ -4646,38 +4646,6 @@ body {
 }
 #lqm-settings-close:hover { color: #fff; }
 
-/* ── Radar Color Editor ── */
-#radar-color-editor {
-  display: none;
-  position: fixed;
-  top: 60px; right: 16px;
-  width: 280px;
-  max-height: calc(100vh - 80px);
-  overflow-y: auto;
-  background: rgb(8,12,18);
-  border: 1px solid rgba(0,140,186,0.25);
-  border-radius: 12px;
-  padding: 14px 16px 18px;
-  z-index: 9200;
-  font-family: var(--mono);
-  color: var(--text);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.7);
-}
-#radar-color-editor.open { display: block; }
-.rce-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 12px;
-}
-.rce-title {
-  font-size: 11px; letter-spacing: 2px; color: var(--accent2);
-  text-transform: uppercase;
-}
-.rce-close {
-  background: none; border: 1px solid rgba(255,255,255,0.15);
-  border-radius: 6px; color: var(--muted); cursor: pointer;
-  font-size: 13px; padding: 2px 7px; line-height: 1;
-}
-.rce-close:hover { color: #fff; border-color: rgba(255,255,255,0.4); }
 .drag-grip {
   display: flex; align-items: center; justify-content: center; gap: 7px;
   cursor: grab; user-select: none;
@@ -4703,41 +4671,6 @@ body {
 }
 .dtb-drag:hover { color: var(--accent2); }
 .dtb-drag:active { cursor: grabbing; }
-/* radar color editor header drag cue */
-.rce-header { cursor: grab; }
-.rce-header:active { cursor: grabbing; }
-.rce-section {
-  font-size: 9px; letter-spacing: 2px; color: var(--muted);
-  text-transform: uppercase; margin: 12px 0 6px;
-  border-top: 1px solid rgba(255,255,255,0.07); padding-top: 10px;
-}
-.rce-row {
-  display: flex; align-items: center; gap: 8px;
-  margin-bottom: 5px;
-}
-.rce-dbz {
-  font-size: 10px; color: var(--accent2); min-width: 38px; letter-spacing: 0.5px;
-}
-.rce-swatch {
-  width: 28px; height: 22px; border-radius: 4px; border: 2px solid rgba(255,255,255,0.25);
-  cursor: pointer; flex-shrink: 0; transition: border-color 0.15s, transform 0.1s;
-}
-.rce-swatch:hover { border-color: rgba(255,255,255,0.6); transform: scale(1.1); }
-.rce-swatch:active { transform: scale(0.93); }
-.rce-hidden-picker { position:absolute; width:0; height:0; opacity:0; pointer-events:none; }
-.rce-label { font-size: 9px; color: var(--muted); }
-.rce-adj-row {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
-}
-.rce-adj-lbl { font-size: 10px; color: var(--text); min-width: 68px; }
-.rce-adj-val { font-size: 9px; color: var(--accent2); min-width: 32px; text-align: right; }
-.rce-reset {
-  width: 100%; margin-top: 12px; padding: 7px;
-  background: rgba(0,140,186,0.08); border: 1px solid rgba(0,140,186,0.25);
-  border-radius: 7px; color: var(--accent2); font-family: var(--mono);
-  font-size: 10px; letter-spacing: 1px; cursor: pointer; text-transform: uppercase;
-}
-.rce-reset:hover { background: rgba(0,140,186,0.18); }
 
 @keyframes lqm-pulse {
   0%   { opacity: 0.6; }
@@ -7509,200 +7442,8 @@ const NWS_DBZ_META = [
   { dbz:75, hex:'#fdfdfd', label:'Max/Hail' },
 ];
 
-// null = NWS defaults (no remapping). Set to array of 15 hex strings for custom.
-let _customRadarColors = null;
 let _inspForcedWms = false; // Inspector forces CORS-readable WMS tiles when on
-let _radarContrast   = 100; // %
-let _radarBrightness = 100; // %
-let _rceDebounce     = null;
-// Cache packed-RGB -> target rgb so each unique color is only nearest-neighbour searched once
-const _colorRemapCache = new Map();
 
-function _hexToRgb(hex) {
-  const v = parseInt(hex.slice(1), 16);
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-}
-
-// Single reusable canvas for pixel remapping - avoids allocating one per tile
-let _remapCanvas = null, _remapCtx = null;
-
-// Post-processes one radar tile's pixels: matches each one to the nearest
-// standard NWS dBZ color and swaps it to the corresponding custom color.
-// No-op when no custom colors are set.
-function _remapTileColors(tile) {
-  if (!_customRadarColors) return;
-  // Reassigning tile.src below (to the processed image) fires this same
-  // 'load' event again, since that's just how <img> works - without this
-  // guard that reprocesses the tile forever: every pass re-quantizes
-  // already-approximated colors against the nearest NWS entry again, which
-  // is exactly what was drifting the colors, and firing hundreds of tiles
-  // into that loop simultaneously is what was hanging/crashing the page.
-  // Comparing against the exact string we last set (not just a boolean)
-  // means a DOM tile element Leaflet later reuses for a genuinely new tile
-  // (a different src) still gets processed normally.
-  if (tile.src === tile.dataset.gwcfcRemappedSrc) return;
-  const w = tile.naturalWidth || 256, h = tile.naturalHeight || 256;
-  if (!_remapCanvas) {
-    _remapCanvas = document.createElement('canvas');
-    _remapCtx = _remapCanvas.getContext('2d', { willReadFrequently: true });
-  }
-  if (_remapCanvas.width !== w) _remapCanvas.width = w;
-  if (_remapCanvas.height !== h) _remapCanvas.height = h;
-  const canvas = _remapCanvas;
-  const ctx = _remapCtx;
-  try { ctx.drawImage(tile, 0, 0); } catch(e) { return; }
-  let imgData;
-  try { imgData = ctx.getImageData(0, 0, w, h); } catch(e) {
-    // SecurityError: CORS-tainted canvas (common on iOS Safari) - reset and skip remap
-    _remapCanvas = null; _remapCtx = null;
-    return;
-  }
-  const px = imgData.data;
-  const n = NWS_SOURCE_COLORS.length;
-  const targets = _customRadarColors.map(_hexToRgb);
-  for (let i = 0; i < px.length; i += 4) {
-    if (px[i+3] < 10) continue;
-    const r = px[i], g = px[i+1], b = px[i+2];
-    const key = (r << 16) | (g << 8) | b;
-    let rgb = _colorRemapCache.get(key);
-    if (rgb === undefined) {
-      let bestD = 800, bestJ = -1;
-      for (let j = 0; j < n; j++) {
-        const s = NWS_SOURCE_COLORS[j];
-        const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
-        if (d < bestD) { bestD = d; bestJ = j; }
-      }
-      rgb = bestJ >= 0 ? targets[bestJ] : null;
-      _colorRemapCache.set(key, rgb);
-    }
-    if (rgb) { px[i] = rgb[0]; px[i+1] = rgb[1]; px[i+2] = rgb[2]; }
-  }
-  ctx.putImageData(imgData, 0, 0);
-  const dataUrl = canvas.toDataURL('image/png');
-  tile.dataset.gwcfcRemappedSrc = dataUrl; // set BEFORE assigning .src so the loop guard above sees it on the re-fired load
-  tile.src = dataUrl;
-}
-
-function _applyRadarPaneFilter() {
-  const pane = map?.getPane('radarPane');
-  if (pane) pane.style.filter =
-    `contrast(${_radarContrast}%) brightness(${_radarBrightness}%)`;
-}
-
-// Re-paints already-loaded radar tiles with the current color settings.
-// This used to call the same heavy path used for a brand new station or a
-// fresh timeline load - full teardown of every WMS layer plus (for
-// single-site) a fresh network fetch of the station's timestamps - every
-// time a color swatch changed. Firing that even a couple of times close
-// together (two quick swatch edits, or the composite pool rebuilding while
-// single-site was also reloading) could leave more than one generation of
-// tile layers in flight at once, which is what showed up as the same radar
-// image duplicated across the map. Since a color change doesn't change
-// which station, frames, or timestamps are being shown, the tiles that
-// already exist just need to be reloaded in place - Leaflet's own
-// redraw() does exactly that without creating or destroying any layer
-// objects.
-function _rebuildRadarTiles() {
-  _colorRemapCache.clear();
-  if (_refStation) {
-    // Single-site is on screen - the composite pool isn't even visible
-    // behind it, so there's nothing to gain from touching it too.
-    _refSitePool.forEach(l => { if (l && typeof l.redraw === 'function') l.redraw(); });
-  } else if (_radarPoolBuilt) {
-    const needsWms = !!_customRadarColors || _inspForcedWms;
-    if (needsWms !== _nexradCacheFailed) {
-      // Only a real switch between the pre-rendered tile cache (not
-      // CORS-readable, can't be recolored) and WMS tiles needs a full
-      // rebuild - that only happens the moment colors first turn on
-      // or fully turn back off.
-      try { updateLoadStatus('Rebuilding radar…'); } catch(e){}
-      _buildRadarPool();
-      showFrame(currentFrame);
-    } else {
-      _radarLayerPool.forEach(l => { if (l && typeof l.redraw === 'function') l.redraw(); });
-    }
-  }
-  _rceUpdateLegend();
-}
-
-function _rceUpdateLegend() {}
-
-// ── Radar Color Editor ──
-function openRadarColorEditor() {
-  const el = document.getElementById('radar-color-editor');
-  if (!el) return;
-  _rceBuildSwatches();
-  document.getElementById('rce-contrast').value   = _radarContrast;
-  document.getElementById('rce-contrast-val').textContent = _radarContrast + '%';
-  document.getElementById('rce-brightness').value = _radarBrightness;
-  document.getElementById('rce-brightness-val').textContent = _radarBrightness + '%';
-  el.classList.add('open');
-  // close settings if open
-  lqmCloseSettings();
-}
-function closeRadarColorEditor() {
-  document.getElementById('radar-color-editor')?.classList.remove('open');
-}
-function _rceBuildSwatches() {
-  const wrap = document.getElementById('rce-swatches');
-  if (!wrap) return;
-  const active = _customRadarColors || NWS_DBZ_META.map(m => m.hex);
-  wrap.innerHTML = NWS_DBZ_META.map((m, i) => `
-    <div class="rce-row">
-      <span class="rce-dbz">${m.dbz} dBZ</span>
-      <div class="rce-swatch" id="rce-sw${i}" style="background:${active[i]}"
-        onclick="_rceOpenPicker(${i})"></div>
-      <input type="color" class="rce-hidden-picker" id="rce-c${i}"
-        value="${active[i]}" oninput="rceColorChange(${i}, this.value)">
-      <span class="rce-label">${m.label}</span>
-    </div>`).join('');
-}
-function _rceOpenPicker(i) {
-  const inp = document.getElementById('rce-c' + i);
-  if (inp) inp.click();
-}
-
-function rceColorChange(idx, hex) {
-  if (!_customRadarColors) _customRadarColors = NWS_DBZ_META.map(m => m.hex);
-  _customRadarColors[idx] = hex;
-  const sw = document.getElementById('rce-sw' + idx);
-  if (sw) sw.style.background = hex;
-  _rceUpdateLegend();
-  clearTimeout(_rceDebounce);
-  _rceDebounce = setTimeout(() => {
-    _rebuildRadarTiles();
-    localStorage.setItem('lqm_custom_colors', JSON.stringify(_customRadarColors));
-  }, 350);
-}
-
-function rceUpdateContrast(val) {
-  _radarContrast = +val;
-  document.getElementById('rce-contrast-val').textContent = val + '%';
-  _applyRadarPaneFilter();
-  localStorage.setItem('lqm_radar_contrast', val);
-}
-
-function rceUpdateBrightness(val) {
-  _radarBrightness = +val;
-  document.getElementById('rce-brightness-val').textContent = val + '%';
-  _applyRadarPaneFilter();
-  localStorage.setItem('lqm_radar_brightness', val);
-}
-
-function rceReset() {
-  _customRadarColors = null;
-  _radarContrast = 100; _radarBrightness = 100;
-  document.getElementById('rce-contrast').value = 100;
-  document.getElementById('rce-contrast-val').textContent = '100%';
-  document.getElementById('rce-brightness').value = 100;
-  document.getElementById('rce-brightness-val').textContent = '100%';
-  _rceBuildSwatches();
-  _applyRadarPaneFilter();
-  _rebuildRadarTiles();
-  localStorage.removeItem('lqm_custom_colors');
-  localStorage.removeItem('lqm_radar_contrast');
-  localStorage.removeItem('lqm_radar_brightness');
-}
 let mapTileLayers = {};
 let activeLayers = {
   nexrad: false, satellite: false, tornado: true, tstm: true,
@@ -8141,7 +7882,7 @@ const _canadaLayerLoaded = [];
 function _buildRadarPool() {
   // If custom colors are active, skip tile cache (needs crossOrigin/canvas) and go straight to WMS.
   // The Inspector also forces WMS so it can read tile pixels for color->dBZ lookup.
-  _nexradCacheFailed = !!_customRadarColors || _inspForcedWms;
+  _nexradCacheFailed = _inspForcedWms;
   // Cancel any stale wait-loop pointing at layers we're about to remove
   if (_showFrameTick) { clearInterval(_showFrameTick); _showFrameTick = null; }
   _radarLayerPool.forEach(l => { try { if (l) map.removeLayer(l); } catch(e){} });
@@ -8222,7 +7963,6 @@ function _switchSlotToWms(i) {
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
   l.on('tileload', (e) => {
-    _remapTileColors(e.tile);
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
   });
   // Wait for ALL WMS tiles in viewport before marking ready (same anti-half-loading fix)
@@ -16212,7 +15952,6 @@ const LOAD_FACTS = [
   "The <b>lightning layer</b> shows real-time strike locations , toggle it on to watch electrical activity develop within a storm cluster.",
   "You can rotate the map with a <b>three-finger drag</b> on touch screens , a bearing compass appears and a reset button snaps you back to north-up.",
   "Alert popup cards let you tap <b>View Full Message</b> to expand the complete NWS hazard text right inside the popup without leaving the map.",
-  "The <b>radar color palette editor</b> lets you customize the dBZ color ramp , build your own reflectivity scale or load a preset.",
   "Switch the base map between <b>Dark, Light, Satellite, and Topographic</b> tiles any time using the map-type buttons.",
   "The <b>Satellite layer</b> pulls in GOES and global IR composite imagery , switch regions and products from the layer sub-menu.",
   "All drawing tool windows are <b>draggable</b> , grab the handle at the top of any tool panel and reposition it anywhere on screen."
@@ -18279,13 +18018,12 @@ function _inspSampleRadarColor(cx, cy) {
 
 // The default IEM tile-CACHE does not send CORS headers, so its pixels can't be
 // read from a canvas. When the Inspector hits a tainted tile, switch reflectivity
-// to the CORS-enabled WMS tiles (the same ones the palette editor uses) so the
-// colors become readable. _buildRadarPool() honours _inspForcedWms. Restored
-// when the Inspector is turned off. (_inspForcedWms is declared near the top.)
+// to the CORS-enabled WMS tiles so the colors become readable. _buildRadarPool()
+// honours _inspForcedWms. Restored when the Inspector is turned off.
+// (_inspForcedWms is declared near the top.)
 function _inspEnsureReadableTiles() {
   if (_inspForcedWms) return;
   if (typeof activeLayers === 'undefined' || !activeLayers.nexrad) return;
-  if (_customRadarColors) return;   // already WMS + same-origin data URLs
   _inspForcedWms = true;
   try { _buildRadarPool(); showFrame(currentFrame); } catch (e) {}
 }
@@ -18296,22 +18034,13 @@ function _inspRestoreTiles() {
 }
 
 // Map a displayed RGB color to the nearest NWS reflectivity step, returning
-// its { dbz, hex, label }. Matches against the custom palette when the user
-// has customized colors, otherwise against the standard NWS N0Q source colors.
+// its { dbz, hex, label }.
 function _inspColorToDbz(r, g, b) {
   let best = -1, bestD = Infinity;
-  if (_customRadarColors) {
-    for (let j = 0; j < _customRadarColors.length; j++) {
-      const c = _hexToRgb(_customRadarColors[j]);
-      const d = (r-c[0])*(r-c[0]) + (g-c[1])*(g-c[1]) + (b-c[2])*(b-c[2]);
-      if (d < bestD) { bestD = d; best = j; }
-    }
-  } else {
-    for (let j = 0; j < NWS_SOURCE_COLORS.length; j++) {
-      const s = NWS_SOURCE_COLORS[j];
-      const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
-      if (d < bestD) { bestD = d; best = j; }
-    }
+  for (let j = 0; j < NWS_SOURCE_COLORS.length; j++) {
+    const s = NWS_SOURCE_COLORS[j];
+    const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
+    if (d < bestD) { bestD = d; best = j; }
   }
   if (best < 0 || bestD > 6000) return null; // too far from any radar color
   return NWS_DBZ_META[best];
@@ -21037,7 +20766,6 @@ function _buildRefSitePool(stationId, useOpengeo) {
       _refSiteLoaded[i] = false;
       l.on('tileload', (e) => {
         _refSiteLoaded[i] = true;
-        _remapTileColors(e.tile);
         if (smoothEnabled) e.tile.style.imageRendering = 'auto';
       });
       l.addTo(map);
@@ -21068,7 +20796,6 @@ function _buildRefSitePool(stationId, useOpengeo) {
       _refSiteLoaded[i] = false;
       l.on('tileload', (e) => {
         _refSiteLoaded[i] = true;
-        _remapTileColors(e.tile);
         if (smoothEnabled) e.tile.style.imageRendering = 'auto';
       });
       l.addTo(map);
@@ -25134,9 +24861,9 @@ function selectProduct(p) {
     </div>
   </div>
 
-  <!-- ─── LAYER OPACITY & COLORS ─── -->
+  <!-- ─── LAYER OPACITY ─── -->
   <div class="lqm-settings-group">
-    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Layer Opacity &amp; Colors</div>
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Layer Opacity</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Waves</span>
       <div style="display:flex;align-items:center;gap:6px;">
@@ -25176,10 +24903,6 @@ function selectProduct(p) {
           class="lqm-slider" oninput="lqmSetPressureOpacity(this.value)">
         <span id="lqm-pressureopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
       </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Radar Colors</span>
-      <button class="lqm-settings-btn" onclick="openRadarColorEditor()">Customize <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-arrow></use></svg></button>
     </div>
   </div>
 
@@ -25460,31 +25183,6 @@ function selectProduct(p) {
       <button class="lqm-settings-btn" onclick="openCredits()">View <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-arrow></use></svg></button>
     </div>
   </div>
-</div>
-
-<!-- ── Radar Color Editor Panel ── -->
-<div id="radar-color-editor">
-  <div class="dtb-drag" id="rce-drag-grip" style="width:100%;padding:4px 0 8px;" title="Drag to move">⠿</div>
-  <div class="rce-header">
-    <span class="rce-title">Radar Colors</span>
-    <button class="rce-close" onclick="closeRadarColorEditor()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg></button>
-  </div>
-  <div class="rce-section" style="margin-top:0;border-top:none;padding-top:0;">ADJUSTMENTS</div>
-  <div class="rce-adj-row">
-    <span class="rce-adj-lbl">Contrast</span>
-    <input type="range" id="rce-contrast" min="50" max="200" value="100" step="5"
-      class="lqm-slider" style="flex:1;" oninput="rceUpdateContrast(this.value)">
-    <span class="rce-adj-val" id="rce-contrast-val">100%</span>
-  </div>
-  <div class="rce-adj-row">
-    <span class="rce-adj-lbl">Brightness</span>
-    <input type="range" id="rce-brightness" min="40" max="160" value="100" step="5"
-      class="lqm-slider" style="flex:1;" oninput="rceUpdateBrightness(this.value)">
-    <span class="rce-adj-val" id="rce-brightness-val">100%</span>
-  </div>
-  <div class="rce-section">dBZ LEVEL COLORS</div>
-  <div id="rce-swatches"></div>
-  <button class="rce-reset" onclick="rceReset()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-refresh-ccw></use></svg> Reset to NWS Defaults</button>
 </div>
 
 <script>
@@ -28393,7 +28091,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Radar Colors moved into Settings > Layer Opacity & Colors, and the reflectivity dBZ filter has been removed.";
+const APP_LATEST_UPDATE = "Removed the Radar Colors customizer entirely and fixed the radar lag it was causing.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -28903,15 +28601,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const presEl = document.getElementById('lqm-set-pressureunit'); if (presEl) presEl.value = _units.pressure;
     const precEl = document.getElementById('lqm-set-precipunit');   if (precEl) precEl.value = _units.precip;
     const distEl = document.getElementById('lqm-set-distunit');     if (distEl) distEl.value = _units.dist;
-    try {
-      const cc = localStorage.getItem('lqm_custom_colors');
-      if (cc) { _customRadarColors = JSON.parse(cc); }
-      const rc = localStorage.getItem('lqm_radar_contrast');
-      if (rc) { _radarContrast = parseInt(rc,10); const el=document.getElementById('rce-contrast'); if(el){el.value=_radarContrast; document.getElementById('rce-contrast-val').textContent=_radarContrast+'%';} }
-      const rb = localStorage.getItem('lqm_radar_brightness');
-      if (rb) { _radarBrightness = parseInt(rb,10); const el=document.getElementById('rce-brightness'); if(el){el.value=_radarBrightness; document.getElementById('rce-brightness-val').textContent=_radarBrightness+'%';} }
-      if (_radarContrast !== 100 || _radarBrightness !== 100) _applyRadarPaneFilter();
-    } catch(e) {}
     // Add scale control by default
     if (!window._scaleCtrl && window.map) { window._scaleCtrl = L.control.scale({imperial:true,metric:true}).addTo(map); }
     // Always ask for location - silently start if granted, do nothing if denied
@@ -29230,7 +28919,6 @@ function clearSurfaceAnalysis(){
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  _makeDraggable(document.getElementById('radar-color-editor'),  document.getElementById('rce-drag-grip'));
   _makeDraggable(document.getElementById('draw-toolbar'),        document.getElementById('draw-drag'));
   _makeDraggable(document.getElementById('text-toolbar'),        document.getElementById('text-drag'));
   _makeDraggable(document.getElementById('stormcone-toolbar'),   document.getElementById('stormcone-drag'));
