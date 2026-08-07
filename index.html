@@ -527,6 +527,15 @@ body {
 }
 #anim-time-display:hover  { background: rgba(0,0,0,0.12); }
 #anim-time-display:active { background: rgba(0,0,0,0.20); }
+#radar-tilt-wrap { flex-shrink: 0; }
+#radar-tilt-sel {
+  font-family: var(--display); font-weight: 700; font-size: 10px; color: #000;
+  height: 28px; box-sizing: border-box;
+  padding: 0 6px; border-radius: 6px;
+  border: none; background: rgba(0,0,0,0.12);
+  cursor: pointer;
+}
+#radar-tilt-sel:hover { background: rgba(0,0,0,0.2); }
 .animbar-sep {
   width: 1px; height: 24px; background: var(--border2); margin: 0 6px; flex-shrink: 0;
 }
@@ -7316,6 +7325,9 @@ body.clean-mode #clean-hint { opacity: 1; }
         <div id="timeline-labels"></div>
       </div>
       <div id="anim-time-display" title="Hold to change timezone">--:-- --- --</div>
+      <span id="radar-tilt-wrap" style="display:none">
+        <select id="radar-tilt-sel" onchange="_setRadarTilt(this.value)" title="Radar tilt (elevation angle)"></select>
+      </span>
       <button id="play-btn" onclick="togglePlay()" title="Play Forward"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg></button>
     </div>
     <div id="tz-popover"></div>
@@ -8361,7 +8373,7 @@ function updateFrameLabel(idx) {
 }
 
 function showFrame(idx) {
-  if (currentProduct === 'vel' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') return;
+  if (currentProduct === 'vel' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') return;
   if (currentProduct === 'ref' && _refStation) {
     // Single-site is active (or loading). Never show composite behind it.
     if (_refSitePool.length) _showSingleSiteRefFrame(idx);
@@ -13491,7 +13503,7 @@ function _disableRadar() {
     if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') currentProduct = 'ref';
   }
   // Clean up L3 canvas (CC/ZDR) if active
-  if (currentProduct === 'cc' || currentProduct === 'zdr') { _disableL3(); currentProduct = 'ref'; }
+  if (currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') { _disableL3(); currentProduct = 'ref'; }
   const el = document.getElementById('layer-nexrad');
   if (el) el.classList.remove('active');
   const sub = document.getElementById('sub-nexrad');
@@ -13509,8 +13521,8 @@ function _disableDualPol() {
   _dpLayerPool = []; _dpPoolLoaded = [];
   _dpFrames = []; _dpCurrentFrame = 0;
   _dpStation = null;
-  if (currentProduct === 'cc' || currentProduct === 'zdr') _disableL3();
-  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') currentProduct = 'ref';
+  if (currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') _disableL3();
+  if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') currentProduct = 'ref';
 }
 function _disableSatellite() {
   activeLayers.satellite = false;
@@ -13623,6 +13635,11 @@ const LAYER_DESCRIPTIONS = {
   hc:           'Hydrometeor classification. Shows what type of precipitation the radar is picking up, like rain, hail, or snow.',
   accum:        'Storm total precipitation, accumulated by radar since the current event began.',
   boha:         'Radar-estimated precipitation over just the last hour.',
+  cc:           'Correlation Coefficient - how similarly-shaped the precipitation particles are in each pulse volume. Near 1.0 (green) means uniform particles like pure rain; lower values (purple/red) mean a mix of shapes, hail, debris, insects, or ground clutter. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
+  zdr:          'Differential Reflectivity - how much wider than tall the average precipitation particle is. Near 0 dB (blue-ish) means round drops or dry snow; higher values (red/orange) mean flattened, larger raindrops. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
+  kdp:          'Specific Differential Phase - the rate of phase shift between horizontal and vertical pulses, a strong signal for heavy rain rates that reflectivity alone can\'t always tell apart from hail. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
+  sw:           'Spectrum Width - how much the wind speed varies within a single pulse volume. High values mean turbulence or wind shear, often seen right around rotation or a gust front. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
+  'radar-tilt': 'Pick which elevation angle (tilt) of the volume scan to view. Lower tilts see closer to the ground; higher tilts look further up into the storm. The list shows the real tilts from the scan currently loaded, since different scan modes use different numbers of tilts.',
   ch01: 'Daytime visible imagery in blue light. Good for seeing haze, smoke, and snow cover.',
   ch02: 'The sharpest daytime visible image, close to what your eye would see from space.',
   ch03: 'Daytime image tuned to vegetation, useful for spotting fires, burn scars, and land cover.',
@@ -15340,9 +15357,10 @@ const RADAR_SUB_BUBBLES = [
   { id:'hc',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-rainbow></use></svg>', label:'Hydro. Class.', action: () => { if (currentProduct === 'hc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('hc'); } } },
   { id:'accum', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>', label:'Storm Accum.',  action: () => { if (currentProduct === 'accum') { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('accum'); } } },
   { id:'boha',  icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gauge></use></svg>', label:'1-Hr Accum.',   action: () => { if (currentProduct === 'boha')  { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('boha'); } } },
-  // CC and ZDR hidden until Level-2 parsing is stable on all devices
-  // { id:'cc',    icon:'🔵', label:'Corr. Coeff.',  action: () => { if (currentProduct === 'cc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('cc'); } } },
-  // { id:'zdr',   icon:'📊', label:'Diff. Refl.',   action: () => { if (currentProduct === 'zdr')   { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('zdr'); } } },
+  { id:'cc',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-hex></use></svg>', label:'Corr. Coeff.',  action: () => { if (currentProduct === 'cc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('cc'); } } },
+  { id:'zdr',   icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label:'Diff. Refl.',   action: () => { if (currentProduct === 'zdr')   { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('zdr'); } } },
+  { id:'kdp',   icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gauge></use></svg>', label:'Spec. Diff. Phase', action: () => { if (currentProduct === 'kdp')  { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('kdp'); } } },
+  { id:'sw',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg>', label:'Spectrum Width', action: () => { if (currentProduct === 'sw')   { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('sw'); } } },
 ];
 
 function toggleRadarSub() {
@@ -15365,13 +15383,15 @@ function toggleRadarSub() {
       (b.id === 'accum'        && currentProduct === 'accum') ||
       (b.id === 'boha'         && currentProduct === 'boha') ||
       (b.id === 'cc'           && currentProduct === 'cc') ||
-      (b.id === 'zdr'          && currentProduct === 'zdr');
+      (b.id === 'zdr'          && currentProduct === 'zdr') ||
+      (b.id === 'kdp'          && currentProduct === 'kdp') ||
+      (b.id === 'sw'           && currentProduct === 'sw');
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isActiveProd ? ' active' : '');
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
-      document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr').forEach(s=>s.classList.remove('active'));
+      document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr,#sub-kdp,#sub-sw').forEach(s=>s.classList.remove('active'));
       el.classList.add('active');
       b.action();
     };
@@ -17743,7 +17763,7 @@ function _scClosePanel() {
 let _inspEnabled = false;
 let _inspEl = null, _inspLabelEl = null, _inspRafPending = false, _inspInterval = null;
 let _inspLastRows = [];
-const INSP_UNITS = { ref: 'dBZ', vel: 'mph', cc: '', zdr: 'dB' };
+const INSP_UNITS = { ref: 'dBZ', vel: 'mph', cc: '', zdr: 'dB', kdp: '°/km', sw: 'm/s' };
 
 function _inspQuadContains(mesh, k, lon, lat) {
   let inside = false;
@@ -19530,7 +19550,7 @@ function _rafTick(ts) {
     if (activeLayers.satellite && goesFrames.length) {
       goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
       showGoesFrame(goesCurrentFrame);
-    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') {
+    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') {
       if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
     } else if (currentProduct === 'vel') {
       velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
@@ -19570,7 +19590,7 @@ function _animationReady() {
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
   if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') return _dpFrames.length > 0;
-  if (currentProduct === 'cc' || currentProduct === 'zdr') return _dpFrames.length > 0;
+  if (currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') return _dpFrames.length > 0;
   if (currentProduct === 'ref' && _refStation) return true;
   if (!radarFrames.length) return false;
   // Need at least 2 frames so animation has somewhere to step
@@ -19622,7 +19642,7 @@ function stepFrame(dir) {
   if (activeLayers.satellite && goesFrames.length) {
     goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
     showGoesFrame(goesCurrentFrame);
-  } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') {
+  } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') {
     if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
   } else if (currentProduct === 'vel') {
     velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
@@ -19642,7 +19662,7 @@ function stepFrame(dir) {
 function seekFrame(idx) {
   if (activeLayers.satellite && goesFrames.length) showGoesFrame(idx);
   else if (currentProduct === 'vel') showVelFrame(idx);
-  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr') showDpFrame(idx);
+  else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') showDpFrame(idx);
   else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) _showSingleSiteRefFrame(idx);
   else showFrame(idx);
 }
@@ -19671,6 +19691,8 @@ const RADAR_WORKER_URL = 'https://l2data.ralphies1005.workers.dev';
 let _l3Product  = null;
 let _l3Station  = null;
 let _l3Overlay  = null;   // L.imageOverlay on the map
+let _l3Elevation  = null; // currently-loaded elevation NUMBER (not a degree angle), null = scan's lowest tilt
+let _l3Elevations = [];   // [{number, angle}, ...] every tilt the current scan actually has, from the worker
 let _l3Canvas   = null;   // offscreen HTMLCanvasElement
 let _lastMeshData = null, _lastMeshBounds = null, _lastMeshProduct = null;
 
@@ -19703,9 +19725,9 @@ function _killRadarWorker() {
   _radarWorkerPending = null;
 }
 
-function _workerProcess(buffer, layer) {
+function _workerProcess(buffer, layer, extraOptions) {
   // Limit gates to 460 per radial (~230 km) - cuts memory and CPU ~50% vs full scan
-  var options = { gate_limit: 460 };
+  var options = Object.assign({ gate_limit: 460 }, extraOptions);
   return new Promise(function(resolve, reject) {
     var p = { resolve: resolve, reject: reject, _timeout: null };
     _radarWorkerPending = p;
@@ -20123,17 +20145,26 @@ function _zdrColor(t) {
 function _disableL3() {
   if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} _l3Overlay = null; }
   _l3Canvas = null; _l3Product = null; _l3Station = null;
+  _l3Elevation = null; _l3Elevations = [];
   const at = document.getElementById('anim-time');
   if (at) at.textContent = '';
+  _updateRadarTiltUI();
 }
 
-async function loadL3Data(product, stationOverride) {
+// `elevationOverride` is a raw elevation NUMBER (not a degree angle - see
+// worker/bundle/radar_worker.js) from the Tilt dropdown; omit it to get
+// whatever the scan's lowest tilt is, same as before Tilt selection existed.
+async function loadL3Data(product, stationOverride, elevationOverride) {
+  const keepElevation = elevationOverride != null;
   _disableL3();
   _l3Product = product;
 
   var center  = map.getCenter();
   var station = stationOverride || _nearestStation(center.lat, center.lng);
   _l3Station  = station;
+  // _disableL3() above just cleared these - restore the one thing it's not
+  // supposed to clear when this call is a tilt change, not a fresh product/station.
+  if (keepElevation) _l3Elevation = elevationOverride;
 
   var at = document.getElementById('anim-time');
   if (at) at.textContent = 'Loading ' + product.toUpperCase() + '…';
@@ -20151,12 +20182,12 @@ async function loadL3Data(product, stationOverride) {
     return;
   }
 
-  var layerMap = { cc: 'CC', zdr: 'ZDR', vel: 'VEL', ref: 'REF' };
+  var layerMap = { cc: 'CC', zdr: 'ZDR', vel: 'VEL', ref: 'REF', kdp: 'KDP', sw: 'SW' };
   var layer = layerMap[product] || product.toUpperCase();
   var result;
   try {
     console.log('[L2] Sending', buffer.byteLength, 'bytes to worker for layer', layer);
-    result = await _workerProcess(buffer, layer);
+    result = await _workerProcess(buffer, layer, elevationOverride != null ? { elevation: elevationOverride } : undefined);
     console.log('[L2] Worker result: meshData length =', result.meshData?.length, 'bounds =', result.bounds);
   } catch(e) {
     console.error('[L2] Parse failed:', e);
@@ -20235,10 +20266,35 @@ function _renderMesh(result, product, station) {
   var timeIso = metadata && metadata.timeIso;
   var d = timeIso ? new Date(timeIso) : new Date();
   var at = document.getElementById('anim-time');
-  var labels = { cc: 'Corr. Coeff.', zdr: 'Diff. Refl.', vel: 'Velocity', ref: 'Reflectivity' };
+  var labels = { cc: 'Corr. Coeff.', zdr: 'Diff. Refl.', vel: 'Velocity', ref: 'Reflectivity', kdp: 'Spec. Diff. Phase', sw: 'Spectrum Width' };
   if (at) at.textContent = _fmtHHMM(d) + ' · ' + station.toUpperCase() + ' ' + (labels[product] || product);
 
+  _l3Elevations = (metadata && Array.isArray(metadata.elevations)) ? metadata.elevations : [];
+  _l3Elevation  = (metadata && metadata.elevationNumber != null) ? metadata.elevationNumber : null;
+  _updateRadarTiltUI();
+
   _refreshNexradSiteStyles();
+}
+
+// Populates/shows the Tilt dropdown with whichever elevations the worker
+// actually found in the current scan (a VCP can have anywhere from 4 to 15+),
+// or hides it entirely for a single-tilt scan (nothing to pick between) or
+// when no Level-2 product is active at all.
+function _updateRadarTiltUI() {
+  const wrap = document.getElementById('radar-tilt-wrap');
+  const sel  = document.getElementById('radar-tilt-sel');
+  if (!wrap || !sel) return;
+  if (!_l3Product || _l3Elevations.length < 2) { wrap.style.display = 'none'; return; }
+  sel.innerHTML = _l3Elevations.map(e =>
+    `<option value="${e.number}">Tilt ${e.number}${e.angle != null ? ' (' + e.angle.toFixed(1) + '°)' : ''}</option>`
+  ).join('');
+  sel.value = _l3Elevation != null ? String(_l3Elevation) : _l3Elevations[0].number;
+  wrap.style.display = 'inline-flex';
+}
+
+function _setRadarTilt(value) {
+  if (!_l3Product || !_l3Station) return;
+  loadL3Data(_l3Product, _l3Station, parseInt(value, 10));
 }
 
 function _meshColorFn(product) {
@@ -20249,6 +20305,17 @@ function _meshColorFn(product) {
   if (product === 'zdr') return function(v) {
     var t = (v + 8) / 16; t = t < 0 ? 0 : t > 1 ? 1 : t;
     return _zdrColor(t);
+  };
+  if (product === 'kdp') return function(v) {
+    if (v == null) return null;
+    var t = v / 8; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    if (t < 0.1) return null; // near-zero KDP isn't meaningful to shade
+    return 'hsl(' + Math.round(120 - t * 120) + ',85%,45%)'; // green (light rain) -> red (heavy rain)
+  };
+  if (product === 'sw') return function(v) {
+    if (v == null) return null;
+    var t = v / 15; t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return 'hsl(' + Math.round(60 - t * 60) + ',80%,45%)'; // yellow (calm) -> red (turbulent)
   };
   if (product === 'vel') return function(v) {
     var t = (v + 35) / 70; t = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -20395,7 +20462,7 @@ function _buildNexradSiteMarkers() {
       } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') {
         loadDualPolData(currentProduct, s.id);
         _refreshNexradSiteStyles();
-      } else if (currentProduct === 'cc' || currentProduct === 'zdr') {
+      } else if (currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') {
         loadL3Data(currentProduct, s.id);
         _refreshNexradSiteStyles();
       } else {
@@ -20415,7 +20482,7 @@ function _refreshNexradSiteStyles() {
     const isActive = (currentProduct === 'vel' && id === _velStation) ||
                      (currentProduct === 'ref' && id === _refStation) ||
                      ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') && id === _dpStation) ||
-                     ((currentProduct === 'cc' || currentProduct === 'zdr') && id === _l3Station);
+                     ((currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') && id === _l3Station);
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
   });
 }
@@ -20493,7 +20560,7 @@ function hideNexradSites() {
 // via a small helper called after any radar-state mutation.
 function _syncNexradSites() {
   // Show markers whenever nexrad layer is ON OR velocity is active
-  const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha';
+  const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha';
   if (radarOn) showNexradSites();
   else         hideNexradSites();
 }
@@ -24325,7 +24392,7 @@ function selectProduct(p) {
     _dpLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
     _dpLayerPool = []; _dpPoolLoaded = [];
     loadDualPolData(p);
-  } else if (p === 'cc' || p === 'zdr') {
+  } else if (p === 'cc' || p === 'zdr' || p === 'kdp' || p === 'sw') {
     if (playing)     { _stopRAF(); playing     = false; document.getElementById('play-btn').innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg>'; document.getElementById('play-btn').classList.remove('active'); }
     if (playingBack) { _stopRAF(); playingBack = false; document.getElementById('play-back-btn').classList.remove('active'); document.getElementById('play-back-btn').innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(180deg)><use href=#ic-play></use></svg>'; }
     try { _refreshPlayButtonsEnabled(); } catch(e) {}
@@ -25986,6 +26053,11 @@ function lqmSetTZ(tz) {
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg></div>
       <div class="fc-title">RADAR</div>
       <p class="fc-body">Tap to choose <strong>Reflectivity</strong> (precipitation intensity, colored by dBZ), <strong>Velocity</strong> (wind motion, green toward the radar, red away), <strong>Hydrometeor Classification</strong> (rain vs. snow vs. hail signature), <strong>Storm Total Accumulation</strong>, or <strong>1-Hr Accumulation</strong>. The WSR-88D network updates roughly every 2 minutes. Station labels like <strong>KTLX</strong> (Oklahoma City), <strong>KEWX</strong> (San Antonio), and <strong>KAMX</strong> (Miami) appear at close zoom.</p>
+    </div>
+    <div class="feature-card">
+      <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-hex></use></svg></div>
+      <div class="fc-title">DUAL-POL + TILT</div>
+      <p class="fc-body">Four more products decode raw Level 2 data live, right in your browser, rather than pulling a pre-made image: <strong>Correlation Coefficient</strong>, <strong>Differential Reflectivity</strong>, <strong>Specific Differential Phase</strong>, and <strong>Spectrum Width</strong>. Because these come straight from the volume scan instead of a single pre-rendered picture, a <strong>Tilt</strong> dropdown appears next to the clock showing every real elevation angle that scan actually has (anywhere from 4 to 15+ depending on the scan mode), so you can look higher into a storm instead of only ever seeing the lowest sweep.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-satellite></use></svg></div>
@@ -28030,7 +28102,7 @@ function lqmSetRadarOpacity(val) {
   radarOpacity = val / 100;
   if (currentProduct === 'vel') showVelFrame(velCurrentFrame);
   else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') showDpFrame(_dpCurrentFrame);
-  else if ((currentProduct === 'cc' || currentProduct === 'zdr') && _l3Overlay) _l3Overlay.setOpacity(radarOpacity);
+  else if ((currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') && _l3Overlay) _l3Overlay.setOpacity(radarOpacity);
   else if (typeof showFrame === 'function') showFrame(currentFrame);
 }
 
