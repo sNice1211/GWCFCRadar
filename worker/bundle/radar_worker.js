@@ -151,6 +151,16 @@ const processRadarData = (radar, radarLocation, extent, layer, options = {}) => 
         throw new Error(`Unknown radar layer: ${layer}`);
     }
 
+    // CC/ZDR/KDP/SW aren't broadcast on every tilt of every VCP - a tilt that
+    // lacks the moment comes back as an array of nothing but `undefined`
+    // (not an empty array, so the length check below wouldn't have caught
+    // it), which used to fall all the way through to a generic "no data
+    // returned" only after building an empty mesh. Catching it here gives a
+    // specific, actionable message instead.
+    if (Array.isArray(radarData) && radarData.length > 0 && radarData.every((item) => item === undefined)) {
+        throw new Error(`No ${layer} data at elevation ${radar.elevation} - this tilt may not carry this moment, try a different tilt`);
+    }
+
     if (!Array.isArray(radarData) || radarData.length === 0) {
         throw new Error(`No radar data available for layer: ${layer}`);
     }

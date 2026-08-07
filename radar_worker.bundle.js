@@ -11083,6 +11083,9 @@
     } else {
       throw new Error(`Unknown radar layer: ${layer}`);
     }
+    if (Array.isArray(radarData) && radarData.length > 0 && radarData.every((item) => item === void 0)) {
+      throw new Error(`No ${layer} data at elevation ${radar.elevation} - this tilt may not carry this moment, try a different tilt`);
+    }
     if (!Array.isArray(radarData) || radarData.length === 0) {
       throw new Error(`No radar data available for layer: ${layer}`);
     }
