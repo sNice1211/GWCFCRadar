@@ -13071,7 +13071,10 @@ function _ptEffectiveDensity(baseDensity) {
   const lngSpan = Math.max(0.5, bounds.getEast() - bounds.getWest());
   const REF_AREA = 25 * 50; // ~continental-US-sized view in degrees
   const scale = Math.sqrt((latSpan * lngSpan) / REF_AREA);
-  return Math.round(baseDensity * Math.max(0.5, Math.min(5, scale)));
+  // Hard ceiling regardless of how wide the view or how high Density is set -
+  // each particle costs one stroke() call every frame, so this is the line
+  // between "denser flow" and "the tab stutters."
+  return Math.round(Math.min(7000, baseDensity * Math.max(0.5, Math.min(5, scale))));
 }
 
 // ── WIND PARTICLES (map overlay, Open-Meteo Forecast API) ───────────────────
@@ -13092,15 +13095,15 @@ let _windPtParticles = [];
 let _windPtGrid = null; // {cols, rows, u, v} - eastward/northward mph components
 let _windPtLoadToken = 0;
 let _windPtRefreshTimer = null;
-let _windPtDensity = 800; // Settings: 200 - 2000, how many particles are on screen at once
+let _windPtDensity = 1800; // Settings: 200 - 4000, how many particles are on screen at once
 // Not a real-time physical speed - exaggerated so the flow is actually
 // visible on screen within a couple of seconds, same trick every wind-
 // particle map (Windy, earth.nullschool) uses rather than animating at the
 // wind's true real-world pace. The Settings "Speed" slider multiplies this.
 const WINDPT_BASE_ANIM_SCALE = 0.00028;
 let _windPtSpeed = 1;       // Settings: 0.25 - 3 (x)
-let _windPtIntensity = 0.7; // Settings: 0.2 - 1, drives both trail opacity and how slowly trails fade
-let _windPtThickness = 1.3; // Settings: 0.5 - 4 (px)
+let _windPtIntensity = 0.95; // Settings: 0.2 - 1, drives both trail opacity and how slowly trails fade
+let _windPtThickness = 2.2;  // Settings: 0.5 - 4 (px)
 let _windPtOpacity = 1;     // Settings: 0.1 - 1, whole-canvas opacity (separate from Intensity's per-trail fade)
 
 function _windPtStart() {
@@ -13330,14 +13333,14 @@ let _wavePtParticles = [];
 let _wavePtGrid = null; // {cols, rows, u, v} - eastward/northward ft "speed" components (height along direction)
 let _wavePtLoadToken = 0;
 let _wavePtRefreshTimer = null;
-let _wavePtDensity = 800; // Settings: 200 - 2000
+let _wavePtDensity = 1800; // Settings: 200 - 4000
 // Wave height (ft) is a much smaller number than wind speed (mph), so this
 // needs its own, larger base scale to read at a similar visual pace by
 // default - see WINDPT_BASE_ANIM_SCALE's comment, same non-physical trick.
 const WAVEPT_BASE_ANIM_SCALE = 0.0014;
 let _wavePtSpeed = 1;       // Settings: 0.25 - 3 (x)
-let _wavePtIntensity = 0.7; // Settings: 0.2 - 1
-let _wavePtThickness = 1.3; // Settings: 0.5 - 4 (px)
+let _wavePtIntensity = 0.95; // Settings: 0.2 - 1
+let _wavePtThickness = 2.2;  // Settings: 0.5 - 4 (px)
 let _wavePtOpacity = 1;     // Settings: 0.1 - 1
 
 function _wavePtStart() {
@@ -25202,25 +25205,25 @@ function selectProduct(p) {
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Intensity</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-windptintensity" min="20" max="100" value="70" step="5"
+        <input type="range" id="lqm-set-windptintensity" min="20" max="100" value="95" step="5"
           class="lqm-slider" oninput="lqmSetWindPtIntensity(this.value)">
-        <span id="lqm-windptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">70%</span>
+        <span id="lqm-windptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">95%</span>
       </div>
     </div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Thickness</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-windptthickness" min="5" max="40" value="13" step="1"
+        <input type="range" id="lqm-set-windptthickness" min="5" max="40" value="22" step="1"
           class="lqm-slider" oninput="lqmSetWindPtThickness(this.value)">
-        <span id="lqm-windptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.3px</span>
+        <span id="lqm-windptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">2.2px</span>
       </div>
     </div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Density</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-windptdensity" min="200" max="2000" value="800" step="100"
+        <input type="range" id="lqm-set-windptdensity" min="200" max="4000" value="1800" step="200"
           class="lqm-slider" oninput="lqmSetWindPtDensity(this.value)">
-        <span id="lqm-windptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">800</span>
+        <span id="lqm-windptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1800</span>
       </div>
     </div>
     <div class="lqm-settings-row">
@@ -25247,25 +25250,25 @@ function selectProduct(p) {
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Intensity</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-waveptintensity" min="20" max="100" value="70" step="5"
+        <input type="range" id="lqm-set-waveptintensity" min="20" max="100" value="95" step="5"
           class="lqm-slider" oninput="lqmSetWavePtIntensity(this.value)">
-        <span id="lqm-waveptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">70%</span>
+        <span id="lqm-waveptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">95%</span>
       </div>
     </div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Thickness</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-waveptthickness" min="5" max="40" value="13" step="1"
+        <input type="range" id="lqm-set-waveptthickness" min="5" max="40" value="22" step="1"
           class="lqm-slider" oninput="lqmSetWavePtThickness(this.value)">
-        <span id="lqm-waveptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.3px</span>
+        <span id="lqm-waveptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">2.2px</span>
       </div>
     </div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Density</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-waveptdensity" min="200" max="2000" value="800" step="100"
+        <input type="range" id="lqm-set-waveptdensity" min="200" max="4000" value="1800" step="200"
           class="lqm-slider" oninput="lqmSetWavePtDensity(this.value)">
-        <span id="lqm-waveptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">800</span>
+        <span id="lqm-waveptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1800</span>
       </div>
     </div>
     <div class="lqm-settings-row">
