@@ -13053,6 +13053,27 @@ function _paintAndShowWind(token) {
   _windLayer = layer.addTo(map);
 }
 
+// Both particle overlays below seed a fixed count of particles across
+// whatever the CURRENT map view covers. That's fine at one zoom level, but
+// the same 800 particles that look like a solid flow zoomed into a state
+// cover a whole ocean basin when zoomed out to see the Atlantic - same
+// count, vastly more area, so it reads as sparse/gappy rather than a
+// continuous field. Scaling the seeded count by how much geographic area is
+// actually visible (relative to a "reference" view about the size of the
+// continental US) keeps the on-screen density roughly constant across zoom
+// levels. sqrt of the area ratio (not the raw ratio) keeps this from
+// exploding into tens of thousands of particles at a full world view -
+// capped on both ends so it never goes so sparse it looks empty or so dense
+// it costs real frame time.
+function _ptEffectiveDensity(baseDensity) {
+  const bounds = map.getBounds();
+  const latSpan = Math.max(0.5, bounds.getNorth() - bounds.getSouth());
+  const lngSpan = Math.max(0.5, bounds.getEast() - bounds.getWest());
+  const REF_AREA = 25 * 50; // ~continental-US-sized view in degrees
+  const scale = Math.sqrt((latSpan * lngSpan) / REF_AREA);
+  return Math.round(baseDensity * Math.max(0.5, Math.min(5, scale)));
+}
+
 // ── WIND PARTICLES (map overlay, Open-Meteo Forecast API) ───────────────────
 // A field of animated particles that flow with the real Surface Wind (10m)
 // direction and speed, redrawn every frame - purely visual, on top of
@@ -13094,6 +13115,7 @@ function _windPtStart() {
     map.getContainer().appendChild(_windPtCanvas);
     map.on('resize', _windPtResizeCanvas);
     map.on('zoomstart', _windPtOnZoomStart);
+    map.on('zoomend', _windPtOnZoomEnd);
   }
   _windPtAnchorLatLng = map.getCenter();
   _windPtLastAnchorPt = null;
@@ -13109,6 +13131,7 @@ function _windPtStop() {
   if (_windPtRafId) { cancelAnimationFrame(_windPtRafId); _windPtRafId = null; }
   map.off('resize', _windPtResizeCanvas);
   map.off('zoomstart', _windPtOnZoomStart);
+  map.off('zoomend', _windPtOnZoomEnd);
   if (_windPtCanvas) { try { _windPtCanvas.remove(); } catch(e){} _windPtCanvas = null; }
   _windPtParticles = [];
   _windPtGrid = null;
@@ -13136,6 +13159,13 @@ function _windPtOnZoomStart() {
   _windPtLastAnchorPt = null;
 }
 
+// The zoom just settled on a view covering a different amount of real-world
+// area - reseed so the particle count matches it (see _ptEffectiveDensity),
+// instead of staying at whatever count fit the zoom level before.
+function _windPtOnZoomEnd() {
+  if (_windPtGrid) _windPtSeedParticles();
+}
+
 // Drops a particle at a random point within the current view (clamped to
 // WORLD_MAP_BOUNDS, since there's no wind data past it) with a fresh random
 // lifespan - used both for the first seeding pass and to recycle a particle
@@ -13152,7 +13182,8 @@ function _windPtRespawn(p, bounds) {
 function _windPtSeedParticles() {
   const bounds = map.getBounds();
   _windPtParticles = [];
-  for (let i = 0; i < _windPtDensity; i++) {
+  const count = _ptEffectiveDensity(_windPtDensity);
+  for (let i = 0; i < count; i++) {
     const p = {};
     _windPtRespawn(p, bounds);
     p.age = Math.floor(Math.random() * p.life); // stagger ages so particles don't all reset in sync
@@ -13321,6 +13352,7 @@ function _wavePtStart() {
     map.getContainer().appendChild(_wavePtCanvas);
     map.on('resize', _wavePtResizeCanvas);
     map.on('zoomstart', _wavePtOnZoomStart);
+    map.on('zoomend', _wavePtOnZoomEnd);
   }
   _wavePtAnchorLatLng = map.getCenter();
   _wavePtLastAnchorPt = null;
@@ -13336,6 +13368,7 @@ function _wavePtStop() {
   if (_wavePtRafId) { cancelAnimationFrame(_wavePtRafId); _wavePtRafId = null; }
   map.off('resize', _wavePtResizeCanvas);
   map.off('zoomstart', _wavePtOnZoomStart);
+  map.off('zoomend', _wavePtOnZoomEnd);
   if (_wavePtCanvas) { try { _wavePtCanvas.remove(); } catch(e){} _wavePtCanvas = null; }
   _wavePtParticles = [];
   _wavePtGrid = null;
@@ -13358,6 +13391,10 @@ function _wavePtOnZoomStart() {
   _wavePtLastAnchorPt = null;
 }
 
+function _wavePtOnZoomEnd() {
+  if (_wavePtGrid) _wavePtSeedParticles();
+}
+
 function _wavePtRespawn(p, bounds) {
   const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
   const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
@@ -13370,7 +13407,8 @@ function _wavePtRespawn(p, bounds) {
 function _wavePtSeedParticles() {
   const bounds = map.getBounds();
   _wavePtParticles = [];
-  for (let i = 0; i < _wavePtDensity; i++) {
+  const count = _ptEffectiveDensity(_wavePtDensity);
+  for (let i = 0; i < count; i++) {
     const p = {};
     _wavePtRespawn(p, bounds);
     p.age = Math.floor(Math.random() * p.life);
