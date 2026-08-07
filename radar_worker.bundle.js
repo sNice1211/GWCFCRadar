@@ -11084,7 +11084,7 @@
       throw new Error(`Unknown radar layer: ${layer}`);
     }
     if (Array.isArray(radarData) && radarData.length > 0 && radarData.every((item) => item === void 0)) {
-      throw new Error(`No ${layer} data at elevation ${radar.elevation} - this tilt may not carry this moment, try a different tilt`);
+      throw new Error(`No ${layer} data at elevation ${radar.elevation} - this scan may not carry this moment`);
     }
     if (!Array.isArray(radarData) || radarData.length === 0) {
       throw new Error(`No radar data available for layer: ${layer}`);
@@ -11334,17 +11334,8 @@
         const requestedMoment = getLevel2MomentForLayer(layer);
         const radar = new import_nexrad_level_2_data.Level2Radar(buffer, { logger: false, includeMoments: requestedMoment ? [requestedMoment] : void 0 });
         parserEndMs = toEpochMs(performance.now());
-        const elevationNumbers = radar.listElevations();
-        const elevations = elevationNumbers.map((number) => {
-          radar.setElevation(number);
-          const h = radar.getHeader(0);
-          return { number, angle: Number.isFinite(h?.elevation_angle) ? h.elevation_angle : null };
-        });
-        if (options?.elevation && elevationNumbers.includes(options.elevation)) {
-          radar.setElevation(options.elevation);
-        } else {
-          radar.setElevation(elevationNumbers[0] || 1);
-        }
+        const elevations = radar.listElevations();
+        radar.setElevation(elevations[0] || 1);
         const header = radar.getHeader(0);
         const radarLocation = [header.volume.latitude, header.volume.longitude];
         const { meshData, bounds, geojson } = processRadarData(radar, radarLocation, header.radial_length, layer, options);
@@ -11357,8 +11348,6 @@
           metadata: {
             timeIso: new Date(header.julian_date * 86400 * 1e3 + header.mseconds - 36e5).toISOString(),
             elevationAngle: header.elevation_angle,
-            elevationNumber: header.elevation_number,
-            elevations,
             station: options?.station || null,
             vcp: getLevel2Vcp(radar, header)
           },

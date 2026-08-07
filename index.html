@@ -1775,62 +1775,6 @@ body {
 }
 .sub-bubble .sb-icon { font-size: 13px; display: inline-flex; align-items: center; }
 .sub-bubble-main.dragging { opacity: 0.45; border-style: dashed; }
-/* Radar Tilt picker - a stubby "TILT" bubble that sits horizontally beside
-   whichever radar product bubble is active (not stacked under it). Clicking
-   it opens a dropdown of the actual tilt numbers. */
-.tilt-row-wrap {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 6px;
-}
-.tilt-trigger-bubble {
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0;
-  padding: 4px 10px;
-  min-width: 36px;
-  border-color: rgba(255,215,0,0.5);
-  position: relative;
-}
-.tilt-trigger-label {
-  font-size: 8px;
-  letter-spacing: 1px;
-  line-height: 1.2;
-  opacity: 0.65;
-}
-.tilt-trigger-value {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.2;
-  color: #ffd700;
-}
-.tilt-dropdown {
-  position: fixed;
-  z-index: 10500;
-  background: rgb(35,0,0);
-  border: 1px solid rgba(255,215,0,0.6);
-  border-radius: 10px;
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 120px;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.5);
-}
-.tilt-dropdown-opt {
-  padding: 6px 10px;
-  font-family: var(--display);
-  font-size: 11px;
-  letter-spacing: 0.5px;
-  color: rgba(255,255,255,0.75);
-  border-radius: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.tilt-dropdown-opt:hover { background: rgba(255,255,255,0.1); color: #fff; }
-.tilt-dropdown-opt.active { background: rgba(255,215,0,0.15); color: #ffd700; }
 .sb-drag {
   flex-shrink: 0; cursor: grab; touch-action: none;
   padding: 2px 3px; margin: -4px -6px -4px 2px;
@@ -13544,7 +13488,6 @@ function _disableRadar() {
     _velLayerPool = []; _velPoolLoaded = [];
     if (velocityLayer) { try { map.removeLayer(velocityLayer); } catch(e){} velocityLayer = null; }
     velFrames = []; velCurrentFrame = 0;
-    _velTilt = 1;
     if (currentProduct === 'vel') currentProduct = 'ref';
   }
   // Clean up dual-pol (WMS) if active
@@ -13556,7 +13499,6 @@ function _disableRadar() {
   }
   // Clean up L3 canvas (CC/ZDR) if active
   if (currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') { _disableL3(); currentProduct = 'ref'; }
-  _updateRadarTiltUI();
   const el = document.getElementById('layer-nexrad');
   if (el) el.classList.remove('active');
   const sub = document.getElementById('sub-nexrad');
@@ -13688,10 +13630,10 @@ const LAYER_DESCRIPTIONS = {
   hc:           'Hydrometeor classification. Shows what type of precipitation the radar is picking up, like rain, hail, or snow.',
   accum:        'Storm total precipitation, accumulated by radar since the current event began.',
   boha:         'Radar-estimated precipitation over just the last hour.',
-  cc:           'Correlation Coefficient - how similarly-shaped the precipitation particles are in each pulse volume. Near 1.0 (green) means uniform particles like pure rain; lower values (purple/red) mean a mix of shapes, hail, debris, insects, or ground clutter. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
-  zdr:          'Differential Reflectivity - how much wider than tall the average precipitation particle is. Near 0 dB (blue-ish) means round drops or dry snow; higher values (red/orange) mean flattened, larger raindrops. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
-  kdp:          'Specific Differential Phase - the rate of phase shift between horizontal and vertical pulses, a strong signal for heavy rain rates that reflectivity alone can\'t always tell apart from hail. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
-  sw:           'Spectrum Width - how much the wind speed varies within a single pulse volume. High values mean turbulence or wind shear, often seen right around rotation or a gust front. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
+  cc:           'Correlation Coefficient - how similarly-shaped the precipitation particles are in each pulse volume. Near 1.0 (green) means uniform particles like pure rain; lower values (purple/red) mean a mix of shapes, hail, debris, insects, or ground clutter. Decoded live from raw Level 2 data.',
+  zdr:          'Differential Reflectivity - how much wider than tall the average precipitation particle is. Near 0 dB (blue-ish) means round drops or dry snow; higher values (red/orange) mean flattened, larger raindrops. Decoded live from raw Level 2 data.',
+  kdp:          'Specific Differential Phase - the rate of phase shift between horizontal and vertical pulses, a strong signal for heavy rain rates that reflectivity alone can\'t always tell apart from hail. Decoded live from raw Level 2 data.',
+  sw:           'Spectrum Width - how much the wind speed varies within a single pulse volume. High values mean turbulence or wind shear, often seen right around rotation or a gust front. Decoded live from raw Level 2 data.',
   ch01: 'Daytime visible imagery in blue light. Good for seeing haze, smoke, and snow cover.',
   ch02: 'The sharpest daytime visible image, close to what your eye would see from space.',
   ch03: 'Daytime image tuned to vegetation, useful for spotting fires, burn scars, and land cover.',
@@ -15409,13 +15351,11 @@ const RADAR_SUB_BUBBLES = [
   { id:'hc',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-rainbow></use></svg>', label:'Hydro. Class.', action: () => { if (currentProduct === 'hc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('hc'); } } },
   { id:'accum', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>', label:'Storm Accum.',  action: () => { if (currentProduct === 'accum') { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('accum'); } } },
   { id:'boha',  icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gauge></use></svg>', label:'1-Hr Accum.',   action: () => { if (currentProduct === 'boha')  { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('boha'); } } },
-  // CC/ZDR/KDP/SW hidden again until the in-browser Level-2 decoder has been
-  // verified against real data on a real device - it was already known to be
-  // unreliable before tilt selection was added on top of it, and none of
-  // this could be tested against live NOAA data from the dev sandbox.
-  // The plumbing (worker elevation support, Tilt dropdown, color scales,
-  // descriptions) all stays in place - re-enabling later is just uncommenting
-  // these four lines once it's confirmed working.
+  // CC/ZDR/KDP/SW hidden until the in-browser Level-2 decoder has been
+  // verified against real data on a real device - none of this could be
+  // tested against live NOAA data from the dev sandbox. The plumbing (color
+  // scales, descriptions) stays in place - re-enabling later is just
+  // uncommenting these four lines once it's confirmed working.
   // { id:'cc',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-hex></use></svg>', label:'Corr. Coeff.',  action: () => { if (currentProduct === 'cc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('cc'); } } },
   // { id:'zdr',   icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label:'Diff. Refl.',   action: () => { if (currentProduct === 'zdr')   { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('zdr'); } } },
   // { id:'kdp',   icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gauge></use></svg>', label:'Spec. Diff. Phase', action: () => { if (currentProduct === 'kdp')  { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('kdp'); } } },
@@ -15458,7 +15398,6 @@ function toggleRadarSub() {
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
-  _updateRadarTiltUI(); // re-attach tilt bubbles if a Level-2 product is still active from before
 }
 
 function hideSubBubbles() {
@@ -19738,9 +19677,6 @@ let velFrames      = [], velCurrentFrame = 0;
 let _velStation    = null;   // currently loaded station ID (e.g. 'ktlx')
 let _velLayerPool  = [];     // double-buffer pool of WMS layers
 let _velPoolLoaded = [];     // per-slot load flags
-let _velTilt = 1; // NOAA's official GeoServer only ever serves the base (lowest) tilt - anything
-                   // higher has to go through IEM's ridge.cgi instead, see VEL_TILT_PRODUCTS below.
-const VEL_TILT_PRODUCTS = { 1: 'N0U', 2: 'N1U', 3: 'N2U', 4: 'N3U' };
 
 // ── DUAL-POL STATE (WMS: hc, accum) ──
 const DP_LAYER_MAP = { hc: 'bdhc', accum: 'bdsa', boha: 'boha', cc: 'n0c', zdr: 'n0x' };
@@ -19754,8 +19690,6 @@ const RADAR_WORKER_URL = 'https://l2data.ralphies1005.workers.dev';
 let _l3Product  = null;
 let _l3Station  = null;
 let _l3Overlay  = null;   // L.imageOverlay on the map
-let _l3Elevation  = null; // currently-loaded elevation NUMBER (not a degree angle), null = scan's lowest tilt
-let _l3Elevations = [];   // [{number, angle}, ...] every tilt the current scan actually has, from the worker
 let _l3Canvas   = null;   // offscreen HTMLCanvasElement
 let _lastMeshData = null, _lastMeshBounds = null, _lastMeshProduct = null;
 
@@ -19811,11 +19745,6 @@ let _refSiteLoaded = [];
 let _refSiteFrames = [];     // timing frames for single-site REF
 let _refSiteTick   = null;   // stale-interval guard for _showSingleSiteRefFrame
 let _refSiteGen    = 0;      // generation counter; incremented on each _loadSingleSiteRef call
-let _refTilt = 1; // NOAA's official GeoServer only ever serves the base (lowest) tilt - anything
-                   // higher has to go through IEM's ridge.cgi instead, see REF_TILT_PRODUCTS below.
-let _refUseOpengeo = false; // remembered from the last _loadSingleSiteRef call, so _setRefTilt can
-                             // rebuild the pool without re-fetching timestamps
-const REF_TILT_PRODUCTS = { 1: 'N0Q', 2: 'N1Q', 3: 'N2Q', 4: 'N3Q' };
 
 // ── NEXRAD station list with lat/lon for nearest-station lookup ──
 const NEXRAD_STATIONS = [
@@ -19975,74 +19904,36 @@ async function _fetchVelTimestamps(station) {
   return recent.map(iso => ({ iso, time: new Date(iso).getTime() / 1000 }));
 }
 
-// Build a double-buffer pool for velocity frames. Tilt 1 (the default) uses
-// NOAA's own GeoServer as before; any higher tilt has to go through IEM's
-// ridge.cgi instead, since GeoServer only ever serves the base tilt.
+// Build a double-buffer pool for velocity frames from NOAA's own GeoServer.
 function _buildVelPool(station, frames) {
   // Tear down old pool
   _velLayerPool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _velLayerPool  = [];
   _velPoolLoaded = [];
 
-  if (_velTilt === 1) {
-    const wmsUrl   = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows`;
-    const layerNm  = `${station}_sr_bvel`;
-    frames.forEach((frame, i) => {
-      const l = L.tileLayer.wms(wmsUrl, {
-        layers:      layerNm,
-        format:      'image/png',
-        transparent: true,
-        version:     '1.3.0',
-        TIME:        frame.iso,
-        opacity:     0,
-        zIndex:      10,
-        pane:        'radarPane',
-        crossOrigin: 'anonymous',
-        noWrap:      true,
-        keepBuffer:  2,
-        updateWhenIdle: _isIOS,
-        updateWhenZooming: false,
-      });
-      _velPoolLoaded[i] = false;
-      l.on('tileload', () => { _velPoolLoaded[i] = true; });
-      l.addTo(map);
-      _velLayerPool[i] = l;
+  const wmsUrl   = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows`;
+  const layerNm  = `${station}_sr_bvel`;
+  frames.forEach((frame, i) => {
+    const l = L.tileLayer.wms(wmsUrl, {
+      layers:      layerNm,
+      format:      'image/png',
+      transparent: true,
+      version:     '1.3.0',
+      TIME:        frame.iso,
+      opacity:     0,
+      zIndex:      10,
+      pane:        'radarPane',
+      crossOrigin: 'anonymous',
+      noWrap:      true,
+      keepBuffer:  2,
+      updateWhenIdle: _isIOS,
+      updateWhenZooming: false,
     });
-  } else {
-    const wmsUrl = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/ridge.cgi';
-    const sector = station.slice(1).toUpperCase();
-    const prod   = VEL_TILT_PRODUCTS[_velTilt] || 'N0U';
-    frames.forEach((frame, i) => {
-      const d = new Date(frame.time * 1000);
-      const isLatest = (i === frames.length - 1);
-      const l = L.tileLayer.wms(wmsUrl, {
-        layers: isLatest ? 'single' : 'single-archive',
-        format: 'image/png', transparent: true, version: '1.1.1',
-        sector, prod,
-        ...(isLatest ? { _cb: Date.now() } : {
-          year: d.getUTCFullYear(), month: String(d.getUTCMonth() + 1).padStart(2, '0'),
-          day: String(d.getUTCDate()).padStart(2, '0'),
-          time: String(d.getUTCHours()).padStart(2, '0') + String(d.getUTCMinutes()).padStart(2, '0'),
-        }),
-        opacity: 0, zIndex: 10, pane: 'radarPane',
-        crossOrigin: 'anonymous', noWrap: true,
-        keepBuffer: 2, updateWhenIdle: _isIOS, updateWhenZooming: false,
-        attribution: `${station.toUpperCase()} ${prod} © NOAA via IEM`,
-      });
-      _velPoolLoaded[i] = false;
-      l.on('tileload', () => { _velPoolLoaded[i] = true; });
-      l.addTo(map);
-      _velLayerPool[i] = l;
-    });
-  }
-}
-
-function _setVelTilt(n) {
-  if (!_velStation) return;
-  _velTilt = n;
-  _buildVelPool(_velStation, velFrames);
-  showVelFrame(velCurrentFrame);
-  _updateRadarTiltUI();
+    _velPoolLoaded[i] = false;
+    l.on('tileload', () => { _velPoolLoaded[i] = true; });
+    l.addTo(map);
+    _velLayerPool[i] = l;
+  });
 }
 
 async function loadVelocityData() {
@@ -20061,7 +19952,6 @@ async function loadVelocityData() {
   const center  = map.getCenter();
   const station = _nearestStation(center.lat, center.lng);
   _velStation   = station;
-  _velTilt      = 1; // reset to base tilt on a fresh station pick
 
   try {
     velFrames = await _fetchVelTimestamps(station);
@@ -20087,7 +19977,6 @@ async function loadVelocityData() {
 
   // Show the latest frame
   showVelFrame(velCurrentFrame);
-  _updateRadarTiltUI();
 }
 
 function buildVelLabels() {
@@ -20254,26 +20143,17 @@ function _zdrColor(t) {
 function _disableL3() {
   if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} _l3Overlay = null; }
   _l3Canvas = null; _l3Product = null; _l3Station = null;
-  _l3Elevation = null; _l3Elevations = [];
   const at = document.getElementById('anim-time');
   if (at) at.textContent = '';
-  _updateRadarTiltUI();
 }
 
-// `elevationOverride` is a raw elevation NUMBER (not a degree angle - see
-// worker/bundle/radar_worker.js) from the Tilt dropdown; omit it to get
-// whatever the scan's lowest tilt is, same as before Tilt selection existed.
-async function loadL3Data(product, stationOverride, elevationOverride) {
-  const keepElevation = elevationOverride != null;
+async function loadL3Data(product, stationOverride) {
   _disableL3();
   _l3Product = product;
 
   var center  = map.getCenter();
   var station = stationOverride || _nearestStation(center.lat, center.lng);
   _l3Station  = station;
-  // _disableL3() above just cleared these - restore the one thing it's not
-  // supposed to clear when this call is a tilt change, not a fresh product/station.
-  if (keepElevation) _l3Elevation = elevationOverride;
 
   var at = document.getElementById('anim-time');
   if (at) at.textContent = 'Loading ' + product.toUpperCase() + '…';
@@ -20296,7 +20176,7 @@ async function loadL3Data(product, stationOverride, elevationOverride) {
   var result;
   try {
     console.log('[L2] Sending', buffer.byteLength, 'bytes to worker for layer', layer);
-    result = await _workerProcess(buffer, layer, elevationOverride != null ? { elevation: elevationOverride } : undefined);
+    result = await _workerProcess(buffer, layer);
     console.log('[L2] Worker result: meshData length =', result.meshData?.length, 'bounds =', result.bounds);
   } catch(e) {
     console.error('[L2] Parse failed:', e);
@@ -20378,128 +20258,7 @@ function _renderMesh(result, product, station) {
   var labels = { cc: 'Corr. Coeff.', zdr: 'Diff. Refl.', vel: 'Velocity', ref: 'Reflectivity', kdp: 'Spec. Diff. Phase', sw: 'Spectrum Width' };
   if (at) at.textContent = _fmtHHMM(d) + ' · ' + station.toUpperCase() + ' ' + (labels[product] || product);
 
-  _l3Elevations = (metadata && Array.isArray(metadata.elevations)) ? metadata.elevations : [];
-  _l3Elevation  = (metadata && metadata.elevationNumber != null) ? metadata.elevationNumber : null;
-  _updateRadarTiltUI();
-
   _refreshNexradSiteStyles();
-}
-
-// Inserts one small "Tilt N" bubble right after whichever radar product
-// bubble is active - so which tilt you're on reads as part of the same
-// product choice in the sub-bubbles row, not a separate control living
-// somewhere else on screen. Two sources feed this:
-//   - CC/ZDR/KDP/SW decode raw Level-2 data, so they report the real
-//     elevation angles the current scan actually has (a VCP can run
-//     anywhere from 4 to 15+ tilts).
-//   - Single-site Reflectivity/Velocity render pre-made WMS tiles, which
-//     only exist at 4 fixed tilt codes (see REF_TILT_PRODUCTS/
-//     VEL_TILT_PRODUCTS) - no per-scan angle is available without
-//     decoding, so those just show as "Tilt 1".."Tilt 4".
-// Clears itself when nothing tilt-capable is currently showing.
-function _updateRadarTiltUI() {
-  _removeTiltTrigger();
-
-  if (_l3Product && _l3Elevations.length > 1) {
-    _insertTiltTrigger('sub-' + _l3Product, _l3Elevations.map(e => ({
-      number: e.number,
-      label: `Tilt ${e.number}${e.angle != null ? ' - ' + e.angle.toFixed(1) + '°' : ''}`,
-      active: _l3Elevation === e.number,
-    })), _setRadarTilt);
-    return;
-  }
-  if (currentProduct === 'ref' && _refStation) {
-    _insertTiltTrigger('sub-reflectivity', [1, 2, 3, 4].map(n => ({
-      number: n, label: `Tilt ${n}`, active: _refTilt === n,
-    })), _setRefTilt);
-    return;
-  }
-  if (currentProduct === 'vel' && _velStation) {
-    _insertTiltTrigger('sub-velocity', [1, 2, 3, 4].map(n => ({
-      number: n, label: `Tilt ${n}`, active: _velTilt === n,
-    })), _setVelTilt);
-    return;
-  }
-}
-
-// The tilt control is one stubby bubble (labeled TILT with the current
-// number under it) that sits horizontally beside the product bubble it
-// belongs to, not stacked as extra rows under it. To do that we pull the
-// product bubble out of #sub-bubbles' normal vertical stack and wrap it
-// together with the tilt bubble in a small side-by-side row - that wrapper
-// takes the product bubble's old spot in the column, so the rest of the
-// list doesn't shift. Clicking the tilt bubble pops open a dropdown of the
-// actual tilt numbers, rendered on <body> (not inside #sub-bubbles) so the
-// column's own clipping/scroll box never crops it off.
-function _removeTiltTrigger() {
-  _closeTiltDropdown();
-  document.querySelectorAll('#sub-bubbles .tilt-row-wrap').forEach(wrap => {
-    const anchor = wrap.querySelector(':scope > .sub-bubble:not(.tilt-trigger-bubble)');
-    if (anchor) wrap.parentElement.insertBefore(anchor, wrap);
-    wrap.remove();
-  });
-}
-
-function _insertTiltTrigger(anchorId, items, onPick) {
-  const anchor = document.getElementById(anchorId);
-  if (!anchor) return;
-  let wrapper = anchor.parentElement && anchor.parentElement.classList.contains('tilt-row-wrap')
-    ? anchor.parentElement : null;
-  if (!wrapper) {
-    wrapper = document.createElement('div');
-    wrapper.className = 'tilt-row-wrap';
-    anchor.parentElement.insertBefore(wrapper, anchor);
-    wrapper.appendChild(anchor);
-  }
-  let trigger = wrapper.querySelector('.tilt-trigger-bubble');
-  if (!trigger) {
-    trigger = document.createElement('div');
-    trigger.className = 'sub-bubble tilt-trigger-bubble';
-    trigger.innerHTML = '<span class="tilt-trigger-label">TILT</span><span class="tilt-trigger-value"></span>';
-    wrapper.appendChild(trigger);
-  }
-  const active = items.find(i => i.active) || items[0];
-  trigger.querySelector('.tilt-trigger-value').textContent = active ? active.number : '-';
-  trigger.onclick = (ev) => {
-    ev.stopPropagation();
-    _toggleTiltDropdown(trigger, items, onPick);
-  };
-}
-
-let _tiltDropdownEl = null;
-function _closeTiltDropdown() {
-  if (_tiltDropdownEl) { _tiltDropdownEl.remove(); _tiltDropdownEl = null; }
-}
-function _toggleTiltDropdown(trigger, items, onPick) {
-  const reopening = _tiltDropdownEl && _tiltDropdownEl.dataset.forTrigger === trigger.dataset.tiltId;
-  _closeTiltDropdown();
-  if (reopening) return;
-  if (!trigger.dataset.tiltId) trigger.dataset.tiltId = 'tt' + Math.random().toString(36).slice(2);
-  const rect = trigger.getBoundingClientRect();
-  const dd = document.createElement('div');
-  dd.className = 'tilt-dropdown';
-  dd.dataset.forTrigger = trigger.dataset.tiltId;
-  dd.style.left = rect.left + 'px';
-  dd.style.top = (rect.bottom + 4) + 'px';
-  items.forEach(item => {
-    const opt = document.createElement('div');
-    opt.className = 'tilt-dropdown-opt' + (item.active ? ' active' : '');
-    opt.textContent = item.label;
-    opt.onclick = (ev) => {
-      ev.stopPropagation();
-      _closeTiltDropdown();
-      onPick(item.number);
-    };
-    dd.appendChild(opt);
-  });
-  document.body.appendChild(dd);
-  _tiltDropdownEl = dd;
-}
-document.addEventListener('click', () => _closeTiltDropdown());
-
-function _setRadarTilt(value) {
-  if (!_l3Product || !_l3Station) return;
-  loadL3Data(_l3Product, _l3Station, parseInt(value, 10));
 }
 
 function _meshColorFn(product) {
@@ -20661,11 +20420,9 @@ function _buildNexradSiteMarkers() {
         _loadSingleSiteRef(s.id);
       } else if (currentProduct === 'vel') {
         _velStation = s.id;
-        _velTilt = 1;
         _buildVelPool(s.id, velFrames);
         showVelFrame(velCurrentFrame);
         _refreshNexradSiteStyles();
-        _updateRadarTiltUI();
       } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') {
         loadDualPolData(currentProduct, s.id);
         _refreshNexradSiteStyles();
@@ -20796,16 +20553,15 @@ async function _fetchRefTimestamps(station) {
 }
 
 // Builds/rebuilds the single-site REF tile pool from whichever source is
-// currently in play (NOAA GeoServer for the base tilt, or IEM's ridge.cgi
-// for anything higher - GeoServer only ever serves the base tilt) using
-// the already-fetched _refSiteFrames, so switching tilts doesn't need to
-// re-fetch timestamps, just rebuild the tiles.
+// currently in play (NOAA GeoServer, or IEM's ridge.cgi as the fallback
+// when GeoServer's own capabilities lookup fails) using the already-fetched
+// _refSiteFrames.
 function _buildRefSitePool(stationId, useOpengeo) {
   _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
   _refSitePool   = [];
   _refSiteLoaded = [];
 
-  if (useOpengeo && _refTilt === 1) {
+  if (useOpengeo) {
     // NOAA GeoServer Level III SR_BREF
     const wmsUrl  = `https://opengeo.ncep.noaa.gov/geoserver/${stationId}/ows`;
     const layerNm = `${stationId}_sr_bref`;
@@ -20828,11 +20584,10 @@ function _buildRefSitePool(stationId, useOpengeo) {
       _refSitePool[i] = l;
     });
   } else {
-    // IEM ridge.cgi - required for any tilt above the base, and the
-    // fallback path when GeoServer's own capabilities lookup fails.
+    // IEM ridge.cgi - fallback path when GeoServer's own capabilities lookup fails.
     const wmsUrl = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/ridge.cgi';
     const sector = stationId.slice(1).toUpperCase();
-    const prod   = REF_TILT_PRODUCTS[_refTilt] || 'N0Q';
+    const prod   = 'N0Q';
     _refSiteFrames.forEach((frame, i) => {
       const d     = frame.date;
       const yr    = d.getUTCFullYear();
@@ -20862,19 +20617,10 @@ function _buildRefSitePool(stationId, useOpengeo) {
   }
 }
 
-function _setRefTilt(n) {
-  if (!_refStation) return;
-  _refTilt = n;
-  _buildRefSitePool(_refStation, _refUseOpengeo);
-  _showSingleSiteRefFrame(currentFrame);
-  _updateRadarTiltUI();
-}
-
 async function _loadSingleSiteRef(stationId) {
   stationId = stationId.toLowerCase();
   const gen = ++_refSiteGen;   // capture generation; stale calls bail out after await
   _refStation = stationId;
-  _refTilt = 1; // reset to base tilt on a fresh station pick
 
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
   _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
@@ -20904,7 +20650,6 @@ async function _loadSingleSiteRef(stationId) {
   // Bail if user switched away (race condition guard)
   if (gen !== _refSiteGen) return;
 
-  _refUseOpengeo = useOpengeo; // remembered so _setRefTilt can rebuild without re-fetching timestamps
   _buildRefSitePool(stationId, useOpengeo);
 
   // Update timeline
@@ -20925,7 +20670,6 @@ async function _loadSingleSiteRef(stationId) {
 
   _refreshNexradSiteStyles();
   _showSingleSiteRefFrame(_refSiteFrames.length - 1);
-  _updateRadarTiltUI();
 }
 
 function _showSingleSiteRefFrame(idx) {
@@ -20987,11 +20731,9 @@ function _clearSingleSiteRef() {
   _refSiteLoaded = [];
   _refSiteFrames = [];
   _refStation    = null;
-  _refTilt       = 1;
   // Reset currentFrame to last composite frame so animation resumes correctly
   if (radarFrames.length) currentFrame = radarFrames.length - 1;
   _refreshNexradSiteStyles();
-  _updateRadarTiltUI();
 }
 
 
@@ -26299,12 +26041,12 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg></div>
       <div class="fc-title">RADAR</div>
-      <p class="fc-body">Tap to choose <strong>Reflectivity</strong> (precipitation intensity, colored by dBZ), <strong>Velocity</strong> (wind motion, green toward the radar, red away), <strong>Hydrometeor Classification</strong> (rain vs. snow vs. hail signature), <strong>Storm Total Accumulation</strong>, or <strong>1-Hr Accumulation</strong>. The WSR-88D network updates roughly every 2 minutes. Station labels like <strong>KTLX</strong> (Oklahoma City), <strong>KEWX</strong> (San Antonio), and <strong>KAMX</strong> (Miami) appear at close zoom. Click a station while viewing Reflectivity or Velocity to lock onto that single site, small <strong>Tilt 1-4</strong> bubbles appear right next to the product to pick a higher elevation angle instead of just the lowest sweep. Under <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gear></use></svg> Settings → Radar, <strong>Hide Below (dBZ)</strong> filters out light returns under a chosen threshold.</p>
+      <p class="fc-body">Tap to choose <strong>Reflectivity</strong> (precipitation intensity, colored by dBZ), <strong>Velocity</strong> (wind motion, green toward the radar, red away), <strong>Hydrometeor Classification</strong> (rain vs. snow vs. hail signature), <strong>Storm Total Accumulation</strong>, or <strong>1-Hr Accumulation</strong>. The WSR-88D network updates roughly every 2 minutes. Station labels like <strong>KTLX</strong> (Oklahoma City), <strong>KEWX</strong> (San Antonio), and <strong>KAMX</strong> (Miami) appear at close zoom. Click a station while viewing Reflectivity or Velocity to lock onto that single site. Under <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gear></use></svg> Settings → Radar, <strong>Hide Below (dBZ)</strong> filters out light returns under a chosen threshold.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-hex></use></svg></div>
-      <div class="fc-title">DUAL-POL + TILT</div>
-      <p class="fc-body">Four more products decode raw Level 2 data live, right in your browser, rather than pulling a pre-made image: <strong>Correlation Coefficient</strong>, <strong>Differential Reflectivity</strong>, <strong>Specific Differential Phase</strong>, and <strong>Spectrum Width</strong>. Because these come straight from the volume scan instead of a single pre-rendered picture, a <strong>Tilt</strong> dropdown appears next to the clock showing every real elevation angle that scan actually has (anywhere from 4 to 15+ depending on the scan mode), so you can look higher into a storm instead of only ever seeing the lowest sweep.</p>
+      <div class="fc-title">DUAL-POL</div>
+      <p class="fc-body">Four more products decode raw Level 2 data live, right in your browser, rather than pulling a pre-made image: <strong>Correlation Coefficient</strong>, <strong>Differential Reflectivity</strong>, <strong>Specific Differential Phase</strong>, and <strong>Spectrum Width</strong>.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-satellite></use></svg></div>
@@ -28367,7 +28109,13 @@ function lqmSetDbzFilter(val) {
   _radarDbzFilter = +val;
   document.getElementById('lqm-dbzfilter-val').textContent = _radarDbzFilter > 0 ? _radarDbzFilter + ' dBZ' : 'Off';
   try { localStorage.setItem('lqm_radardbzfilter', val); } catch(e){}
-  _rebuildRadarTiles();
+  // Debounced the same way as the color editor - dragging this slider fires
+  // oninput dozens of times a second, and _rebuildRadarTiles() tears down
+  // and re-fetches the entire radar tile pool. Calling that on every tick
+  // (instead of once after the user stops moving the slider) was what made
+  // the radar go laggy and show overlapping/duplicated tiles while dragging.
+  clearTimeout(_rceDebounce);
+  _rceDebounce = setTimeout(_rebuildRadarTiles, 350);
 }
 
 function lqmSetLoopSpeed(val) {

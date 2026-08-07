@@ -158,7 +158,7 @@ const processRadarData = (radar, radarLocation, extent, layer, options = {}) => 
     // returned" only after building an empty mesh. Catching it here gives a
     // specific, actionable message instead.
     if (Array.isArray(radarData) && radarData.length > 0 && radarData.every((item) => item === undefined)) {
-        throw new Error(`No ${layer} data at elevation ${radar.elevation} - this tilt may not carry this moment, try a different tilt`);
+        throw new Error(`No ${layer} data at elevation ${radar.elevation} - this scan may not carry this moment`);
     }
 
     if (!Array.isArray(radarData) || radarData.length === 0) {
@@ -431,23 +431,8 @@ self.onmessage = (event) => {
             const requestedMoment = getLevel2MomentForLayer(layer);
             const radar = new Level2Radar(buffer, { logger: false, includeMoments: requestedMoment ? [requestedMoment] : undefined });
             parserEndMs = toEpochMs(performance.now());
-            const elevationNumbers = radar.listElevations();
-            // setElevation() here is a cheap re-point into the already-fully-
-            // parsed volume, not a re-decode, so visiting every tilt just to
-            // read its real angle (the VCP determines how many tilts exist and
-            // at what angles - anywhere from 4 to 15+) costs nothing extra
-            // compared to the mesh-building step below, which only runs once
-            // for whichever single tilt actually gets rendered.
-            const elevations = elevationNumbers.map((number) => {
-                radar.setElevation(number);
-                const h = radar.getHeader(0);
-                return { number, angle: Number.isFinite(h?.elevation_angle) ? h.elevation_angle : null };
-            });
-            if (options?.elevation && elevationNumbers.includes(options.elevation)) {
-                radar.setElevation(options.elevation);
-            } else {
-                radar.setElevation(elevationNumbers[0] || 1);
-            }
+            const elevations = radar.listElevations();
+            radar.setElevation(elevations[0] || 1);
             const header = radar.getHeader(0);
             const radarLocation = [header.volume.latitude, header.volume.longitude];
             const { meshData, bounds, geojson } = processRadarData(radar, radarLocation, header.radial_length, layer, options);
@@ -457,8 +442,6 @@ self.onmessage = (event) => {
                 metadata: {
                     timeIso: new Date((header.julian_date * 86400 * 1000) + header.mseconds - 3600000).toISOString(),
                     elevationAngle: header.elevation_angle,
-                    elevationNumber: header.elevation_number,
-                    elevations,
                     station: options?.station || null,
                     vcp: getLevel2Vcp(radar, header),
                 },
