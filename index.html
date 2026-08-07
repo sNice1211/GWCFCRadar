@@ -7515,12 +7515,7 @@ let _inspForcedWms = false; // Inspector forces CORS-readable WMS tiles when on
 let _radarContrast   = 100; // %
 let _radarBrightness = 100; // %
 let _rceDebounce     = null;
-// Minimum dBZ to actually show on Reflectivity tiles - 0 means show everything.
-// Only takes effect wherever tile pixels are CORS-readable (same limitation
-// custom colors already have): single-site REF and the WMS fallback path,
-// not the default pre-rendered composite mosaic tiles.
-let _radarDbzFilter = 0;
-// Cache packed-RGB → {hide, rgb} so each unique color is only nearest-neighbour searched once
+// Cache packed-RGB -> target rgb so each unique color is only nearest-neighbour searched once
 const _colorRemapCache = new Map();
 
 function _hexToRgb(hex) {
@@ -7532,12 +7527,10 @@ function _hexToRgb(hex) {
 let _remapCanvas = null, _remapCtx = null;
 
 // Post-processes one radar tile's pixels: matches each one to the nearest
-// standard NWS dBZ color, then either hides it (below the dBZ filter
-// threshold) or swaps it to a custom color, or both are off and this is a
-// no-op. Both features share this one pixel pass since they both need the
-// same nearest-color lookup.
+// standard NWS dBZ color and swaps it to the corresponding custom color.
+// No-op when no custom colors are set.
 function _remapTileColors(tile) {
-  if (!_customRadarColors && !_radarDbzFilter) return;
+  if (!_customRadarColors) return;
   // Reassigning tile.src below (to the processed image) fires this same
   // 'load' event again, since that's just how <img> works - without this
   // guard that reprocesses the tile forever: every pass re-quantizes
@@ -7566,28 +7559,23 @@ function _remapTileColors(tile) {
   }
   const px = imgData.data;
   const n = NWS_SOURCE_COLORS.length;
-  const targets = _customRadarColors ? _customRadarColors.map(_hexToRgb) : null;
+  const targets = _customRadarColors.map(_hexToRgb);
   for (let i = 0; i < px.length; i += 4) {
     if (px[i+3] < 10) continue;
     const r = px[i], g = px[i+1], b = px[i+2];
     const key = (r << 16) | (g << 8) | b;
-    let entry = _colorRemapCache.get(key);
-    if (entry === undefined) {
+    let rgb = _colorRemapCache.get(key);
+    if (rgb === undefined) {
       let bestD = 800, bestJ = -1;
       for (let j = 0; j < n; j++) {
         const s = NWS_SOURCE_COLORS[j];
         const d = (r-s[1])*(r-s[1]) + (g-s[2])*(g-s[2]) + (b-s[3])*(b-s[3]);
         if (d < bestD) { bestD = d; bestJ = j; }
       }
-      const dbz = bestJ >= 0 ? NWS_SOURCE_COLORS[bestJ][0] : null;
-      entry = {
-        hide: _radarDbzFilter > 0 && dbz != null && dbz < _radarDbzFilter,
-        rgb: (targets && bestJ >= 0) ? targets[bestJ] : null,
-      };
-      _colorRemapCache.set(key, entry);
+      rgb = bestJ >= 0 ? targets[bestJ] : null;
+      _colorRemapCache.set(key, rgb);
     }
-    if (entry.hide) { px[i+3] = 0; }
-    else if (entry.rgb) { px[i] = entry.rgb[0]; px[i+1] = entry.rgb[1]; px[i+2] = entry.rgb[2]; }
+    if (rgb) { px[i] = rgb[0]; px[i+1] = rgb[1]; px[i+2] = rgb[2]; }
   }
   ctx.putImageData(imgData, 0, 0);
   const dataUrl = canvas.toDataURL('image/png');
@@ -7601,19 +7589,19 @@ function _applyRadarPaneFilter() {
     `contrast(${_radarContrast}%) brightness(${_radarBrightness}%)`;
 }
 
-// Re-paints already-loaded radar tiles with the current color/dBZ filter
-// settings. This used to call the same heavy path used for a brand new
-// station or a fresh timeline load - full teardown of every WMS layer plus
-// (for single-site) a fresh network fetch of the station's timestamps -
-// every time a color swatch or the dBZ slider changed. Firing that even a
-// couple of times close together (two quick swatch edits, or the composite
-// pool rebuilding while single-site was also reloading) could leave more
-// than one generation of tile layers in flight at once, which is what
-// showed up as the same radar image duplicated across the map. Since
-// colors/filters don't change which station, frames, or timestamps are
-// being shown, the tiles that already exist just need to be reloaded in
-// place - Leaflet's own redraw() does exactly that without creating or
-// destroying any layer objects.
+// Re-paints already-loaded radar tiles with the current color settings.
+// This used to call the same heavy path used for a brand new station or a
+// fresh timeline load - full teardown of every WMS layer plus (for
+// single-site) a fresh network fetch of the station's timestamps - every
+// time a color swatch changed. Firing that even a couple of times close
+// together (two quick swatch edits, or the composite pool rebuilding while
+// single-site was also reloading) could leave more than one generation of
+// tile layers in flight at once, which is what showed up as the same radar
+// image duplicated across the map. Since a color change doesn't change
+// which station, frames, or timestamps are being shown, the tiles that
+// already exist just need to be reloaded in place - Leaflet's own
+// redraw() does exactly that without creating or destroying any layer
+// objects.
 function _rebuildRadarTiles() {
   _colorRemapCache.clear();
   if (_refStation) {
@@ -7621,11 +7609,11 @@ function _rebuildRadarTiles() {
     // behind it, so there's nothing to gain from touching it too.
     _refSitePool.forEach(l => { if (l && typeof l.redraw === 'function') l.redraw(); });
   } else if (_radarPoolBuilt) {
-    const needsWms = !!_customRadarColors || _radarDbzFilter > 0 || _inspForcedWms;
+    const needsWms = !!_customRadarColors || _inspForcedWms;
     if (needsWms !== _nexradCacheFailed) {
       // Only a real switch between the pre-rendered tile cache (not
       // CORS-readable, can't be recolored) and WMS tiles needs a full
-      // rebuild - that only happens the moment colors/filter first turn on
+      // rebuild - that only happens the moment colors first turn on
       // or fully turn back off.
       try { updateLoadStatus('Rebuilding radar…'); } catch(e){}
       _buildRadarPool();
@@ -8153,7 +8141,7 @@ const _canadaLayerLoaded = [];
 function _buildRadarPool() {
   // If custom colors are active, skip tile cache (needs crossOrigin/canvas) and go straight to WMS.
   // The Inspector also forces WMS so it can read tile pixels for color->dBZ lookup.
-  _nexradCacheFailed = !!_customRadarColors || _radarDbzFilter > 0 || _inspForcedWms;
+  _nexradCacheFailed = !!_customRadarColors || _inspForcedWms;
   // Cancel any stale wait-loop pointing at layers we're about to remove
   if (_showFrameTick) { clearInterval(_showFrameTick); _showFrameTick = null; }
   _radarLayerPool.forEach(l => { try { if (l) map.removeLayer(l); } catch(e){} });
@@ -25121,18 +25109,6 @@ function selectProduct(p) {
       </div>
     </div>
     <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Radar Colors</span>
-      <button class="lqm-settings-btn" onclick="openRadarColorEditor()">Customize <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-arrow></use></svg></button>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Hide Below (dBZ)</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-dbzfilter" min="0" max="40" value="0" step="5"
-          class="lqm-slider" oninput="lqmSetDbzFilter(this.value)">
-        <span id="lqm-dbzfilter-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">Off</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Radar Labels</span>
       <label class="lqm-toggle">
         <input type="checkbox" id="lqm-set-labels" checked onchange="lqmToggleSetting('labels',this.checked)">
@@ -25158,9 +25134,9 @@ function selectProduct(p) {
     </div>
   </div>
 
-  <!-- ─── LAYER OPACITY ─── -->
+  <!-- ─── LAYER OPACITY & COLORS ─── -->
   <div class="lqm-settings-group">
-    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Layer Opacity</div>
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Layer Opacity &amp; Colors</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Waves</span>
       <div style="display:flex;align-items:center;gap:6px;">
@@ -25200,6 +25176,10 @@ function selectProduct(p) {
           class="lqm-slider" oninput="lqmSetPressureOpacity(this.value)">
         <span id="lqm-pressureopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
       </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Radar Colors</span>
+      <button class="lqm-settings-btn" onclick="openRadarColorEditor()">Customize <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-arrow></use></svg></button>
     </div>
   </div>
 
@@ -26619,7 +26599,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg></div>
       <div class="fc-title">RADAR</div>
-      <p class="fc-body">Tap to choose <strong>Reflectivity</strong> (precipitation intensity, colored by dBZ), <strong>Velocity</strong> (wind motion, green toward the radar, red away), <strong>Hydrometeor Classification</strong> (rain vs. snow vs. hail signature), <strong>Storm Total Accumulation</strong>, or <strong>1-Hr Accumulation</strong>. The WSR-88D network updates roughly every 2 minutes. Station labels like <strong>KTLX</strong> (Oklahoma City), <strong>KEWX</strong> (San Antonio), and <strong>KAMX</strong> (Miami) appear at close zoom. Click a station while viewing Reflectivity or Velocity to lock onto that single site. Under <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gear></use></svg> Settings → Radar, <strong>Hide Below (dBZ)</strong> filters out light returns under a chosen threshold.</p>
+      <p class="fc-body">Tap to choose <strong>Reflectivity</strong> (precipitation intensity, colored by dBZ), <strong>Velocity</strong> (wind motion, green toward the radar, red away), <strong>Hydrometeor Classification</strong> (rain vs. snow vs. hail signature), <strong>Storm Total Accumulation</strong>, or <strong>1-Hr Accumulation</strong>. The WSR-88D network updates roughly every 2 minutes. Station labels like <strong>KTLX</strong> (Oklahoma City), <strong>KEWX</strong> (San Antonio), and <strong>KAMX</strong> (Miami) appear at close zoom. Click a station while viewing Reflectivity or Velocity to lock onto that single site.</p>
     </div>
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-hex></use></svg></div>
@@ -28413,7 +28393,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Wind & Wave Particles rebuilt to fill the map evenly with no gaps, and Wave Particles can no longer appear over land.";
+const APP_LATEST_UPDATE = "Radar Colors moved into Settings > Layer Opacity & Colors, and the reflectivity dBZ filter has been removed.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -28712,19 +28692,6 @@ function lqmSetRadarOpacity(val) {
   else if (typeof showFrame === 'function') showFrame(currentFrame);
 }
 
-function lqmSetDbzFilter(val) {
-  _radarDbzFilter = +val;
-  document.getElementById('lqm-dbzfilter-val').textContent = _radarDbzFilter > 0 ? _radarDbzFilter + ' dBZ' : 'Off';
-  try { localStorage.setItem('lqm_radardbzfilter', val); } catch(e){}
-  // Debounced the same way as the color editor - dragging this slider fires
-  // oninput dozens of times a second, and _rebuildRadarTiles() tears down
-  // and re-fetches the entire radar tile pool. Calling that on every tick
-  // (instead of once after the user stops moving the slider) was what made
-  // the radar go laggy and show overlapping/duplicated tiles while dragging.
-  clearTimeout(_rceDebounce);
-  _rceDebounce = setTimeout(_rebuildRadarTiles, 350);
-}
-
 function lqmSetLoopSpeed(val) {
   document.getElementById('lqm-loopspeed-val').textContent = val;
   try { localStorage.setItem('lqm_loopspeed', val); } catch(e){}
@@ -28886,8 +28853,6 @@ document.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => {
     const op = localStorage.getItem('lqm_radaropacity');
     if (op) { const el=document.getElementById('lqm-set-opacity'); if(el){el.value=op;lqmSetRadarOpacity(op);} }
-    const df = localStorage.getItem('lqm_radardbzfilter');
-    if (df) { const el=document.getElementById('lqm-set-dbzfilter'); if(el){el.value=df;lqmSetDbzFilter(df);} }
     const ls = localStorage.getItem('lqm_loopspeed');
     if (ls) { const el=document.getElementById('lqm-set-loopspeed'); if(el){el.value=ls;lqmSetLoopSpeed(ls);} }
     const ao = localStorage.getItem('lqm_alertopacity');
