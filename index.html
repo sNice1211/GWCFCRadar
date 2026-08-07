@@ -7548,14 +7548,39 @@ function _applyRadarPaneFilter() {
     `contrast(${_radarContrast}%) brightness(${_radarBrightness}%)`;
 }
 
+// Re-paints already-loaded radar tiles with the current color/dBZ filter
+// settings. This used to call the same heavy path used for a brand new
+// station or a fresh timeline load - full teardown of every WMS layer plus
+// (for single-site) a fresh network fetch of the station's timestamps -
+// every time a color swatch or the dBZ slider changed. Firing that even a
+// couple of times close together (two quick swatch edits, or the composite
+// pool rebuilding while single-site was also reloading) could leave more
+// than one generation of tile layers in flight at once, which is what
+// showed up as the same radar image duplicated across the map. Since
+// colors/filters don't change which station, frames, or timestamps are
+// being shown, the tiles that already exist just need to be reloaded in
+// place - Leaflet's own redraw() does exactly that without creating or
+// destroying any layer objects.
 function _rebuildRadarTiles() {
   _colorRemapCache.clear();
-  if (_radarPoolBuilt) {
-    try { updateLoadStatus('Rebuilding radar…'); } catch(e){}
-    _buildRadarPool();
-    showFrame(currentFrame);
+  if (_refStation) {
+    // Single-site is on screen - the composite pool isn't even visible
+    // behind it, so there's nothing to gain from touching it too.
+    _refSitePool.forEach(l => { if (l && typeof l.redraw === 'function') l.redraw(); });
+  } else if (_radarPoolBuilt) {
+    const needsWms = !!_customRadarColors || _radarDbzFilter > 0 || _inspForcedWms;
+    if (needsWms !== _nexradCacheFailed) {
+      // Only a real switch between the pre-rendered tile cache (not
+      // CORS-readable, can't be recolored) and WMS tiles needs a full
+      // rebuild - that only happens the moment colors/filter first turn on
+      // or fully turn back off.
+      try { updateLoadStatus('Rebuilding radar…'); } catch(e){}
+      _buildRadarPool();
+      showFrame(currentFrame);
+    } else {
+      _radarLayerPool.forEach(l => { if (l && typeof l.redraw === 'function') l.redraw(); });
+    }
   }
-  if (_refStation)     { _loadSingleSiteRef(_refStation); }
   _rceUpdateLegend();
 }
 
@@ -8075,7 +8100,7 @@ const _canadaLayerLoaded = [];
 function _buildRadarPool() {
   // If custom colors are active, skip tile cache (needs crossOrigin/canvas) and go straight to WMS.
   // The Inspector also forces WMS so it can read tile pixels for color->dBZ lookup.
-  _nexradCacheFailed = !!_customRadarColors || _inspForcedWms;
+  _nexradCacheFailed = !!_customRadarColors || _radarDbzFilter > 0 || _inspForcedWms;
   // Cancel any stale wait-loop pointing at layers we're about to remove
   if (_showFrameTick) { clearInterval(_showFrameTick); _showFrameTick = null; }
   _radarLayerPool.forEach(l => { try { if (l) map.removeLayer(l); } catch(e){} });
