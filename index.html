@@ -527,15 +527,6 @@ body {
 }
 #anim-time-display:hover  { background: rgba(0,0,0,0.12); }
 #anim-time-display:active { background: rgba(0,0,0,0.20); }
-#radar-tilt-wrap { flex-shrink: 0; }
-#radar-tilt-sel {
-  font-family: var(--display); font-weight: 700; font-size: 10px; color: #000;
-  height: 28px; box-sizing: border-box;
-  padding: 0 6px; border-radius: 6px;
-  border: none; background: rgba(0,0,0,0.12);
-  cursor: pointer;
-}
-#radar-tilt-sel:hover { background: rgba(0,0,0,0.2); }
 .animbar-sep {
   width: 1px; height: 24px; background: var(--border2); margin: 0 6px; flex-shrink: 0;
 }
@@ -1784,6 +1775,25 @@ body {
 }
 .sub-bubble .sb-icon { font-size: 13px; display: inline-flex; align-items: center; }
 .sub-bubble-main.dragging { opacity: 0.45; border-style: dashed; }
+/* Radar Tilt picker - small bubbles inserted right after whichever radar
+   product bubble is active, so which tilt you're on reads as part of the
+   same product choice rather than a separate control elsewhere. */
+.sub-tilt-bubble {
+  padding: 4px 10px 4px 18px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  margin-left: 4px;
+  border-color: rgba(255,215,0,0.35);
+  position: relative;
+}
+.sub-tilt-bubble::before {
+  content: '';
+  position: absolute; left: 8px; top: 50%;
+  width: 5px; height: 5px; border-radius: 50%;
+  background: rgba(255,255,255,0.3);
+  transform: translateY(-50%);
+}
+.sub-tilt-bubble.active::before { background: #ffd700; }
 .sb-drag {
   flex-shrink: 0; cursor: grab; touch-action: none;
   padding: 2px 3px; margin: -4px -6px -4px 2px;
@@ -7325,9 +7335,6 @@ body.clean-mode #clean-hint { opacity: 1; }
         <div id="timeline-labels"></div>
       </div>
       <div id="anim-time-display" title="Hold to change timezone">--:-- --- --</div>
-      <span id="radar-tilt-wrap" style="display:none">
-        <select id="radar-tilt-sel" onchange="_setRadarTilt(this.value)" title="Radar tilt (elevation angle)"></select>
-      </span>
       <button id="play-btn" onclick="togglePlay()" title="Play Forward"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg></button>
     </div>
     <div id="tz-popover"></div>
@@ -13639,7 +13646,6 @@ const LAYER_DESCRIPTIONS = {
   zdr:          'Differential Reflectivity - how much wider than tall the average precipitation particle is. Near 0 dB (blue-ish) means round drops or dry snow; higher values (red/orange) mean flattened, larger raindrops. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
   kdp:          'Specific Differential Phase - the rate of phase shift between horizontal and vertical pulses, a strong signal for heavy rain rates that reflectivity alone can\'t always tell apart from hail. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
   sw:           'Spectrum Width - how much the wind speed varies within a single pulse volume. High values mean turbulence or wind shear, often seen right around rotation or a gust front. Decoded live from raw Level 2 data, so you can pick any tilt the current scan has.',
-  'radar-tilt': 'Pick which elevation angle (tilt) of the volume scan to view. Lower tilts see closer to the ground; higher tilts look further up into the storm. The list shows the real tilts from the scan currently loaded, since different scan modes use different numbers of tilts.',
   ch01: 'Daytime visible imagery in blue light. Good for seeing haze, smoke, and snow cover.',
   ch02: 'The sharpest daytime visible image, close to what your eye would see from space.',
   ch03: 'Daytime image tuned to vegetation, useful for spotting fires, burn scars, and land cover.',
@@ -15406,6 +15412,7 @@ function toggleRadarSub() {
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
+  _updateRadarTiltUI(); // re-attach tilt bubbles if a Level-2 product is still active from before
 }
 
 function hideSubBubbles() {
@@ -20283,20 +20290,27 @@ function _renderMesh(result, product, station) {
   _refreshNexradSiteStyles();
 }
 
-// Populates/shows the Tilt dropdown with whichever elevations the worker
-// actually found in the current scan (a VCP can have anywhere from 4 to 15+),
-// or hides it entirely for a single-tilt scan (nothing to pick between) or
-// when no Level-2 product is active at all.
+// Inserts one small "Tilt N" bubble right after whichever radar product
+// bubble is active, one per elevation the worker actually found in the
+// current scan (a VCP can have anywhere from 4 to 15+) - so which tilt
+// you're on reads as part of the same product choice in the sub-bubbles
+// row, not a separate control living somewhere else on screen. Clears
+// itself for a single-tilt scan (nothing to pick between) or when no
+// Level-2 product is active at all.
 function _updateRadarTiltUI() {
-  const wrap = document.getElementById('radar-tilt-wrap');
-  const sel  = document.getElementById('radar-tilt-sel');
-  if (!wrap || !sel) return;
-  if (!_l3Product || _l3Elevations.length < 2) { wrap.style.display = 'none'; return; }
-  sel.innerHTML = _l3Elevations.map(e =>
-    `<option value="${e.number}">Tilt ${e.number}${e.angle != null ? ' (' + e.angle.toFixed(1) + '°)' : ''}</option>`
-  ).join('');
-  sel.value = _l3Elevation != null ? String(_l3Elevation) : _l3Elevations[0].number;
-  wrap.style.display = 'inline-flex';
+  document.querySelectorAll('#sub-bubbles .sub-tilt-bubble').forEach(el => el.remove());
+  if (!_l3Product || _l3Elevations.length < 2) return;
+  const anchor = document.getElementById('sub-' + _l3Product);
+  if (!anchor) return;
+  let insertAfter = anchor;
+  _l3Elevations.forEach(e => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble sub-tilt-bubble' + (_l3Elevation === e.number ? ' active' : '');
+    el.innerHTML = `<span class="sb-label">Tilt ${e.number}${e.angle != null ? ' · ' + e.angle.toFixed(1) + '°' : ''}</span>`;
+    el.onclick = () => _setRadarTilt(e.number);
+    insertAfter.insertAdjacentElement('afterend', el);
+    insertAfter = el;
+  });
 }
 
 function _setRadarTilt(value) {
