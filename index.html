@@ -12275,9 +12275,9 @@ function _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn) {
 
 // Builds the canvas, paints it, and returns a fixed-bounds image overlay.
 // Used directly by Air (no land mask needed - AQI is meaningful over land).
-function _paintInterpolatedOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
+function _paintInterpolatedOverlay(grid, cols, rows, bounds, isAngle, colorFn, opacity) {
   const canvas = _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn);
-  return L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: 1, interactive: false });
+  return L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: opacity == null ? 1 : opacity, interactive: false });
 }
 
 // ── LAND MASK (Waves only) ───────────────────────────────────────────────────
@@ -12334,7 +12334,7 @@ function _rasterizeLandMask(geojson, bounds, W, H) {
 }
 // Waves-specific version of _paintInterpolatedOverlay that also punches land
 // out of the finished canvas before wrapping it as an image overlay.
-async function _paintWavesOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
+async function _paintWavesOverlay(grid, cols, rows, bounds, isAngle, colorFn, opacity) {
   const canvas = _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn);
   const geojson = await _loadLandGeoJSON();
   if (geojson) {
@@ -12346,7 +12346,7 @@ async function _paintWavesOverlay(grid, cols, rows, bounds, isAngle, colorFn) {
       ctx.globalCompositeOperation = 'source-over';
     } catch(e) { console.warn('Land mask rasterize failed:', e); }
   }
-  return L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: 1, interactive: false });
+  return L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: opacity == null ? 1 : opacity, interactive: false });
 }
 
 // Splits a big point list into smaller batches and fetches them in parallel -
@@ -12468,6 +12468,7 @@ function _sampleGrid(cols, rows, bounds) {
 let wavesActive = false;
 let _wavesProduct = 'wave-height';
 let _wavesLayer = null;
+let _wavesOpacity = 1; // Settings: 0.1 - 1
 let _wavesLoadToken = 0;
 let _wavesRefreshTimer = null;
 let _wavesGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
@@ -12496,10 +12497,10 @@ const WAVES_FIELD = {
   'sst':          'sea_surface_temperature',
 };
 const WAVES_SCALES = {
-  'wave-height':  [[0,[0,60,140]],[2,[0,150,220]],[5,[0,220,180]],[8,[255,204,0]],[12,[255,80,0]],[18,[200,0,220]]],
-  'swell-height': [[0,[0,60,140]],[2,[0,150,220]],[5,[0,220,180]],[8,[255,204,0]],[12,[255,80,0]],[18,[200,0,220]]],
-  'wave-period':  [[3,[255,60,60]],[7,[255,204,0]],[10,[0,220,120]],[14,[0,150,255]],[20,[160,0,220]]],
-  'sst':          [[40,[80,0,180]],[55,[0,90,220]],[65,[0,190,190]],[75,[0,200,60]],[82,[255,204,0]],[88,[255,90,0]],[95,[220,0,0]]],
+  'wave-height':  [[0,[0,60,140]],[1,[0,110,190]],[2,[0,150,220]],[3.5,[0,190,205]],[5,[0,220,180]],[6.5,[130,225,90]],[8,[255,204,0]],[10,[255,140,0]],[12,[255,80,0]],[15,[230,20,120]],[18,[200,0,220]]],
+  'swell-height': [[0,[0,60,140]],[1,[0,110,190]],[2,[0,150,220]],[3.5,[0,190,205]],[5,[0,220,180]],[6.5,[130,225,90]],[8,[255,204,0]],[10,[255,140,0]],[12,[255,80,0]],[15,[230,20,120]],[18,[200,0,220]]],
+  'wave-period':  [[3,[255,60,60]],[5,[255,140,40]],[7,[255,204,0]],[8.5,[140,210,60]],[10,[0,220,120]],[12,[0,190,190]],[14,[0,150,255]],[17,[80,80,240]],[20,[160,0,220]]],
+  'sst':          [[40,[80,0,180]],[48,[40,50,200]],[55,[0,90,220]],[60,[0,140,210]],[65,[0,190,190]],[70,[0,210,110]],[75,[0,200,60]],[79,[150,210,20]],[82,[255,204,0]],[85,[255,140,0]],[88,[255,90,0]],[92,[235,20,0]],[95,[220,0,0]]],
 };
 function _waveColorFor(product, v) {
   if (product === 'wave-dir') return _hslToRgb(((v % 360) + 360) % 360, 0.85, 0.5);
@@ -12589,7 +12590,7 @@ async function _paintAndShowWaves(allGrids, token) {
   const field = WAVES_FIELD[_wavesProduct] || 'wave_height';
   const grid = allGrids.grids[field];
   const isAngle = _wavesProduct === 'wave-dir';
-  const layer = await _paintWavesOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, isAngle, v => _waveColorFor(_wavesProduct, v));
+  const layer = await _paintWavesOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, isAngle, v => _waveColorFor(_wavesProduct, v), _wavesOpacity);
   if (token !== _wavesLoadToken) return; // superseded while awaiting the land-mask fetch/rasterize
   _wavesGridCache = { grid, cols: allGrids.cols, rows: allGrids.rows, isAngle };
   if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch(e){} }
@@ -12600,6 +12601,7 @@ async function _paintAndShowWaves(allGrids, token) {
 let airActive = false;
 let _airProduct = 'us-aqi';
 let _airLayer = null;
+let _airOpacity = 1; // Settings: 0.1 - 1
 let _airLoadToken = 0;
 let _airRefreshTimer = null;
 let _airGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
@@ -12706,7 +12708,7 @@ function _paintAndShowAir(allGrids, token) {
   const field = AIR_FIELD[_airProduct] || 'us_aqi';
   const grid = allGrids.grids[field];
   _airGridCache = { grid, cols: allGrids.cols, rows: allGrids.rows, isAngle: false };
-  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _airColorFor(_airProduct, v));
+  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _airColorFor(_airProduct, v), _airOpacity);
   if (token !== _airLoadToken) return;
   if (_airLayer) { try { map.removeLayer(_airLayer); } catch(e){} }
   _airLayer = layer.addTo(map);
@@ -12716,6 +12718,7 @@ function _paintAndShowAir(allGrids, token) {
 let temperatureActive = false;
 let _temperatureProduct = 'air-temp';
 let _temperatureLayer = null;
+let _temperatureOpacity = 1; // Settings: 0.1 - 1
 let _temperatureLoadToken = 0;
 let _temperatureRefreshTimer = null;
 let _temperatureGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
@@ -12727,10 +12730,10 @@ const TEMPERATURE_SUB_BUBBLES = [
   { id: 'dew-point',  icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-drop></use></svg>', label: 'Dew Point' },
 ];
 const TEMPERATURE_FIELD = { 'air-temp': 'temperature_2m', 'feels-like': 'apparent_temperature', 'dew-point': 'dew_point_2m' };
-const TEMP_SCALE = [[-20,[130,0,200]],[0,[80,0,180]],[32,[0,120,220]],[50,[0,200,140]],[70,[255,204,0]],[85,[255,110,0]],[100,[210,0,0]]];
+const TEMP_SCALE = [[-20,[130,0,200]],[-10,[110,0,195]],[0,[80,0,180]],[10,[40,40,205]],[20,[0,90,215]],[32,[0,120,220]],[40,[0,160,205]],[50,[0,200,140]],[60,[100,210,70]],[70,[255,204,0]],[80,[255,140,0]],[85,[255,110,0]],[92,[255,60,0]],[100,[210,0,0]],[110,[150,0,0]]];
 // Dew point isn't "hot/cold" - it's a muggy-air/comfort scale, so it gets its
 // own range even though it's also a temperature-shaped number in °F.
-const DEWPOINT_SCALE = [[20,[80,0,180]],[35,[0,120,220]],[50,[0,190,140]],[60,[255,204,0]],[70,[255,110,0]],[80,[210,0,0]]];
+const DEWPOINT_SCALE = [[20,[80,0,180]],[28,[40,50,205]],[35,[0,120,220]],[42,[0,160,200]],[50,[0,190,140]],[55,[80,210,90]],[60,[255,204,0]],[65,[255,150,0]],[70,[255,110,0]],[75,[230,40,0]],[80,[210,0,0]]];
 const TEMPERATURE_SCALES = { 'air-temp': TEMP_SCALE, 'feels-like': TEMP_SCALE, 'dew-point': DEWPOINT_SCALE };
 const TEMPERATURE_UNITS = { 'air-temp': '°F', 'feels-like': '°F', 'dew-point': '°F' };
 function _temperatureColorFor(product, v) {
@@ -12816,7 +12819,7 @@ function _paintAndShowTemperature(allGrids, token) {
   const field = TEMPERATURE_FIELD[_temperatureProduct] || 'temperature_2m';
   const grid = allGrids.grids[field];
   _temperatureGridCache = { grid, cols: allGrids.cols, rows: allGrids.rows, isAngle: false };
-  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _temperatureColorFor(_temperatureProduct, v));
+  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _temperatureColorFor(_temperatureProduct, v), _temperatureOpacity);
   if (token !== _temperatureLoadToken) return;
   if (_temperatureLayer) { try { map.removeLayer(_temperatureLayer); } catch(e){} }
   _temperatureLayer = layer.addTo(map);
@@ -12826,6 +12829,7 @@ function _paintAndShowTemperature(allGrids, token) {
 let pressureActive = false;
 let _pressureProduct = 'sea-level';
 let _pressureLayer = null;
+let _pressureOpacity = 1; // Settings: 0.1 - 1
 let _pressureLoadToken = 0;
 let _pressureRefreshTimer = null;
 let _pressureGridCache = null; // {grid, cols, rows, isAngle} - read by the Inspector tool for exact values
@@ -12839,7 +12843,7 @@ const PRESSURE_FIELD = { 'sea-level': 'pressure_msl', surface: 'surface_pressure
 // Same units (hPa) for both - surface pressure is just the raw station
 // reading, not normalized to sea level, so it reads lower at high elevation
 // even under identical weather - that's the whole point of showing both.
-const PRESSURE_SCALE = [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]];
+const PRESSURE_SCALE = [[970,[200,0,220]],[980,[100,20,220]],[990,[0,90,220]],[998,[0,150,160]],[1005,[0,200,60]],[1010,[140,210,20]],[1015,[255,204,0]],[1020,[255,150,0]],[1025,[255,90,0]],[1032,[240,30,0]],[1040,[220,0,0]]];
 const PRESSURE_UNITS = { 'sea-level': 'hPa', surface: 'hPa' };
 function _pressureColorFor(product, v) {
   return _colorScale(v, PRESSURE_SCALE);
@@ -12919,7 +12923,7 @@ function _paintAndShowPressure(allGrids, token) {
   const field = PRESSURE_FIELD[_pressureProduct] || 'pressure_msl';
   const grid = allGrids.grids[field];
   _pressureGridCache = { grid, cols: allGrids.cols, rows: allGrids.rows, isAngle: false };
-  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _pressureColorFor(_pressureProduct, v));
+  const layer = _paintInterpolatedOverlay(grid, allGrids.cols, allGrids.rows, WORLD_MAP_BOUNDS, false, v => _pressureColorFor(_pressureProduct, v), _pressureOpacity);
   if (token !== _pressureLoadToken) return;
   if (_pressureLayer) { try { map.removeLayer(_pressureLayer); } catch(e){} }
   _pressureLayer = layer.addTo(map);
@@ -12938,6 +12942,7 @@ function _paintAndShowPressure(allGrids, token) {
 let windActive = false;
 let _windProduct = 'wind-surface';
 let _windLayer = null;
+let _windLayerOpacity = 1; // Settings: 0.1 - 1
 let _windLoadToken = 0;
 let _windRefreshTimer = null;
 let _windGridCache = null; // {grid, dirGrid, cols, rows} - read by the Inspector tool for exact values
@@ -12956,7 +12961,7 @@ const WIND_FIELDS = {
 // 80-150+ mph core lives in the high end - one scale covers both sensibly.
 // Also shared by the Wind Particles overlay below, so particle color always
 // matches this layer's color map.
-const WIND_SPEED_SCALE = [[0,[60,60,180]],[8,[0,140,220]],[20,[0,200,120]],[35,[255,204,0]],[55,[255,110,0]],[80,[220,0,0]],[120,[190,0,220]]];
+const WIND_SPEED_SCALE = [[0,[60,60,180]],[5,[30,100,200]],[8,[0,140,220]],[14,[0,175,170]],[20,[0,200,120]],[27,[130,210,60]],[35,[255,204,0]],[45,[255,150,0]],[55,[255,110,0]],[65,[240,60,0]],[80,[220,0,0]],[100,[205,0,120]],[120,[190,0,220]]];
 function _windColorFor(v) { return _colorScale(v, WIND_SPEED_SCALE); }
 
 function toggleWindSub() {
@@ -13042,7 +13047,7 @@ async function _loadWindLayer(forceRefresh) {
 }
 
 function _paintAndShowWind(token) {
-  const layer = _paintInterpolatedOverlay(_windGridCache.grid, WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS, false, _windColorFor);
+  const layer = _paintInterpolatedOverlay(_windGridCache.grid, WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS, false, _windColorFor, _windLayerOpacity);
   if (token !== _windLoadToken) return;
   if (_windLayer) { try { map.removeLayer(_windLayer); } catch(e){} }
   _windLayer = layer.addTo(map);
@@ -13066,7 +13071,7 @@ let _windPtParticles = [];
 let _windPtGrid = null; // {cols, rows, u, v} - eastward/northward mph components
 let _windPtLoadToken = 0;
 let _windPtRefreshTimer = null;
-const WINDPT_COUNT = 800;
+let _windPtDensity = 800; // Settings: 200 - 2000, how many particles are on screen at once
 // Not a real-time physical speed - exaggerated so the flow is actually
 // visible on screen within a couple of seconds, same trick every wind-
 // particle map (Windy, earth.nullschool) uses rather than animating at the
@@ -13075,13 +13080,15 @@ const WINDPT_BASE_ANIM_SCALE = 0.00028;
 let _windPtSpeed = 1;       // Settings: 0.25 - 3 (x)
 let _windPtIntensity = 0.7; // Settings: 0.2 - 1, drives both trail opacity and how slowly trails fade
 let _windPtThickness = 1.3; // Settings: 0.5 - 4 (px)
+let _windPtOpacity = 1;     // Settings: 0.1 - 1, whole-canvas opacity (separate from Intensity's per-trail fade)
 
 function _windPtStart() {
   _windPtActive = true;
   if (!_windPtCanvas) {
     _windPtCanvas = document.createElement('canvas');
     _windPtCanvas.id = 'wind-particles-canvas';
-    _windPtCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:490;opacity:1';
+    _windPtCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:490;';
+    _windPtCanvas.style.opacity = _windPtOpacity;
     const size = map.getSize();
     _windPtCanvas.width = size.x; _windPtCanvas.height = size.y;
     map.getContainer().appendChild(_windPtCanvas);
@@ -13145,7 +13152,7 @@ function _windPtRespawn(p, bounds) {
 function _windPtSeedParticles() {
   const bounds = map.getBounds();
   _windPtParticles = [];
-  for (let i = 0; i < WINDPT_COUNT; i++) {
+  for (let i = 0; i < _windPtDensity; i++) {
     const p = {};
     _windPtRespawn(p, bounds);
     p.age = Math.floor(Math.random() * p.life); // stagger ages so particles don't all reset in sync
@@ -13272,6 +13279,201 @@ async function _windPtLoad(forceRefresh) {
   } catch(e) {
     console.warn('Wind Particles overlay error:', e);
     showToast('Wind particle data unavailable right now', 3000);
+  }
+}
+
+// ── WAVE PARTICLES (map overlay, Open-Meteo Marine API) ─────────────────────
+// Same system as Wind Particles above - a field of animated particles
+// redrawn every frame, independently toggleable and Settings-adjustable -
+// just fed by real Wave Height/Direction instead of Wind. Ocean-only by
+// nature (Marine API returns no data over land), so particles drifting
+// onto land just get treated the same as any other "no data here" point and
+// respawn elsewhere, the same way Wind Particles handles the map edge.
+let _wavePtActive = false;
+let _wavePtCanvas = null;
+let _wavePtRafId = null;
+let _wavePtLastFrameTime = null;
+let _wavePtAnchorLatLng = null;
+let _wavePtLastAnchorPt = null;
+let _wavePtParticles = [];
+let _wavePtGrid = null; // {cols, rows, u, v} - eastward/northward ft "speed" components (height along direction)
+let _wavePtLoadToken = 0;
+let _wavePtRefreshTimer = null;
+let _wavePtDensity = 800; // Settings: 200 - 2000
+// Wave height (ft) is a much smaller number than wind speed (mph), so this
+// needs its own, larger base scale to read at a similar visual pace by
+// default - see WINDPT_BASE_ANIM_SCALE's comment, same non-physical trick.
+const WAVEPT_BASE_ANIM_SCALE = 0.0014;
+let _wavePtSpeed = 1;       // Settings: 0.25 - 3 (x)
+let _wavePtIntensity = 0.7; // Settings: 0.2 - 1
+let _wavePtThickness = 1.3; // Settings: 0.5 - 4 (px)
+let _wavePtOpacity = 1;     // Settings: 0.1 - 1
+
+function _wavePtStart() {
+  _wavePtActive = true;
+  if (!_wavePtCanvas) {
+    _wavePtCanvas = document.createElement('canvas');
+    _wavePtCanvas.id = 'wave-particles-canvas';
+    _wavePtCanvas.style.cssText = 'position:absolute;top:0;left:0;pointer-events:none;z-index:490;';
+    _wavePtCanvas.style.opacity = _wavePtOpacity;
+    const size = map.getSize();
+    _wavePtCanvas.width = size.x; _wavePtCanvas.height = size.y;
+    map.getContainer().appendChild(_wavePtCanvas);
+    map.on('resize', _wavePtResizeCanvas);
+    map.on('zoomstart', _wavePtOnZoomStart);
+  }
+  _wavePtAnchorLatLng = map.getCenter();
+  _wavePtLastAnchorPt = null;
+  if (!_wavePtRafId) { _wavePtLastFrameTime = null; _wavePtRafId = requestAnimationFrame(_wavePtAnimTick); }
+  _wavePtLoad();
+  clearInterval(_wavePtRefreshTimer);
+  _wavePtRefreshTimer = setInterval(() => _wavePtLoad(true), 10 * 60 * 1000);
+}
+
+function _wavePtStop() {
+  _wavePtActive = false;
+  clearInterval(_wavePtRefreshTimer); _wavePtRefreshTimer = null;
+  if (_wavePtRafId) { cancelAnimationFrame(_wavePtRafId); _wavePtRafId = null; }
+  map.off('resize', _wavePtResizeCanvas);
+  map.off('zoomstart', _wavePtOnZoomStart);
+  if (_wavePtCanvas) { try { _wavePtCanvas.remove(); } catch(e){} _wavePtCanvas = null; }
+  _wavePtParticles = [];
+  _wavePtGrid = null;
+  _wavePtAnchorLatLng = null;
+  _wavePtLastAnchorPt = null;
+}
+
+function _wavePtResizeCanvas() {
+  if (!_wavePtCanvas) return;
+  const size = map.getSize();
+  _wavePtCanvas.width = size.x;
+  _wavePtCanvas.height = size.y;
+  _wavePtLastAnchorPt = null;
+}
+
+function _wavePtOnZoomStart() {
+  if (!_wavePtCanvas) return;
+  _wavePtCanvas.getContext('2d').clearRect(0, 0, _wavePtCanvas.width, _wavePtCanvas.height);
+  _wavePtAnchorLatLng = map.getCenter();
+  _wavePtLastAnchorPt = null;
+}
+
+function _wavePtRespawn(p, bounds) {
+  const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
+  const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
+  p.lat = south + Math.random() * (north - south);
+  p.lng = bounds.getWest() + Math.random() * (bounds.getEast() - bounds.getWest());
+  p.age = 0;
+  p.life = 40 + Math.random() * 80;
+}
+
+function _wavePtSeedParticles() {
+  const bounds = map.getBounds();
+  _wavePtParticles = [];
+  for (let i = 0; i < _wavePtDensity; i++) {
+    const p = {};
+    _wavePtRespawn(p, bounds);
+    p.age = Math.floor(Math.random() * p.life);
+    _wavePtParticles.push(p);
+  }
+}
+
+function _wavePtGridCoord(lat, lng) {
+  const south = WORLD_MAP_BOUNDS[0][0], north = WORLD_MAP_BOUNDS[1][0];
+  const west  = WORLD_MAP_BOUNDS[0][1], east  = WORLD_MAP_BOUNDS[1][1];
+  return [
+    (lng - west) / (east - west) * (_wavePtGrid.cols - 1),
+    (lat - south) / (north - south) * (_wavePtGrid.rows - 1),
+  ];
+}
+
+function _wavePtAnimTick(now) {
+  if (!_wavePtActive || !_wavePtCanvas) { _wavePtRafId = null; return; }
+  const dtMs = _wavePtLastFrameTime ? Math.min(now - _wavePtLastFrameTime, 100) : 16.7;
+  _wavePtLastFrameTime = now;
+  const ctx = _wavePtCanvas.getContext('2d');
+  const w = _wavePtCanvas.width, h = _wavePtCanvas.height;
+
+  if (_wavePtAnchorLatLng) {
+    const anchorPt = map.latLngToContainerPoint(_wavePtAnchorLatLng);
+    if (_wavePtLastAnchorPt) {
+      const dx = Math.round(anchorPt.x - _wavePtLastAnchorPt.x);
+      const dy = Math.round(anchorPt.y - _wavePtLastAnchorPt.y);
+      if (dx || dy) {
+        ctx.globalCompositeOperation = 'copy';
+        ctx.drawImage(_wavePtCanvas, dx, dy);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+    }
+    _wavePtLastAnchorPt = anchorPt;
+  }
+
+  const fadeKeep = 0.90 + _wavePtIntensity * 0.08;
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = `rgba(0,0,0,${fadeKeep})`;
+  ctx.fillRect(0, 0, w, h);
+  ctx.globalCompositeOperation = 'source-over';
+
+  if (_wavePtGrid) {
+    const bounds = map.getBounds();
+    const stepScale = WAVEPT_BASE_ANIM_SCALE * _wavePtSpeed * (dtMs / 16.7);
+    const strokeAlpha = 0.4 + _wavePtIntensity * 0.5;
+    _wavePtParticles.forEach(p => {
+      const prevPoint = map.latLngToContainerPoint([p.lat, p.lng]);
+      const [gx, gy] = _wavePtGridCoord(p.lat, p.lng);
+      const u = _bilinear(_wavePtGrid.u, _wavePtGrid.cols, _wavePtGrid.rows, gx, gy);
+      const v = _bilinear(_wavePtGrid.v, _wavePtGrid.cols, _wavePtGrid.rows, gx, gy);
+      if (u == null || v == null) { _wavePtRespawn(p, bounds); return; }
+      p.lat += v * stepScale;
+      p.lng += u * stepScale / Math.cos(p.lat * Math.PI / 180);
+      p.age++;
+      const inView = p.lat >= WORLD_MAP_BOUNDS[0][0] && p.lat <= WORLD_MAP_BOUNDS[1][0] && bounds.pad(0.15).contains([p.lat, p.lng]);
+      if (p.age > p.life || !inView) { _wavePtRespawn(p, bounds); return; }
+      const newPoint = map.latLngToContainerPoint([p.lat, p.lng]);
+      const [r, g, b] = _waveColorFor('wave-height', Math.hypot(u, v));
+      ctx.strokeStyle = `rgba(${r},${g},${b},${strokeAlpha})`;
+      ctx.lineWidth = _wavePtThickness;
+      ctx.beginPath();
+      ctx.moveTo(prevPoint.x, prevPoint.y);
+      ctx.lineTo(newPoint.x, newPoint.y);
+      ctx.stroke();
+    });
+  }
+  _wavePtRafId = requestAnimationFrame(_wavePtAnimTick);
+}
+
+async function _wavePtLoad(forceRefresh) {
+  if (!_wavePtActive) return;
+  if (!forceRefresh && _wavePtGrid) return;
+  const token = ++_wavePtLoadToken;
+  try {
+    const pts = _sampleGrid(WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS);
+    const locations = await _fetchGridChunkedRaw(pts, chunk => {
+      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+      return `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
+        `&current=wave_height,wave_direction&length_unit=imperial`;
+    }, 300);
+    if (token !== _wavePtLoadToken) return;
+
+    const u = new Array(pts.length).fill(null);
+    const v = new Array(pts.length).fill(null);
+    locations.forEach((loc, i) => {
+      const ht = loc?.current?.wave_height;
+      const d = loc?.current?.wave_direction;
+      if (ht == null || d == null || !isFinite(ht) || !isFinite(d)) return;
+      // Wave direction, like wind, is the "coming from" heading - the swell
+      // actually travels toward direction+180.
+      const rad = (d + 180) * Math.PI / 180;
+      u[i] = ht * Math.sin(rad);
+      v[i] = ht * Math.cos(rad);
+    });
+    if (!u.some(x => x != null)) throw new Error('no wave data in response');
+    _wavePtGrid = { cols: WAVES_COLS, rows: WAVES_ROWS, u, v };
+    _wavePtSeedParticles();
+  } catch(e) {
+    console.warn('Wave Particles overlay error:', e);
+    showToast('Wave particle data unavailable right now', 3000);
   }
 }
 
@@ -13775,6 +13977,10 @@ function toggleOverlayPill(id) {
     if (_windPtActive) _windPtStop(); else _windPtStart();
     const pill = document.getElementById('op-wind-particles');
     if (pill) pill.classList.toggle('active', _windPtActive);
+  } else if (id === 'wave-particles') {
+    if (_wavePtActive) _wavePtStop(); else _wavePtStart();
+    const pill = document.getElementById('op-wave-particles');
+    if (pill) pill.classList.toggle('active', _wavePtActive);
   } else if (id === 'wx-alerts') {
     toggleAlertsPanel();
     const panel = document.getElementById('alerts-panel');
@@ -14510,7 +14716,7 @@ function _sevRender() {
   if (_sevCompareOn) _sevRenderAllSlots();
   const body=document.getElementById('sev-panel-body');
   if(_iemModelLayer){map.removeLayer(_iemModelLayer);_iemModelLayer=null;}
-  if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;}
+  if(_sevOverlayLayer){map.removeLayer(_sevOverlayLayer);_sevOverlayLayer=null;_sevEnsGridCache=null;}
   if(_sevSection === 'ecmwf') { _sevRenderECMWF(body); return; }
   if(_sevSection === 'dwd')   { _sevRenderDWD(body);   return; }
   if(GEOMET_LAYERS[_sevSection]) { _sevRenderGeoMet(body); return; }
@@ -15230,7 +15436,9 @@ const SEV_ENS_COLS = 18, SEV_ENS_ROWS = 11;
 const SEV_ENS_MAX_FRAME = 8;  // 9 frames: F+000 .. F+048 at a 6h step
 const SEV_ENS_STEP_H = 6;
 const SEV_ENS_SCALES = {
-  temperature_2m:   [[-20,[80,0,180]],[0,[0,90,220]],[15,[0,200,60]],[25,[255,204,0]],[32,[255,90,0]],[40,[220,0,0]]],
+  // Fahrenheit stops - the fetch below requests temperature_unit=fahrenheit,
+  // so this has to match TEMP_SCALE's range, not a Celsius one.
+  temperature_2m:   [[0,[80,0,180]],[20,[0,90,220]],[40,[0,200,60]],[60,[100,210,70]],[75,[255,204,0]],[90,[255,90,0]],[105,[220,0,0]]],
   precipitation:    [[0,[0,60,140]],[0.02,[0,150,220]],[0.08,[0,220,180]],[0.25,[255,204,0]],[0.6,[255,80,0]],[1.2,[200,0,220]]],
   wind_speed_10m:   [[0,[0,60,140]],[10,[0,150,220]],[20,[0,220,180]],[35,[255,204,0]],[50,[255,80,0]],[70,[200,0,220]]],
   wind_gusts_10m:   [[0,[0,60,140]],[15,[0,150,220]],[30,[0,220,180]],[50,[255,204,0]],[70,[255,80,0]],[90,[200,0,220]]],
@@ -15243,6 +15451,7 @@ const SEV_ENS_SCALES = {
 let _sevEnsFrames = null;
 let _sevEnsFramesKey = '';
 let _sevEnsLoadToken = 0;
+let _sevEnsGridCache = null; // {grid, cols, rows, isAngle, varName} for whichever frame is currently shown - read by the Inspector tool
 
 function _sevEnsCacheKey() { return `${_sevSection}|${_sevVar}`; }
 
@@ -15250,8 +15459,10 @@ function _sevEnsShowFrame(body, frames) {
   const f = frames[_sevFrame];
   if (f && f.layer) {
     _sevOverlayLayer = f.layer.addTo(map);
+    _sevEnsGridCache = { grid: f.grid, cols: SEV_ENS_COLS, rows: SEV_ENS_ROWS, isAngle: false, varName: _sevVar };
     if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.85)">${f.statusText}</div>`;
   } else if (body) {
+    _sevEnsGridCache = null;
     body.innerHTML = `<div class="trop-model-err">No ensemble data for this forecast hour.</div>`;
   }
 }
@@ -15292,7 +15503,7 @@ async function _sevRenderEnsemble(body) {
       if (!grid.some(v => v != null)) { frames.push(null); continue; }
       const layer = _paintInterpolatedOverlay(grid, SEV_ENS_COLS, SEV_ENS_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale));
       const { date, flbl } = _sevFcastDateTime(i);
-      frames.push({ layer, statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
+      frames.push({ layer, grid, statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
     }
     if (!frames.some(f => f)) throw new Error('no ensemble members in response');
     if (token !== _sevEnsLoadToken) return;
@@ -15571,7 +15782,7 @@ function switchTab(tab) {
       tropicalLayers = [];
       if (nhcLayer) { try { map.removeLayer(nhcLayer); } catch(e){} nhcLayer = null; }
     }
-    if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
+    if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; _sevEnsGridCache = null; }
   }
 
   currentTab = tab;
@@ -16051,7 +16262,7 @@ function closeRunModelsPanel() {
   activeBubbles['run-models'] = false;
   const btn = document.getElementById('sub-run-models');
   if (btn) btn.classList.remove('active');
-  if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; }
+  if (_sevOverlayLayer) { map.removeLayer(_sevOverlayLayer); _sevOverlayLayer = null; _sevEnsGridCache = null; }
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
 }
 
@@ -18136,6 +18347,21 @@ function _inspWindRow(center) {
   return { label, value: Math.round(speed), unit, color: `rgb(${r},${g},${b})` };
 }
 
+// Run Models' Ensemble Spread view (Severity ensemble mean) has real
+// interpolated numbers cached per-frame same as Waves/Air/Wind/Temperature/
+// Pressure above, so it gets an exact reading too instead of the pixel-color
+// guess the rest of Run Models is stuck with (see _inspModelsRow).
+function _inspSevEnsRow(center) {
+  const varName = _sevEnsGridCache?.varName || _sevVar;
+  const label = SEV_ENS_VAR_LABELS[varName] || 'Ensemble';
+  const v = _inspGridValueAt(_sevEnsGridCache, center.lat, center.lng, WORLD_MAP_BOUNDS);
+  if (v == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
+  const [r, g, b] = _colorScale(v, scale);
+  const units = { temperature_2m: '°F', precipitation: 'in', wind_speed_10m: 'mph', wind_gusts_10m: 'mph', surface_pressure: 'hPa' };
+  return { label, value: v.toFixed(2), unit: units[varName] || '', color: `rgb(${r},${g},${b})` };
+}
+
 function _inspUpdate() {
   _inspRafPending = false;
   if (!_inspEnabled || typeof map === 'undefined') return;
@@ -18151,6 +18377,7 @@ function _inspUpdate() {
   if (typeof windActive !== 'undefined' && windActive)               rows.push(_inspWindRow(center));
   if (typeof temperatureActive !== 'undefined' && temperatureActive) rows.push(_inspTemperatureRow(center));
   if (typeof pressureActive !== 'undefined' && pressureActive)       rows.push(_inspPressureRow(center));
+  if (_sevOverlayLayer)                                               rows.push(_inspSevEnsRow(center));
   if (_iemModelLayer)                                                 rows.push(_inspModelsRow(cx, cy));
 
   if (!rows.length) { _inspRenderRows([{ label: '', value: 'No layers active', color: 'rgba(120,120,120,0.5)' }]); return; }
@@ -24711,6 +24938,51 @@ function selectProduct(p) {
     </div>
   </div>
 
+  <!-- ─── LAYER OPACITY ─── -->
+  <div class="lqm-settings-group">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Layer Opacity</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Waves</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-wavesopacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetWavesOpacity(this.value)">
+        <span id="lqm-wavesopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Air Quality</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-airopacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetAirOpacity(this.value)">
+        <span id="lqm-airopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Wind</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windlayeropacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetWindLayerOpacity(this.value)">
+        <span id="lqm-windlayeropacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Temperature</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-temperatureopacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetTemperatureOpacity(this.value)">
+        <span id="lqm-temperatureopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Pressure</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-pressureopacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetPressureOpacity(this.value)">
+        <span id="lqm-pressureopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── DISPLAY ─── -->
   <div class="lqm-settings-group">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-desktop></use></svg> Display</div>
@@ -24903,6 +25175,67 @@ function selectProduct(p) {
         <input type="range" id="lqm-set-windptthickness" min="5" max="40" value="13" step="1"
           class="lqm-slider" oninput="lqmSetWindPtThickness(this.value)">
         <span id="lqm-windptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.3px</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Density</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptdensity" min="200" max="2000" value="800" step="100"
+          class="lqm-slider" oninput="lqmSetWindPtDensity(this.value)">
+        <span id="lqm-windptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">800</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Opacity</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptopacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetWindPtOpacity(this.value)">
+        <span id="lqm-windptopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── WAVE PARTICLES ─── -->
+  <div class="lqm-settings-group">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wave></use></svg> Wave Particles</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Speed</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptspeed" min="25" max="300" value="100" step="25"
+          class="lqm-slider" oninput="lqmSetWavePtSpeed(this.value)">
+        <span id="lqm-waveptspeed-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.00x</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Intensity</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptintensity" min="20" max="100" value="70" step="5"
+          class="lqm-slider" oninput="lqmSetWavePtIntensity(this.value)">
+        <span id="lqm-waveptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">70%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Thickness</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptthickness" min="5" max="40" value="13" step="1"
+          class="lqm-slider" oninput="lqmSetWavePtThickness(this.value)">
+        <span id="lqm-waveptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.3px</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Density</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptdensity" min="200" max="2000" value="800" step="100"
+          class="lqm-slider" oninput="lqmSetWavePtDensity(this.value)">
+        <span id="lqm-waveptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">800</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Opacity</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptopacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetWavePtOpacity(this.value)">
+        <span id="lqm-waveptopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
       </div>
     </div>
   </div>
@@ -28174,6 +28507,88 @@ function lqmSetWindPtThickness(val) {
   try { localStorage.setItem('lqm_windptthickness', val); } catch(e){}
   _windPtThickness = px;
 }
+function lqmSetWindPtDensity(val) {
+  document.getElementById('lqm-windptdensity-val').textContent = val;
+  try { localStorage.setItem('lqm_windptdensity', val); } catch(e){}
+  _windPtDensity = +val;
+  // Particle count is baked into the array length at seed time, not read
+  // live each frame, so a fresh reseed is needed to actually add/remove
+  // particles - everything else (speed/intensity/thickness) just changes
+  // how the existing ones are drawn, no reseed needed.
+  if (_windPtActive) _windPtSeedParticles();
+}
+function lqmSetWindPtOpacity(val) {
+  document.getElementById('lqm-windptopacity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_windptopacity', val); } catch(e){}
+  _windPtOpacity = val / 100;
+  if (_windPtCanvas) _windPtCanvas.style.opacity = _windPtOpacity;
+}
+
+function lqmSetWavePtSpeed(val) {
+  const mult = val / 100;
+  document.getElementById('lqm-waveptspeed-val').textContent = mult.toFixed(2) + 'x';
+  try { localStorage.setItem('lqm_waveptspeed', val); } catch(e){}
+  _wavePtSpeed = mult;
+}
+function lqmSetWavePtIntensity(val) {
+  document.getElementById('lqm-waveptintensity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_waveptintensity', val); } catch(e){}
+  _wavePtIntensity = val / 100;
+}
+function lqmSetWavePtThickness(val) {
+  const px = val / 10;
+  document.getElementById('lqm-waveptthickness-val').textContent = px.toFixed(1) + 'px';
+  try { localStorage.setItem('lqm_waveptthickness', val); } catch(e){}
+  _wavePtThickness = px;
+}
+function lqmSetWavePtDensity(val) {
+  document.getElementById('lqm-waveptdensity-val').textContent = val;
+  try { localStorage.setItem('lqm_waveptdensity', val); } catch(e){}
+  _wavePtDensity = +val;
+  if (_wavePtActive) _wavePtSeedParticles();
+}
+function lqmSetWavePtOpacity(val) {
+  document.getElementById('lqm-waveptopacity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_waveptopacity', val); } catch(e){}
+  _wavePtOpacity = val / 100;
+  if (_wavePtCanvas) _wavePtCanvas.style.opacity = _wavePtOpacity;
+}
+
+// Per-layer opacity for the Waves/Air/Wind/Temperature/Pressure color maps.
+// Each layer is a plain L.imageOverlay, which already has its own
+// setOpacity() - so an already-loaded layer can be dimmed instantly with no
+// re-fetch or repaint; the stored value also gets threaded into the paint
+// call above so a *freshly loaded* layer starts at the right opacity too.
+function lqmSetWavesOpacity(val) {
+  document.getElementById('lqm-wavesopacity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_wavesopacity', val); } catch(e){}
+  _wavesOpacity = val / 100;
+  if (_wavesLayer) _wavesLayer.setOpacity(_wavesOpacity);
+}
+function lqmSetAirOpacity(val) {
+  document.getElementById('lqm-airopacity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_airopacity', val); } catch(e){}
+  _airOpacity = val / 100;
+  if (_airLayer) _airLayer.setOpacity(_airOpacity);
+}
+function lqmSetWindLayerOpacity(val) {
+  document.getElementById('lqm-windlayeropacity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_windlayeropacity', val); } catch(e){}
+  _windLayerOpacity = val / 100;
+  if (_windLayer) _windLayer.setOpacity(_windLayerOpacity);
+}
+function lqmSetTemperatureOpacity(val) {
+  document.getElementById('lqm-temperatureopacity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_temperatureopacity', val); } catch(e){}
+  _temperatureOpacity = val / 100;
+  if (_temperatureLayer) _temperatureLayer.setOpacity(_temperatureOpacity);
+}
+function lqmSetPressureOpacity(val) {
+  document.getElementById('lqm-pressureopacity-val').textContent = val + '%';
+  try { localStorage.setItem('lqm_pressureopacity', val); } catch(e){}
+  _pressureOpacity = val / 100;
+  if (_pressureLayer) _pressureLayer.setOpacity(_pressureOpacity);
+}
 
 // Extend lqmToggleSetting for new options
 const _origLqmToggle = lqmToggleSetting;
@@ -28234,6 +28649,36 @@ document.addEventListener('DOMContentLoaded', () => {
     if (wpi) { const el=document.getElementById('lqm-set-windptintensity'); if(el){el.value=wpi;lqmSetWindPtIntensity(wpi);} }
     const wpt = localStorage.getItem('lqm_windptthickness');
     if (wpt) { const el=document.getElementById('lqm-set-windptthickness'); if(el){el.value=wpt;lqmSetWindPtThickness(wpt);} }
+    const wpd = localStorage.getItem('lqm_windptdensity');
+    if (wpd) { const el=document.getElementById('lqm-set-windptdensity'); if(el){el.value=wpd;lqmSetWindPtDensity(wpd);} }
+    const wpo = localStorage.getItem('lqm_windptopacity');
+    if (wpo) { const el=document.getElementById('lqm-set-windptopacity'); if(el){el.value=wpo;lqmSetWindPtOpacity(wpo);} }
+    const wavePtSettings = [
+      ['lqm_waveptspeed', 'lqm-set-waveptspeed', 'lqmSetWavePtSpeed'],
+      ['lqm_waveptintensity', 'lqm-set-waveptintensity', 'lqmSetWavePtIntensity'],
+      ['lqm_waveptthickness', 'lqm-set-waveptthickness', 'lqmSetWavePtThickness'],
+      ['lqm_waveptdensity', 'lqm-set-waveptdensity', 'lqmSetWavePtDensity'],
+      ['lqm_waveptopacity', 'lqm-set-waveptopacity', 'lqmSetWavePtOpacity'],
+    ];
+    wavePtSettings.forEach(([storeKey, elId, fnName]) => {
+      const v = localStorage.getItem(storeKey);
+      if (v == null) return;
+      const el = document.getElementById(elId);
+      if (el) { el.value = v; window[fnName](v); }
+    });
+    const layerOpacitySettings = [
+      ['lqm_wavesopacity', 'lqm-set-wavesopacity', 'lqmSetWavesOpacity'],
+      ['lqm_airopacity', 'lqm-set-airopacity', 'lqmSetAirOpacity'],
+      ['lqm_windlayeropacity', 'lqm-set-windlayeropacity', 'lqmSetWindLayerOpacity'],
+      ['lqm_temperatureopacity', 'lqm-set-temperatureopacity', 'lqmSetTemperatureOpacity'],
+      ['lqm_pressureopacity', 'lqm-set-pressureopacity', 'lqmSetPressureOpacity'],
+    ];
+    layerOpacitySettings.forEach(([storeKey, elId, fnName]) => {
+      const v = localStorage.getItem(storeKey);
+      if (v == null) return;
+      const el = document.getElementById(elId);
+      if (el) { el.value = v; window[fnName](v); }
+    });
     if (localStorage.getItem('lqm_crosshair')==='1') { document.getElementById('lqm-set-crosshair').checked=true; document.body.classList.add('gwcfc-crosshair'); }
     if (localStorage.getItem('lqm_contrast')==='1')  { document.getElementById('lqm-set-contrast').checked=true; }
     if (localStorage.getItem('lqm_coords')==='1')    { const el=document.getElementById('lqm-set-coords'); if(el){el.checked=true;lqmToggleSetting('coords',true);} }
@@ -29069,6 +29514,9 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-wind-particles" data-ovid="wind-particles" title="Wind Particles - animated flow showing real-time Surface Wind direction and speed">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wind-particles')">Wind Particles</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-wave-particles" data-ovid="wave-particles" title="Wave Particles - animated flow showing real-time wave height and direction">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wave-particles')">Wave Particles</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-cloudcam" data-ovid="cloudcam" title="Cloud Capture - submit weather photos to the map">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('cloudcam')">Cloud Capture</span><span class="ov-drag" title="Drag to reorder">⠿</span>
@@ -30099,6 +30547,7 @@ const OV_DESCRIPTIONS = {
   'traffic-cameras':  'Live state DOT traffic camera feeds (Kansas, Maryland, Oregon, Kentucky, Iowa, South Dakota) - tap a dot for a live or recently-refreshed still image.',
   'wfo-offices':      "Dots for every NWS Weather Forecast Office. Tap one to see that office's currently active alerts and its recent text products (forecasts, discussions, statements).",
   'wind-particles':   'An animated flow of particles that streams across the map along the real Surface Wind (10m) direction, colored by speed. Independent of the Wind layer\'s color map, both can be on together. Tune Speed, Intensity, and Thickness under Settings → Wind Particles.',
+  'wave-particles':   'An animated flow of particles that streams across the ocean along real wave height and direction, colored the same way as the Waves layer. Independent of the Waves color map, both can be on together. Tune Speed, Intensity, Thickness, Density, and Opacity under Settings → Wave Particles.',
 };
 
 function _ovInjectInfoButtons() {
