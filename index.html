@@ -12207,14 +12207,22 @@ function _globalFetchRelease() {
 //
 // The gate is entered BEFORE the concurrency slot is taken, so a request that
 // is waiting out a cooldown is not holding a slot the other layers need.
-const OM_MIN_GAP_MS  = 250;    // spacing between request starts
+// These are a safety net, not the main defence - sharing grids between layers
+// is what actually cut the request count. Set them too tight and every layer
+// crawls: at 250ms a full load spends nine seconds doing nothing but waiting.
+// 60ms still smooths out bursts while costing well under a second overall,
+// and 300 starts a minute leaves plenty of headroom under the real cap.
+const OM_MIN_GAP_MS  = 60;     // spacing between request starts
 const OM_WINDOW_MS   = 60000;
-const OM_WINDOW_MAX  = 60;     // starts per rolling minute, far under the cap
-// Pauses after a 429 that carries no Retry-After header. Escalating rather
-// than one long stall, so a single blip costs a few seconds while a genuine
-// sustained limit still backs right off.
-const OM_COOLDOWN_STEPS = [5000, 15000, 45000];
-const OM_MAX_ATTEMPTS = 3;     // per chunk, so a rate limit costs no data
+const OM_WINDOW_MAX  = 300;    // starts per rolling minute, still under the cap
+// Pauses after a 429 that carries no Retry-After header. These stay short on
+// purpose. A cooldown holds up EVERY layer, so a long one does not read as
+// "being careful", it reads as the map never loading. Missing points are
+// scattered and interpolated over anyway, so waiting a long time to recover
+// them is a bad trade against showing the user their map.
+const OM_COOLDOWN_STEPS = [2000, 5000, 10000];
+const OM_COOLDOWN_CAP_MS = 30000; // ceiling on a server-supplied Retry-After
+const OM_MAX_ATTEMPTS = 2;        // one retry; beyond that, paint what we have
 
 let _omRecentStarts = [];
 let _omLastStart = 0;
@@ -12226,7 +12234,7 @@ const _omSleep = ms => new Promise(r => setTimeout(r, ms));
 function _omNoteRateLimited(retryAfter) {
   const secs = Number(retryAfter);
   const waitMs = isFinite(secs) && secs > 0
-    ? Math.min(secs * 1000, 5 * 60000)
+    ? Math.min(secs * 1000, OM_COOLDOWN_CAP_MS)
     : OM_COOLDOWN_STEPS[Math.min(_omCooldownStep++, OM_COOLDOWN_STEPS.length - 1)];
   _omCooldownUntil = Math.max(_omCooldownUntil, Date.now() + waitMs);
   console.warn('Open-Meteo rate limited - pausing all grid requests for ' + Math.round(waitMs / 1000) + 's');
@@ -12236,21 +12244,40 @@ function _omNoteRateLimited(retryAfter) {
 // starts from the shortest pause rather than wherever the last one escalated.
 function _omNoteOk() { _omCooldownStep = 0; }
 
-// Resolves once it is safe to start another Open-Meteo request.
+// Resolves true when it is safe to start another Open-Meteo request, or false
+// if that would mean waiting too long.
+//
+// The distinction matters more than it looks. A cooldown exists to stop us
+// SENDING, not to make the user WAIT. An earlier version slept through the
+// whole cooldown, so when the API refused everything the chunks queued up
+// behind each other and a single layer took over a minute to give up: from
+// the outside, a map that never loads. Now anything longer than a short
+// budget is abandoned instead. The cooldown still suppresses the requests -
+// that is the part that protects against the rate limit - but the layer
+// resolves promptly and draws whatever it managed to get.
+const OM_MAX_GATE_WAIT_MS = 3000;
+
 async function _omGate() {
   for (;;) {
     const now = Date.now();
-    if (now < _omCooldownUntil) { await _omSleep(_omCooldownUntil - now); continue; }
+    const cooling = _omCooldownUntil - now;
+    if (cooling > 0) {
+      if (cooling > OM_MAX_GATE_WAIT_MS) return false;
+      await _omSleep(cooling);
+      continue;
+    }
     _omRecentStarts = _omRecentStarts.filter(t => now - t < OM_WINDOW_MS);
     if (_omRecentStarts.length >= OM_WINDOW_MAX) {
-      await _omSleep(OM_WINDOW_MS - (now - _omRecentStarts[0]) + 50);
+      const wait = OM_WINDOW_MS - (now - _omRecentStarts[0]) + 50;
+      if (wait > OM_MAX_GATE_WAIT_MS) return false;
+      await _omSleep(wait);
       continue;
     }
     const gap = OM_MIN_GAP_MS - (now - _omLastStart);
     if (gap > 0) { await _omSleep(gap); continue; }
     _omLastStart = Date.now();
     _omRecentStarts.push(_omLastStart);
-    return;
+    return true;
   }
 }
 
@@ -12312,7 +12339,8 @@ async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
     const chunkPts = indices.map(i => pts[i]);
     const url = buildUrl(chunkPts);
     for (let attempt = 0; attempt < OM_MAX_ATTEMPTS; attempt++) {
-      await _omGate();
+      // Rate limited right now - stop rather than stall the whole map.
+      if (!(await _omGate())) break;
       await _globalFetchAcquire();
       try {
         const r = await fetch(url, { signal: AbortSignal.timeout(25000) });
@@ -15688,7 +15716,8 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
     const chunkPts = indices.map(i => pts[i]);
     const url = buildUrl(chunkPts);
     for (let attempt = 0; attempt < OM_MAX_ATTEMPTS; attempt++) {
-      await _omGate();
+      // Rate limited right now - stop rather than stall the whole map.
+      if (!(await _omGate())) break;
       await _globalFetchAcquire();
       try {
         const r = await fetch(url, { signal: AbortSignal.timeout(45000) });
@@ -28362,7 +28391,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Weather data requests are now paced and shared so the app stops running into Open-Meteo rate limits. The Wind layer and Wind particles share one download instead of fetching the same thing twice, wave particles reuse the Waves layer data, requests are spaced out, and if a limit is ever hit the app waits and retries instead of losing data. Background tabs no longer refresh.";
+const APP_LATEST_UPDATE = "Fixed the slow loading I introduced with the last update. The rate limit protection was making the map wait instead of just easing off, so layers could take over a minute. Loading is back to normal speed, and if the weather service ever does push back the map now gives up in about two seconds and draws what it has.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
