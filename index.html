@@ -12765,6 +12765,37 @@ const WIND_FIELDS = {
 const WIND_SPEED_SCALE = [[0,[60,60,180]],[5,[30,100,200]],[8,[0,140,220]],[14,[0,175,170]],[20,[0,200,120]],[27,[130,210,60]],[35,[255,204,0]],[45,[255,150,0]],[55,[255,110,0]],[65,[240,60,0]],[80,[220,0,0]],[100,[205,0,120]],[120,[190,0,220]]];
 function _windColorFor(v) { return _colorScale(v, WIND_SPEED_SCALE); }
 
+// Picks the entry in an hourly series that matches the current hour. Reading
+// [0] instead means midnight of today, so the map could be showing wind up to
+// 23 hours old. Open-Meteo returns hourly.time alongside the values, in UTC
+// unless a timezone is requested.
+function _hourlyNowIndex(loc) {
+  const t = loc?.hourly?.time;
+  if (!Array.isArray(t) || !t.length) return 0;
+  const stamp = new Date().toISOString().slice(0, 13); // YYYY-MM-DDTHH
+  const i = t.findIndex(v => typeof v === 'string' && v.slice(0, 13) === stamp);
+  return i >= 0 ? i : 0;
+}
+
+// Surface wind is available from the cheap `current` endpoint; the 250hPa jet
+// product is a pressure-level variable, which `current` does not carry, so it
+// has to come from the hourly series.
+function _windUsesCurrent(product) { return product !== 'wind-jet'; }
+
+function _windQuery(fields, product) {
+  return _windUsesCurrent(product)
+    ? `&current=${fields.speed},${fields.dir}&wind_speed_unit=mph`
+    : `&hourly=${fields.speed},${fields.dir}&forecast_days=1&wind_speed_unit=mph`;
+}
+
+// Returns [speed, direction] for one location response, from whichever of the
+// two shapes the query asked for.
+function _windReadPoint(loc, fields, product) {
+  if (_windUsesCurrent(product)) return [loc?.current?.[fields.speed], loc?.current?.[fields.dir]];
+  const k = _hourlyNowIndex(loc);
+  return [loc?.hourly?.[fields.speed]?.[k], loc?.hourly?.[fields.dir]?.[k]];
+}
+
 function toggleWindSub() {
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
@@ -12824,15 +12855,14 @@ async function _loadWindLayer(forceRefresh) {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
-        `&hourly=${fields.speed},${fields.dir}&forecast_days=1&wind_speed_unit=mph`;
+        _windQuery(fields, _windProduct);
     }, 300);
     if (token !== _windLoadToken) return;
 
     const grid = new Array(pts.length).fill(null);
     const dirGrid = new Array(pts.length).fill(null);
     locations.forEach((loc, i) => {
-      const s = loc?.hourly?.[fields.speed]?.[0];
-      const d = loc?.hourly?.[fields.dir]?.[0];
+      const [s, d] = _windReadPoint(loc, fields, _windProduct);
       if (s == null || !isFinite(s)) return;
       grid[i] = s;
       if (d != null && isFinite(d)) dirGrid[i] = d;
@@ -13172,15 +13202,14 @@ async function _windPtLoad(forceRefresh) {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
-        `&hourly=${fields.speed},${fields.dir}&forecast_days=1&wind_speed_unit=mph`;
+        _windQuery(fields, 'wind-surface');
     }, 300);
     if (token !== _windPtLoadToken) return;
 
     const u = new Array(pts.length).fill(null);
     const v = new Array(pts.length).fill(null);
     locations.forEach((loc, i) => {
-      const s = loc?.hourly?.[fields.speed]?.[0];
-      const d = loc?.hourly?.[fields.dir]?.[0];
+      const [s, d] = _windReadPoint(loc, fields, 'wind-surface');
       if (s == null || d == null || !isFinite(s) || !isFinite(d)) return;
       // Wind direction is meteorological "from" convention (0deg = blowing
       // FROM the north), so the actual movement heading is direction+180.
