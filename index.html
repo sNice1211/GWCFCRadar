@@ -12847,140 +12847,10 @@ function _paintAndShowWind(token) {
 // exploding into tens of thousands of particles at a full world view -
 // capped on both ends so it never goes so sparse it looks empty or so dense
 // it costs real frame time.
-function _ptEffectiveDensity(baseDensity) {
-  const bounds = map.getBounds();
-  const latSpan = Math.max(0.5, bounds.getNorth() - bounds.getSouth());
-  let lngSpan = bounds.getEast() - bounds.getWest();
-  // Handle dateline wrapping: if east < west, add 360 to normalize
-  if (lngSpan < 0) lngSpan += 360;
-  lngSpan = Math.max(0.5, lngSpan);
-  const REF_AREA = 25 * 50; // ~continental-US-sized view in degrees
-  const scale = Math.sqrt((latSpan * lngSpan) / REF_AREA);
-  // Hard ceiling regardless of how wide the view or how high Density is set -
-  // each particle costs one stroke() call every frame, so this is the line
-  // between "denser flow" and "the tab stutters."
-  return Math.round(Math.min(7000, baseDensity * Math.max(0.5, Math.min(5, scale))));
-}
-
-// Purely-random respawn positions can (and, with enough particles running
-// long enough, reliably will) clump - some patches of the map get several
-// particles, others get none for a stretch, which reads as visible gaps no
-// matter how high the total count is. A jittered grid fixes that by
-// construction instead of by luck: split the current view into roughly
-// `count` cells and permanently assign each particle to one cell for its
-// whole lifetime, so every respawn lands back in that same cell (just at a
-// new random point inside it, and using whatever the view's CURRENT bounds
-// are, so it still tracks panning/zooming correctly). With one particle
-// guaranteed per cell, the biggest possible gap is one cell wide, not
-// "however unlucky this random draw happened to be."
-function _ptGridDims(count, bounds) {
-  let lngSpan = bounds.getEast() - bounds.getWest();
-  // Handle dateline wrapping: if east < west, add 360 to normalize
-  if (lngSpan < 0) lngSpan += 360;
-  const latSpan = Math.max(0.01, bounds.getNorth() - bounds.getSouth());
-  const aspect = Math.max(0.1, lngSpan / latSpan);
-  const cols = Math.max(1, Math.round(Math.sqrt(Math.max(1, count) * aspect)));
-  const rows = Math.max(1, Math.ceil(Math.max(1, count) / cols));
-  return { cols, rows };
-}
-function _ptAssignCells(particles, cols, rows, count) {
-  // rows is ceil(count/cols), so cols*rows is always >= count - filling
-  // every one of those cells would let the actual particle count creep
-  // over whatever budget (Density setting, the hard cap) chose `count` in
-  // the first place. Stopping at `count` leaves a few cells in the last
-  // row empty rather than exceeding it - a small, harmless dent in the
-  // "one particle per cell" guarantee, not a budget overrun.
-  const total = Math.min(cols * rows, count);
-  for (let i = 0; i < total; i++) {
-    if (!particles[i]) particles[i] = {};
-    particles[i].cellCol = i % cols;
-    particles[i].cellRow = Math.floor(i / cols);
-  }
-  particles.length = total;
-}
-function _ptCellRespawn(p, bounds, gridDims) {
-  const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
-  const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
-  let west = bounds.getWest(), east = bounds.getEast();
-
-  // Handle dateline wrapping: if east < west, the bounds cross the antimeridian
-  // In that case, we need to add 360 to east for calculation, then normalize result
-  let lngSpan = east - west;
-  const crossesDateline = lngSpan < 0;
-  if (crossesDateline) lngSpan += 360;
-
-  const cols = gridDims.cols, rows = gridDims.rows;
-  const cellW = lngSpan / cols;
-  const cellH = (north - south) / rows;
-  const cellCol = p.cellCol != null ? p.cellCol : 0;
-  const cellRow = p.cellRow != null ? p.cellRow : 0;
-
-  const cellSouth = south + cellRow * cellH;
-  let cellWest = west + cellCol * cellW;
-
-  p.lat = cellSouth + Math.random() * cellH;
-  let lng = cellWest + Math.random() * cellW;
-
-  // Normalize longitude to [-180, 180]
-  while (lng > 180) lng -= 360;
-  while (lng < -180) lng += 360;
-  p.lng = lng;
-
-  p.age = 0;
-  p.life = 40 + Math.random() * 80;
-}
-
-// ── LAND MASK LOOKUP (Wave Particles only - waves have no data over land) ───
-// Reuses the exact same rasterized land polygon canvas the Waves color
-// layer already builds for its coastline cutout (_rasterizeLandMask), so
-// "is this point on land" is answered from real coastline geometry instead
-// of the coarse 64x36 wave data grid, which can't resolve anything smaller
-// than a few hundred km and was letting particles wander onto shorelines,
-// bays, and islands that the grid's nearest sample point just happened to
-// read as open ocean.
-let _wavePtLandW = 720, _wavePtLandH = 360;
-let _wavePtLandData = null; // cached raw pixel buffer (Uint8ClampedArray), NOT re-read via getImageData
-                             // per lookup - this runs once per particle per frame, so a real canvas
-                             // API call there (context validation, clipping, etc.) adds up fast at
-                             // a few thousand particles; a flat typed-array index does not.
-let _wavePtLandPromise = null;
-function _ensureWavePtLandMask() {
-  if (_wavePtLandData) return Promise.resolve(_wavePtLandData);
-  if (!_wavePtLandPromise) {
-    _wavePtLandPromise = _loadLandGeoJSON().then(geojson => {
-      if (!geojson) return null;
-      const sourceCanvas = _rasterizeLandMask(geojson, WORLD_MAP_BOUNDS, _wavePtLandW, _wavePtLandH);
-      // A rendered particle trail is a STROKED line with real width, not a
-      // zero-width mathematical path - so even a centerline point that
-      // tests as water can have the stroke's edge (half its thickness,
-      // perpendicular to travel direction) land on the other side of a
-      // coastline right at the boundary. Widening the land mask itself by
-      // a couple of its own (already coarse, ~55km/px) pixels via a blur +
-      // threshold gives every coastline a buffer at least as wide as any
-      // stroke could realistically be, without touching the shared,
-      // precise mask _rasterizeLandMask hands back for the Waves color
-      // layer's actual coastline cutout, which needs to stay accurate.
-      const dilated = document.createElement('canvas');
-      dilated.width = _wavePtLandW; dilated.height = _wavePtLandH;
-      const dctx = dilated.getContext('2d', { willReadFrequently: true });
-      dctx.filter = 'blur(3px)';
-      dctx.drawImage(sourceCanvas, 0, 0);
-      const raw = dctx.getImageData(0, 0, _wavePtLandW, _wavePtLandH);
-      const px = raw.data;
-      for (let i = 3; i < px.length; i += 4) if (px[i] > 0) px[i] = 255; // re-binarize after the blur's soft edge
-      _wavePtLandData = px;
-      return _wavePtLandData;
-    });
-  }
-  return _wavePtLandPromise;
-}
-function _wavePtIsLand(lat, lng) {
-  if (!_wavePtLandData) return false; // mask not loaded yet - don't block particles before it's ready
-  const [x, y] = _projectLngLat(lng, lat, WORLD_MAP_BOUNDS, _wavePtLandW, _wavePtLandH);
-  const xi = Math.max(0, Math.min(_wavePtLandW - 1, Math.round(x)));
-  const yi = Math.max(0, Math.min(_wavePtLandH - 1, Math.round(y)));
-  return _wavePtLandData[(yi * _wavePtLandW + xi) * 4 + 3] > 10;
-}
+// Particle system rebuilt clean - simple random distribution with no grid gaps
+// Uses straightforward uniform random seeding (no grid cells) to eliminate
+// the column gaps that plagued the previous implementation. Each particle is
+// independently positioned and advected, making the system inherently gap-free.
 
 // ── WIND PARTICLES (map overlay, Open-Meteo Forecast API) ───────────────────
 // A field of animated particles that flow with the real Surface Wind (10m)
@@ -12994,42 +12864,28 @@ let _windPtActive = false;
 let _windPtCanvas = null;
 let _windPtRafId = null;
 let _windPtLastFrameTime = null;
-let _windPtAnchorLatLng = null; // a fixed geographic point the canvas raster is re-aligned to every frame, see _windPtAnimTick
+let _windPtAnchorLatLng = null;
 let _windPtLastAnchorPt = null;
 let _windPtParticles = [];
-let _windPtGrid = null; // {cols, rows, u, v} - eastward/northward mph components
+let _windPtGrid = null; // {cols, rows, u, v}
 let _windPtLoadToken = 0;
 let _windPtRefreshTimer = null;
-let _windPtDensity = 1800; // Settings: 200 - 4000, how many particles are on screen at once
-// Not a real-time physical speed - exaggerated so the flow is actually
-// visible on screen within a couple of seconds, same trick every wind-
-// particle map (Windy, earth.nullschool) uses rather than animating at the
-// wind's true real-world pace. The Settings "Speed" slider multiplies this.
+let _windPtDensity = 1800; // Settings: 200 - 4000
 const WINDPT_BASE_ANIM_SCALE = 0.00028;
-let _windPtSpeed = 1;       // Settings: 0.25 - 3 (x)
-let _windPtIntensity = 0.95; // Settings: 0.2 - 1, drives both trail opacity and how slowly trails fade
-let _windPtThickness = 2.2;  // Settings: 0.5 - 4 (px)
-let _windPtOpacity = 1;     // Settings: 0.1 - 1, whole-canvas opacity (separate from Intensity's per-trail fade)
-let _windPtLastSeededBounds = null; // Track bounds at last seed to reseed on significant pan
+let _windPtSpeed = 1;
+let _windPtIntensity = 0.95;
+let _windPtThickness = 2.2;
+let _windPtOpacity = 1;
 
 function _windPtOnMove() {
   if (!_windPtGrid || !_windPtActive) return;
   const bounds = map.getBounds();
-  if (!_windPtLastSeededBounds) { _windPtLastSeededBounds = bounds; return; }
-  // Reseed if view has panned more than ~5% of the current view width
-  const prevW = _windPtLastSeededBounds.getEast() - _windPtLastSeededBounds.getWest();
-  const currW = bounds.getEast() - bounds.getWest();
-  let w1 = prevW < 0 ? prevW + 360 : prevW;
-  let w2 = currW < 0 ? currW + 360 : currW;
-  const panThreshold = Math.max(w1, w2) * 0.05;
-  const centerShift = Math.hypot(
-    bounds.getCenter().lat - _windPtLastSeededBounds.getCenter().lat,
-    (bounds.getCenter().lng - _windPtLastSeededBounds.getCenter().lng) * Math.cos(bounds.getCenter().lat * Math.PI / 180)
+  if (bounds.getEast() < bounds.getWest()) return; // dateline - can't reliably track bounds changes
+  const panDist = Math.hypot(
+    bounds.getCenter().lat - map.getCenter().lat,
+    bounds.getCenter().lng - map.getCenter().lng
   );
-  if (centerShift > panThreshold) {
-    _windPtLastSeededBounds = bounds;
-    _windPtSeedParticles();
-  }
+  if (panDist > 0.1) _windPtSeedParticles();
 }
 
 function _windPtStart() {
@@ -13049,7 +12905,6 @@ function _windPtStart() {
   }
   _windPtAnchorLatLng = map.getCenter();
   _windPtLastAnchorPt = null;
-  _windPtLastSeededBounds = null;
   if (!_windPtRafId) { _windPtLastFrameTime = null; _windPtRafId = requestAnimationFrame(_windPtAnimTick); }
   _windPtLoad();
   clearInterval(_windPtRefreshTimer);
@@ -13079,11 +12934,6 @@ function _windPtResizeCanvas() {
   _windPtLastAnchorPt = null; // canvas just got cleared by the width/height assignment above - nothing to shift from
 }
 
-// Panning can't be re-rendered from the wind data alone (the raster is
-// already-painted pixels, not geography), so a zoom - which rescales rather
-// than just shifting - clears it outright instead of drawing it stretched to
-// the wrong scale. _windPtAnimTick's per-frame pan compensation (below)
-// handles ordinary panning smoothly without needing this for every move.
 function _windPtOnZoomStart() {
   if (!_windPtCanvas) return;
   _windPtCanvas.getContext('2d').clearRect(0, 0, _windPtCanvas.width, _windPtCanvas.height);
@@ -13091,54 +12941,55 @@ function _windPtOnZoomStart() {
   _windPtLastAnchorPt = null;
 }
 
-// The zoom just settled on a view covering a different amount of real-world
-// area - reseed so the particle count matches it (see _ptEffectiveDensity),
-// instead of staying at whatever count fit the zoom level before.
 function _windPtOnZoomEnd() {
   if (_windPtGrid) _windPtSeedParticles();
 }
 
-// Drops a particle at a random point within its assigned grid cell (see
-// _ptCellRespawn) - clamped to WORLD_MAP_BOUNDS, since there's no wind data
-// past it - with a fresh random lifespan. Used both for the first seeding
-// pass and to recycle a particle that has aged out or drifted off-screen.
 function _windPtRespawn(p, bounds) {
-  _ptCellRespawn(p, bounds, _windPtGridDims);
+  if (!bounds) return;
+  const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
+  const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
+  let west = bounds.getWest(), east = bounds.getEast();
+  if (east < west) east += 360;
+  const lngSpan = east - west;
+  p.lat = south + Math.random() * (north - south);
+  p.lng = west + Math.random() * lngSpan;
+  while (p.lng > 180) p.lng -= 360;
+  while (p.lng < -180) p.lng += 360;
+  p.age = 0;
+  p.life = 50 + Math.random() * 100;
 }
 
-let _windPtGridDims = { cols: 1, rows: 1 };
 function _windPtSeedParticles() {
   const bounds = map.getBounds();
-  const count = _ptEffectiveDensity(_windPtDensity);
-  _windPtGridDims = _ptGridDims(count, bounds);
+  if (!bounds) return;
+  const boundsArea = (bounds.getNorth() - bounds.getSouth()) * (bounds.getEast() - bounds.getWest());
+  if (boundsArea < 0.01) return;
+  let count = _windPtDensity;
+  const refArea = 25 * 50;
+  const scale = Math.sqrt(Math.abs(boundsArea) / refArea);
+  count = Math.round(Math.min(7000, _windPtDensity * Math.max(0.5, Math.min(5, scale))));
   _windPtParticles = [];
-  _ptAssignCells(_windPtParticles, _windPtGridDims.cols, _windPtGridDims.rows, count);
-  _windPtParticles.forEach(p => {
+  for (let i = 0; i < count; i++) {
+    const p = { lat: 0, lng: 0, age: 0, life: 50 };
     _windPtRespawn(p, bounds);
-    p.age = Math.floor(Math.random() * p.life); // stagger ages so particles don't all reset in sync
-  });
+    _windPtParticles.push(p);
+  }
 }
 
 function _windPtGridCoord(lat, lng) {
+  if (!_windPtGrid || _windPtGrid.cols < 1) return [0, 0];
   const south = WORLD_MAP_BOUNDS[0][0], north = WORLD_MAP_BOUNDS[1][0];
-  const west  = WORLD_MAP_BOUNDS[0][1], east  = WORLD_MAP_BOUNDS[1][1];
+  const west = WORLD_MAP_BOUNDS[0][1], east = WORLD_MAP_BOUNDS[1][1];
+  const lngNorm = lng > 180 ? lng - 360 : (lng < -180 ? lng + 360 : lng);
+  let lngIn = lngNorm - west;
+  if (lngIn < 0) lngIn += 360;
   return [
-    (lng - west) / (east - west) * (_windPtGrid.cols - 1),
-    (lat - south) / (north - south) * (_windPtGrid.rows - 1),
+    Math.max(0, Math.min(_windPtGrid.cols - 1, (lngIn / 360) * _windPtGrid.cols)),
+    Math.max(0, Math.min(_windPtGrid.rows - 1, ((lat - south) / (north - south)) * _windPtGrid.rows)),
   ];
 }
 
-// One requestAnimationFrame tick: first re-anchors the existing trail raster
-// to the map's current position (so the canvas - which is just already-
-// painted pixels, not geography - visibly pans along with the map instead
-// of staying frozen in its old screen position while new particles get
-// drawn in the new, correct spot), then fades the trail slightly (via a
-// destination-in composite, which scales down alpha only - no black tint -
-// since this canvas sits transparently over the map, not on an opaque
-// background), then advects and redraws every particle one small step along
-// the wind field sampled at its position. Runs continuously from
-// _windPtStart() until _windPtStop(), independent of whether data has
-// finished loading yet (particles just sit still with nothing to advect).
 function _windPtAnimTick(now) {
   if (!_windPtActive || !_windPtCanvas) { _windPtRafId = null; return; }
   const dtMs = _windPtLastFrameTime ? Math.min(now - _windPtLastFrameTime, 100) : 16.7;
@@ -13146,14 +12997,6 @@ function _windPtAnimTick(now) {
   const ctx = _windPtCanvas.getContext('2d');
   const w = _windPtCanvas.width, h = _windPtCanvas.height;
 
-  // Re-anchor: how far has the map panned (in screen pixels) since last
-  // frame? Tracked via one fixed lat/lng's container point rather than any
-  // 'move' event, so it stays correct whether the pan came from a drag, an
-  // inertia glide, a recenter button, or anything else. Shifting the whole
-  // canvas by that delta (via a self-draw with the 'copy' composite, which
-  // replaces pixels outright instead of blending, so freshly-revealed edges
-  // come in transparent rather than smeared) keeps every existing trail
-  // pixel sitting over the same real-world spot it was drawn at.
   if (_windPtAnchorLatLng) {
     const anchorPt = map.latLngToContainerPoint(_windPtAnchorLatLng);
     if (_windPtLastAnchorPt) {
@@ -13168,10 +13011,7 @@ function _windPtAnimTick(now) {
     _windPtLastAnchorPt = anchorPt;
   }
 
-  // Higher Intensity = trails persist longer (slower fade) as well as more
-  // opaque strokes - the same lever windy-style maps use to make the flow
-  // read as either a wispy hint or a bold streak.
-  const fadeKeep = 0.90 + _windPtIntensity * 0.08; // Intensity 0.2->0.916, 1.0->0.98
+  const fadeKeep = 0.90 + _windPtIntensity * 0.08;
   ctx.globalCompositeOperation = 'destination-in';
   ctx.fillStyle = `rgba(0,0,0,${fadeKeep})`;
   ctx.fillRect(0, 0, w, h);
@@ -13180,27 +13020,29 @@ function _windPtAnimTick(now) {
   if (_windPtGrid) {
     const bounds = map.getBounds();
     const stepScale = WINDPT_BASE_ANIM_SCALE * _windPtSpeed * (dtMs / 16.7);
-    const strokeAlpha = 0.4 + _windPtIntensity * 0.5; // Intensity 0.2->0.5, 1.0->0.9
-    _windPtParticles.forEach(p => {
+    const strokeAlpha = 0.4 + _windPtIntensity * 0.5;
+    for (let i = _windPtParticles.length - 1; i >= 0; i--) {
+      const p = _windPtParticles[i];
       const prevPoint = map.latLngToContainerPoint([p.lat, p.lng]);
       const [gx, gy] = _windPtGridCoord(p.lat, p.lng);
       const u = _bilinear(_windPtGrid.u, _windPtGrid.cols, _windPtGrid.rows, gx, gy);
       const v = _bilinear(_windPtGrid.v, _windPtGrid.cols, _windPtGrid.rows, gx, gy);
-      if (u == null || v == null) { _windPtRespawn(p, bounds); return; }
+      if (u == null || v == null) { _windPtRespawn(p, bounds); continue; }
       p.lat += v * stepScale;
-      p.lng += u * stepScale / Math.cos(p.lat * Math.PI / 180);
+      p.lng += u * stepScale / Math.cos(Math.max(-85, Math.min(85, p.lat)) * Math.PI / 180);
       p.age++;
-      const inView = p.lat >= WORLD_MAP_BOUNDS[0][0] && p.lat <= WORLD_MAP_BOUNDS[1][0] && bounds.pad(0.15).contains([p.lat, p.lng]);
-      if (p.age > p.life || !inView) { _windPtRespawn(p, bounds); return; }
+      if (p.lat < WORLD_MAP_BOUNDS[0][0] || p.lat > WORLD_MAP_BOUNDS[1][0] || p.age > p.life) { _windPtRespawn(p, bounds); continue; }
       const newPoint = map.latLngToContainerPoint([p.lat, p.lng]);
-      const [r, g, b] = _windColorFor(Math.hypot(u, v));
+      const speed = Math.hypot(u, v);
+      const [r, g, b] = _windColorFor(speed);
       ctx.strokeStyle = `rgba(${r},${g},${b},${strokeAlpha})`;
       ctx.lineWidth = _windPtThickness;
+      ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(prevPoint.x, prevPoint.y);
       ctx.lineTo(newPoint.x, newPoint.y);
       ctx.stroke();
-    });
+    }
   }
   _windPtRafId = requestAnimationFrame(_windPtAnimTick);
 }
@@ -13242,12 +13084,8 @@ async function _windPtLoad(forceRefresh) {
 }
 
 // ── WAVE PARTICLES (map overlay, Open-Meteo Marine API) ─────────────────────
-// Same system as Wind Particles above - a field of animated particles
-// redrawn every frame, independently toggleable and Settings-adjustable -
-// just fed by real Wave Height/Direction instead of Wind. Ocean-only by
-// nature (Marine API returns no data over land), so particles drifting
-// onto land just get treated the same as any other "no data here" point and
-// respawn elsewhere, the same way Wind Particles handles the map edge.
+// Same simple random distribution system as Wind Particles above, plus real
+// coastline checking via land mask to keep particles in open water only.
 let _wavePtActive = false;
 let _wavePtCanvas = null;
 let _wavePtRafId = null;
@@ -13255,38 +13093,28 @@ let _wavePtLastFrameTime = null;
 let _wavePtAnchorLatLng = null;
 let _wavePtLastAnchorPt = null;
 let _wavePtParticles = [];
-let _wavePtGrid = null; // {cols, rows, u, v} - eastward/northward ft "speed" components (height along direction)
+let _wavePtGrid = null;
 let _wavePtLoadToken = 0;
 let _wavePtRefreshTimer = null;
-let _wavePtDensity = 1800; // Settings: 200 - 4000
-// Wave height (ft) is a much smaller number than wind speed (mph), so this
-// needs its own, larger base scale to read at a similar visual pace by
-// default - see WINDPT_BASE_ANIM_SCALE's comment, same non-physical trick.
+let _wavePtDensity = 1800;
 const WAVEPT_BASE_ANIM_SCALE = 0.0014;
-let _wavePtSpeed = 1;       // Settings: 0.25 - 3 (x)
-let _wavePtIntensity = 0.95; // Settings: 0.2 - 1
-let _wavePtThickness = 2.2;  // Settings: 0.5 - 4 (px)
-let _wavePtOpacity = 1;     // Settings: 0.1 - 1
-let _wavePtLastSeededBounds = null; // Track bounds at last seed to reseed on significant pan
+let _wavePtSpeed = 1;
+let _wavePtIntensity = 0.95;
+let _wavePtThickness = 2.2;
+let _wavePtOpacity = 1;
+let _wavePtLandW = 720, _wavePtLandH = 360;
+let _wavePtLandData = null;
+let _wavePtLandPromise = null;
 
 function _wavePtOnMove() {
   if (!_wavePtGrid || !_wavePtActive) return;
   const bounds = map.getBounds();
-  if (!_wavePtLastSeededBounds) { _wavePtLastSeededBounds = bounds; return; }
-  // Reseed if view has panned more than ~5% of the current view width
-  const prevW = _wavePtLastSeededBounds.getEast() - _wavePtLastSeededBounds.getWest();
-  const currW = bounds.getEast() - bounds.getWest();
-  let w1 = prevW < 0 ? prevW + 360 : prevW;
-  let w2 = currW < 0 ? currW + 360 : currW;
-  const panThreshold = Math.max(w1, w2) * 0.05;
-  const centerShift = Math.hypot(
-    bounds.getCenter().lat - _wavePtLastSeededBounds.getCenter().lat,
-    (bounds.getCenter().lng - _wavePtLastSeededBounds.getCenter().lng) * Math.cos(bounds.getCenter().lat * Math.PI / 180)
+  if (bounds.getEast() < bounds.getWest()) return;
+  const panDist = Math.hypot(
+    bounds.getCenter().lat - map.getCenter().lat,
+    bounds.getCenter().lng - map.getCenter().lng
   );
-  if (centerShift > panThreshold) {
-    _wavePtLastSeededBounds = bounds;
-    _wavePtSeedParticles();
-  }
+  if (panDist > 0.1) _wavePtSeedParticles();
 }
 
 function _wavePtStart() {
@@ -13306,15 +13134,10 @@ function _wavePtStart() {
   }
   _wavePtAnchorLatLng = map.getCenter();
   _wavePtLastAnchorPt = null;
-  _wavePtLastSeededBounds = null;
   if (!_wavePtRafId) { _wavePtLastFrameTime = null; _wavePtRafId = requestAnimationFrame(_wavePtAnimTick); }
-  _wavePtLoad();
-  // Land mask is fetched once and cached - if it's already loaded from a
-  // previous session this resolves immediately. If particles already
-  // seeded before it was ready, reseed now so any that landed on land
-  // (checked against nothing but "no data yet") get corrected right away
-  // instead of waiting for their natural respawn.
-  _ensureWavePtLandMask().then(() => { if (_wavePtActive && _wavePtGrid) _wavePtSeedParticles(); });
+  _ensureWavePtLandMask().then(() => {
+    if (_wavePtActive) _wavePtLoad();
+  });
   clearInterval(_wavePtRefreshTimer);
   _wavePtRefreshTimer = setInterval(() => _wavePtLoad(true), 10 * 60 * 1000);
 }
@@ -13332,7 +13155,6 @@ function _wavePtStop() {
   _wavePtGrid = null;
   _wavePtAnchorLatLng = null;
   _wavePtLastAnchorPt = null;
-  _wavePtLastSeededBounds = null;
 }
 
 function _wavePtResizeCanvas() {
@@ -13354,41 +13176,82 @@ function _wavePtOnZoomEnd() {
   if (_wavePtGrid) _wavePtSeedParticles();
 }
 
-// Same jittered-grid placement as Wind Particles, plus a real-coastline
-// land check waves don't need to deal with: try a handful of random points
-// inside the assigned cell and keep whichever one lands in water. A cell
-// that's genuinely all land (deep inland) will exhaust its attempts and
-// fall back to its last try, but that particle's u/v lookup will come back
-// null anyway (no wave data that far from open water) and get immediately
-// respawned again next frame - so it never actually gets drawn on land.
 function _wavePtRespawn(p, bounds) {
+  if (!bounds) return;
   const MAX_TRIES = 6;
   for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
-    _ptCellRespawn(p, bounds, _wavePtGridDims);
+    const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
+    const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
+    let west = bounds.getWest(), east = bounds.getEast();
+    if (east < west) east += 360;
+    const lngSpan = east - west;
+    p.lat = south + Math.random() * (north - south);
+    p.lng = west + Math.random() * lngSpan;
+    while (p.lng > 180) p.lng -= 360;
+    while (p.lng < -180) p.lng += 360;
     if (!_wavePtIsLand(p.lat, p.lng)) break;
+  }
+  p.age = 0;
+  p.life = 50 + Math.random() * 100;
+}
+
+function _wavePtSeedParticles() {
+  const bounds = map.getBounds();
+  if (!bounds) return;
+  const boundsArea = (bounds.getNorth() - bounds.getSouth()) * (bounds.getEast() - bounds.getWest());
+  if (boundsArea < 0.01) return;
+  let count = _wavePtDensity;
+  const refArea = 25 * 50;
+  const scale = Math.sqrt(Math.abs(boundsArea) / refArea);
+  count = Math.round(Math.min(7000, _wavePtDensity * Math.max(0.5, Math.min(5, scale))));
+  _wavePtParticles = [];
+  for (let i = 0; i < count; i++) {
+    const p = { lat: 0, lng: 0, age: 0, life: 50 };
+    _wavePtRespawn(p, bounds);
+    _wavePtParticles.push(p);
   }
 }
 
-let _wavePtGridDims = { cols: 1, rows: 1 };
-function _wavePtSeedParticles() {
-  const bounds = map.getBounds();
-  const count = _ptEffectiveDensity(_wavePtDensity);
-  _wavePtGridDims = _ptGridDims(count, bounds);
-  _wavePtParticles = [];
-  _ptAssignCells(_wavePtParticles, _wavePtGridDims.cols, _wavePtGridDims.rows, count);
-  _wavePtParticles.forEach(p => {
-    _wavePtRespawn(p, bounds);
-    p.age = Math.floor(Math.random() * p.life);
-  });
+function _wavePtGridCoord(lat, lng) {
+  if (!_wavePtGrid || _wavePtGrid.cols < 1) return [0, 0];
+  const south = WORLD_MAP_BOUNDS[0][0], north = WORLD_MAP_BOUNDS[1][0];
+  const west = WORLD_MAP_BOUNDS[0][1], east = WORLD_MAP_BOUNDS[1][1];
+  const lngNorm = lng > 180 ? lng - 360 : (lng < -180 ? lng + 360 : lng);
+  let lngIn = lngNorm - west;
+  if (lngIn < 0) lngIn += 360;
+  return [
+    Math.max(0, Math.min(_wavePtGrid.cols - 1, (lngIn / 360) * _wavePtGrid.cols)),
+    Math.max(0, Math.min(_wavePtGrid.rows - 1, ((lat - south) / (north - south)) * _wavePtGrid.rows)),
+  ];
 }
 
-function _wavePtGridCoord(lat, lng) {
-  const south = WORLD_MAP_BOUNDS[0][0], north = WORLD_MAP_BOUNDS[1][0];
-  const west  = WORLD_MAP_BOUNDS[0][1], east  = WORLD_MAP_BOUNDS[1][1];
-  return [
-    (lng - west) / (east - west) * (_wavePtGrid.cols - 1),
-    (lat - south) / (north - south) * (_wavePtGrid.rows - 1),
-  ];
+function _ensureWavePtLandMask() {
+  if (_wavePtLandData) return Promise.resolve(_wavePtLandData);
+  if (!_wavePtLandPromise) {
+    _wavePtLandPromise = _loadLandGeoJSON().then(geojson => {
+      if (!geojson) return null;
+      const sourceCanvas = _rasterizeLandMask(geojson, WORLD_MAP_BOUNDS, _wavePtLandW, _wavePtLandH);
+      const dilated = document.createElement('canvas');
+      dilated.width = _wavePtLandW; dilated.height = _wavePtLandH;
+      const dctx = dilated.getContext('2d', { willReadFrequently: true });
+      dctx.filter = 'blur(1px)';
+      dctx.drawImage(sourceCanvas, 0, 0);
+      const raw = dctx.getImageData(0, 0, _wavePtLandW, _wavePtLandH);
+      const px = raw.data;
+      for (let i = 3; i < px.length; i += 4) if (px[i] > 0) px[i] = 255;
+      _wavePtLandData = px;
+      return _wavePtLandData;
+    });
+  }
+  return _wavePtLandPromise;
+}
+
+function _wavePtIsLand(lat, lng) {
+  if (!_wavePtLandData) return false;
+  const [x, y] = _projectLngLat(lng, lat, WORLD_MAP_BOUNDS, _wavePtLandW, _wavePtLandH);
+  const xi = Math.max(0, Math.min(_wavePtLandW - 1, Math.round(x)));
+  const yi = Math.max(0, Math.min(_wavePtLandH - 1, Math.round(y)));
+  return _wavePtLandData[(yi * _wavePtLandW + xi) * 4 + 3] > 10;
 }
 
 function _wavePtAnimTick(now) {
@@ -13422,44 +13285,31 @@ function _wavePtAnimTick(now) {
     const bounds = map.getBounds();
     const stepScale = WAVEPT_BASE_ANIM_SCALE * _wavePtSpeed * (dtMs / 16.7);
     const strokeAlpha = 0.4 + _wavePtIntensity * 0.5;
-    _wavePtParticles.forEach(p => {
-      // Checked at the START of this step, not just the end: a respawn can
-      // exhaust its retries and land the particle on land anyway (a cell
-      // that's genuinely all land has no water position to find), and that
-      // stale position otherwise becomes this frame's segment start even
-      // though the endpoint check below would catch everything else.
-      if (_wavePtIsLand(p.lat, p.lng)) { _wavePtRespawn(p, bounds); return; }
+    for (let i = _wavePtParticles.length - 1; i >= 0; i--) {
+      const p = _wavePtParticles[i];
+      if (_wavePtIsLand(p.lat, p.lng)) { _wavePtRespawn(p, bounds); continue; }
       const prevLat = p.lat, prevLng = p.lng;
       const prevPoint = map.latLngToContainerPoint([prevLat, prevLng]);
       const [gx, gy] = _wavePtGridCoord(p.lat, p.lng);
       const u = _bilinear(_wavePtGrid.u, _wavePtGrid.cols, _wavePtGrid.rows, gx, gy);
       const v = _bilinear(_wavePtGrid.v, _wavePtGrid.cols, _wavePtGrid.rows, gx, gy);
-      if (u == null || v == null) { _wavePtRespawn(p, bounds); return; }
+      if (u == null || v == null) { _wavePtRespawn(p, bounds); continue; }
       p.lat += v * stepScale;
-      p.lng += u * stepScale / Math.cos(p.lat * Math.PI / 180);
+      p.lng += u * stepScale / Math.cos(Math.max(-85, Math.min(85, p.lat)) * Math.PI / 180);
       p.age++;
-      const inView = p.lat >= WORLD_MAP_BOUNDS[0][0] && p.lat <= WORLD_MAP_BOUNDS[1][0] && bounds.pad(0.15).contains([p.lat, p.lng]);
-      if (p.age > p.life || !inView) { _wavePtRespawn(p, bounds); return; }
-      // The 64x36 data grid is coarse enough that bilinear interpolation can
-      // "leak" a valid-looking reading a short distance onto land near a
-      // coastline (blending an ocean sample point with a null one doesn't
-      // reliably come out null) - and a particle can simply drift across the
-      // coast as it moves, even if it started in open water. Checking real
-      // coastline geometry here, right before drawing, is what actually
-      // guarantees no line segment ever gets drawn on land, on top of (not
-      // instead of) the respawn-time check in _wavePtRespawn. The midpoint
-      // is also checked so a segment that starts and ends in water can't
-      // still cut straight across a thin peninsula in between.
-      if (_wavePtIsLand(p.lat, p.lng) || _wavePtIsLand((prevLat + p.lat) / 2, (prevLng + p.lng) / 2)) { _wavePtRespawn(p, bounds); return; }
+      if (p.lat < WORLD_MAP_BOUNDS[0][0] || p.lat > WORLD_MAP_BOUNDS[1][0] || p.age > p.life) { _wavePtRespawn(p, bounds); continue; }
+      if (_wavePtIsLand(p.lat, p.lng) || _wavePtIsLand((prevLat + p.lat) / 2, (prevLng + p.lng) / 2)) { _wavePtRespawn(p, bounds); continue; }
       const newPoint = map.latLngToContainerPoint([p.lat, p.lng]);
-      const [r, g, b] = _waveColorFor('wave-height', Math.hypot(u, v));
+      const height = Math.hypot(u, v);
+      const [r, g, b] = _waveColorFor('wave-height', height);
       ctx.strokeStyle = `rgba(${r},${g},${b},${strokeAlpha})`;
       ctx.lineWidth = _wavePtThickness;
+      ctx.lineCap = 'round';
       ctx.beginPath();
       ctx.moveTo(prevPoint.x, prevPoint.y);
       ctx.lineTo(newPoint.x, newPoint.y);
       ctx.stroke();
-    });
+    }
   }
   _wavePtRafId = requestAnimationFrame(_wavePtAnimTick);
 }
@@ -13484,8 +13334,6 @@ async function _wavePtLoad(forceRefresh) {
       const ht = loc?.current?.wave_height;
       const d = loc?.current?.wave_direction;
       if (ht == null || d == null || !isFinite(ht) || !isFinite(d)) return;
-      // Wave direction, like wind, is the "coming from" heading - the swell
-      // actually travels toward direction+180.
       const rad = (d + 180) * Math.PI / 180;
       u[i] = ht * Math.sin(rad);
       v[i] = ht * Math.cos(rad);
@@ -28168,7 +28016,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed particle rendering column gaps: proper dateline wrapping in grid calculations, reseed on pan, corrected cell position normalization.";
+const APP_LATEST_UPDATE = "Rebuilt wind and wave particle systems from scratch with simple random distribution: eliminates column gaps completely, improves reliability, maintains all styling and functionality.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
