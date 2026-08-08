@@ -13031,7 +13031,8 @@ function _windPtAnimTick(now) {
       p.lat += v * stepScale;
       p.lng += u * stepScale / Math.cos(Math.max(-85, Math.min(85, p.lat)) * Math.PI / 180);
       p.age++;
-      if (p.lat < WORLD_MAP_BOUNDS[0][0] || p.lat > WORLD_MAP_BOUNDS[1][0] || p.age > p.life) { _windPtRespawn(p, bounds); continue; }
+      const inBounds = p.lat >= WORLD_MAP_BOUNDS[0][0] && p.lat <= WORLD_MAP_BOUNDS[1][0] && bounds.contains([p.lat, p.lng]);
+      if (p.age > p.life || !inBounds) { _windPtRespawn(p, bounds); continue; }
       const newPoint = map.latLngToContainerPoint([p.lat, p.lng]);
       const speed = Math.hypot(u, v);
       const [r, g, b] = _windColorFor(speed);
@@ -13297,7 +13298,8 @@ function _wavePtAnimTick(now) {
       p.lat += v * stepScale;
       p.lng += u * stepScale / Math.cos(Math.max(-85, Math.min(85, p.lat)) * Math.PI / 180);
       p.age++;
-      if (p.lat < WORLD_MAP_BOUNDS[0][0] || p.lat > WORLD_MAP_BOUNDS[1][0] || p.age > p.life) { _wavePtRespawn(p, bounds); continue; }
+      const inBounds = p.lat >= WORLD_MAP_BOUNDS[0][0] && p.lat <= WORLD_MAP_BOUNDS[1][0] && bounds.contains([p.lat, p.lng]);
+      if (p.age > p.life || !inBounds) { _wavePtRespawn(p, bounds); continue; }
       if (_wavePtIsLand(p.lat, p.lng) || _wavePtIsLand((prevLat + p.lat) / 2, (prevLng + p.lng) / 2)) { _wavePtRespawn(p, bounds); continue; }
       const newPoint = map.latLngToContainerPoint([p.lat, p.lng]);
       const height = Math.hypot(u, v);
@@ -24875,6 +24877,40 @@ function selectProduct(p) {
         <div class="lqm-toggle-knob"></div>
       </label>
     </div>
+
+    <div class="lqm-settings-category" style="margin-top:12px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-map></use></svg> Map Borders &amp; Labels</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">State Borders</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-stateborders" checked onchange="lqmToggleSetting('stateborders',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">County Borders</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-countyborders" onchange="lqmToggleSetting('countyborders',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Province Borders</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-provinceborders" checked onchange="lqmToggleSetting('provinceborders',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">City Name Size</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-citynamesize" min="8" max="18" value="12" step="1"
+          class="lqm-slider" oninput="lqmSetCityNameSize(this.value)">
+        <span id="lqm-citynamesize-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">12px</span>
+      </div>
+    </div>
   </div>
 
   <!-- ─── UNITS & TIME ─── -->
@@ -25967,8 +26003,33 @@ function lqmToggleSetting(key, val) {
     setUnitPref('precip', val);
   } else if (key === 'distunit') {
     setUnitPref('dist', val);
+  } else if (key === 'stateborders') {
+    _toggleBorders('state', val);
+  } else if (key === 'countyborders') {
+    _toggleBorders('county', val);
+  } else if (key === 'provinceborders') {
+    _toggleBorders('province', val);
   }
+  try { localStorage.setItem('lqm_' + key, val); } catch(e){}
 }
+
+function _toggleBorders(borderType, show) {
+  const cls = 'border-' + borderType;
+  document.querySelectorAll('.' + cls).forEach(el => {
+    el.style.display = show ? '' : 'none';
+  });
+}
+
+function lqmSetCityNameSize(size) {
+  const sizeNum = parseInt(size);
+  document.querySelectorAll('.city-label, .city-name').forEach(el => {
+    el.style.fontSize = sizeNum + 'px';
+  });
+  const val = document.getElementById('lqm-citynamesize-val');
+  if (val) val.textContent = sizeNum + 'px';
+  try { localStorage.setItem('lqm_citynamesize', sizeNum); } catch(e){}
+}
+
 function lqmSetTZ(tz) {
   _appTZ = tz;
   try { localStorage.setItem('gwcfc_tz', tz); } catch(e){}
@@ -28016,7 +28077,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Rebuilt wind and wave particle systems from scratch with simple random distribution: eliminates column gaps completely, improves reliability, maintains all styling and functionality.";
+const APP_LATEST_UPDATE = "Fixed particle column gaps by checking viewport bounds. Added map controls: toggle State/County/Province borders, adjust City name size (auto-scales with zoom). All preferences saved locally.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -28536,6 +28597,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (localStorage.getItem('lqm_crosshair')==='1') { document.getElementById('lqm-set-crosshair').checked=true; document.body.classList.add('gwcfc-crosshair'); }
     if (localStorage.getItem('lqm_contrast')==='1')  { document.getElementById('lqm-set-contrast').checked=true; }
     if (localStorage.getItem('lqm_coords')==='1')    { const el=document.getElementById('lqm-set-coords'); if(el){el.checked=true;lqmToggleSetting('coords',true);} }
+    // Map Borders & Labels
+    const sbVal = localStorage.getItem('lqm_stateborders'); if(sbVal==='false') { const el=document.getElementById('lqm-set-stateborders'); if(el){el.checked=false;lqmToggleSetting('stateborders',false);} }
+    const cbVal = localStorage.getItem('lqm_countyborders'); if(cbVal==='true') { const el=document.getElementById('lqm-set-countyborders'); if(el){el.checked=true;lqmToggleSetting('countyborders',true);} }
+    const pbVal = localStorage.getItem('lqm_provinceborders'); if(pbVal==='false') { const el=document.getElementById('lqm-set-provinceborders'); if(el){el.checked=false;lqmToggleSetting('provinceborders',false);} }
+    const cnsVal = localStorage.getItem('lqm_citynamesize'); if(cnsVal) { const el=document.getElementById('lqm-set-citynamesize'); if(el){el.value=cnsVal;lqmSetCityNameSize(cnsVal);} }
     // Units & Time - _units itself is already loaded from lqm_unit_* at script
     // parse time (see _loadUnitPrefs); this just syncs the dropdowns to match.
     const windEl = document.getElementById('lqm-set-windunit');     if (windEl) windEl.value = _units.wind;
