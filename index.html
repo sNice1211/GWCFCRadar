@@ -12871,21 +12871,70 @@ let _windPtGrid = null; // {cols, rows, u, v}
 let _windPtLoadToken = 0;
 let _windPtRefreshTimer = null;
 let _windPtDensity = 1800; // Settings: 200 - 4000
-const WINDPT_BASE_ANIM_SCALE = 0.00028;
+let _windPtSeedCenter = null; // where the field was last seeded, for pan detection
+// Particles are seeded across a domain slightly LARGER than the visible map.
+// Without that margin the upwind edge of the screen is always empty: nothing
+// exists off-screen to flow inward, so a bare band appears wherever the wind
+// enters the view. The pad puts that unavoidable empty band off-screen.
+const PT_DOMAIN_PAD = 0.14;
+// Animation step is expressed in screen PIXELS per frame per mph, not in
+// degrees - see _ptDegPerPixel. A fixed step in degrees means particles crawl
+// when zoomed out and rocket across the screen when zoomed in, which drains
+// whole regions of the view at higher zooms.
+const WINDPT_BASE_ANIM_SCALE = 0.0128;
 let _windPtSpeed = 1;
 let _windPtIntensity = 0.95;
 let _windPtThickness = 2.2;
 let _windPtOpacity = 1;
 
+// How many degrees of longitude one screen pixel covers at the current view.
+// Multiplying the animation step by this converts a pixels-per-frame speed
+// into the degrees-per-frame the particle positions actually use, so a given
+// wind speed always travels the same visible distance at any zoom level.
+function _ptDegPerPixel() {
+  const b = map.getBounds(), sz = map.getSize();
+  let span = b.getEast() - b.getWest();
+  if (span <= 0) span += 360;
+  return span / Math.max(1, sz.x);
+}
+
+// The seeding domain: the visible map plus a margin on every side.
+function _ptDomainBounds() {
+  return map.getBounds().pad(PT_DOMAIN_PAD);
+}
+
+// True once the map has moved far enough that the padded domain no longer
+// covers the view and the field needs re-seeding. The old check compared
+// bounds.getCenter() with map.getCenter(), which are the same point, so it
+// never fired and panning was never handled at all.
+function _ptPanNeedsReseed(seedCenter) {
+  if (!seedCenter) return true;
+  const c = map.getCenter(), b = map.getBounds();
+  let spanLng = b.getEast() - b.getWest();
+  if (spanLng <= 0) spanLng += 360;
+  const spanLat = b.getNorth() - b.getSouth();
+  let dLng = Math.abs(c.lng - seedCenter.lng);
+  if (dLng > 180) dLng = 360 - dLng;
+  const dLat = Math.abs(c.lat - seedCenter.lat);
+  return dLng > spanLng * PT_DOMAIN_PAD || dLat > spanLat * PT_DOMAIN_PAD;
+}
+
+// Panning shifts the existing trail image sideways to keep it pinned to the
+// map. That leaves the newly revealed strip with no trail history at all while
+// the retained side keeps a full one, which shows up as a hard bright/dark
+// edge - a "column of nothing" running down the map. Wiping the trails puts
+// both sides on equal footing so they fade back in evenly instead.
+function _ptResetTrails(canvas) {
+  if (!canvas) return;
+  canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+}
+
 function _windPtOnMove() {
   if (!_windPtGrid || !_windPtActive) return;
-  const bounds = map.getBounds();
-  if (bounds.getEast() < bounds.getWest()) return; // dateline - can't reliably track bounds changes
-  const panDist = Math.hypot(
-    bounds.getCenter().lat - map.getCenter().lat,
-    bounds.getCenter().lng - map.getCenter().lng
-  );
-  if (panDist > 0.1) _windPtSeedParticles();
+  _ptResetTrails(_windPtCanvas);
+  _windPtAnchorLatLng = map.getCenter();
+  _windPtLastAnchorPt = null;
+  if (_ptPanNeedsReseed(_windPtSeedCenter)) _windPtSeedParticles();
 }
 
 function _windPtStart() {
@@ -12924,6 +12973,7 @@ function _windPtStop() {
   _windPtGrid = null;
   _windPtAnchorLatLng = null;
   _windPtLastAnchorPt = null;
+  _windPtSeedCenter = null;
 }
 
 function _windPtResizeCanvas() {
@@ -12966,14 +13016,17 @@ function _windPtRespawn(p, bounds) {
 }
 
 function _windPtSeedParticles() {
-  const bounds = map.getBounds();
+  const bounds = _ptDomainBounds();
   if (!bounds) return;
+  _windPtSeedCenter = map.getCenter();
   const boundsArea = (bounds.getNorth() - bounds.getSouth()) * (bounds.getEast() - bounds.getWest());
-  if (boundsArea < 0.01) return;
-  let count = _windPtDensity;
+  // Only bail on a degenerate (zero-size) map. The old 0.01 floor meant any
+  // view tighter than about a tenth of a degree - i.e. every city-level zoom -
+  // silently seeded nothing at all.
+  if (!isFinite(boundsArea) || boundsArea <= 0) return;
   const refArea = 25 * 50;
   const scale = Math.sqrt(Math.abs(boundsArea) / refArea);
-  count = Math.round(Math.min(7000, _windPtDensity * Math.max(0.5, Math.min(5, scale))));
+  const count = Math.round(Math.min(7000, _windPtDensity * Math.max(0.5, Math.min(5, scale))));
   _windPtParticles = [];
   for (let i = 0; i < count; i++) {
     const p = { lat: 0, lng: 0, age: 0, life: 50 };
@@ -13028,8 +13081,8 @@ function _windPtAnimTick(now) {
   ctx.globalCompositeOperation = 'source-over';
 
   if (_windPtGrid) {
-    const bounds = map.getBounds();
-    const stepScale = WINDPT_BASE_ANIM_SCALE * _windPtSpeed * (dtMs / 16.7);
+    const bounds = _ptDomainBounds();
+    const stepScale = WINDPT_BASE_ANIM_SCALE * _windPtSpeed * (dtMs / 16.7) * _ptDegPerPixel();
     const strokeAlpha = 0.4 + _windPtIntensity * 0.5;
     for (let i = _windPtParticles.length - 1; i >= 0; i--) {
       const p = _windPtParticles[i];
@@ -13108,7 +13161,9 @@ let _wavePtGrid = null;
 let _wavePtLoadToken = 0;
 let _wavePtRefreshTimer = null;
 let _wavePtDensity = 1800;
-const WAVEPT_BASE_ANIM_SCALE = 0.0014;
+let _wavePtSeedCenter = null;
+// Pixels per frame per foot of wave height - see WINDPT_BASE_ANIM_SCALE.
+const WAVEPT_BASE_ANIM_SCALE = 0.0637;
 let _wavePtSpeed = 1;
 let _wavePtIntensity = 0.95;
 let _wavePtThickness = 2.2;
@@ -13119,13 +13174,10 @@ let _wavePtLandPromise = null;
 
 function _wavePtOnMove() {
   if (!_wavePtGrid || !_wavePtActive) return;
-  const bounds = map.getBounds();
-  if (bounds.getEast() < bounds.getWest()) return;
-  const panDist = Math.hypot(
-    bounds.getCenter().lat - map.getCenter().lat,
-    bounds.getCenter().lng - map.getCenter().lng
-  );
-  if (panDist > 0.1) _wavePtSeedParticles();
+  _ptResetTrails(_wavePtCanvas);
+  _wavePtAnchorLatLng = map.getCenter();
+  _wavePtLastAnchorPt = null;
+  if (_ptPanNeedsReseed(_wavePtSeedCenter)) _wavePtSeedParticles();
 }
 
 function _wavePtStart() {
@@ -13166,6 +13218,7 @@ function _wavePtStop() {
   _wavePtGrid = null;
   _wavePtAnchorLatLng = null;
   _wavePtLastAnchorPt = null;
+  _wavePtSeedCenter = null;
 }
 
 function _wavePtResizeCanvas() {
@@ -13213,14 +13266,14 @@ function _wavePtRespawn(p, bounds) {
 }
 
 function _wavePtSeedParticles() {
-  const bounds = map.getBounds();
+  const bounds = _ptDomainBounds();
   if (!bounds) return;
+  _wavePtSeedCenter = map.getCenter();
   const boundsArea = (bounds.getNorth() - bounds.getSouth()) * (bounds.getEast() - bounds.getWest());
-  if (boundsArea < 0.01) return;
-  let count = _wavePtDensity;
+  if (!isFinite(boundsArea) || boundsArea <= 0) return;
   const refArea = 25 * 50;
   const scale = Math.sqrt(Math.abs(boundsArea) / refArea);
-  count = Math.round(Math.min(7000, _wavePtDensity * Math.max(0.5, Math.min(5, scale))));
+  const count = Math.round(Math.min(7000, _wavePtDensity * Math.max(0.5, Math.min(5, scale))));
   _wavePtParticles = [];
   for (let i = 0; i < count; i++) {
     const p = { lat: 0, lng: 0, age: 0, life: 50 };
@@ -13304,8 +13357,8 @@ function _wavePtAnimTick(now) {
   ctx.globalCompositeOperation = 'source-over';
 
   if (_wavePtGrid) {
-    const bounds = map.getBounds();
-    const stepScale = WAVEPT_BASE_ANIM_SCALE * _wavePtSpeed * (dtMs / 16.7);
+    const bounds = _ptDomainBounds();
+    const stepScale = WAVEPT_BASE_ANIM_SCALE * _wavePtSpeed * (dtMs / 16.7) * _ptDegPerPixel();
     const strokeAlpha = 0.4 + _wavePtIntensity * 0.5;
     for (let i = _wavePtParticles.length - 1; i >= 0; i--) {
       const p = _wavePtParticles[i];
@@ -28064,7 +28117,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed wind and wave particle column gaps: corrected dateline wrapping and grid coordinate calculation logic.";
+const APP_LATEST_UPDATE = "Wind and wave particle gaps are fixed for real this time. Particles now seed past the edges of the screen, move at a speed that matches the zoom level, and reset cleanly when you pan.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
