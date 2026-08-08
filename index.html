@@ -7415,7 +7415,8 @@ const AMBIENT_WEATHER_API_KEY         = '807d842f188e4d76bbba35960ef9449bb775e4a
 const AMBIENT_WEATHER_APPLICATION_KEY = 'a8d10c794d6f4490b23cc708a8a42859c354a64c32c84436a0aae46dc839d0ad'; // app-level
 let smoothEnabled = false;
 
-// ── RADAR COLOUR CUSTOMISER ──
+// ── NWS REFLECTIVITY COLOR TABLES ──
+// Used by the default reflectivity legend and the Inspector's dBZ readout.
 // NWS source colors: [dBZ, R, G, B] , exact values IEM WMS renders
 const NWS_SOURCE_COLORS = [
   [5,  4,   233, 231], [10, 1,   159, 244], [15, 3,   0,   244],
@@ -21585,14 +21586,17 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
     ? 'background:rgba(255,50,50,0.15);border:1px solid rgba(255,50,50,0.4);color:#ff6060;'
     : 'background:rgba(0,255,100,0.1);border:1px solid rgba(0,255,100,0.3);color:#00e676;';
 
+  // src (stream URL) and siteName come from an external stream-directory API,
+  // so both are escaped for the JS-string-inside-HTML-attribute context they
+  // sit in below (see _jsAttrEsc), not just interpolated as-is.
   const streamPanel = (src, listeners, playId, callKey) => `
     <div class="nwr-stream-panel">
       <div class="nwr-stream-btns">
-        <button id="${playId}" class="nwr-btn-play" onclick="_nwrPlayAudio('${src}','${playId}','${callKey}')"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Play</button>
-        <button class="nwr-btn-rec" onclick="_nwrStartRecord('${call}','${src}','${siteName}')"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg> Rec</button>
+        <button id="${playId}" class="nwr-btn-play" onclick="_nwrPlayAudio('${_jsAttrEsc(src)}','${playId}','${callKey}')"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Play</button>
+        <button class="nwr-btn-rec" onclick="_nwrStartRecord('${call}','${_jsAttrEsc(src)}','${_jsAttrEsc(siteName)}')"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg> Rec</button>
         <div class="nwr-stream-meta">
           <span class="nwr-live-count">${listeners ?? 0} live</span>
-          <a class="nwr-stream-link" href="${src}" target="_blank">link <svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(-45deg)><use href=#ic-arrow></use></svg></a>
+          <a class="nwr-stream-link" href="${_ccEsc(src)}" target="_blank" rel="noopener noreferrer">link <svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(-45deg)><use href=#ic-arrow></use></svg></a>
         </div>
       </div>
     </div>`;
@@ -21662,7 +21666,7 @@ function _nwrBuildPopup(call, p, gwesStream, wxrStream, wusaStream) {
       </div>
     </div>
     ${audioHTML}
-    <div class="nwr-footer"><a href="https://www.weather.gov/nwr/" target="_blank">weather.gov/nwr <svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(-45deg)><use href=#ic-arrow></use></svg></a></div>
+    <div class="nwr-footer"><a href="https://www.weather.gov/nwr/" target="_blank" rel="noopener noreferrer">weather.gov/nwr <svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(-45deg)><use href=#ic-arrow></use></svg></a></div>
   </div>`;
 }
 
@@ -25295,7 +25299,7 @@ async function lqmDoSearch() {
     const loc = data.results[0];
     const label = [loc.name, loc.admin1, loc.country].filter(Boolean).join(', ');
     status.style.color = 'var(--success)';
-    status.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> ' + label;
+    status.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> ' + _ccEsc(label);
     // Fly map to location
     if (window.map) {
       map.flyTo([loc.latitude, loc.longitude], Math.max(map.getZoom(), 8), { duration: 1.2 });
@@ -28091,7 +28095,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Removed the Radar Colors customizer entirely and fixed the radar lag it was causing.";
+const APP_LATEST_UPDATE = "Security check: fixed a handful of spots where search results and radio stream links could have injected malicious code.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -28290,7 +28294,7 @@ async function _srchFetchLocations(q) {
           const label = [loc.name, loc.admin1, loc.country_code].filter(Boolean).join(', ');
           const el = document.createElement('div');
           el.className = 'srch-item';
-          el.innerHTML = `<span class="si-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg></span><span class="si-label">${label}</span><span class="si-type">LOCATION</span>`;
+          el.innerHTML = `<span class="si-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg></span><span class="si-label">${_ccEsc(label)}</span><span class="si-type">LOCATION</span>`;
           el.onclick = () => _srchPickLocation(loc, label);
           frag.appendChild(el);
         });
@@ -28322,22 +28326,39 @@ function _srchPickLocation(loc, label) {
 
 function _srchShowDefault() {
   const dd = document.getElementById('lqm-search-dropdown');
-  let html = '';
+  dd.innerHTML = '';
   if (_srchRecent.length) {
-    html += '<div class="srch-section-hdr">RECENT</div>';
+    const hdr = document.createElement('div');
+    hdr.className = 'srch-section-hdr';
+    hdr.textContent = 'RECENT';
+    dd.appendChild(hdr);
+    // r.label came from a third-party geocoding API response, so it's built as
+    // real DOM nodes (textContent) here rather than concatenated into an HTML
+    // string - a place name is never trusted to safely contain literal markup.
     _srchRecent.slice(0,5).forEach(r => {
-      html += `<div class="srch-item" onclick="lqmSearchInput('${r.label.replace(/'/g,"\\'")}');document.getElementById('lqm-search-input').value='${r.label.replace(/'/g,"\\'")}';"><span class="si-icon">${_eicon(r.icon)}</span><span class="si-label">${r.label}</span><span class="si-type">RECENT</span></div>`;
+      const el = document.createElement('div');
+      el.className = 'srch-item';
+      el.innerHTML = `<span class="si-icon">${_eicon(r.icon)}</span><span class="si-label"></span><span class="si-type">RECENT</span>`;
+      el.querySelector('.si-label').textContent = r.label;
+      el.onclick = () => { lqmSearchInput(r.label); document.getElementById('lqm-search-input').value = r.label; };
+      dd.appendChild(el);
     });
   }
   const frequent = [
     RADAR_CATALOG[0], RADAR_CATALOG[1], RADAR_CATALOG[4], RADAR_CATALOG[5],
     RADAR_CATALOG[10], RADAR_CATALOG[11]
   ];
-  html += '<div class="srch-section-hdr">QUICK ACCESS</div>';
+  const hdr2 = document.createElement('div');
+  hdr2.className = 'srch-section-hdr';
+  hdr2.textContent = 'QUICK ACCESS';
+  dd.appendChild(hdr2);
   frequent.forEach(c => {
-    html += `<div class="srch-item" onclick="lqmCloseSearch();setTimeout(()=>{ (${c.action.toString()})(); },150)"><span class="si-icon">${_eicon(c.icon)}</span><span class="si-label">${c.label}</span><span class="si-type">${c.type}</span></div>`;
+    const el = document.createElement('div');
+    el.className = 'srch-item';
+    el.innerHTML = `<span class="si-icon">${_eicon(c.icon)}</span><span class="si-label">${c.label}</span><span class="si-type">${c.type}</span>`;
+    el.onclick = () => { lqmCloseSearch(); setTimeout(c.action, 150); };
+    dd.appendChild(el);
   });
-  dd.innerHTML = html;
   dd.classList.add('open');
 }
 
@@ -28371,7 +28392,7 @@ lqmDoSearch = async function() {
     const loc = data.results[0];
     const label = [loc.name,loc.admin1,loc.country].filter(Boolean).join(', ');
     _srchSaveRecent(label,'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg>');
-    if(status){status.style.color='var(--success)';status.innerHTML='<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> '+label;}
+    if(status){status.style.color='var(--success)';status.innerHTML='<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> '+_ccEsc(label);}
     if(window.map) map.flyTo([loc.latitude,loc.longitude],Math.max(map.getZoom(),8),{duration:1.2});
     setTimeout(lqmCloseSearch,1200);
   } catch(e) { if(status){status.style.color='#ff6655';status.textContent='Search failed.';} }
@@ -29052,7 +29073,7 @@ document.addEventListener('DOMContentLoaded', () => {
     <div id="auth-discord-info">
       <strong>Discord login coming soon!</strong><br><br>
       To enable Discord login you'll need to:<br>
-      1. Go to <a href="https://discord.com/developers/applications" target="_blank">discord.com/developers/applications</a><br>
+      1. Go to <a href="https://discord.com/developers/applications" target="_blank" rel="noopener noreferrer">discord.com/developers/applications</a><br>
       2. Create a new application named <strong>GWCFC Radar</strong><br>
       3. Under OAuth2 <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-arrow></use></svg> add redirect URI for your radar domain<br>
       4. Copy the <strong>Client ID</strong> and paste it into the DISCORD_CLIENT_ID variable in the code<br><br>
@@ -29956,6 +29977,11 @@ let _ccLayer = null;
 let _ccDB = null;
 
 function _ccEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// For untrusted text embedded inside a single-quoted JS string literal that
+// itself sits inside an HTML attribute (e.g. onclick="fn('${x}')") - escapes
+// backslash/quote first so it can't break out of the JS string, then escapes
+// & and " so the result also can't break out of the surrounding HTML attribute.
+function _jsAttrEsc(s){ return String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
 
 // ── IndexedDB store ──
 function _ccOpenDB(){
