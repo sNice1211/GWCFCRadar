@@ -12193,6 +12193,85 @@ function _globalFetchRelease() {
   if (next) next();
 }
 
+// ── Open-Meteo request governor ─────────────────────────────────────────────
+// GLOBAL_FETCH_LIMIT above caps how many requests run AT ONCE, which is not
+// the same thing as how many run per minute: four concurrent requests that
+// each take 200ms is still twelve hundred a minute, well past Open-Meteo's
+// per-minute cap. This governor supplies the missing half:
+//
+//   - a minimum gap between request starts, so a burst gets spread out
+//   - a rolling one-minute allowance, so a burst can never exceed the cap
+//   - a hard pause whenever the API answers 429, honouring its Retry-After
+//     header, so being rate limited makes everything back off rather than
+//     retry straight back into the limit
+//
+// The gate is entered BEFORE the concurrency slot is taken, so a request that
+// is waiting out a cooldown is not holding a slot the other layers need.
+const OM_MIN_GAP_MS  = 250;    // spacing between request starts
+const OM_WINDOW_MS   = 60000;
+const OM_WINDOW_MAX  = 60;     // starts per rolling minute, far under the cap
+// Pauses after a 429 that carries no Retry-After header. Escalating rather
+// than one long stall, so a single blip costs a few seconds while a genuine
+// sustained limit still backs right off.
+const OM_COOLDOWN_STEPS = [5000, 15000, 45000];
+const OM_MAX_ATTEMPTS = 3;     // per chunk, so a rate limit costs no data
+
+let _omRecentStarts = [];
+let _omLastStart = 0;
+let _omCooldownUntil = 0;
+let _omCooldownStep = 0;
+
+const _omSleep = ms => new Promise(r => setTimeout(r, ms));
+
+function _omNoteRateLimited(retryAfter) {
+  const secs = Number(retryAfter);
+  const waitMs = isFinite(secs) && secs > 0
+    ? Math.min(secs * 1000, 5 * 60000)
+    : OM_COOLDOWN_STEPS[Math.min(_omCooldownStep++, OM_COOLDOWN_STEPS.length - 1)];
+  _omCooldownUntil = Math.max(_omCooldownUntil, Date.now() + waitMs);
+  console.warn('Open-Meteo rate limited - pausing all grid requests for ' + Math.round(waitMs / 1000) + 's');
+}
+
+// A clean response means we are inside the limits again, so the next blip
+// starts from the shortest pause rather than wherever the last one escalated.
+function _omNoteOk() { _omCooldownStep = 0; }
+
+// Resolves once it is safe to start another Open-Meteo request.
+async function _omGate() {
+  for (;;) {
+    const now = Date.now();
+    if (now < _omCooldownUntil) { await _omSleep(_omCooldownUntil - now); continue; }
+    _omRecentStarts = _omRecentStarts.filter(t => now - t < OM_WINDOW_MS);
+    if (_omRecentStarts.length >= OM_WINDOW_MAX) {
+      await _omSleep(OM_WINDOW_MS - (now - _omRecentStarts[0]) + 50);
+      continue;
+    }
+    const gap = OM_MIN_GAP_MS - (now - _omLastStart);
+    if (gap > 0) { await _omSleep(gap); continue; }
+    _omLastStart = Date.now();
+    _omRecentStarts.push(_omLastStart);
+    return;
+  }
+}
+
+// Refresh timers used to keep firing in background tabs, spending request
+// budget on data nobody is looking at. These skip while the page is hidden and
+// run once on the way back in if a tick was missed.
+const _omMissedRefresh = new Set();
+function _omRefreshInterval(fn, ms) {
+  const tick = () => {
+    if (document.hidden) { _omMissedRefresh.add(tick); return; }
+    fn();
+  };
+  return setInterval(tick, ms);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  const due = [..._omMissedRefresh];
+  _omMissedRefresh.clear();
+  due.forEach(fn => fn());
+});
+
 // Decides which request batch each grid point belongs to, so that when one
 // batch fails its missing points are scattered instead of forming a shape.
 //
@@ -12231,24 +12310,33 @@ async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
 
   await _runLimited(chunkIdx, 4, async indices => {
     const chunkPts = indices.map(i => pts[i]);
-    await _globalFetchAcquire();
-    try {
-      const r = await fetch(buildUrl(chunkPts), { signal: AbortSignal.timeout(25000) });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
-      const arr = Array.isArray(data) ? data : [data];
-      anyOk = true;
-      arr.forEach((d, j) => {
-        const origIdx = indices[j];
-        fields.forEach(f => {
-          const v = d?.current?.[f];
-          grids[f][origIdx] = (v == null || !isFinite(v)) ? null : v;
+    const url = buildUrl(chunkPts);
+    for (let attempt = 0; attempt < OM_MAX_ATTEMPTS; attempt++) {
+      await _omGate();
+      await _globalFetchAcquire();
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(25000) });
+        if (r.status === 429) { _omNoteRateLimited(r.headers.get('Retry-After')); continue; }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        _omNoteOk();
+        const data = await r.json();
+        const arr = Array.isArray(data) ? data : [data];
+        anyOk = true;
+        arr.forEach((d, j) => {
+          const origIdx = indices[j];
+          fields.forEach(f => {
+            const v = d?.current?.[f];
+            grids[f][origIdx] = (v == null || !isFinite(v)) ? null : v;
+          });
         });
-      });
-    } catch (e) {
-      console.warn('Grid chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
-    } finally {
-      _globalFetchRelease();
+        return;
+      } catch (e) {
+        if (attempt === OM_MAX_ATTEMPTS - 1) {
+          console.warn('Grid chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
+        }
+      } finally {
+        _globalFetchRelease();
+      }
     }
   });
   if (!anyOk) throw new Error('All chunks failed');
@@ -12337,7 +12425,7 @@ function toggleWavesSub() {
       _syncParentBubble('waves');
       _loadWavesLayer();
       clearInterval(_wavesRefreshTimer);
-      _wavesRefreshTimer = setInterval(() => _loadWavesLayer(true), 10 * 60 * 1000);
+      _wavesRefreshTimer = _omRefreshInterval(() => _loadWavesLayer(true), 10 * 60 * 1000);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
@@ -12347,6 +12435,7 @@ function toggleWavesSub() {
 
 let _wavesAllGrids = null; // {cols, rows, grids: {wave_height:[...], wave_period:[...], ...}} - every product's data, one fetch
 let _wavesFetchPromise = null; // collapses overlapping fetches from rapid clicking into one in-flight request
+let _wavesGridsAt = 0; // when _wavesAllGrids was filled, so Wave Particles can reuse it instead of refetching
 
 // Renders once over the fixed WORLD_MAP_BOUNDS domain, not the current
 // viewport - panning/zooming the map never re-triggers this, Leaflet just
@@ -12380,6 +12469,7 @@ async function _loadWavesLayer(forceRefresh) {
     const grids = await _wavesFetchPromise;
     if (token !== _wavesLoadToken) return; // a newer request/toggle already superseded this one
     _wavesAllGrids = { cols: WAVES_COLS, rows: WAVES_ROWS, grids };
+    _wavesGridsAt = Date.now();
     await _paintAndShowWaves(_wavesAllGrids, token);
   } catch(e) {
     console.warn('Waves layer error:', e);
@@ -12460,7 +12550,7 @@ function toggleAirSub() {
       _syncParentBubble('air');
       _loadAirLayer();
       clearInterval(_airRefreshTimer);
-      _airRefreshTimer = setInterval(() => _loadAirLayer(true), 10 * 60 * 1000);
+      _airRefreshTimer = _omRefreshInterval(() => _loadAirLayer(true), 10 * 60 * 1000);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
@@ -12570,7 +12660,7 @@ function toggleTemperatureSub() {
       _syncParentBubble('temperature');
       _loadTemperatureLayer();
       clearInterval(_temperatureRefreshTimer);
-      _temperatureRefreshTimer = setInterval(() => _loadTemperatureLayer(true), 10 * 60 * 1000);
+      _temperatureRefreshTimer = _omRefreshInterval(() => _loadTemperatureLayer(true), 10 * 60 * 1000);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
@@ -12679,7 +12769,7 @@ function togglePressureSub() {
       _syncParentBubble('pressure');
       _loadPressureLayer();
       clearInterval(_pressureRefreshTimer);
-      _pressureRefreshTimer = setInterval(() => _loadPressureLayer(true), 10 * 60 * 1000);
+      _pressureRefreshTimer = _omRefreshInterval(() => _loadPressureLayer(true), 10 * 60 * 1000);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
@@ -12796,6 +12886,43 @@ function _windReadPoint(loc, fields, product) {
   return [loc?.hourly?.[fields.speed]?.[k], loc?.hourly?.[fields.dir]?.[k]];
 }
 
+// The Wind layer and the Wind Particles overlay want the exact same world
+// grid, and used to fetch it separately - the same 2304 points, the same two
+// variables, twice, every ten minutes. They now share one cached fetch per
+// product, so turning both on costs no more than turning on either.
+const WIND_SHARED_TTL = 9 * 60 * 1000;
+const WAVES_SHARED_TTL = 9 * 60 * 1000;
+const _windSharedGrid = {};    // product -> { speed, dir, at }
+const _windSharedPending = {}; // product -> in-flight promise
+
+function _fetchWindGrid(product, forceRefresh) {
+  const cached = _windSharedGrid[product];
+  if (!forceRefresh && cached && Date.now() - cached.at < WIND_SHARED_TTL) return Promise.resolve(cached);
+  if (_windSharedPending[product]) return _windSharedPending[product];
+
+  const fields = WIND_FIELDS[product];
+  const pts = _sampleGrid(WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS);
+  _windSharedPending[product] = _fetchGridChunkedRaw(pts, chunk => {
+    const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+    const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+    return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
+      _windQuery(fields, product);
+  }, 300).then(locations => {
+    const speed = new Array(pts.length).fill(null);
+    const dir = new Array(pts.length).fill(null);
+    locations.forEach((loc, i) => {
+      const [s, d] = _windReadPoint(loc, fields, product);
+      if (s != null && isFinite(s)) speed[i] = s;
+      if (d != null && isFinite(d)) dir[i] = d;
+    });
+    const entry = { speed, dir, at: Date.now() };
+    _windSharedGrid[product] = entry;
+    return entry;
+  }).finally(() => { _windSharedPending[product] = null; });
+
+  return _windSharedPending[product];
+}
+
 function toggleWindSub() {
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
@@ -12825,7 +12952,7 @@ function toggleWindSub() {
       _syncParentBubble('wind');
       _loadWindLayer();
       clearInterval(_windRefreshTimer);
-      _windRefreshTimer = setInterval(() => _loadWindLayer(true), 10 * 60 * 1000);
+      _windRefreshTimer = _omRefreshInterval(() => _loadWindLayer(true), 10 * 60 * 1000);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
@@ -12849,24 +12976,11 @@ async function _loadWindLayer(forceRefresh) {
   }
 
   try {
-    const fields = WIND_FIELDS[_windProduct];
-    const pts = _sampleGrid(WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS);
-    const locations = await _fetchGridChunkedRaw(pts, chunk => {
-      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
-        _windQuery(fields, _windProduct);
-    }, 300);
+    const { speed, dir } = await _fetchWindGrid(_windProduct, forceRefresh);
     if (token !== _windLoadToken) return;
 
-    const grid = new Array(pts.length).fill(null);
-    const dirGrid = new Array(pts.length).fill(null);
-    locations.forEach((loc, i) => {
-      const [s, d] = _windReadPoint(loc, fields, _windProduct);
-      if (s == null || !isFinite(s)) return;
-      grid[i] = s;
-      if (d != null && isFinite(d)) dirGrid[i] = d;
-    });
+    const grid = speed.slice();
+    const dirGrid = dir.slice();
     if (!grid.some(v => v != null)) throw new Error('no wind data in response');
     _windGridCache = { grid, dirGrid, cols: WIND_COLS, rows: WIND_ROWS };
     _windFetchedProduct = _windProduct;
@@ -13037,7 +13151,7 @@ function _windPtStart() {
   if (!_windPtRafId) { _windPtLastFrameTime = null; _windPtRafId = requestAnimationFrame(_windPtAnimTick); }
   _windPtLoad();
   clearInterval(_windPtRefreshTimer);
-  _windPtRefreshTimer = setInterval(() => _windPtLoad(true), 10 * 60 * 1000);
+  _windPtRefreshTimer = _omRefreshInterval(() => _windPtLoad(true), 10 * 60 * 1000);
 }
 
 function _windPtStop() {
@@ -13196,20 +13310,14 @@ async function _windPtLoad(forceRefresh) {
   if (!forceRefresh && _windPtGrid) return; // the animation loop keeps using the cached field
   const token = ++_windPtLoadToken;
   try {
-    const fields = WIND_FIELDS['wind-surface'];
-    const pts = _sampleGrid(WIND_COLS, WIND_ROWS, WORLD_MAP_BOUNDS);
-    const locations = await _fetchGridChunkedRaw(pts, chunk => {
-      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
-        _windQuery(fields, 'wind-surface');
-    }, 300);
+    // Shares the Wind layer's cached grid - identical points and variables.
+    const { speed, dir } = await _fetchWindGrid('wind-surface', forceRefresh);
     if (token !== _windPtLoadToken) return;
 
-    const u = new Array(pts.length).fill(null);
-    const v = new Array(pts.length).fill(null);
-    locations.forEach((loc, i) => {
-      const [s, d] = _windReadPoint(loc, fields, 'wind-surface');
+    const u = new Array(speed.length).fill(null);
+    const v = new Array(speed.length).fill(null);
+    speed.forEach((s, i) => {
+      const d = dir[i];
       if (s == null || d == null || !isFinite(s) || !isFinite(d)) return;
       // Wind direction is meteorological "from" convention (0deg = blowing
       // FROM the north), so the actual movement heading is direction+180.
@@ -13282,7 +13390,7 @@ function _wavePtStart() {
     if (_wavePtActive) _wavePtLoad();
   });
   clearInterval(_wavePtRefreshTimer);
-  _wavePtRefreshTimer = setInterval(() => _wavePtLoad(true), 10 * 60 * 1000);
+  _wavePtRefreshTimer = _omRefreshInterval(() => _wavePtLoad(true), 10 * 60 * 1000);
 }
 
 function _wavePtStop() {
@@ -13475,20 +13583,33 @@ async function _wavePtLoad(forceRefresh) {
   if (!forceRefresh && _wavePtGrid) return;
   const token = ++_wavePtLoadToken;
   try {
-    const pts = _sampleGrid(WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS);
-    const locations = await _fetchGridChunkedRaw(pts, chunk => {
-      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      return `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
-        `&current=wave_height,wave_direction&length_unit=imperial`;
-    }, 300);
+    // The Waves layer already fetches wave height and direction (among its
+    // five products) over this exact grid. If it has a recent copy, reuse it
+    // and make no request at all. Otherwise fetch just the two fields needed,
+    // so running particles alone is never more expensive than it was.
+    let heights = null, dirs = null;
+    if (_wavesFetchPromise) { try { await _wavesFetchPromise; } catch(e) {} }
+    if (_wavesAllGrids && Date.now() - _wavesGridsAt < WAVES_SHARED_TTL) {
+      heights = _wavesAllGrids.grids[WAVES_FIELD['wave-height']];
+      dirs    = _wavesAllGrids.grids[WAVES_FIELD['wave-dir']];
+    }
+    if (!heights || !dirs) {
+      const pts = _sampleGrid(WAVES_COLS, WAVES_ROWS, WORLD_MAP_BOUNDS);
+      const locations = await _fetchGridChunkedRaw(pts, chunk => {
+        const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+        const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+        return `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lngStr}` +
+          `&current=wave_height,wave_direction&length_unit=imperial`;
+      }, 300);
+      heights = locations.map(loc => loc?.current?.wave_height);
+      dirs    = locations.map(loc => loc?.current?.wave_direction);
+    }
     if (token !== _wavePtLoadToken) return;
 
-    const u = new Array(pts.length).fill(null);
-    const v = new Array(pts.length).fill(null);
-    locations.forEach((loc, i) => {
-      const ht = loc?.current?.wave_height;
-      const d = loc?.current?.wave_direction;
+    const u = new Array(heights.length).fill(null);
+    const v = new Array(heights.length).fill(null);
+    heights.forEach((ht, i) => {
+      const d = dirs[i];
       if (ht == null || d == null || !isFinite(ht) || !isFinite(d)) return;
       const rad = (d + 180) * Math.PI / 180;
       u[i] = ht * Math.sin(rad);
@@ -15565,22 +15686,31 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
   const out = new Array(pts.length).fill(null);
   await _runLimited(chunkIdx, 6, async indices => {
     const chunkPts = indices.map(i => pts[i]);
-    await _globalFetchAcquire();
-    try {
-      const r = await fetch(buildUrl(chunkPts), { signal: AbortSignal.timeout(45000) });
-      if (!r.ok) {
-        const body = await r.text().catch(() => '');
-        throw new Error(`HTTP ${r.status}${body ? ' - ' + body.slice(0, 200) : ''}`);
+    const url = buildUrl(chunkPts);
+    for (let attempt = 0; attempt < OM_MAX_ATTEMPTS; attempt++) {
+      await _omGate();
+      await _globalFetchAcquire();
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(45000) });
+        if (r.status === 429) { _omNoteRateLimited(r.headers.get('Retry-After')); continue; }
+        if (!r.ok) {
+          const body = await r.text().catch(() => '');
+          throw new Error(`HTTP ${r.status}${body ? ' - ' + body.slice(0, 200) : ''}`);
+        }
+        _omNoteOk();
+        const data = await r.json();
+        const arr = Array.isArray(data) ? data : [data];
+        anyOk = true;
+        arr.forEach((d, j) => { out[indices[j]] = d; });
+        return;
+      } catch (e) {
+        lastErr = e;
+        if (attempt === OM_MAX_ATTEMPTS - 1) {
+          console.warn('Grid chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
+        }
+      } finally {
+        _globalFetchRelease();
       }
-      const data = await r.json();
-      const arr = Array.isArray(data) ? data : [data];
-      anyOk = true;
-      arr.forEach((d, j) => { out[indices[j]] = d; });
-    } catch (e) {
-      lastErr = e;
-      console.warn('Ensemble chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
-    } finally {
-      _globalFetchRelease();
     }
   });
   if (!anyOk) throw lastErr || new Error('All chunks failed');
@@ -28232,7 +28362,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Put back the Map Borders and Labels section in Settings that I removed earlier. The page now matches what was there before this round of changes.";
+const APP_LATEST_UPDATE = "Weather data requests are now paced and shared so the app stops running into Open-Meteo rate limits. The Wind layer and Wind particles share one download instead of fetching the same thing twice, wave particles reuse the Waves layer data, requests are spaced out, and if a limit is ever hit the app waits and retries instead of losing data. Background tabs no longer refresh.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
