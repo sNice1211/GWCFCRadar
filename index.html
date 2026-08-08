@@ -12193,18 +12193,37 @@ function _globalFetchRelease() {
   if (next) next();
 }
 
+// Decides which request batch each grid point belongs to, so that when one
+// batch fails its missing points are scattered instead of forming a shape.
+//
+// The obvious round-robin (point i goes to chunk i % numChunks) looks
+// scattered but is a trap: the world grids here are row-major and 64 columns
+// wide, and 64 points get split into exactly 8 batches, so i % 8 reduces to
+// column % 8. Every point in a grid column landed in the same request, and one
+// rate-limited request blanked out whole vertical columns of the world, evenly
+// spaced, which is what produced the repeating "columns of nothing" in the
+// wind and wave particle overlays.
+//
+// Shuffling first (deterministically, so behaviour is reproducible) removes
+// any relationship between batch membership and grid geometry, whatever the
+// grid width or batch count happen to be.
+function _chunkAssign(total, numChunks) {
+  const order = Array.from({ length: total }, (_, i) => i);
+  let seed = 0x9e3779b9;
+  for (let i = order.length - 1; i > 0; i--) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    const j = seed % (i + 1);
+    const t = order[i]; order[i] = order[j]; order[j] = t;
+  }
+  const chunks = Array.from({ length: numChunks }, () => []);
+  order.forEach((origIdx, k) => chunks[k % numChunks].push(origIdx));
+  return chunks;
+}
+
 async function _fetchGridChunked(pts, buildUrl, fields, chunkSize) {
   chunkSize = chunkSize || 500;
   const numChunks = Math.max(1, Math.ceil(pts.length / chunkSize));
-  // Stripe points across chunks round-robin (point i goes to chunk i%numChunks)
-  // instead of slicing consecutive runs. In a row-major world grid, a run of
-  // consecutive points spans several whole rows - so one failed "consecutive"
-  // chunk used to blank out solid horizontal bands across the entire map
-  // width. Striping means a failed chunk's missing points are scattered
-  // one-per-neighborhood across the whole world instead, which _bilinear
-  // smooths right over using the (still-present) surrounding points.
-  const chunkIdx = Array.from({ length: numChunks }, () => []);
-  pts.forEach((p, i) => chunkIdx[i % numChunks].push(i));
+  const chunkIdx = _chunkAssign(pts.length, numChunks);
 
   let anyOk = false;
   const grids = {};
@@ -12887,6 +12906,37 @@ let _windPtIntensity = 0.95;
 let _windPtThickness = 2.2;
 let _windPtOpacity = 1;
 
+// Any cell the API didn't return leaves a hole in the velocity field, and a
+// hole big enough that all four of _bilinear's corners are missing kills every
+// particle that reaches it - a dead patch on the map. Close the holes by
+// averaging whatever neighbours do exist, repeating a few times so small
+// clusters fill in from their edges inward. The grid spans the full globe, so
+// longitude wraps around at the edges.
+function _ptFillGridHoles(u, v, cols, rows) {
+  for (let pass = 0; pass < 4; pass++) {
+    const su = u.slice(), sv = v.slice();
+    let filled = 0;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        if (su[i] != null) continue;
+        let sumU = 0, sumV = 0, n = 0;
+        for (let dr = -1; dr <= 1; dr++) {
+          const rr = r + dr;
+          if (rr < 0 || rr >= rows) continue;
+          for (let dc = -1; dc <= 1; dc++) {
+            if (!dr && !dc) continue;
+            const j = rr * cols + ((c + dc + cols) % cols);
+            if (su[j] != null) { sumU += su[j]; sumV += sv[j]; n++; }
+          }
+        }
+        if (n) { u[i] = sumU / n; v[i] = sumV / n; filled++; }
+      }
+    }
+    if (!filled) break;
+  }
+}
+
 // How many degrees of longitude one screen pixel covers at the current view.
 // Multiplying the animation step by this converts a pixels-per-frame speed
 // into the degrees-per-frame the particle positions actually use, so a given
@@ -13139,6 +13189,7 @@ async function _windPtLoad(forceRefresh) {
       v[i] = s * Math.cos(rad);
     });
     if (!u.some(x => x != null)) throw new Error('no wind data in response');
+    _ptFillGridHoles(u, v, WIND_COLS, WIND_ROWS);
     _windPtGrid = { cols: WIND_COLS, rows: WIND_ROWS, u, v };
     _windPtSeedParticles();
   } catch(e) {
@@ -13415,6 +13466,7 @@ async function _wavePtLoad(forceRefresh) {
       v[i] = ht * Math.cos(rad);
     });
     if (!u.some(x => x != null)) throw new Error('no wave data in response');
+    _ptFillGridHoles(u, v, WAVES_COLS, WAVES_ROWS);
     _wavePtGrid = { cols: WAVES_COLS, rows: WAVES_ROWS, u, v };
     _wavePtSeedParticles();
   } catch(e) {
@@ -15477,8 +15529,7 @@ async function _sevRenderEnsemble(body) {
 async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize) {
   chunkSize = chunkSize || 20;
   const numChunks = Math.max(1, Math.ceil(pts.length / chunkSize));
-  const chunkIdx = Array.from({ length: numChunks }, () => []);
-  pts.forEach((p, i) => chunkIdx[i % numChunks].push(i));
+  const chunkIdx = _chunkAssign(pts.length, numChunks);
 
   let anyOk = false;
   let lastErr = null;
@@ -28117,7 +28168,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Wind and wave particle gaps are fixed for real this time. Particles now seed past the edges of the screen, move at a speed that matches the zoom level, and reset cleanly when you pan.";
+const APP_LATEST_UPDATE = "Found the real cause of the wind and wave particle gaps: when a weather data request got rate limited it wiped out whole columns of the map, evenly spaced. Requests are now spread so a failure scatters harmlessly, and missing cells are filled in from their neighbours.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
