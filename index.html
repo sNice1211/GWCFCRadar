@@ -12850,7 +12850,10 @@ function _paintAndShowWind(token) {
 function _ptEffectiveDensity(baseDensity) {
   const bounds = map.getBounds();
   const latSpan = Math.max(0.5, bounds.getNorth() - bounds.getSouth());
-  const lngSpan = Math.max(0.5, bounds.getEast() - bounds.getWest());
+  let lngSpan = bounds.getEast() - bounds.getWest();
+  // Handle dateline wrapping: if east < west, add 360 to normalize
+  if (lngSpan < 0) lngSpan += 360;
+  lngSpan = Math.max(0.5, lngSpan);
   const REF_AREA = 25 * 50; // ~continental-US-sized view in degrees
   const scale = Math.sqrt((latSpan * lngSpan) / REF_AREA);
   // Hard ceiling regardless of how wide the view or how high Density is set -
@@ -12871,7 +12874,11 @@ function _ptEffectiveDensity(baseDensity) {
 // guaranteed per cell, the biggest possible gap is one cell wide, not
 // "however unlucky this random draw happened to be."
 function _ptGridDims(count, bounds) {
-  const aspect = Math.max(0.1, (bounds.getEast() - bounds.getWest()) / Math.max(0.01, bounds.getNorth() - bounds.getSouth()));
+  let lngSpan = bounds.getEast() - bounds.getWest();
+  // Handle dateline wrapping: if east < west, add 360 to normalize
+  if (lngSpan < 0) lngSpan += 360;
+  const latSpan = Math.max(0.01, bounds.getNorth() - bounds.getSouth());
+  const aspect = Math.max(0.1, lngSpan / latSpan);
   const cols = Math.max(1, Math.round(Math.sqrt(Math.max(1, count) * aspect)));
   const rows = Math.max(1, Math.ceil(Math.max(1, count) / cols));
   return { cols, rows };
@@ -12894,14 +12901,31 @@ function _ptAssignCells(particles, cols, rows, count) {
 function _ptCellRespawn(p, bounds, gridDims) {
   const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
   const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
-  const west = bounds.getWest(), east = bounds.getEast();
+  let west = bounds.getWest(), east = bounds.getEast();
+
+  // Handle dateline wrapping: if east < west, the bounds cross the antimeridian
+  // In that case, we need to add 360 to east for calculation, then normalize result
+  let lngSpan = east - west;
+  const crossesDateline = lngSpan < 0;
+  if (crossesDateline) lngSpan += 360;
+
   const cols = gridDims.cols, rows = gridDims.rows;
-  const cellW = (east - west) / cols;
+  const cellW = lngSpan / cols;
   const cellH = (north - south) / rows;
-  const cellWest = west + (p.cellCol != null ? p.cellCol : 0) * cellW;
-  const cellSouth = south + (p.cellRow != null ? p.cellRow : 0) * cellH;
+  const cellCol = p.cellCol != null ? p.cellCol : 0;
+  const cellRow = p.cellRow != null ? p.cellRow : 0;
+
+  const cellSouth = south + cellRow * cellH;
+  let cellWest = west + cellCol * cellW;
+
   p.lat = cellSouth + Math.random() * cellH;
-  p.lng = cellWest + Math.random() * cellW;
+  let lng = cellWest + Math.random() * cellW;
+
+  // Normalize longitude to [-180, 180]
+  while (lng > 180) lng -= 360;
+  while (lng < -180) lng += 360;
+  p.lng = lng;
+
   p.age = 0;
   p.life = 40 + Math.random() * 80;
 }
@@ -12986,6 +13010,27 @@ let _windPtSpeed = 1;       // Settings: 0.25 - 3 (x)
 let _windPtIntensity = 0.95; // Settings: 0.2 - 1, drives both trail opacity and how slowly trails fade
 let _windPtThickness = 2.2;  // Settings: 0.5 - 4 (px)
 let _windPtOpacity = 1;     // Settings: 0.1 - 1, whole-canvas opacity (separate from Intensity's per-trail fade)
+let _windPtLastSeededBounds = null; // Track bounds at last seed to reseed on significant pan
+
+function _windPtOnMove() {
+  if (!_windPtGrid || !_windPtActive) return;
+  const bounds = map.getBounds();
+  if (!_windPtLastSeededBounds) { _windPtLastSeededBounds = bounds; return; }
+  // Reseed if view has panned more than ~5% of the current view width
+  const prevW = _windPtLastSeededBounds.getEast() - _windPtLastSeededBounds.getWest();
+  const currW = bounds.getEast() - bounds.getWest();
+  let w1 = prevW < 0 ? prevW + 360 : prevW;
+  let w2 = currW < 0 ? currW + 360 : currW;
+  const panThreshold = Math.max(w1, w2) * 0.05;
+  const centerShift = Math.hypot(
+    bounds.getCenter().lat - _windPtLastSeededBounds.getCenter().lat,
+    (bounds.getCenter().lng - _windPtLastSeededBounds.getCenter().lng) * Math.cos(bounds.getCenter().lat * Math.PI / 180)
+  );
+  if (centerShift > panThreshold) {
+    _windPtLastSeededBounds = bounds;
+    _windPtSeedParticles();
+  }
+}
 
 function _windPtStart() {
   _windPtActive = true;
@@ -13000,9 +13045,11 @@ function _windPtStart() {
     map.on('resize', _windPtResizeCanvas);
     map.on('zoomstart', _windPtOnZoomStart);
     map.on('zoomend', _windPtOnZoomEnd);
+    map.on('moveend', _windPtOnMove);
   }
   _windPtAnchorLatLng = map.getCenter();
   _windPtLastAnchorPt = null;
+  _windPtLastSeededBounds = null;
   if (!_windPtRafId) { _windPtLastFrameTime = null; _windPtRafId = requestAnimationFrame(_windPtAnimTick); }
   _windPtLoad();
   clearInterval(_windPtRefreshTimer);
@@ -13016,6 +13063,7 @@ function _windPtStop() {
   map.off('resize', _windPtResizeCanvas);
   map.off('zoomstart', _windPtOnZoomStart);
   map.off('zoomend', _windPtOnZoomEnd);
+  map.off('moveend', _windPtOnMove);
   if (_windPtCanvas) { try { _windPtCanvas.remove(); } catch(e){} _windPtCanvas = null; }
   _windPtParticles = [];
   _windPtGrid = null;
@@ -13219,6 +13267,27 @@ let _wavePtSpeed = 1;       // Settings: 0.25 - 3 (x)
 let _wavePtIntensity = 0.95; // Settings: 0.2 - 1
 let _wavePtThickness = 2.2;  // Settings: 0.5 - 4 (px)
 let _wavePtOpacity = 1;     // Settings: 0.1 - 1
+let _wavePtLastSeededBounds = null; // Track bounds at last seed to reseed on significant pan
+
+function _wavePtOnMove() {
+  if (!_wavePtGrid || !_wavePtActive) return;
+  const bounds = map.getBounds();
+  if (!_wavePtLastSeededBounds) { _wavePtLastSeededBounds = bounds; return; }
+  // Reseed if view has panned more than ~5% of the current view width
+  const prevW = _wavePtLastSeededBounds.getEast() - _wavePtLastSeededBounds.getWest();
+  const currW = bounds.getEast() - bounds.getWest();
+  let w1 = prevW < 0 ? prevW + 360 : prevW;
+  let w2 = currW < 0 ? currW + 360 : currW;
+  const panThreshold = Math.max(w1, w2) * 0.05;
+  const centerShift = Math.hypot(
+    bounds.getCenter().lat - _wavePtLastSeededBounds.getCenter().lat,
+    (bounds.getCenter().lng - _wavePtLastSeededBounds.getCenter().lng) * Math.cos(bounds.getCenter().lat * Math.PI / 180)
+  );
+  if (centerShift > panThreshold) {
+    _wavePtLastSeededBounds = bounds;
+    _wavePtSeedParticles();
+  }
+}
 
 function _wavePtStart() {
   _wavePtActive = true;
@@ -13233,9 +13302,11 @@ function _wavePtStart() {
     map.on('resize', _wavePtResizeCanvas);
     map.on('zoomstart', _wavePtOnZoomStart);
     map.on('zoomend', _wavePtOnZoomEnd);
+    map.on('moveend', _wavePtOnMove);
   }
   _wavePtAnchorLatLng = map.getCenter();
   _wavePtLastAnchorPt = null;
+  _wavePtLastSeededBounds = null;
   if (!_wavePtRafId) { _wavePtLastFrameTime = null; _wavePtRafId = requestAnimationFrame(_wavePtAnimTick); }
   _wavePtLoad();
   // Land mask is fetched once and cached - if it's already loaded from a
@@ -13255,11 +13326,13 @@ function _wavePtStop() {
   map.off('resize', _wavePtResizeCanvas);
   map.off('zoomstart', _wavePtOnZoomStart);
   map.off('zoomend', _wavePtOnZoomEnd);
+  map.off('moveend', _wavePtOnMove);
   if (_wavePtCanvas) { try { _wavePtCanvas.remove(); } catch(e){} _wavePtCanvas = null; }
   _wavePtParticles = [];
   _wavePtGrid = null;
   _wavePtAnchorLatLng = null;
   _wavePtLastAnchorPt = null;
+  _wavePtLastSeededBounds = null;
 }
 
 function _wavePtResizeCanvas() {
@@ -28095,7 +28168,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Security check: fixed a handful of spots where search results and radio stream links could have injected malicious code.";
+const APP_LATEST_UPDATE = "Fixed particle rendering column gaps: proper dateline wrapping in grid calculations, reseed on pan, corrected cell position normalization.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
