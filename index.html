@@ -12949,13 +12949,18 @@ function _windPtRespawn(p, bounds) {
   if (!bounds) return;
   const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
   const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
-  let west = bounds.getWest(), east = bounds.getEast();
-  if (east < west) east += 360;
-  const lngSpan = east - west;
+  let west = bounds.getWest();
+  let east = bounds.getEast();
+
   p.lat = south + Math.random() * (north - south);
-  p.lng = west + Math.random() * lngSpan;
-  while (p.lng > 180) p.lng -= 360;
-  while (p.lng < -180) p.lng += 360;
+
+  if (east < west) {
+    p.lng = Math.random() < 0.5 ?
+      west + Math.random() * (180 - west) :
+      -180 + Math.random() * (east + 180);
+  } else {
+    p.lng = west + Math.random() * (east - west);
+  }
   p.age = 0;
   p.life = 50 + Math.random() * 100;
 }
@@ -12978,15 +12983,20 @@ function _windPtSeedParticles() {
 }
 
 function _windPtGridCoord(lat, lng) {
-  if (!_windPtGrid || _windPtGrid.cols < 1) return [0, 0];
-  const south = WORLD_MAP_BOUNDS[0][0], north = WORLD_MAP_BOUNDS[1][0];
-  const west = WORLD_MAP_BOUNDS[0][1], east = WORLD_MAP_BOUNDS[1][1];
-  const lngNorm = lng > 180 ? lng - 360 : (lng < -180 ? lng + 360 : lng);
-  let lngIn = lngNorm - west;
-  if (lngIn < 0) lngIn += 360;
+  if (!_windPtGrid || _windPtGrid.cols < 1 || _windPtGrid.rows < 1) return [0, 0];
+  const gridSouth = WORLD_MAP_BOUNDS[0][0], gridNorth = WORLD_MAP_BOUNDS[1][0];
+  const gridWest = WORLD_MAP_BOUNDS[0][1], gridEast = WORLD_MAP_BOUNDS[1][1];
+  const latFrac = Math.max(0, Math.min(1, (lat - gridSouth) / (gridNorth - gridSouth)));
+  let lngNorm = lng;
+  while (lngNorm > 180) lngNorm -= 360;
+  while (lngNorm < -180) lngNorm += 360;
+  let lngFrac = (lngNorm - gridWest) / (gridEast - gridWest);
+  if (lngFrac < 0) lngFrac += 1;
+  if (lngFrac > 1) lngFrac -= 1;
+  lngFrac = Math.max(0, Math.min(1, lngFrac));
   return [
-    Math.max(0, Math.min(_windPtGrid.cols - 1, (lngIn / 360) * _windPtGrid.cols)),
-    Math.max(0, Math.min(_windPtGrid.rows - 1, ((lat - south) / (north - south)) * _windPtGrid.rows)),
+    lngFrac * (_windPtGrid.cols - 1),
+    latFrac * (_windPtGrid.rows - 1)
   ];
 }
 
@@ -13183,13 +13193,19 @@ function _wavePtRespawn(p, bounds) {
   for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
     const south = Math.max(bounds.getSouth(), WORLD_MAP_BOUNDS[0][0]);
     const north = Math.min(bounds.getNorth(), WORLD_MAP_BOUNDS[1][0]);
-    let west = bounds.getWest(), east = bounds.getEast();
-    if (east < west) east += 360;
-    const lngSpan = east - west;
+    let west = bounds.getWest();
+    let east = bounds.getEast();
+
     p.lat = south + Math.random() * (north - south);
-    p.lng = west + Math.random() * lngSpan;
-    while (p.lng > 180) p.lng -= 360;
-    while (p.lng < -180) p.lng += 360;
+
+    if (east < west) {
+      p.lng = Math.random() < 0.5 ?
+        west + Math.random() * (180 - west) :
+        -180 + Math.random() * (east + 180);
+    } else {
+      p.lng = west + Math.random() * (east - west);
+    }
+
     if (!_wavePtIsLand(p.lat, p.lng)) break;
   }
   p.age = 0;
@@ -13214,15 +13230,20 @@ function _wavePtSeedParticles() {
 }
 
 function _wavePtGridCoord(lat, lng) {
-  if (!_wavePtGrid || _wavePtGrid.cols < 1) return [0, 0];
-  const south = WORLD_MAP_BOUNDS[0][0], north = WORLD_MAP_BOUNDS[1][0];
-  const west = WORLD_MAP_BOUNDS[0][1], east = WORLD_MAP_BOUNDS[1][1];
-  const lngNorm = lng > 180 ? lng - 360 : (lng < -180 ? lng + 360 : lng);
-  let lngIn = lngNorm - west;
-  if (lngIn < 0) lngIn += 360;
+  if (!_wavePtGrid || _wavePtGrid.cols < 1 || _wavePtGrid.rows < 1) return [0, 0];
+  const gridSouth = WORLD_MAP_BOUNDS[0][0], gridNorth = WORLD_MAP_BOUNDS[1][0];
+  const gridWest = WORLD_MAP_BOUNDS[0][1], gridEast = WORLD_MAP_BOUNDS[1][1];
+  const latFrac = Math.max(0, Math.min(1, (lat - gridSouth) / (gridNorth - gridSouth)));
+  let lngNorm = lng;
+  while (lngNorm > 180) lngNorm -= 360;
+  while (lngNorm < -180) lngNorm += 360;
+  let lngFrac = (lngNorm - gridWest) / (gridEast - gridWest);
+  if (lngFrac < 0) lngFrac += 1;
+  if (lngFrac > 1) lngFrac -= 1;
+  lngFrac = Math.max(0, Math.min(1, lngFrac));
   return [
-    Math.max(0, Math.min(_wavePtGrid.cols - 1, (lngIn / 360) * _wavePtGrid.cols)),
-    Math.max(0, Math.min(_wavePtGrid.rows - 1, ((lat - south) / (north - south)) * _wavePtGrid.rows)),
+    lngFrac * (_wavePtGrid.cols - 1),
+    latFrac * (_wavePtGrid.rows - 1)
   ];
 }
 
@@ -24876,40 +24897,6 @@ function selectProduct(p) {
         <div class="lqm-toggle-track"></div>
         <div class="lqm-toggle-knob"></div>
       </label>
-    </div>
-
-    <div class="lqm-settings-category" style="margin-top:12px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-map></use></svg> Map Borders &amp; Labels</div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">State Borders</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-stateborders" checked onchange="lqmToggleSetting('stateborders',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">County Borders</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-countyborders" onchange="lqmToggleSetting('countyborders',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Province Borders</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-provinceborders" checked onchange="lqmToggleSetting('provinceborders',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">City Name Size</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-citynamesize" min="8" max="18" value="12" step="1"
-          class="lqm-slider" oninput="lqmSetCityNameSize(this.value)">
-        <span id="lqm-citynamesize-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">12px</span>
-      </div>
     </div>
   </div>
 
