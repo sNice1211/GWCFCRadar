@@ -13542,6 +13542,7 @@ function toggleSmooth() {
 
 // Products - IEM WMS channel suffix per product type.
 const GOES_PRODUCTS = [
+  { id: 'geocolor', label: 'GeoColor RGB', ch: null, src: 'gibs', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-image></use></svg>', note: 'Day and night' },
   { id: 'ch01', label: 'Blue Visible',      ch: 'ch01', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg>', note: 'Daytime only' },
   { id: 'ch02', label: 'Red Visible',       ch: 'ch02', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sun></use></svg>', note: 'Daytime only' },
   { id: 'ch03', label: 'Veggie',            ch: 'ch03', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-leaf></use></svg>', note: 'Daytime only' },
@@ -13563,6 +13564,20 @@ const GOES_PRODUCTS = [
 // Shared WMS base URLs.
 const _GOES_E = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
 const _GOES_W = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
+// NASA GIBS - free, no API key, CORS-enabled, and serves EPSG:3857, so it sits
+// alongside the Iowa Mesonet layers without any extra plumbing.
+const _GIBS_WMS = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi';
+
+// GeoColor is a full RGB composite, not one ABI channel, so it does not follow
+// the {sector}_{channel} naming every other product here uses. There is one
+// layer per satellite and it covers the whole disk, so only East vs West
+// matters - the sector part of the region choice does not apply.
+const GIBS_GEOCOLOR = { east: 'GOES-East_ABI_GeoColor', west: 'GOES-West_ABI_GeoColor' };
+
+// GIBS stops publishing GeoColor tiles past about this zoom. Capping it makes
+// Leaflet scale up the last real tiles instead of requesting empty ones, which
+// would otherwise look like the layer had broken. Raise it if GIBS adds levels.
+const GIBS_MAX_NATIVE_ZOOM = 7;
 
 // Regions - IEM WMS endpoint + layer-name prefix.
 // Layer name = prefix + '_' + ch from the active product.
@@ -13585,20 +13600,28 @@ function _detectGoesConfig() {
   const product = GOES_PRODUCTS.find(p => p.id === _goesProductId) || GOES_PRODUCTS[0];
   const ch = product.ch;
 
-  // Manual region override
+  // Work out which satellite and which Iowa Mesonet sector this view wants,
+  // then hand back whichever shape the chosen product needs.
+  let base = _GOES_E, prefix = 'conus';
+
   const override = GOES_REGIONS.find(r => r.id === _goesRegionId && r.id !== 'auto');
-  if (override) return { url: override.url, layer: `${override.prefix}_${ch}` };
+  if (override) {
+    base = override.url; prefix = override.prefix;
+  } else if (map) {
+    const c   = map.getCenter();
+    const lat = c.lat;
+    const lng = ((c.lng + 180) % 360 + 360) % 360 - 180; // normalise -180..180
+    if (lat > 50 && lng < -120 && lng > -170)                     { base = _GOES_W; prefix = 'alaska'; }
+    else if (lat > 16 && lat < 28 && lng < -150 && lng > -165)    { base = _GOES_W; prefix = 'hawaii'; }
+    else if (lat >= 24 && lat <= 50 && lng <= -100 && lng >= -125) { base = _GOES_W; prefix = 'conus'; }
+  }
 
-  // Auto-detect from map centre
-  if (!map) return { url: _GOES_E, layer: `conus_${ch}` };
-  const c   = map.getCenter();
-  const lat = c.lat;
-  const lng = ((c.lng + 180) % 360 + 360) % 360 - 180; // normalise -180..180
-
-  if (lat > 50 && lng < -120 && lng > -170)                return { url: _GOES_W, layer: `alaska_${ch}` };
-  if (lat > 16 && lat < 28 && lng < -150 && lng > -165)    return { url: _GOES_W, layer: `hawaii_${ch}` };
-  if (lat >= 24 && lat <= 50 && lng <= -100 && lng >= -125) return { url: _GOES_W, layer: `conus_${ch}` };
-  return { url: _GOES_E, layer: `conus_${ch}` };
+  // GeoColor comes from GIBS as one whole-disk layer per satellite, so the
+  // sector is irrelevant and only the East/West choice carries over.
+  if (product.src === 'gibs') {
+    return { url: _GIBS_WMS, layer: GIBS_GEOCOLOR[base === _GOES_W ? 'west' : 'east'], gibs: true };
+  }
+  return { url: base, layer: `${prefix}_${ch}` };
 }
 
 // GOES frame state (also read by timeline and animation code outside this section)
@@ -13626,23 +13649,42 @@ function _buildGoesFrames() {
 
 // Build a fresh WMS layer using the auto-detected (or manually chosen) region.
 function _makeGoesLayer(timeStr, opacity) {
-  const { url, layer } = _detectGoesConfig();
-  return L.tileLayer.wms(`${url}?_cb=${Date.now()}`, {
-    layers:            layer,
+  const cfg = _detectGoesConfig();
+  const opts = {
+    layers:            cfg.layer,
     styles:            '',
     format:            'image/png',
     transparent:       true,
     version:           '1.1.1',
     opacity:           opacity !== undefined ? opacity : 0.85,
     zIndex:            11,
-    attribution:       '© Iowa Mesonet · GOES',
+    attribution:       cfg.gibs ? '© NASA GIBS · GOES ABI GeoColor' : '© Iowa Mesonet · GOES',
     crossOrigin:       'anonymous',
     noWrap:            true,
     TIME:              timeStr,
     keepBuffer:        _isIOS ? 1 : 2,
     updateWhenIdle:    _isIOS,
     updateWhenZooming: false,
-  }).addTo(map);
+  };
+  if (cfg.gibs) opts.maxNativeZoom = GIBS_MAX_NATIVE_ZOOM;
+  const layer = L.tileLayer.wms(`${cfg.url}?_cb=${Date.now()}`, opts).addTo(map);
+  if (cfg.gibs) _watchGibsTiles(layer, cfg.layer);
+  return layer;
+}
+
+// A WMS server handed a layer name it does not recognise just returns errors,
+// and Leaflet renders that as nothing at all - an empty map with no clue why.
+// That is exactly how the earlier GIBS attempt failed. Watch the first tiles
+// and say something specific if none of them arrive.
+function _watchGibsTiles(layer, layerName) {
+  let anyLoaded = false, errors = 0;
+  layer.on('tileload', () => { anyLoaded = true; });
+  layer.on('tileerror', () => {
+    if (anyLoaded || ++errors !== 4) return;
+    showToast('GeoColor imagery unavailable right now', 4000);
+    console.warn('NASA GIBS returned no tiles for layer "' + layerName + '". Confirm the name against ' +
+      'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.3.0');
+  });
 }
 
 function _clearGoesLayer() {
@@ -13869,6 +13911,7 @@ function toggleSatelliteSub() {
 // them (Radar's Reflectivity/Velocity/etc, Satellite's GOES channels, Alerts'
 // sub-panels). Shown in the same ⓘ tooltip used for the overlay pills.
 const LAYER_DESCRIPTIONS = {
+  geocolor:       'Full-colour satellite imagery, the kind you see on TV weather. By day it looks close to true colour, and at night it switches to infrared cloud shading with city lights, so it stays readable around the clock rather than going dark like the plain visible channels. One image built from several ABI bands, from NASA GIBS, updated about every 10 minutes. Detail stops sharpening past roughly zoom 7, where it scales the last real imagery up rather than going blank.',
   waves:          'Ocean conditions - wave height, period, direction, swell, and sea surface temperature - shown as a smooth color map over the water. Tap a product below to pick which one.',
   air:            'Air quality - overall AQI, PM2.5, PM10, and ozone - shown as a smooth color map. Tap a product below to pick which one.',
   temperature:    'Current temperature conditions - air temperature, feels-like, and dew point - shown as a smooth color map. Tap a product below to pick which one.',
@@ -28232,7 +28275,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Rolled back the request pacing changes from the last two updates. They were meant to avoid rate limits but made layers slow to load, so loading is back to how it was before them.";
+const APP_LATEST_UPDATE = "Added GeoColor to the Satellite layer: full-colour imagery that looks close to true colour by day and switches to infrared with city lights at night, so it stays readable after dark. It is the first option in the Satellite menu.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
