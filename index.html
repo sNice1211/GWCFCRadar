@@ -13579,6 +13579,54 @@ const GIBS_GEOCOLOR = { east: 'GOES-East_ABI_GeoColor', west: 'GOES-West_ABI_Geo
 // would otherwise look like the layer had broken. Raise it if GIBS adds levels.
 const GIBS_MAX_NATIVE_ZOOM = 7;
 
+// The names above are a starting guess. A WMS server handed a layer name it
+// does not know just returns errors, and Leaflet paints that as an empty map
+// with no explanation, which is how this went wrong the last time GIBS was
+// tried here. Rather than hard-code a guess and hope, the layer name is
+// confirmed against the server the first time GeoColor actually fails, and
+// the answer is remembered so the lookup happens at most once.
+const GIBS_CAPS_URL = _GIBS_WMS + '?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.3.0';
+const GIBS_NAME_CACHE_KEY = 'lqm_gibs_geocolor_names';
+const GIBS_NAME_CACHE_TTL = 30 * 24 * 3600 * 1000;
+let _gibsResolving = null;
+
+// Load previously confirmed names, so a returning visitor never pays for the
+// lookup again.
+(function _gibsLoadCachedNames() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(GIBS_NAME_CACHE_KEY) || 'null');
+    if (raw && Date.now() - raw.at < GIBS_NAME_CACHE_TTL && raw.east && raw.west) {
+      GIBS_GEOCOLOR.east = raw.east;
+      GIBS_GEOCOLOR.west = raw.west;
+    }
+  } catch(e) {}
+})();
+
+// Ask GIBS what it actually publishes and pick the GeoColor layers out of it.
+// Only ever called after a real failure, never on the happy path - the
+// capabilities document is large and not worth fetching speculatively.
+async function _gibsResolveNames() {
+  if (_gibsResolving) return _gibsResolving;
+  _gibsResolving = (async () => {
+    const r = await fetch(GIBS_CAPS_URL, { signal: AbortSignal.timeout(20000) });
+    if (!r.ok) throw new Error('capabilities HTTP ' + r.status);
+    const xml = await r.text();
+    const names = (xml.match(/<Name>[^<]*<\/Name>/g) || []).map(n => n.slice(6, -7));
+    const geo = names.filter(n => /geocolor/i.test(n));
+    if (!geo.length) throw new Error('GIBS WMS publishes no GeoColor layer');
+    const east = geo.find(n => /east/i.test(n));
+    const west = geo.find(n => /west/i.test(n));
+    if (!east && !west) throw new Error('found GeoColor layers but none for GOES East/West: ' + geo.slice(0, 4).join(', '));
+    const resolved = { east: east || west, west: west || east };
+    GIBS_GEOCOLOR.east = resolved.east;
+    GIBS_GEOCOLOR.west = resolved.west;
+    try { localStorage.setItem(GIBS_NAME_CACHE_KEY, JSON.stringify({ ...resolved, at: Date.now() })); } catch(e) {}
+    console.info('Resolved GIBS GeoColor layers from the server:', resolved);
+    return resolved;
+  })().finally(() => { _gibsResolving = null; });
+  return _gibsResolving;
+}
+
 // Regions - IEM WMS endpoint + layer-name prefix.
 // Layer name = prefix + '_' + ch from the active product.
 const GOES_REGIONS = [
@@ -13674,16 +13722,37 @@ function _makeGoesLayer(timeStr, opacity) {
 
 // A WMS server handed a layer name it does not recognise just returns errors,
 // and Leaflet renders that as nothing at all - an empty map with no clue why.
-// That is exactly how the earlier GIBS attempt failed. Watch the first tiles
-// and say something specific if none of them arrive.
+// That is exactly how the earlier GIBS attempt failed. So when no tiles arrive:
+// ask GIBS what it really publishes, correct the name and rebuild; and if that
+// cannot be done, report the reason the server gave rather than a blank map.
 function _watchGibsTiles(layer, layerName) {
-  let anyLoaded = false, errors = 0;
+  let anyLoaded = false, errors = 0, handled = false;
   layer.on('tileload', () => { anyLoaded = true; });
-  layer.on('tileerror', () => {
-    if (anyLoaded || ++errors !== 4) return;
-    showToast('GeoColor imagery unavailable right now', 4000);
-    console.warn('NASA GIBS returned no tiles for layer "' + layerName + '". Confirm the name against ' +
-      'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.3.0');
+  layer.on('tileerror', async (ev) => {
+    if (anyLoaded || handled || ++errors < 3) return;
+    handled = true;
+
+    let serverSaid = '';
+    try {
+      const r = await fetch(ev?.tile?.src || '', { signal: AbortSignal.timeout(10000) });
+      const body = await r.text();
+      const m = body.match(/<ServiceException(?:\s[^>]*)?>([\s\S]*?)<\/ServiceException>/i);
+      if (m) serverSaid = m[1].trim().replace(/\s+/g, ' ').slice(0, 200);
+    } catch(e) {}
+
+    try {
+      const resolved = await _gibsResolveNames();
+      if (resolved.east !== layerName && resolved.west !== layerName) {
+        console.info('GeoColor layer name corrected, reloading');
+        _reloadGoesIfActive();
+        return;
+      }
+      throw new Error('server publishes "' + layerName + '" but served no tiles' + (serverSaid ? ': ' + serverSaid : ''));
+    } catch (e) {
+      showToast('GeoColor unavailable: ' + (serverSaid || e.message).slice(0, 90), 6000);
+      console.warn('NASA GIBS GeoColor failed for layer "' + layerName + '".',
+        serverSaid ? 'Server said: ' + serverSaid : '', e);
+    }
   });
 }
 
@@ -28275,7 +28344,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Added GeoColor to the Satellite layer: full-colour imagery that looks close to true colour by day and switches to infrared with city lights at night, so it stays readable after dark. It is the first option in the Satellite menu.";
+const APP_LATEST_UPDATE = "GeoColor satellite now checks with NASA for the correct imagery name if it fails to load, and fixes itself. If it still cannot load it now tells you the actual reason instead of showing an empty map.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
