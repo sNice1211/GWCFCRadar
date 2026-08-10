@@ -13884,6 +13884,7 @@ function showGoesFrame(idx) {
 
 // Kill radar cleanly, used when satellite turns on
 function _disableRadar() {
+  if (typeof _mrmsActive !== 'undefined' && _mrmsActive) _clearMrms();
   activeLayers.nexrad = false;
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
   radarLayer = null; // layers already hidden by setOpacity(0) above; keep on map so re-enable works
@@ -14020,6 +14021,7 @@ function toggleSatelliteSub() {
 // them (Radar's Reflectivity/Velocity/etc, Satellite's GOES channels, Alerts'
 // sub-panels). Shown in the same ⓘ tooltip used for the overlay pills.
 const LAYER_DESCRIPTIONS = {
+  mrms:           'NOAA MRMS, a 1 km national mosaic built by blending every radar in the network and quality-controlling the result. Sharper than the standard mosaic and much cleaner around ground clutter and beam blockage. Covers the lower 48.',
   geocolor:       'Full-colour satellite imagery, the kind you see on TV weather. By day it looks close to true colour, and at night it switches to infrared cloud shading with city lights, so it stays readable around the clock rather than going dark like the plain visible channels. One image built from several ABI bands, from NASA GIBS, updated about every 10 minutes. Detail stops sharpening past roughly zoom 7, where it scales the last real imagery up rather than going blank.',
   waves:          'Ocean conditions - wave height, period, direction, swell, and sea surface temperature - shown as a smooth color map over the water. Tap a product below to pick which one.',
   air:            'Air quality - overall AQI, PM2.5, PM10, and ozone - shown as a smooth color map. Tap a product below to pick which one.',
@@ -15850,6 +15852,7 @@ function showToast(msg, durationMs) {
 }
 
 const RADAR_SUB_BUBBLES = [
+  { id:'mrms', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label:'MRMS 1km', action: () => { if (_mrmsActive) { _clearMrms(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); _disableSatellite(); activeLayers.nexrad = true; currentProduct = 'mrms'; _loadMrmsComposite(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } } },
   { id:'reflectivity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
   { id:'velocity',     icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
   { id:'hc',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-rainbow></use></svg>', label:'Hydro. Class.', action: () => { if (currentProduct === 'hc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('hc'); } } },
@@ -21120,6 +21123,107 @@ function _syncNexradSites() {
   else         hideNexradSites();
 }
 
+// ── MRMS NATIONAL MOSAIC , NOAA Multi-Radar Multi-Sensor via NCEP GeoServer ──
+// 1 km quality-controlled mosaic, higher resolution and better QC than the n0q
+// composite the default loop draws. Served as WMS, so there is no raw GRIB
+// handling, and the host is already used for single-site Level III.
+//
+// Deliberately reuses _refSiteFrames / _refSitePool rather than adding a
+// parallel system: showFrame() already delegates to _showSingleSiteRefFrame()
+// whenever that pool is populated, so the timeline, scrubbing, animation and
+// teardown all work with no changes.
+const MRMS_WMS   = 'https://opengeo.ncep.noaa.gov/geoserver/conus/ows';
+const MRMS_LAYER = 'conus_bref_qcd';   // MRMS QC'd base reflectivity, CONUS 1 km
+let _mrmsActive  = false;
+
+// Reads the real scan times off GetCapabilities. This doubles as the check that
+// the layer exists at all: a renamed or withdrawn layer throws here with a clear
+// message instead of quietly painting empty tiles.
+async function _fetchMrmsTimestamps() {
+  const url = `${MRMS_WMS}?service=wms&version=1.3.0&request=GetCapabilities&_=${Date.now()}`;
+  const res = await fetch(url, { cache: 'no-store', signal: _abortSignal(12000) });
+  if (!res.ok) throw new Error('GetCapabilities HTTP ' + res.status);
+  const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
+  let timeStr = '';
+  for (const lyr of xml.querySelectorAll('Layer')) {
+    const nm = (lyr.querySelector(':scope > Name')?.textContent || '').trim().toLowerCase();
+    if (nm === MRMS_LAYER || nm.endsWith(':' + MRMS_LAYER)) {
+      const dim = lyr.querySelector('Dimension[name="time"]') || lyr.querySelector('Extent[name="time"]');
+      if (dim && dim.textContent.trim()) { timeStr = dim.textContent.trim(); break; }
+    }
+  }
+  if (!timeStr) throw new Error(`${MRMS_LAYER} not advertised with a time dimension`);
+  // Capabilities can express time as a start/end/period range rather than a list.
+  const parts = timeStr.split(',').map(x => x.trim()).filter(Boolean);
+  const times = parts.length > 1 ? parts.slice(-12) : [parts[0].split('/')[1] || parts[0]];
+  return times.map(iso => ({ iso, time: new Date(iso).getTime() / 1000, date: new Date(iso) }));
+}
+
+function _buildMrmsPool() {
+  _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _refSitePool = []; _refSiteLoaded = [];
+  _refSiteFrames.forEach((frame, i) => {
+    const l = L.tileLayer.wms(MRMS_WMS, {
+      layers: MRMS_LAYER, format: 'image/png', transparent: true,
+      version: '1.3.0', TIME: frame.iso,
+      opacity: 0, zIndex: 12, pane: 'radarPane',
+      crossOrigin: 'anonymous', noWrap: true,
+      keepBuffer: _isIOS ? 1 : 4, updateWhenIdle: _isIOS, updateWhenZooming: false,
+      attribution: 'MRMS &copy; NOAA/NSSL',
+    });
+    _refSiteLoaded[i] = false;
+    l.on('tileload', e => {
+      _refSiteLoaded[i] = true;
+      if (smoothEnabled) e.tile.style.imageRendering = 'auto';
+    });
+    l.addTo(map);
+    _refSitePool[i] = l;
+  });
+}
+
+async function _loadMrmsComposite() {
+  const gen = ++_refSiteGen;          // stale calls bail after the await
+  _mrmsActive = true;
+  _refStation = null;                 // national mosaic, not a station product
+  // Hide the n0q loop rather than removing it, matching how toggleLayer does it,
+  // so switching back does not need a rebuild.
+  _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
+  _canadaLayerPool.forEach(l => { if (l) l.setOpacity(0); });
+  _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _refSitePool = []; _refSiteLoaded = []; _refSiteFrames = [];
+
+  const animTimeEl = document.getElementById('anim-time');
+  if (animTimeEl) animTimeEl.textContent = 'Loading MRMS…';
+
+  try {
+    _refSiteFrames = await _fetchMrmsTimestamps();
+  } catch(e) {
+    console.warn('MRMS unavailable:', e);
+    _mrmsActive = false;
+    if (typeof _lqmToast === 'function') _lqmToast('MRMS unavailable right now - staying on the standard mosaic');
+    // Put the normal loop back so the user is never left with a blank radar.
+    if (typeof showFrame === 'function' && radarFrames.length) showFrame(currentFrame);
+    return;
+  }
+  if (gen !== _refSiteGen) return;    // a newer request superseded this one
+
+  _buildMrmsPool();
+  const tl = document.getElementById('timeline');
+  if (tl) tl.max = Math.max(0, _refSiteFrames.length - 1);
+  _showSingleSiteRefFrame(_refSiteFrames.length - 1);
+}
+
+function _clearMrms() {
+  if (!_mrmsActive) return;
+  _mrmsActive = false;
+  _refSiteGen++;
+  _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  _refSitePool = []; _refSiteLoaded = []; _refSiteFrames = [];
+  const tl = document.getElementById('timeline');
+  if (tl && radarFrames.length) tl.max = Math.max(0, radarFrames.length - 1);
+  if (radarFrames.length) currentFrame = radarFrames.length - 1;
+}
+
 // ── SINGLE-SITE REFLECTIVITY , NOAA Level III (opengeo.ncep.noaa.gov SR_BREF) ──
 // Uses Super Resolution Base Reflectivity with real scan timestamps from GetCapabilities.
 // Falls back to IEM ridge.cgi N0Q if opengeo is unavailable for this station.
@@ -21313,6 +21417,7 @@ function _showSingleSiteRefFrame(idx) {
 }
 
 function _clearSingleSiteRef() {
+  if (_mrmsActive) _clearMrms();
   _refSiteGen++;   // invalidate any in-flight _loadSingleSiteRef
   if (_refSiteTick) { clearInterval(_refSiteTick); _refSiteTick = null; }
   _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
@@ -28951,7 +29056,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Sharing a link to the site now shows the GWCFC logo as a preview card, and notifications finally have an icon instead of a missing image.";
+const APP_LATEST_UPDATE = "Added MRMS, NOAA's 1 km national radar mosaic. It is sharper than the standard loop and much cleaner around clutter. Pick MRMS 1km in the Radar menu.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -31784,8 +31889,8 @@ function _ovLoadOrder(){
         <div class="credit-info">
           <div class="credit-name">NOAA NCEP</div>
           <div class="credit-full">National Centers for Environmental Prediction</div>
-          <div class="credit-desc">Single-site NEXRAD Level III products served as WMS: base reflectivity, base velocity, hydrometeor classification, storm total accumulation and one-hour accumulation.</div>
-          <div class="credit-uses"><span class="credit-use">Single-Site Radar</span><span class="credit-use">Velocity</span><span class="credit-use">Hydro. Class.</span><span class="credit-use">Storm Accum.</span><span class="credit-use">1-Hr Accum.</span></div>
+          <div class="credit-desc">Single-site NEXRAD Level III products served as WMS: base reflectivity, base velocity, hydrometeor classification, storm total accumulation and one-hour accumulation. Also serves the MRMS national mosaic, the 1 km quality-controlled blend of every radar in the network.</div>
+          <div class="credit-uses"><span class="credit-use">MRMS 1km</span><span class="credit-use">Single-Site Radar</span><span class="credit-use">Velocity</span><span class="credit-use">Hydro. Class.</span><span class="credit-use">Storm Accum.</span><span class="credit-use">1-Hr Accum.</span></div>
           <a class="credit-link" href="https://opengeo.ncep.noaa.gov/" target="_blank" rel="noopener">opengeo.ncep.noaa.gov</a>
         </div>
       </div>
