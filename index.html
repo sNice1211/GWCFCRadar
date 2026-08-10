@@ -28286,22 +28286,100 @@ async function authSaveHomeRegion() {
   }
 }
 
+// Snapshot of everything currently switched on: the sub-menu layers, the
+// overlay pills, the active tool, and the basemap. Overlay ids are read from
+// the DOM (every pill carries data-ovid) rather than a hardcoded list, so
+// adding a pill puts it in the preset automatically.
+function _captureViewState() {
+  const overlays = {};
+  document.querySelectorAll('.ov-pill[data-ovid]').forEach(p => {
+    overlays[p.dataset.ovid] = p.classList.contains('active');
+  });
+  return {
+    savedLayers:   { ...activeLayers },
+    savedOverlays: overlays,
+    savedTools:    { activeTool: activeTool || null, inspector: !!_inspEnabled },
+    savedMapType:  currentMapType || 'satellite',
+    savedProduct:  currentProduct || 'ref'
+  };
+}
+
+// Counts what a snapshot actually has switched on, for the confirmation toast.
+function _countViewStateOn(v) {
+  const layers   = Object.values(v.savedLayers   || {}).filter(Boolean).length;
+  const overlays = Object.values(v.savedOverlays || {}).filter(Boolean).length;
+  const tools    = (v.savedTools && v.savedTools.activeTool ? 1 : 0)
+                 + (v.savedTools && v.savedTools.inspector  ? 1 : 0);
+  return { layers, overlays, tools, total: layers + overlays + tools };
+}
+
 async function authSaveLayerPreset() {
   if (!_currentUser || !_fbDb) {
     if (typeof _lqmToast === 'function') _lqmToast('Sign in first to save your layers');
     return;
   }
   try {
-    // Spread into a plain object - Firestore rejects anything non-primitive,
-    // and activeLayers is a flat id -> bool map, which is exactly what restores.
+    const view = _captureViewState();
     await _fbDb.collection('users').doc(_currentUser.uid).set({
-      savedLayers: { ...activeLayers },
+      ...view,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
-    if (typeof _lqmToast === 'function') _lqmToast('Layer preset saved <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>');
+    const c = _countViewStateOn(view);
+    if (typeof _lqmToast === 'function') {
+      _lqmToast(`Saved ${c.total} on: ${c.layers} layers, ${c.overlays} overlays, ${c.tools} tools <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>`);
+    }
   } catch(e) {
     console.warn('authSaveLayerPreset:', e);
     if (typeof _lqmToast === 'function') _lqmToast('Could not save layers - ' + (e.code || 'try again'));
+  }
+}
+
+// Re-applies a saved snapshot. Each item is toggled only when it differs from
+// the current state, and each is caught on its own so one failure cannot abort
+// the rest of the restore.
+function _applyViewState(d) {
+  if (d.savedMapType && typeof setMapType === 'function') {
+    try { setMapType(d.savedMapType); } catch(e) { console.warn('restore basemap:', e); }
+  }
+
+  if (d.savedLayers && typeof toggleLayer === 'function') {
+    Object.entries(d.savedLayers).forEach(([id, shouldBeOn]) => {
+      if (!(id in activeLayers)) return;      // ignore ids from older builds
+      if (!!shouldBeOn === !!activeLayers[id]) return;
+      try { toggleLayer(id); } catch(e) { console.warn('restore layer', id, e); }
+    });
+    ['lightning','radio','forecasts'].forEach(id => {
+      const pill = document.getElementById('op-' + id);
+      if (pill) pill.classList.toggle('active', !!activeLayers[id]);
+    });
+  }
+
+  // The pill's own active class is the source of truth for an overlay, so the
+  // toggle only fires when the saved state and the pill disagree.
+  if (d.savedOverlays && typeof toggleOverlayPill === 'function') {
+    Object.entries(d.savedOverlays).forEach(([id, shouldBeOn]) => {
+      const pill = document.querySelector(`.ov-pill[data-ovid="${id}"]`);
+      if (!pill) return;                      // pill removed since the save
+      if (!!shouldBeOn === pill.classList.contains('active')) return;
+      try { toggleOverlayPill(id); } catch(e) { console.warn('restore overlay', id, e); }
+    });
+  }
+
+  const t = d.savedTools || {};
+  if (t.inspector && !_inspEnabled && typeof toggleInspector === 'function') {
+    try { toggleInspector(); } catch(e) { console.warn('restore inspector:', e); }
+  }
+  // Only tools that raise their own toolbar are re-armed. polygon, distance and
+  // radius are one-shot placement modes - restoring one would silently swallow
+  // the first map click after load, which reads as the map being broken.
+  const RESTORABLE_TOOLS = {
+    draw:      'toggleDrawTool',
+    text:      'toggleTextTool',
+    stormcone: 'toggleStormConeTool'
+  };
+  const toolFn = RESTORABLE_TOOLS[t.activeTool];
+  if (toolFn && activeTool !== t.activeTool && typeof window[toolFn] === 'function') {
+    try { window[toolFn](); } catch(e) { console.warn('restore tool', t.activeTool, e); }
   }
 }
 
@@ -28363,22 +28441,10 @@ async function _loadUserPrefs(uid) {
     if (d.homeRegion && typeof d.homeRegion.lat === 'number' && map) {
       map.setView([d.homeRegion.lat, d.homeRegion.lng], d.homeRegion.zoom || 7);
     }
-    // Restore saved layers. toggleLayer() is the real toggle - it flips
-    // activeLayers[id] and runs the matching add/remove side effects, so it
-    // must only be called for ids whose state actually differs.
-    if (d.savedLayers && typeof toggleLayer === 'function') {
-      Object.entries(d.savedLayers).forEach(([id, shouldBeOn]) => {
-        if (!(id in activeLayers)) return;      // ignore ids from older builds
-        if (!!shouldBeOn === !!activeLayers[id]) return;
-        try { toggleLayer(id); }
-        catch(e) { console.warn('restore layer', id, e); }
-      });
-      // Re-sync the overlay pills so their active state matches what restored.
-      ['lightning','radio','forecasts'].forEach(id => {
-        const pill = document.getElementById('op-' + id);
-        if (pill) pill.classList.toggle('active', !!activeLayers[id]);
-      });
-    }
+    // Re-apply the saved layers, overlays, tools and basemap. Deferred to the
+    // next frame because auth can resolve before the overlay pills and tool
+    // buttons this reads have finished rendering.
+    requestAnimationFrame(() => _applyViewState(d));
   } catch(e) { console.warn('loadUserPrefs:', e); }
 }
 
@@ -28396,7 +28462,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Account fixes: photo cropping works again, picking an emoji now actually sets your avatar, and Save Region and Save Layers really save. Turning on Rain Near Me stores your location on your account.";
+const APP_LATEST_UPDATE = "Save Layers now saves everything you have switched on: all 28 overlays, your active tool and your basemap, not just the menu layers. Signing back in puts it all back.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
