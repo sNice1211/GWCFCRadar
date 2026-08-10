@@ -28434,12 +28434,33 @@ function _applyViewState(d) {
 
 async function _loadUserPrefs(uid) {
   if (!_fbDb) return;
+  let d;
   try {
     const snap = await _fbDb.collection('users').doc(uid).get();
     if (!snap.exists) return;
-    const d = snap.data();
+    d = snap.data();
+  } catch(e) { console.warn('loadUserPrefs read:', e); return; }
+
+  // Queue the saved view FIRST. None of the profile or notification work below
+  // affects it, and having it last meant one throw up there - a missing element,
+  // Notification unavailable, a notify poll failing - silently cost the user
+  // every saved layer. Queued behind the map because auth resolves from
+  // IndexedDB long before init() runs on window's load event.
+  _whenMapReady(() => {
+    // setView needs a live map, so it belongs in here rather than inline above,
+    // where `map` is still undefined and the saved region was dropped outright.
+    if (d.homeRegion && typeof d.homeRegion.lat === 'number' && map) {
+      try { map.setView([d.homeRegion.lat, d.homeRegion.lng], d.homeRegion.zoom || 7); }
+      catch(e) { console.warn('restore homeRegion:', e); }
+    }
+    _applyViewState(d);
+  });
+
+  // Profile, avatar and notification state. Isolated in its own try so a
+  // failure here cannot reach the restore queued above.
+  try {
     const sub = document.getElementById('lqm-profile-sub-txt');
-    if (sub) sub.textContent = (d.region || '') + (d.role ? ' · ' + d.role : '');
+    if (sub) sub.textContent = (d.region || '') + (d.role ? ' \u00b7 ' + d.role : '');
     const rv = document.getElementById('lqm-profile-region-val');
     const ro = document.getElementById('lqm-profile-role-val');
     if (rv) {
@@ -28465,18 +28486,20 @@ async function _loadUserPrefs(uid) {
       _homeLocation = { country:'', state:'', county:'', city:'', ...d.homeLocation };
       setTimeout(_decorateAlertCards, 1200);
     }
-    if (d.notifEnabled && Notification.permission === 'granted') {
+    // Notification is absent in some mobile webviews, so never touch it bare.
+    const notifOK = (typeof Notification !== 'undefined' && Notification.permission === 'granted');
+    if (d.notifEnabled && notifOK) {
       _notifEnabled = true;
-      const cb  = document.getElementById('lqm-notif-toggle');
-      const sub = document.getElementById('lqm-notif-sublabel');
-      if (cb)  cb.checked = true;
-      if (sub) sub.textContent = 'On - watching for alerts in your area';
+      const cb   = document.getElementById('lqm-notif-toggle');
+      const nsub = document.getElementById('lqm-notif-sublabel');
+      if (cb)   cb.checked = true;
+      if (nsub) nsub.textContent = 'On - watching for alerts in your area';
       _startNotifPoll();
     }
-    if (d.rainDetectEnabled && Notification.permission === 'granted' && d.rainCoords) {
+    if (d.rainDetectEnabled && notifOK && d.rainCoords) {
       _userCoords        = d.rainCoords;
       _rainDetectEnabled = true;
-      const rcb = document.getElementById('lqm-rain-toggle');
+      const rcb  = document.getElementById('lqm-rain-toggle');
       const rsub = document.getElementById('lqm-rain-sublabel');
       if (rcb)  rcb.checked = true;
       if (rsub) rsub.textContent = 'On - checking every 5 min';
@@ -28485,17 +28508,7 @@ async function _loadUserPrefs(uid) {
         _rainDetectInterval = setInterval(_pollRainRadar, 5 * 60 * 1000);
       }
     }
-    // Restore the saved map view. Guarded on `map` because auth state can
-    // resolve before initMap() has run.
-    if (d.homeRegion && typeof d.homeRegion.lat === 'number' && map) {
-      map.setView([d.homeRegion.lat, d.homeRegion.lng], d.homeRegion.zoom || 7);
-    }
-    // Re-apply the saved layers, overlays, tools and basemap. Queued behind the
-    // map rather than a frame: auth resolves from IndexedDB well before init()
-    // runs on window's load event, so a rAF here fired while map was still
-    // undefined and every toggle threw.
-    _whenMapReady(() => _applyViewState(d));
-  } catch(e) { console.warn('loadUserPrefs:', e); }
+  } catch(e) { console.warn('loadUserPrefs profile:', e); }
 }
 
 // ── LQM INTEGRATION ─────────────────────────────────────────
@@ -28512,7 +28525,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Credits rewritten to name every source behind the map: 28 entries with logos, proper agency names, licence terms, and which layer each one powers.";
+const APP_LATEST_UPDATE = "Saved layers and your saved region now both come back on reload, and can no longer be lost when something unrelated in your profile fails to load.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -29044,8 +29057,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const presEl = document.getElementById('lqm-set-pressureunit'); if (presEl) presEl.value = _units.pressure;
     const precEl = document.getElementById('lqm-set-precipunit');   if (precEl) precEl.value = _units.precip;
     const distEl = document.getElementById('lqm-set-distunit');     if (distEl) distEl.value = _units.dist;
-    // Add scale control by default
-    if (!window._scaleCtrl && window.map) { window._scaleCtrl = L.control.scale({imperial:true,metric:true}).addTo(map); }
+    // Add scale control by default. Guarding on window.map is always truthy:
+    // <div id="map"> puts the element on window, so this ran before initMap()
+    // and Leaflet threw on every load. Queue it behind the real map instead.
+    _whenMapReady(() => {
+      if (!window._scaleCtrl && typeof map !== 'undefined' && map) {
+        try { window._scaleCtrl = L.control.scale({imperial:true, metric:true}).addTo(map); }
+        catch(e) { console.warn('scale control:', e); }
+      }
+    });
     // Always ask for location - silently start if granted, do nothing if denied
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -31238,9 +31258,10 @@ function _ovLoadOrder(){
         <img class="credit-logo" src="https://www.google.com/s2/favicons?domain=globaleas.org&amp;sz=64" alt="Global Weather and EAS Society logo" loading="lazy">
         <div class="credit-info">
           <div class="credit-name">Global Weather &amp; EAS Society</div>
-          <div class="credit-desc">Live playback of real Emergency Alert System broadcasts, and part of the weather radio station data.</div>
+          <div class="credit-desc">Live playback of real Emergency Alert System broadcasts, and the NOAA Weather Radio transmitter directory the station overlay is built from.</div>
           <div class="credit-uses"><span class="credit-use">EAS Alert Panel</span><span class="credit-use">NWR Stations</span></div>
           <a class="credit-link" href="https://globaleas.org/" target="_blank" rel="noopener">globaleas.org</a>
+          <a class="credit-link" href="https://transmitters.weatherradio.org/" target="_blank" rel="noopener" style="margin-left:10px">transmitters.weatherradio.org</a>
         </div>
       </div>
       <div class="credit-row">
@@ -31272,12 +31293,12 @@ function _ovLoadOrder(){
         </div>
       </div>
       <div class="credit-row">
-        <img class="credit-logo" src="https://www.google.com/s2/favicons?domain=weatherradio.org&amp;sz=64" alt="WeatherRadio logo" loading="lazy">
+        <img class="credit-logo" src="https://www.google.com/s2/favicons?domain=noaaweatherradio.org&amp;sz=64" alt="NOAAWeatherRadio.org logo" loading="lazy">
         <div class="credit-info">
-          <div class="credit-name">WeatherRadio.org &amp; WeatherUSA</div>
-          <div class="credit-desc">Volunteer-run audio streams and the transmitter directory behind the NOAA Weather Radio overlay.</div>
+          <div class="credit-name">NOAAWeatherRadio.org</div>
+          <div class="credit-desc">Volunteer-run live audio streams of NOAA Weather Radio All Hazards transmitters, which is what plays when you open a station from the map.</div>
           <div class="credit-uses"><span class="credit-use">NWR Stations</span><span class="credit-use">Radio Streams</span></div>
-          <a class="credit-link" href="https://transmitters.weatherradio.org/" target="_blank" rel="noopener">transmitters.weatherradio.org</a>
+          <a class="credit-link" href="https://www.noaaweatherradio.org/" target="_blank" rel="noopener">noaaweatherradio.org</a>
         </div>
       </div>
 
@@ -31337,8 +31358,8 @@ function _ovLoadOrder(){
         <div class="credit-info">
           <div class="credit-name">NOAA NCEP</div>
           <div class="credit-full">National Centers for Environmental Prediction</div>
-          <div class="credit-desc">Single-site NEXRAD Level III products served as WMS, including reflectivity, velocity, hydrometeor classification and storm total accumulation.</div>
-          <div class="credit-uses"><span class="credit-use">Single-Site Radar</span><span class="credit-use">Velocity</span><span class="credit-use">Dual-Pol</span></div>
+          <div class="credit-desc">Single-site NEXRAD Level III products served as WMS: base reflectivity, base velocity, hydrometeor classification, storm total accumulation and one-hour accumulation.</div>
+          <div class="credit-uses"><span class="credit-use">Single-Site Radar</span><span class="credit-use">Velocity</span><span class="credit-use">Hydro. Class.</span><span class="credit-use">Storm Accum.</span><span class="credit-use">1-Hr Accum.</span></div>
           <a class="credit-link" href="https://opengeo.ncep.noaa.gov/" target="_blank" rel="noopener">opengeo.ncep.noaa.gov</a>
         </div>
       </div>
