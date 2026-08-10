@@ -7117,8 +7117,6 @@ body.clean-mode #clean-hint { opacity: 1; }
             <option value="dwd">DWD ICON (Global)</option>
             <option value="ecmwf">ECMWF IFS (Global)</option>
             <option value="hrdps">HRDPS (Hi-Res N. America)</option>
-            <option value="rdps">RDPS (Regional N. America, 84h)</option>
-            <option value="gdps">GDPS (Global, 240h)</option>
             <option value="ndfd">NWS NDFD (US Forecast)</option>
             <option value="hrrr">HRRR (18h)</option>
             <option value="gfs_ens">GFS Ensemble Mean (NOAA)</option>
@@ -14868,17 +14866,14 @@ function _sevRenderDWD(body) {
 // ── Environment Canada GeoMet (MSC) ──
 // geo.weather.gc.ca/geomet : free, CORS-enabled, very reliable WMS, 3-hourly
 // and TIME-stepped. Only HRDPS (hi-res continental, 2.5 km, to +48h) is wired
-// up: its CONTINENTAL_* layers render correctly here. The GDPS/RDPS ETA_*
-// layers did not render in this setup, so they are intentionally left out.
+// up: its CONTINENTAL_* layers render correctly here.
+//
+// Do not add GDPS or RDPS here. Their ETA_* layers have been tried twice now
+// and do not render in this setup, even though ECCC documents the names as
+// valid. Removed again in favour of shipping nothing over shipping a model
+// that draws an empty panel.
 const GEOMET_WMS = 'https://geo.weather.gc.ca/geomet';
 const GEOMET_LAYERS = {
-  // RDPS (regional, 10 km, 84 h) and GDPS (global, 15 km, 240 h) come off the
-  // same ECCC GeoMet WMS as HRDPS below, so they need no new host and no raw
-  // GRIB handling. ECCC names these families with the ETA_ prefix rather than
-  // HRDPS's CONTINENTAL_ prefix; _sevValidateGeoMet() checks the names against
-  // GetCapabilities at runtime and logs loudly if ECCC ever renames one.
-  rdps:  { temp:'RDPS.ETA_TT', td:'RDPS.ETA_TD', precip:'RDPS.ETA_PR', wind:'RDPS.ETA_WSPD', gust:'RDPS.ETA_GUST' },
-  gdps:  { temp:'GDPS.ETA_TT', td:'GDPS.ETA_TD', precip:'GDPS.ETA_PR', wind:'GDPS.ETA_WSPD' },
   hrdps: { temp:'HRDPS.CONTINENTAL_TT', td:'HRDPS.CONTINENTAL_TD', precip:'HRDPS.CONTINENTAL_PR', wind:'HRDPS.CONTINENTAL_WSPD', gust:'HRDPS.CONTINENTAL_WGX', pmsl:'HRDPS.CONTINENTAL_PN', rh:'HRDPS.CONTINENTAL_HR', cloud:'HRDPS.CONTINENTAL_NT', snow:'HRDPS.CONTINENTAL_SD' },
 };
 
@@ -14952,9 +14947,9 @@ function _sevRenderGeoMet(body) {
   let timeISO = null;
   if (_sevRun && _sevRun.length >= 10) {
     const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
-    // Step size is per model, not a flat 3 h: GDPS publishes 6-hourly steps, so
-    // a hardcoded 3 would ask for a valid-time the service has no field for and
-    // hand back an empty tile.
+    // Step size is per model rather than a flat 3 h. Every GeoMet model wired up
+    // today is 3-hourly, but hardcoding that would silently request a valid-time
+    // the service has no field for the moment a 6-hourly one is added.
     const stepH = _sevStepHoursFor(_sevSection);
     timeISO = new Date(runMs + _sevFrame * stepH * 3600000).toISOString().replace('.000Z','Z');
   }
@@ -15059,8 +15054,6 @@ const SEV_PRODUCTS = {
   // Environment Canada GeoMet. Every entry's v must exist as a key in
   // GEOMET_LAYERS[section] or the renderer has no layer to ask for and shows
   // "Pick a product" instead; _sevCheckGeoMetProducts() asserts that on load.
-  rdps:  [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'}],
-  gdps:  [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'}],
   hrdps: [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'},{v:'snow',l:'Snow Depth'}],
   // NWS NDFD - the official US forecast grid (CONUS).
   ndfd:  [{v:'temp',l:'Temperature'},{v:'maxt',l:'Max Temp'},{v:'td',l:'Dew Point'},{v:'wind',l:'Wind Speed'},{v:'wdir',l:'Wind Direction'},{v:'sky',l:'Sky Cover'},{v:'pop12',l:'Precip Chance'},{v:'qpf',l:'Precip Amount'},{v:'snow',l:'Snow Amount'},{v:'wx',l:'Weather Type'}],
@@ -15068,12 +15061,12 @@ const SEV_PRODUCTS = {
   icon_ens: SEV_ENS_PRODUCT_LIST,
   gem_ens:  SEV_ENS_PRODUCT_LIST,
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', rdps:'temp', gdps:'temp', ndfd:'temp', gfs_ens:'temperature_2m', icon_ens:'temperature_2m', gem_ens:'temperature_2m'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp', gfs_ens:'temperature_2m', icon_ens:'temperature_2m', gem_ens:'temperature_2m'};
 
 // A GeoMet section is configured in two independent places: GEOMET_LAYERS says
 // which WMS layer backs each variable, and SEV_PRODUCTS says which variables the
-// dropdown offers. RDPS and GDPS shipped in the first but not the second, so
-// they silently inherited HRRR's products and every one of them resolved to no
+// dropdown offers. A model has already shipped in the first but not the second,
+// which made it silently inherit HRRR's products so every one resolved to no
 // layer. This catches that pairing being wrong at load rather than in the UI.
 function _sevCheckGeoMetProducts() {
   Object.keys(GEOMET_LAYERS).forEach(section => {
@@ -15115,8 +15108,6 @@ const SEV_RUN_CFG = {
   ecmwf: { cycleH: 12, lagH: 7,   maxRuns: 2  }, // 00/12z only; eccharts serves the latest run
   dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
   hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; GeoMet serves the latest run
-  rdps:  { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z, same GeoMet cadence as HRDPS
-  gdps:  { cycleH: 12, lagH: 5,   maxRuns: 2  }, // 00/12z only
   ndfd:  { cycleH: 1,  lagH: 1,   maxRuns: 1  }, // continuously updated; anchor to the current hour
   // Open-Meteo's ensemble endpoint has no concept of picking a past run - it
   // only ever answers with "now". Same single-entry pattern as NDFD above,
@@ -15343,7 +15334,7 @@ let _sevDraggingIdx = -1;
 let _sevGroups = {}; // name -> [{section,var,run}, ...], persisted to localStorage
 let _sevCurrentGroup = '';
 
-const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', rdps:'RDPS', gdps:'GDPS', ndfd:'NDFD', hrrr:'HRRR', gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble' };
+const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR', gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble' };
 
 // Per-model forecast range, shared by A (via _sevMaxFrame/_sevStartFrame
 // below) and every extra slot, so both A and every comparison slot clamp
@@ -15352,15 +15343,13 @@ function _sevMaxFrameFor(section) {
   if (section === 'ecmwf') return 40; // 40 × 6h = 240h
   if (section === 'dwd')   return 30;
   if (section === 'hrdps') return 16; // 16 × 3h = 48h
-  if (section === 'rdps')  return 28; // 28 × 3h = 84h
-  if (section === 'gdps')  return 40; // 40 × 6h = 240h
   if (section === 'ndfd')  return 32; // 32 × 3h = 96h
   if (SEV_ENSEMBLE_SECTIONS[section]) return SEV_ENS_MAX_FRAME; // 8 × 6h = 48h
   return 6; // hrrr
 }
 // ecmwf and every ensemble model publish 6-hourly steps; everything else here is 3-hourly.
 function _sevStepHoursFor(section) {
-  return (section === 'ecmwf' || section === 'gdps' || SEV_ENSEMBLE_SECTIONS[section]) ? 6 : 3;
+  return (section === 'ecmwf' || SEV_ENSEMBLE_SECTIONS[section]) ? 6 : 3;
 }
 function _sevMinFrameFor(section, variable) {
   if (section === 'dwd' && DWD_MIN_FRAME[variable]) return DWD_MIN_FRAME[variable];
@@ -15571,8 +15560,6 @@ function _sevRenderSlotRows() {
             <option value="dwd" ${slot.section==='dwd'?'selected':''}>DWD ICON (Global)</option>
             <option value="ecmwf" ${slot.section==='ecmwf'?'selected':''}>ECMWF IFS (Global)</option>
             <option value="hrdps" ${slot.section==='hrdps'?'selected':''}>HRDPS (Hi-Res N. America)</option>
-            <option value="rdps" ${slot.section==='rdps'?'selected':''}>RDPS (Regional N. America, 84h)</option>
-            <option value="gdps" ${slot.section==='gdps'?'selected':''}>GDPS (Global, 240h)</option>
             <option value="ndfd" ${slot.section==='ndfd'?'selected':''}>NWS NDFD (US Forecast)</option>
             <option value="hrrr" ${slot.section==='hrrr'?'selected':''}>HRRR (18h)</option>
           </select>
@@ -26586,7 +26573,7 @@ SPC storm reports: today's tornado/hail/wind LSRs
 GOES satellite: visible, IR, water vapor
 Lightning: strike density overlay
 Surface fronts: analysis chart fronts
-Model guidance: HRRR (18h), GFS (10d), ECMWF IFS, DWD ICON, Canadian RDPS
+Model guidance: HRRR (18h), GFS (10d), ECMWF IFS, DWD ICON, Canadian HRDPS
 ${hasSnap ? '\nA live map screenshot is attached - analyze it visually.' : ''}
 
 === ACTIONS YOU CAN PERFORM (you control the map exactly like a human would click through the UI) ===
@@ -29567,7 +29554,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Asturio chats now save to your account and come back when you sign in, and you can link the account to Discord so the bot shares the same history.";
+const APP_LATEST_UPDATE = "Removed the RDPS and GDPS models. They never drew anything, so the menu no longer offers them.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
