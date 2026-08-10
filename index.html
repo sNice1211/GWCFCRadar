@@ -15852,7 +15852,22 @@ function showToast(msg, durationMs) {
 }
 
 const RADAR_SUB_BUBBLES = [
-  { id:'mrms', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label:'MRMS 1km', action: () => { if (_mrmsActive) { _clearMrms(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); _disableSatellite(); activeLayers.nexrad = true; currentProduct = 'mrms'; _loadMrmsComposite(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } } },
+  { id:'mrms', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label:'MRMS 1km', action: () => {
+    if (_mrmsActive) {
+      // Turning off returns to the main bubbles, same as the other products.
+      _clearMrms(); _disableRadar();
+      renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
+    } else {
+      // Turning on must NOT call renderSubBubbles: that swaps the radar
+      // sub-row back to the main bubbles and closes the menu, which read as
+      // the button doing nothing. Re-render the radar row instead so MRMS
+      // shows as active and the row stays open.
+      _clearSingleSiteRef(); _disableSatellite();
+      activeLayers.nexrad = true; currentProduct = 'mrms';
+      _loadMrmsComposite();
+      toggleRadarSub();
+    }
+  } },
   { id:'reflectivity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
   { id:'velocity',     icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
   { id:'hc',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-rainbow></use></svg>', label:'Hydro. Class.', action: () => { if (currentProduct === 'hc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('hc'); } } },
@@ -15883,6 +15898,7 @@ function toggleRadarSub() {
   wrap.appendChild(back);
   RADAR_SUB_BUBBLES.forEach(b => {
     const isActiveProd =
+      (b.id === 'mrms'         && _mrmsActive) ||
       (b.id === 'reflectivity' && activeLayers.nexrad && currentProduct === 'ref') ||
       (b.id === 'velocity'     && currentProduct === 'vel') ||
       (b.id === 'hc'           && currentProduct === 'hc') ||
@@ -15897,7 +15913,7 @@ function toggleRadarSub() {
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
-      document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr,#sub-kdp,#sub-sw').forEach(s=>s.classList.remove('active'));
+      document.querySelectorAll('#sub-mrms,#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr,#sub-kdp,#sub-sw').forEach(s=>s.classList.remove('active'));
       el.classList.add('active');
       b.action();
     };
@@ -29071,7 +29087,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Added MRMS, NOAA's 1 km national radar mosaic. It is sharper than the standard loop and much cleaner around clutter. Pick MRMS 1km in the Radar menu.";
+const APP_LATEST_UPDATE = "MRMS 1km now stays selected when you tap it. It was loading before, but the menu closed itself so there was no way to tell.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
