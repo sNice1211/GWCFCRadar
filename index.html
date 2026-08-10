@@ -7039,6 +7039,8 @@ body.clean-mode #clean-hint { opacity: 1; }
             <option value="dwd">DWD ICON (Global)</option>
             <option value="ecmwf">ECMWF IFS (Global)</option>
             <option value="hrdps">HRDPS (Hi-Res N. America)</option>
+            <option value="rdps">RDPS (Regional N. America, 84h)</option>
+            <option value="gdps">GDPS (Global, 240h)</option>
             <option value="ndfd">NWS NDFD (US Forecast)</option>
             <option value="hrrr">HRRR (18h)</option>
             <option value="gfs_ens">GFS Ensemble Mean (NOAA)</option>
@@ -14731,8 +14733,56 @@ function _sevRenderDWD(body) {
 // layers did not render in this setup, so they are intentionally left out.
 const GEOMET_WMS = 'https://geo.weather.gc.ca/geomet';
 const GEOMET_LAYERS = {
+  // RDPS (regional, 10 km, 84 h) and GDPS (global, 15 km, 240 h) come off the
+  // same ECCC GeoMet WMS as HRDPS below, so they need no new host and no raw
+  // GRIB handling. ECCC names these families with the ETA_ prefix rather than
+  // HRDPS's CONTINENTAL_ prefix; _sevValidateGeoMet() checks the names against
+  // GetCapabilities at runtime and logs loudly if ECCC ever renames one.
+  rdps:  { temp:'RDPS.ETA_TT', td:'RDPS.ETA_TD', precip:'RDPS.ETA_PR', wind:'RDPS.ETA_WSPD', gust:'RDPS.ETA_GUST' },
+  gdps:  { temp:'GDPS.ETA_TT', td:'GDPS.ETA_TD', precip:'GDPS.ETA_PR', wind:'GDPS.ETA_WSPD' },
   hrdps: { temp:'HRDPS.CONTINENTAL_TT', td:'HRDPS.CONTINENTAL_TD', precip:'HRDPS.CONTINENTAL_PR', wind:'HRDPS.CONTINENTAL_WSPD', gust:'HRDPS.CONTINENTAL_WGX', pmsl:'HRDPS.CONTINENTAL_PN', rh:'HRDPS.CONTINENTAL_HR', cloud:'HRDPS.CONTINENTAL_NT', snow:'HRDPS.CONTINENTAL_SD' },
 };
+
+// GeoMet layer names are configured by hand, and ECCC does rename layers between
+// model upgrades. A wrong name does not error, it just returns empty tiles,
+// which is indistinguishable from "no data for this hour". This checks the
+// configured names against GetCapabilities once per session and logs the exact
+// bad name, so a rename is diagnosable instead of silently blank.
+let _geoMetCaps = null;      // Set of advertised layer names, once fetched
+let _geoMetCapsWarned = new Set();
+function _sevValidateGeoMet(layerName) {
+  if (!layerName || _geoMetCapsWarned.has(layerName)) return;
+  if (_geoMetCaps) {
+    if (!_geoMetCaps.has(layerName)) {
+      _geoMetCapsWarned.add(layerName);
+      console.warn('GeoMet layer not advertised by the service:', layerName,
+                   '- check GEOMET_LAYERS against', GEOMET_WMS + '?service=WMS&request=GetCapabilities');
+    }
+    return;
+  }
+  if (_sevValidateGeoMet._inFlight) return;
+  _sevValidateGeoMet._inFlight = true;
+  fetch(GEOMET_WMS + '?service=WMS&version=1.3.0&request=GetCapabilities',
+        { signal: _abortSignal(15000) })
+    .then(r => r.ok ? r.text() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(xml => {
+      _geoMetCaps = new Set();
+      // <Name> appears on both the root service and each layer; harvesting all
+      // of them is enough for a membership test.
+      const re = /<Name>([^<]+)<\/Name>/g;
+      let m; while ((m = re.exec(xml)) !== null) _geoMetCaps.add(m[1].trim());
+      Object.entries(GEOMET_LAYERS).forEach(([section, set]) => {
+        Object.entries(set).forEach(([v, name]) => {
+          if (name && !_geoMetCaps.has(name)) {
+            _geoMetCapsWarned.add(name);
+            console.warn(`GeoMet: ${section}.${v} configured as "${name}" but the service does not advertise it.`);
+          }
+        });
+      });
+    })
+    .catch(e => console.warn('GeoMet GetCapabilities check skipped:', e.message))
+    .finally(() => { _sevValidateGeoMet._inFlight = false; });
+}
 
 function _sevRenderGeoMet(body) {
   const set = GEOMET_LAYERS[_sevSection];
@@ -14744,8 +14794,13 @@ function _sevRenderGeoMet(body) {
   let timeISO = null;
   if (_sevRun && _sevRun.length >= 10) {
     const runMs = Date.UTC(parseInt(_sevRun.slice(0,4)), parseInt(_sevRun.slice(4,6))-1, parseInt(_sevRun.slice(6,8)), parseInt(_sevRun.slice(8,10)));
-    timeISO = new Date(runMs + _sevFrame * 3 * 3600000).toISOString().replace('.000Z','Z');
+    // Step size is per model, not a flat 3 h: GDPS publishes 6-hourly steps, so
+    // a hardcoded 3 would ask for a valid-time the service has no field for and
+    // hand back an empty tile.
+    const stepH = _sevStepHoursFor(_sevSection);
+    timeISO = new Date(runMs + _sevFrame * stepH * 3600000).toISOString().replace('.000Z','Z');
   }
+  _sevValidateGeoMet(layerName);
   if (_iemModelLayer) { map.removeLayer(_iemModelLayer); _iemModelLayer = null; }
   const opts = { layers: layerName, format: 'image/png', transparent: true, version: '1.1.1', opacity: 0.8, zIndex: 6, noWrap: true, tileSize: 256 };
   if (timeISO) opts.TIME = timeISO;
@@ -14873,6 +14928,8 @@ const SEV_RUN_CFG = {
   ecmwf: { cycleH: 12, lagH: 7,   maxRuns: 2  }, // 00/12z only; eccharts serves the latest run
   dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
   hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; GeoMet serves the latest run
+  rdps:  { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z, same GeoMet cadence as HRDPS
+  gdps:  { cycleH: 12, lagH: 5,   maxRuns: 2  }, // 00/12z only
   ndfd:  { cycleH: 1,  lagH: 1,   maxRuns: 1  }, // continuously updated; anchor to the current hour
   // Open-Meteo's ensemble endpoint has no concept of picking a past run - it
   // only ever answers with "now". Same single-entry pattern as NDFD above,
@@ -15099,7 +15156,7 @@ let _sevDraggingIdx = -1;
 let _sevGroups = {}; // name -> [{section,var,run}, ...], persisted to localStorage
 let _sevCurrentGroup = '';
 
-const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR', gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble' };
+const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', rdps:'RDPS', gdps:'GDPS', ndfd:'NDFD', hrrr:'HRRR', gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble' };
 
 // Per-model forecast range, shared by A (via _sevMaxFrame/_sevStartFrame
 // below) and every extra slot, so both A and every comparison slot clamp
@@ -15108,13 +15165,15 @@ function _sevMaxFrameFor(section) {
   if (section === 'ecmwf') return 40; // 40 × 6h = 240h
   if (section === 'dwd')   return 30;
   if (section === 'hrdps') return 16; // 16 × 3h = 48h
+  if (section === 'rdps')  return 28; // 28 × 3h = 84h
+  if (section === 'gdps')  return 40; // 40 × 6h = 240h
   if (section === 'ndfd')  return 32; // 32 × 3h = 96h
   if (SEV_ENSEMBLE_SECTIONS[section]) return SEV_ENS_MAX_FRAME; // 8 × 6h = 48h
   return 6; // hrrr
 }
 // ecmwf and every ensemble model publish 6-hourly steps; everything else here is 3-hourly.
 function _sevStepHoursFor(section) {
-  return (section === 'ecmwf' || SEV_ENSEMBLE_SECTIONS[section]) ? 6 : 3;
+  return (section === 'ecmwf' || section === 'gdps' || SEV_ENSEMBLE_SECTIONS[section]) ? 6 : 3;
 }
 function _sevMinFrameFor(section, variable) {
   if (section === 'dwd' && DWD_MIN_FRAME[variable]) return DWD_MIN_FRAME[variable];
@@ -15325,6 +15384,8 @@ function _sevRenderSlotRows() {
             <option value="dwd" ${slot.section==='dwd'?'selected':''}>DWD ICON (Global)</option>
             <option value="ecmwf" ${slot.section==='ecmwf'?'selected':''}>ECMWF IFS (Global)</option>
             <option value="hrdps" ${slot.section==='hrdps'?'selected':''}>HRDPS (Hi-Res N. America)</option>
+            <option value="rdps" ${slot.section==='rdps'?'selected':''}>RDPS (Regional N. America, 84h)</option>
+            <option value="gdps" ${slot.section==='gdps'?'selected':''}>GDPS (Global, 240h)</option>
             <option value="ndfd" ${slot.section==='ndfd'?'selected':''}>NWS NDFD (US Forecast)</option>
             <option value="hrrr" ${slot.section==='hrrr'?'selected':''}>HRRR (18h)</option>
           </select>
@@ -28326,23 +28387,66 @@ async function authSaveHomeRegion() {
 // overlay pills, the active tool, and the basemap. Overlay ids are read from
 // the DOM (every pill carries data-ovid) rather than a hardcoded list, so
 // adding a pill puts it in the preset automatically.
+// Waves, Air, Temperature, Pressure and Wind are not in activeLayers at all.
+// Each keeps its own on/off flag, its own selected product and its own refresh
+// timer, which is why picking Sea Surface Temperature under Waves used to save
+// as nothing. Kept as one table so capture and restore cannot drift apart.
+const _PRODUCT_FAMILIES = [
+  { id: 'waves',
+    isOn: () => wavesActive,       product: () => _wavesProduct,
+    apply: p => { wavesActive = true; _wavesProduct = p; _loadWavesLayer();
+      clearInterval(_wavesRefreshTimer);
+      _wavesRefreshTimer = setInterval(() => _loadWavesLayer(true), 10 * 60 * 1000); } },
+  { id: 'air',
+    isOn: () => airActive,         product: () => _airProduct,
+    apply: p => { airActive = true; _airProduct = p; _loadAirLayer();
+      clearInterval(_airRefreshTimer);
+      _airRefreshTimer = setInterval(() => _loadAirLayer(true), 10 * 60 * 1000); } },
+  { id: 'temperature',
+    isOn: () => temperatureActive, product: () => _temperatureProduct,
+    apply: p => { temperatureActive = true; _temperatureProduct = p; _loadTemperatureLayer();
+      clearInterval(_temperatureRefreshTimer);
+      _temperatureRefreshTimer = setInterval(() => _loadTemperatureLayer(true), 10 * 60 * 1000); } },
+  { id: 'pressure',
+    isOn: () => pressureActive,    product: () => _pressureProduct,
+    apply: p => { pressureActive = true; _pressureProduct = p; _loadPressureLayer();
+      clearInterval(_pressureRefreshTimer);
+      _pressureRefreshTimer = setInterval(() => _loadPressureLayer(true), 10 * 60 * 1000); } },
+  { id: 'wind',
+    isOn: () => windActive,        product: () => _windProduct,
+    apply: p => { windActive = true; _windProduct = p; _loadWindLayer();
+      clearInterval(_windRefreshTimer);
+      _windRefreshTimer = setInterval(() => _loadWindLayer(true), 10 * 60 * 1000); } },
+];
+
 function _captureViewState() {
   const overlays = {};
   document.querySelectorAll('.ov-pill[data-ovid]').forEach(p => {
     overlays[p.dataset.ovid] = p.classList.contains('active');
+  });
+  // Only the selected product matters for a family that is off, so store both
+  // and let restore decide.
+  const families = {};
+  _PRODUCT_FAMILIES.forEach(f => {
+    families[f.id] = { on: !!f.isOn(), product: f.product() || null };
   });
   return {
     savedLayers:   { ...activeLayers },
     savedOverlays: overlays,
     savedTools:    { activeTool: activeTool || null, inspector: !!_inspEnabled },
     savedMapType:  currentMapType || 'satellite',
-    savedProduct:  currentProduct || 'ref'
+    savedProduct:  currentProduct || 'ref',
+    savedFamilies: families,
+    savedSatProduct: (typeof _goesProductId !== 'undefined' ? _goesProductId : null),
+    savedModel:      (typeof currentModel !== 'undefined' ? currentModel : null),
+    savedModelVar:   (typeof currentModelVar !== 'undefined' ? currentModelVar : null)
   };
 }
 
 // Counts what a snapshot actually has switched on, for the confirmation toast.
 function _countViewStateOn(v) {
-  const layers   = Object.values(v.savedLayers   || {}).filter(Boolean).length;
+  const layers   = Object.values(v.savedLayers   || {}).filter(Boolean).length
+                 + Object.values(v.savedFamilies || {}).filter(f => f && f.on).length;
   const overlays = Object.values(v.savedOverlays || {}).filter(Boolean).length;
   const tools    = (v.savedTools && v.savedTools.activeTool ? 1 : 0)
                  + (v.savedTools && v.savedTools.inspector  ? 1 : 0);
@@ -28413,6 +28517,31 @@ function _applyViewState(d) {
       try { toggleOverlayPill(id); } catch(e) { console.warn('restore overlay', id, e); }
     });
   }
+
+  // Product families. Only switched on, never off: a family that is already
+  // showing something the user turned on since load should not be torn down.
+  if (d.savedFamilies) {
+    _PRODUCT_FAMILIES.forEach(f => {
+      const saved = d.savedFamilies[f.id];
+      if (!saved || !saved.on || !saved.product) return;
+      if (f.isOn() && f.product() === saved.product) return;
+      try { f.apply(saved.product); }
+      catch(e) { console.warn('restore family', f.id, e); }
+    });
+    // The sub-bubble row reads these flags when it renders, so refresh whatever
+    // row is currently open to match what was just switched on.
+    try {
+      if (typeof renderSubBubbles === 'function' && typeof currentTab !== 'undefined') {
+        renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
+      }
+    } catch(e) { console.warn('resync sub-bubbles:', e); }
+  }
+
+  // Satellite channel and model selection, so reopening those tabs shows what
+  // was saved rather than the defaults.
+  if (d.savedSatProduct && typeof _goesProductId !== 'undefined') _goesProductId = d.savedSatProduct;
+  if (d.savedModel && typeof currentModel !== 'undefined') currentModel = d.savedModel;
+  if (d.savedModelVar && typeof currentModelVar !== 'undefined') currentModelVar = d.savedModelVar;
 
   const t = d.savedTools || {};
   if (t.inspector && !_inspEnabled && typeof toggleInspector === 'function') {
@@ -28525,7 +28654,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Saved layers and your saved region now both come back on reload, and can no longer be lost when something unrelated in your profile fails to load.";
+const APP_LATEST_UPDATE = "Save Layers now remembers which product you picked inside Waves, Air, Wind, Temperature and Pressure, so Sea Surface Temperature comes back. Added RDPS and GDPS models.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
