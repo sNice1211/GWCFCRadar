@@ -13602,18 +13602,11 @@ const GIBS_TMPL_CACHE_KEY = 'lqm_gibs_geocolor_tmpl';
 let _gibsTmpl = null;      // { set, ext } once known
 let _gibsProbing = null;
 
-(function _gibsLoadCachedTemplate() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(GIBS_TMPL_CACHE_KEY) || 'null');
-    if (raw && Date.now() - raw.at < GIBS_NAME_CACHE_TTL && raw.set && raw.ext) _gibsTmpl = raw;
-  } catch(e) {}
-})();
-
 // Builds the tile URL template Leaflet fills in per tile. {time} is supplied
-// from the layer's options, so stepping the animation is just a redraw.
+// from the layer's options in YYYY-MM-DD format.
 function _gibsTileUrl(layerName) {
   const t = _gibsTmpl || { set: GIBS_MATRIX_SETS[0], ext: GIBS_EXTS[0] };
-  return `${GIBS_WMTS}/${layerName}/default/{time}/${t.set}/{z}/{y}/{x}.${t.ext}`;
+  return `${GIBS_WMTS}/${layerName}/{time}/${t.set}/{z}/{y}/{x}.${t.ext}`;
 }
 
 // Ask for one known tile until a combination answers with an actual image.
@@ -13623,9 +13616,14 @@ async function _gibsProbeTemplate(layerName) {
   if (_gibsTmpl) return _gibsTmpl;
   if (_gibsProbing) return _gibsProbing;
   _gibsProbing = (async () => {
+    // Use today's date as the time parameter; GIBS typically has tiles from the last few days.
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const timeParam = `${now.getUTCFullYear()}-${pad(now.getUTCMonth()+1)}-${pad(now.getUTCDate())}`;
+
     for (const set of GIBS_MATRIX_SETS) {
       for (const ext of GIBS_EXTS) {
-        const url = `${GIBS_WMTS}/${layerName}/default/default/${set}/2/1/1.${ext}`;
+        const url = `${GIBS_WMTS}/${layerName}/${timeParam}/${set}/2/1/1.${ext}`;
         try {
           const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
           if (r.ok && (r.headers.get('content-type') || '').startsWith('image/')) {
@@ -13634,7 +13632,7 @@ async function _gibsProbeTemplate(layerName) {
             console.info('GIBS GeoColor tiles:', set, ext);
             return _gibsTmpl;
           }
-        } catch(e) {}
+        } catch(e) { console.debug('GIBS probe failed for', set, ext, e?.message || ''); }
       }
     }
     throw new Error('no working tile matrix set for ' + layerName);
@@ -13655,6 +13653,19 @@ let _gibsResolving = null;
     if (raw && Date.now() - raw.at < GIBS_NAME_CACHE_TTL && raw.east && raw.west) {
       GIBS_GEOCOLOR.east = raw.east;
       GIBS_GEOCOLOR.west = raw.west;
+    }
+  } catch(e) {}
+})();
+
+// Load previously confirmed tile template (matrix set + file type).
+(function _gibsLoadCachedTemplate() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(GIBS_TMPL_CACHE_KEY) || 'null');
+    if (raw && raw.set && raw.ext && Date.now() - raw.at < 30 * 24 * 3600 * 1000) {
+      _gibsTmpl = raw;
+    } else {
+      // Clear expired or invalid cache entry
+      localStorage.removeItem(GIBS_TMPL_CACHE_KEY);
     }
   } catch(e) {}
 })();
@@ -13773,8 +13784,10 @@ function _makeGoesLayer(timeStr, opacity) {
   };
   // GIBS is served as plain WMTS tiles; everything else stays on WMS.
   if (cfg.gibs) {
+    // GIBS GeoColor tiles are indexed by date only (YYYY-MM-DD), not time.
+    const gibsTime = timeStr.split('T')[0];
     const layer = L.tileLayer(_gibsTileUrl(cfg.layer), {
-      time:              timeStr,
+      time:              gibsTime,
       opacity:           opts.opacity,
       zIndex:            opts.zIndex,
       attribution:       opts.attribution,
@@ -13910,7 +13923,9 @@ function showGoesFrame(idx) {
     if (_goesLayer.setParams) {
       _goesLayer.setParams({ TIME: frame.timeStr }, false);
     } else {
-      _goesLayer.options.time = frame.timeStr;
+      // GIBS GeoColor tiles are indexed by date only (YYYY-MM-DD), not time.
+      const gimsTime = frame.timeStr.split('T')[0];
+      _goesLayer.options.time = gimsTime;
       _goesLayer.redraw();
     }
     if (activeLayers.satellite) _goesLayer.setOpacity(0.85);
