@@ -13596,16 +13596,18 @@ const GIBS_WMTS = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best';
 // be guessed reliably, so they are probed once against a known tile and the
 // working combination is remembered. Ordered most likely first.
 const GIBS_MATRIX_SETS = ['GoogleMapsCompatible_Level7', 'GoogleMapsCompatible_Level8',
-                          'GoogleMapsCompatible_Level6', 'GoogleMapsCompatible_Level9'];
+                          'GoogleMapsCompatible_Level6', 'GoogleMapsCompatible_Level9',
+                          'EPSG3857_250m', 'EPSG3857_500m', 'EPSG3857_1km'];
 const GIBS_EXTS = ['png', 'jpg'];
 const GIBS_TMPL_CACHE_KEY = 'lqm_gibs_geocolor_tmpl';
 let _gibsTmpl = null;      // { set, ext } once known
 let _gibsProbing = null;
 
 // Builds the tile URL template Leaflet fills in per tile. {time} is supplied
-// from the layer's options in YYYY-MM-DD format.
+// from the layer's options in YYYY-MM-DD format, or 'default' for latest.
 function _gibsTileUrl(layerName) {
   const t = _gibsTmpl || { set: GIBS_MATRIX_SETS[0], ext: GIBS_EXTS[0] };
+  // Use {time} placeholder that Leaflet will fill in from layer.options.time
   return `${GIBS_WMTS}/${layerName}/{time}/${t.set}/{z}/{y}/{x}.${t.ext}`;
 }
 
@@ -13616,23 +13618,29 @@ async function _gibsProbeTemplate(layerName) {
   if (_gibsTmpl) return _gibsTmpl;
   if (_gibsProbing) return _gibsProbing;
   _gibsProbing = (async () => {
-    // Use today's date as the time parameter; GIBS typically has tiles from the last few days.
     const now = new Date();
     const pad = n => String(n).padStart(2, '0');
-    const timeParam = `${now.getUTCFullYear()}-${pad(now.getUTCMonth()+1)}-${pad(now.getUTCDate())}`;
+    const dateStr = `${now.getUTCFullYear()}-${pad(now.getUTCMonth()+1)}-${pad(now.getUTCDate())}`;
 
-    for (const set of GIBS_MATRIX_SETS) {
-      for (const ext of GIBS_EXTS) {
-        const url = `${GIBS_WMTS}/${layerName}/${timeParam}/${set}/2/1/1.${ext}`;
-        try {
-          const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-          if (r.ok && (r.headers.get('content-type') || '').startsWith('image/')) {
-            _gibsTmpl = { set, ext, at: Date.now() };
-            try { localStorage.setItem(GIBS_TMPL_CACHE_KEY, JSON.stringify(_gibsTmpl)); } catch(e) {}
-            console.info('GIBS GeoColor tiles:', set, ext);
-            return _gibsTmpl;
+    // Try with today's date first, then fall back to 'default' if that fails
+    const timeParams = [dateStr, 'default'];
+
+    for (const timeParam of timeParams) {
+      for (const set of GIBS_MATRIX_SETS) {
+        for (const ext of GIBS_EXTS) {
+          const url = `${GIBS_WMTS}/${layerName}/${timeParam}/${set}/2/1/1.${ext}`;
+          try {
+            const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+            if (r.ok && (r.headers.get('content-type') || '').startsWith('image/')) {
+              _gibsTmpl = { set, ext, at: Date.now() };
+              try { localStorage.setItem(GIBS_TMPL_CACHE_KEY, JSON.stringify(_gibsTmpl)); } catch(e) {}
+              console.info('GIBS GeoColor tiles found:', set, ext, 'with time param:', timeParam);
+              return _gibsTmpl;
+            }
+          } catch(e) {
+            console.debug('GIBS probe failed for', set, ext, 'time:', timeParam, r?.status, e?.message || '');
           }
-        } catch(e) { console.debug('GIBS probe failed for', set, ext, e?.message || ''); }
+        }
       }
     }
     throw new Error('no working tile matrix set for ' + layerName);
@@ -13784,8 +13792,8 @@ function _makeGoesLayer(timeStr, opacity) {
   };
   // GIBS is served as plain WMTS tiles; everything else stays on WMS.
   if (cfg.gibs) {
-    // GIBS GeoColor tiles are indexed by date only (YYYY-MM-DD), not time.
-    const gibsTime = timeStr.split('T')[0];
+    // GIBS GeoColor uses date (YYYY-MM-DD) or 'default' for most recent
+    const gibsTime = timeStr.split('T')[0] || 'default';
     const layer = L.tileLayer(_gibsTileUrl(cfg.layer), {
       time:              gibsTime,
       opacity:           opts.opacity,
@@ -13923,8 +13931,8 @@ function showGoesFrame(idx) {
     if (_goesLayer.setParams) {
       _goesLayer.setParams({ TIME: frame.timeStr }, false);
     } else {
-      // GIBS GeoColor tiles are indexed by date only (YYYY-MM-DD), not time.
-      const gimsTime = frame.timeStr.split('T')[0];
+      // GIBS GeoColor tiles use date (YYYY-MM-DD) or 'default' for most recent
+      const gimsTime = frame.timeStr.split('T')[0] || 'default';
       _goesLayer.options.time = gimsTime;
       _goesLayer.redraw();
     }
