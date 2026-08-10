@@ -16333,20 +16333,85 @@ function dismissLoading() {
 }
 
 // ── STARTUP ──
+// A single dismissible strip for map-level problems. Deliberately plain DOM and
+// inline styles: this has to work in exactly the situations where something
+// else has already gone wrong, so it depends on nothing that could be missing.
+function _mapFailNotice(msg) {
+  try {
+    let el = document.getElementById('map-fail-notice');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'map-fail-notice';
+      el.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);' +
+        'top:calc(env(safe-area-inset-top,0px) + 96px);z-index:11000;max-width:min(420px,calc(100vw - 32px));' +
+        'background:rgba(20,6,6,0.96);border:1px solid rgba(232,184,0,0.55);border-radius:10px;' +
+        'padding:9px 12px;color:#f2e2b8;font-family:Comfortaa,sans-serif;font-size:11.5px;' +
+        'line-height:1.45;box-shadow:0 8px 28px rgba(0,0,0,0.6);display:flex;gap:9px;align-items:flex-start;';
+      const txt = document.createElement('div');
+      txt.id = 'map-fail-notice-txt';
+      txt.style.flex = '1';
+      const x = document.createElement('button');
+      x.textContent = '×';
+      x.setAttribute('aria-label', 'Dismiss');
+      x.style.cssText = 'background:none;border:none;color:rgba(242,226,184,0.7);font-size:15px;' +
+        'line-height:1;cursor:pointer;padding:0 2px;';
+      x.onclick = () => el.remove();
+      el.appendChild(txt); el.appendChild(x);
+      document.body.appendChild(el);
+    }
+    document.getElementById('map-fail-notice-txt').textContent = msg;
+  } catch(e) { console.warn('map notice:', msg, e); }
+}
+
+// Watchdog for the basemap specifically. With the OpenStreetMap fallback gone
+// there is no second service to swap in, so a MapTiler outage now shows the
+// dark container background. That is indistinguishable from a broken app unless
+// we say otherwise, hence this notice. Radar, alerts and overlays are unaffected
+// and keep drawing, which is why it is worded as a basemap-only problem.
+function _watchBasemap() {
+  let loaded = false;
+  const layers = Object.values(mapTileLayers || {});
+  if (!layers.length) return;
+  // tileload, not load: Leaflet fires `load` once the visible tiles have all
+  // settled, and a tile that 404s or 503s counts as settled, so `load` fires
+  // just as readily when every single tile failed. tileload only fires for a
+  // tile that actually decoded.
+  layers.forEach(l => l.on('tileload', () => { loaded = true; }));
+  setTimeout(() => {
+    if (loaded || !map) return;
+    console.warn('No basemap tile loaded within 20s.');
+    _mapFailNotice('Basemap imagery is unavailable right now. Radar and alerts are still live.');
+  }, 20000);
+}
+
 async function init() {
   const _initStart = Date.now();
   const SAFETY_MS  = 10000; // absolute hard dismiss after 10 s
 
   const safetyTimer = setTimeout(dismissLoading, SAFETY_MS);
 
-  try {
-    initMap();
-    _ovApplyMapOrder(); // re-apply saved overlay order now that map panes exist
-    updateLegend('ref');
-    renderSubBubbles('regular');
-  } catch(e) {
-    console.warn('Map init error:', e);
+  // The map is the whole app, so a failure here must not end as a blank screen.
+  // Leaflet is a CDN script: if it did not arrive there is nothing to retry, so
+  // say so plainly. If it did arrive, one retry covers a transient DOM or sizing
+  // problem, and only after that do we surface a notice.
+  let _mapOK = false;
+  for (let attempt = 1; attempt <= 2 && !_mapOK; attempt++) {
+    if (typeof L === 'undefined') {
+      _mapFailNotice('Mapping library did not load. Check your connection and reload.');
+      break;
+    }
+    try {
+      initMap();
+      _ovApplyMapOrder(); // re-apply saved overlay order now that map panes exist
+      updateLegend('ref');
+      renderSubBubbles('regular');
+      _mapOK = !!map;
+    } catch(e) {
+      console.warn('Map init error (attempt ' + attempt + '):', e);
+      if (attempt === 2) _mapFailNotice('The map could not start. Reload to try again.');
+    }
   }
+  if (_mapOK) _watchBasemap();
   // Release anything queued on the map, above all the saved layer/overlay
   // preset. Fires outside the try so a partial init still lets the queue drain
   // rather than stranding it forever; each queued task guards itself.
@@ -27336,6 +27401,16 @@ function _onSignedOut() {
 // to explain it. On failure this now hands back to the emoji/initial rendering.
 function _paintAvatarImage(el, url, onFail) {
   el.style.backgroundImage = `url(${url})`;
+  // These three must be set explicitly, not left to the stylesheet. The
+  // emoji/initial path writes the `background` SHORTHAND, which resets
+  // background-size to auto and background-position to 0% 0% as inline styles,
+  // and inline beats the class rule's cover/center for good. The avatar then
+  // drew at natural size anchored top-left inside a 60px circle, so only the
+  // image's top-left corner showed - a flat patch of whatever colour happened
+  // to be in that corner.
+  el.style.backgroundSize     = 'cover';
+  el.style.backgroundPosition = 'center';
+  el.style.backgroundRepeat   = 'no-repeat';
   // Drop the name-hash colour, so a decode failure cannot pose as an avatar.
   el.style.backgroundColor = 'transparent';
   el.classList.add('has-image');
@@ -27374,7 +27449,9 @@ function _updateProfileBadge(user, avatarEmoji) {
       sm.classList.remove('has-image');
       sm.textContent = emoji || init;
       sm.style.fontSize = emoji ? '16px' : '';
-      sm.style.background = emoji ? 'rgba(0,0,0,0.25)' : `hsl(${Math.abs(hue)},60%,42%)`;
+      // backgroundColor, never the `background` shorthand: the shorthand also
+      // resets background-size/position inline and breaks the image path above.
+      sm.style.backgroundColor = emoji ? 'rgba(0,0,0,0.25)' : `hsl(${Math.abs(hue)},60%,42%)`;
     };
     if (sm) {
       if (hasImg) _paintAvatarImage(sm, _selectedAvatarImage, paintSmFallback);
@@ -27391,7 +27468,8 @@ function _updateProfileBadge(user, avatarEmoji) {
         lg.classList.remove('has-image');
         lg.textContent = emoji || init;
         lg.style.fontSize = emoji ? '28px' : '';
-        lg.style.background = emoji ? 'rgba(0,0,0,0.2)' : `hsl(${Math.abs(hue)},60%,38%)`;
+        // backgroundColor, never the `background` shorthand - see the note above.
+        lg.style.backgroundColor = emoji ? 'rgba(0,0,0,0.2)' : `hsl(${Math.abs(hue)},60%,38%)`;
       };
       if (hasImg) _paintAvatarImage(lg, _selectedAvatarImage, paintLgFallback);
       else        paintLgFallback();
@@ -27459,6 +27537,12 @@ function _renderAvatarPreview(el, emoji, init) {
   if (!el) return;
   if (_selectedAvatarImage) {
     el.style.backgroundImage = `url(${_selectedAvatarImage})`;
+    // Pinned inline for the same reason as _paintAvatarImage: anything that
+    // writes the `background` shorthand on this element would otherwise leave
+    // background-size at auto and show only the picture's top-left corner.
+    el.style.backgroundSize     = 'cover';
+    el.style.backgroundPosition = 'center';
+    el.style.backgroundRepeat   = 'no-repeat';
     el.classList.add('has-image');
     el.textContent = '';
   } else {
@@ -28715,7 +28799,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Removed the OpenStreetMap fallback basemap. If MapTiler tiles fail the app now retries them instead of switching to a second map service.";
+const APP_LATEST_UPDATE = "Profile photos now fill the circle properly instead of showing only their top-left corner. Added safeguards so the map explains itself if the basemap or Leaflet fails to load.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
