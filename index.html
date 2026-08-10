@@ -2248,6 +2248,34 @@ body {
   color: rgba(212,232,255,0.6);
 }
 #sounding-legend i { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin-right: 3px; }
+#sounding-model {
+  padding: 2px 6px; font-size: 9px; background: rgba(0,140,186,0.14);
+  border: 1px solid rgba(0,140,186,0.4); color: #008CBA; border-radius: 4px;
+  cursor: pointer; font-family: 'Comfortaa', sans-serif;
+}
+#sounding-model:hover { background: rgba(0,140,186,0.24); }
+.sounding-section {
+  border-top: 1px solid rgba(255,255,255,0.1); padding-top: 6px; margin-top: 4px;
+}
+.snd-section-title {
+  font-family: var(--mono); font-size: 8px; letter-spacing: 1px;
+  color: rgba(255,255,255,0.4); text-transform: uppercase; margin-bottom: 4px;
+}
+#sounding-hourly-list {
+  display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto;
+}
+.snd-hourly-item {
+  display: grid; grid-template-columns: 35px 1fr; gap: 6px;
+  padding: 4px 6px; background: rgba(0,0,0,0.15); border-radius: 4px;
+  font-family: var(--mono); font-size: 8px; color: rgba(212,232,255,0.7);
+}
+.snd-hourly-time { color: rgba(212,232,255,0.85); font-weight: 700; }
+.snd-hourly-data { display: flex; flex-direction: column; gap: 2px; }
+.snd-hourly-line { display: flex; gap: 8px; flex-wrap: wrap; }
+.snd-hourly-label { color: rgba(212,232,255,0.45); min-width: 40px; }
+.snd-hourly-val { color: #e8b800; }
+.snd-hourly-precip { color: #2ecc71; font-weight: 600; }
+.snd-hourly-cape { color: #ff8855; font-weight: 600; }
 
 #severe-model-panel {
   display: none;
@@ -16748,6 +16776,7 @@ const SOUNDING_LEVELS = [1000,975,950,925,900,850,800,700,600,500,400,300,250,20
 let _sndData = null;      // { levels:[{p,t,td,ws,wd,z}], sfc:{...}, meta:{...} }
 let _sndLoading = false;
 let _sndAbort = null;
+let _sndModel = 'gfs';    // 'gfs' or 'ecmwf'
 
 function _soundingPanelIsOpen() {
   const el = document.getElementById('sounding-panel');
@@ -16772,6 +16801,71 @@ function _sndSetStatus(msg) {
   if (s) s.textContent = msg;
 }
 
+function _sndChangeModel(model) {
+  _sndModel = model;
+  const sel = document.getElementById('sounding-model');
+  if (sel) sel.value = model;
+  loadSounding();
+}
+
+// WMO Weather Code descriptions (simplified)
+function _sndWeatherDesc(code) {
+  const codes = {
+    0: 'Clear', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+    45: 'Foggy', 48: 'Frost fog', 51: 'Light drizzle', 53: 'Moderate drizzle', 55: 'Heavy drizzle',
+    61: 'Slight rain', 63: 'Moderate rain', 65: 'Heavy rain',
+    71: 'Slight snow', 73: 'Moderate snow', 75: 'Heavy snow',
+    80: 'Slight showers', 81: 'Moderate showers', 82: 'Heavy showers',
+    95: 'Thunderstorm', 96: 'Thunderstorm w/ hail', 99: 'Thunderstorm w/ hail'
+  };
+  return codes[code] || 'Weather ' + code;
+}
+
+function _sndRenderHourly(hourly, startIdx) {
+  const list = document.getElementById('sounding-hourly-list');
+  if (!list || !hourly?.time) return;
+
+  const times = hourly.time;
+  const precip = hourly.precipitation || [];
+  const precipProb = hourly.precipitation_probability || [];
+  const codes = hourly.weather_code || [];
+  const cape = hourly.cape || [];
+  const li = hourly.lifted_index || [];
+
+  // Show next 24 hours starting from current hour
+  const html = [];
+  for (let i = startIdx; i < Math.min(startIdx + 24, times.length); i++) {
+    const time = times[i];
+    const hour = time ? new Date(time + 'Z').getHours() : '?';
+    const prec = precip[i] ?? 0;
+    const prob = precipProb[i] ?? 0;
+    const code = codes[i] ?? 0;
+    const capeVal = cape[i];
+    const liVal = li[i];
+
+    const precipText = prec > 0 ? `${prec.toFixed(1)}mm` : '-';
+    const capeText = capeVal != null && !Number.isNaN(capeVal) ? Math.round(capeVal) : '-';
+
+    html.push(`
+      <div class="snd-hourly-item">
+        <div class="snd-hourly-time">${String(hour).padStart(2,'0')}z</div>
+        <div class="snd-hourly-data">
+          <div class="snd-hourly-line">
+            <span class="snd-hourly-label">${_sndWeatherDesc(code)}</span>
+          </div>
+          <div class="snd-hourly-line">
+            ${prec > 0 ? `<span><span class="snd-hourly-precip">${precipText}</span></span>` : ''}
+            ${prob > 0 ? `<span><span class="snd-hourly-label">Prob:</span> <span class="snd-hourly-val">${prob}%</span></span>` : ''}
+            ${capeVal != null ? `<span><span class="snd-hourly-label">CAPE:</span> <span class="snd-hourly-cape">${capeText}</span></span>` : ''}
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  list.innerHTML = html.length > 0 ? html.join('') : '<div style="color: rgba(212,232,255,0.35); font-size: 8px;">No hourly data</div>';
+}
+
 // Builds the pressure-level query. One request covers every level and variable;
 // asking per level would be 16 round trips for the same answer.
 function _sndUrl(lat, lon) {
@@ -16783,9 +16877,19 @@ function _sndUrl(lat, lon) {
   });
   vars.push('temperature_2m', 'dew_point_2m', 'surface_pressure',
             'wind_speed_10m', 'wind_direction_10m');
+  const modelParam = _sndModel === 'ecmwf' ? '&models=ecmwf' : '';
   return `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}` +
          `&longitude=${lon.toFixed(3)}&hourly=${vars.join(',')}` +
-         `&wind_speed_unit=kn&forecast_days=2&timezone=UTC`;
+         `&wind_speed_unit=kn&forecast_days=2&timezone=UTC${modelParam}`;
+}
+
+// Hourly forecast for next 24 hours: precipitation, convective indices, weather
+function _sndHourlyUrl(lat, lon) {
+  const modelParam = _sndModel === 'ecmwf' ? '&models=ecmwf' : '';
+  return `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}` +
+         `&longitude=${lon.toFixed(3)}` +
+         `&hourly=precipitation,precipitation_probability,weather_code,cape,lifted_index` +
+         `&forecast_days=1&timezone=UTC${modelParam}`;
 }
 
 // Indices are fetched separately on purpose. Open-Meteo rejects the entire
@@ -16873,6 +16977,15 @@ async function loadSounding() {
         _sndDraw();
       })
       .catch(e => { if (e.name !== 'AbortError') console.warn('sounding indices:', e.message); });
+
+    // Fetch hourly forecast (precipitation, convective indices for next 24h)
+    fetch(_sndHourlyUrl(c.lat, c.lng), { signal: _sndAbort.signal })
+      .then(r => r.ok ? r.json() : null)
+      .then(hly => {
+        if (!hly?.hourly || !_sndData) return;
+        _sndRenderHourly(hly.hourly, idx);
+      })
+      .catch(e => { if (e.name !== 'AbortError') console.warn('sounding hourly:', e.message); });
   } catch(e) {
     if (e.name === 'AbortError') return;
     console.warn('sounding:', e);
@@ -29554,7 +29667,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Removed the RDPS and GDPS models. They never drew anything, so the menu no longer offers them.";
+const APP_LATEST_UPDATE = "Soundings now show 24-hour forecast and can switch between GFS and ECMWF models.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -30862,6 +30975,10 @@ document.addEventListener('DOMContentLoaded', () => {
   <div id="sounding-head">
     <div class="snd-drag" id="sounding-drag" title="Drag to move">⠿</div>
     <span id="sounding-title">Sounding</span>
+    <select id="sounding-model" onchange="_sndChangeModel(this.value)" title="Forecast model">
+      <option value="gfs">GFS</option>
+      <option value="ecmwf">ECMWF</option>
+    </select>
     <button class="snd-btn" onclick="loadSounding()" title="Reload for the current map centre">Here</button>
     <button class="snd-btn" onclick="closeSoundingPanel()" title="Close">Close</button>
   </div>
@@ -30872,6 +30989,10 @@ document.addEventListener('DOMContentLoaded', () => {
   </div>
   <div id="sounding-indices"></div>
   <div id="sounding-status">Pan the map, then press Here.</div>
+  <div id="sounding-hourly" class="sounding-section">
+    <div class="snd-section-title">Next 24h</div>
+    <div id="sounding-hourly-list" class="snd-hourly-items"></div>
+  </div>
 </div>
 
 <div id="stormcone-panel">
