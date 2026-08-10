@@ -16395,20 +16395,28 @@ async function init() {
   // say so plainly. If it did arrive, one retry covers a transient DOM or sizing
   // problem, and only after that do we surface a notice.
   let _mapOK = false;
-  for (let attempt = 1; attempt <= 2 && !_mapOK; attempt++) {
-    if (typeof L === 'undefined') {
-      _mapFailNotice('Mapping library did not load. Check your connection and reload.');
-      break;
+  if (typeof L === 'undefined') {
+    _mapFailNotice('Mapping library did not load. Check your connection and reload.');
+  } else {
+    // Retry is gated on `map` itself, never on a general success flag. Leaflet
+    // refuses to initialise a container twice, so if initMap() succeeded and
+    // something after it threw, calling initMap() again would throw "Map
+    // container is already initialized" and leave a dead map behind.
+    for (let attempt = 1; attempt <= 2 && !map; attempt++) {
+      try { initMap(); }
+      catch(e) {
+        console.warn('Map init error (attempt ' + attempt + '):', e);
+        if (attempt === 2) _mapFailNotice('The map could not start. Reload to try again.');
+      }
     }
-    try {
-      initMap();
-      _ovApplyMapOrder(); // re-apply saved overlay order now that map panes exist
-      updateLegend('ref');
-      renderSubBubbles('regular');
-      _mapOK = !!map;
-    } catch(e) {
-      console.warn('Map init error (attempt ' + attempt + '):', e);
-      if (attempt === 2) _mapFailNotice('The map could not start. Reload to try again.');
+    _mapOK = !!map;
+    // Post-init steps are cosmetic next to the map itself. Each is isolated so
+    // one failing cannot take down the others, and none of them can reach the
+    // retry above.
+    if (_mapOK) {
+      try { _ovApplyMapOrder(); } catch(e) { console.warn('overlay order:', e); }
+      try { updateLegend('ref');  } catch(e) { console.warn('legend:', e); }
+      try { renderSubBubbles('regular'); } catch(e) { console.warn('sub-bubbles:', e); }
     }
   }
   if (_mapOK) _watchBasemap();
@@ -28799,7 +28807,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Profile photos now fill the circle properly instead of showing only their top-left corner. Added safeguards so the map explains itself if the basemap or Leaflet fails to load.";
+const APP_LATEST_UPDATE = "Fixed the map failing to start. A harmless error after startup was making it try to build the map a second time, which Leaflet refuses and which left the map dead.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
