@@ -2211,6 +2211,13 @@ body {
   font-family: 'Comfortaa', sans-serif;
 }
 #sounding-head { display: flex; align-items: center; gap: 6px; }
+.snd-drag {
+  cursor: grab; user-select: none;
+  color: rgba(255,255,255,0.4); font-size: 13px; line-height: 0.7;
+  padding: 2px 2px 4px; transition: color 0.15s;
+}
+.snd-drag:hover { color: var(--accent2); }
+.snd-drag:active { cursor: grabbing; }
 #sounding-title {
   flex: 1; font-size: 11px; font-weight: 700; color: #fff; letter-spacing: 0.5px;
 }
@@ -14882,6 +14889,21 @@ const GEOMET_LAYERS = {
 // bad name, so a rename is diagnosable instead of silently blank.
 let _geoMetCaps = null;      // Set of advertised layer names, once fetched
 let _geoMetCapsWarned = new Set();
+// Names the exact layer the service rejected, and offers the closest thing it
+// does publish, so a rename is reportable rather than just "it doesn't work".
+function _sevShowLayerProblem(layerName) {
+  const body = document.getElementById('sev-panel-body');
+  if (!body) return;
+  let hint = '';
+  if (_geoMetCaps) {
+    const prefix = String(layerName).split('.')[0];
+    const near = [..._geoMetCaps].filter(n => n.startsWith(prefix)).slice(0, 3);
+    if (near.length) hint = `<br>This service does publish: ${near.join(', ')}`;
+  }
+  body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.75);font-size:9px;padding:6px;line-height:1.45;">` +
+    `Environment Canada does not publish <b>${layerName}</b> right now, so there is nothing to draw.${hint}</div>`;
+}
+
 function _sevValidateGeoMet(layerName) {
   if (!layerName || _geoMetCapsWarned.has(layerName)) return;
   if (_geoMetCaps) {
@@ -14889,6 +14911,10 @@ function _sevValidateGeoMet(layerName) {
       _geoMetCapsWarned.add(layerName);
       console.warn('GeoMet layer not advertised by the service:', layerName,
                    '- check GEOMET_LAYERS against', GEOMET_WMS + '?service=WMS&request=GetCapabilities');
+      // Say so in the panel as well. A layer the service does not publish just
+      // returns nothing, which is indistinguishable from "no data this hour",
+      // and a console warning is invisible to anyone not looking for it.
+      _sevShowLayerProblem(layerName);
     }
     return;
   }
@@ -16768,14 +16794,23 @@ function _sndUrl(lat, lon) {
               `wind_speed_${p}hPa`, `wind_direction_${p}hPa`,
               `geopotential_height_${p}hPa`);
   });
-  // Surface fields and the instability indices Open-Meteo already computes, so
-  // the panel does not have to derive CAPE itself from a coarse profile.
   vars.push('temperature_2m', 'dew_point_2m', 'surface_pressure',
-            'wind_speed_10m', 'wind_direction_10m', 'cape', 'lifted_index',
-            'convective_inhibition');
+            'wind_speed_10m', 'wind_direction_10m');
   return `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}` +
          `&longitude=${lon.toFixed(3)}&hourly=${vars.join(',')}` +
          `&wind_speed_unit=kn&forecast_days=2&timezone=UTC`;
+}
+
+// Indices are fetched separately on purpose. Open-Meteo rejects the entire
+// request if a single variable name is not supported for the chosen model, so
+// bundling these with the eighty profile variables meant one unsupported index
+// returned 400 and took the whole sounding down with it. Split, a missing index
+// costs only that number.
+function _sndIdxUrl(lat, lon) {
+  return `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}` +
+         `&longitude=${lon.toFixed(3)}` +
+         `&hourly=cape,lifted_index,convective_inhibition` +
+         `&forecast_days=2&timezone=UTC`;
 }
 
 async function loadSounding() {
@@ -16789,7 +16824,12 @@ async function loadSounding() {
 
   try {
     const res = await fetch(_sndUrl(c.lat, c.lng), { signal: _sndAbort.signal });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) {
+      // Surface Open-Meteo's own reason: it names the offending variable, which
+      // is the difference between a fixable report and "it doesn't work".
+      const why = await res.json().catch(() => null);
+      throw new Error(why?.reason ? `${why.reason}` : 'HTTP ' + res.status);
+    }
     const j = await res.json();
     const h = j.hourly;
     if (!h || !h.time || !h.time.length) throw new Error('no hourly data');
@@ -16826,19 +16866,30 @@ async function loadSounding() {
         ws: h.wind_speed_10m?.[idx],
         wd: h.wind_direction_10m?.[idx]
       },
-      idx: {
-        cape: h.cape?.[idx],
-        li:   h.lifted_index?.[idx],
-        cin:  h.convective_inhibition?.[idx]
-      },
+      idx: {},
       meta: { lat: c.lat, lon: c.lng, time: h.time[idx] }
     };
     _sndDraw();
     _sndSetStatus(`${c.lat.toFixed(2)}, ${c.lng.toFixed(2)} · ${h.time[idx].replace('T',' ')}Z`);
+
+    // Non-blocking: the chart is already up, so indices fill in if they arrive
+    // and are simply left blank if this model does not publish them.
+    fetch(_sndIdxUrl(c.lat, c.lng), { signal: _sndAbort.signal })
+      .then(r => r.ok ? r.json() : null)
+      .then(ij => {
+        if (!ij?.hourly || !_sndData) return;
+        _sndData.idx = {
+          cape: ij.hourly.cape?.[idx],
+          li:   ij.hourly.lifted_index?.[idx],
+          cin:  ij.hourly.convective_inhibition?.[idx]
+        };
+        _sndDraw();
+      })
+      .catch(e => { if (e.name !== 'AbortError') console.warn('sounding indices:', e.message); });
   } catch(e) {
     if (e.name === 'AbortError') return;
     console.warn('sounding:', e);
-    _sndSetStatus('Sounding unavailable here - try another location');
+    _sndSetStatus('Sounding unavailable: ' + (e.message || 'try another location'));
     const cv = document.getElementById('sounding-canvas');
     if (cv) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
   } finally {
@@ -26269,11 +26320,136 @@ function _aiRenderMessages() {
   box.scrollTop = box.scrollHeight;
 }
 
+
+// ── ASTURIO CHAT SYNC ──────────────────────────────────────────────────────
+// Chats are kept on the signed-in account so they survive a reload and follow
+// you between devices. Guests keep working exactly as before, just in memory.
+//
+// Firestore caps a document at 1 MiB and the whole user profile shares that
+// budget, so history is trimmed rather than stored wholesale: oldest chats and
+// oldest turns go first, and if it is still too big the cap tightens until it
+// fits. Losing the start of an old conversation is survivable; blowing the
+// document limit would fail the write and lose the profile edit alongside it.
+const AI_SYNC_MAX_CHATS = 10;
+const AI_SYNC_MAX_TURNS = 40;
+const AI_SYNC_MAX_BYTES = 180000;
+
+let _aiSyncTimer = null;
+let _aiSyncSuppressed = false;   // true while restoring, so we do not save what we just loaded
+
+function _aiTrimForSync() {
+  let turns = AI_SYNC_MAX_TURNS;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const trimmed = _aiChats.slice(-AI_SYNC_MAX_CHATS).map(c => ({
+      id: c.id,
+      name: String(c.name || 'Chat').slice(0, 60),
+      history: (c.history || []).slice(-turns).map(m => ({
+        role: m.role,
+        text: String(m.parts?.[0]?.text ?? '').slice(0, 6000)
+      }))
+    }));
+    const json = JSON.stringify(trimmed);
+    if (json.length <= AI_SYNC_MAX_BYTES) return trimmed;
+    turns = Math.max(4, Math.floor(turns / 2));
+  }
+  return [];
+}
+
+function _aiSyncNow() {
+  if (_aiSyncSuppressed || !_currentUser || !_fbDb) return;
+  const payload = _aiTrimForSync();
+  _fbDb.collection('users').doc(_currentUser.uid).set({
+    asturioChats: payload,
+    asturioActive: Math.min(_aiActiveChat, Math.max(0, payload.length - 1)),
+    asturioSavedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }, { merge: true }).catch(e => console.warn('asturio sync:', e));
+}
+
+// Debounced: a conversation fires several state changes in a row and each one
+// would otherwise be its own write.
+function _aiScheduleSync() {
+  if (_aiSyncSuppressed || !_currentUser || !_fbDb) return;
+  clearTimeout(_aiSyncTimer);
+  _aiSyncTimer = setTimeout(_aiSyncNow, 1500);
+}
+
+// Rehydrates into the shape the panel expects. Stored flat as {role,text} so a
+// change to Gemini's parts format cannot strand saved history.
+function _aiRestoreChats(saved, activeIdx) {
+  if (!Array.isArray(saved) || !saved.length) return false;
+  _aiSyncSuppressed = true;
+  try {
+    _aiChats = saved.map((c, i) => ({
+      id: c.id ?? (i + 1),
+      name: c.name || `Chat ${i + 1}`,
+      history: (c.history || []).map(m => ({
+        role: m.role === 'model' ? 'model' : 'user',
+        parts: [{ text: String(m.text ?? '') }]
+      }))
+    }));
+    _aiNextId = Math.max(...(_aiChats.map(c => Number(c.id) || 0)), 0) + 1;
+    _aiActiveChat = Math.min(Math.max(0, Number(activeIdx) || 0), _aiChats.length - 1);
+    if (typeof _aiRenderTabs === 'function') _aiRenderTabs();
+    if (typeof _aiRenderMessages === 'function') _aiRenderMessages();
+    return true;
+  } catch(e) {
+    console.warn('asturio restore:', e);
+    return false;
+  } finally {
+    _aiSyncSuppressed = false;
+  }
+}
+
+// ── DISCORD LINKING ────────────────────────────────────────────────────────
+// The web side only mints a short code and parks it on the account. The bot
+// looks the code up and writes its own Discord id back, so the token never has
+// to travel through the browser and nothing here needs Discord credentials.
+const AI_LINK_CODE_TTL_MS = 10 * 60 * 1000;
+
+function _aiMakeLinkCode() {
+  // No 0/O or 1/I: this gets read off a screen and typed into Discord.
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  const buf = new Uint8Array(6);
+  (crypto || window.crypto).getRandomValues(buf);
+  buf.forEach(b => { out += alphabet[b % alphabet.length]; });
+  return out;
+}
+
+async function lqmGenerateDiscordCode() {
+  const out = document.getElementById('lqm-discord-code');
+  if (!_currentUser || !_fbDb) {
+    if (out) out.textContent = 'Sign in first to link Discord.';
+    return;
+  }
+  const code = _aiMakeLinkCode();
+  const expires = Date.now() + AI_LINK_CODE_TTL_MS;
+  try {
+    await _fbDb.collection('users').doc(_currentUser.uid).set({
+      discordLinkCode: code,
+      discordLinkExpires: expires
+    }, { merge: true });
+    if (out) out.innerHTML = `Run <b>/link ${code}</b> in Discord within 10 minutes.`;
+  } catch(e) {
+    console.warn('discord link code:', e);
+    if (out) out.textContent = 'Could not create a code - ' + (e.code || 'try again');
+  }
+}
+
+function _aiRenderDiscordState(d) {
+  const el = document.getElementById('lqm-discord-state');
+  if (!el) return;
+  el.textContent = d && d.discordId
+    ? `Linked to Discord${d.discordTag ? ' as ' + d.discordTag : ''}`
+    : 'Not linked';
+}
+
 function _aiNewChat() {
   _aiChats.push({ id: _aiNextId++, name: `Chat ${_aiNextId - 1}`, history: [] });
   _aiActiveChat = _aiChats.length - 1;
   _aiRenderTabs();
   _aiRenderMessages();
+  _aiScheduleSync();
 }
 
 function _aiSwitchChat(i) {
@@ -26784,6 +26960,7 @@ async function _aiSend(explicitImageB64) {
       (finishReason && finishReason !== 'STOP' ? `[Stopped: ${finishReason}]` : null) ||
       'No response.';
     hist.push({ role: 'model', parts: [{ text: reply }] });
+    _aiScheduleSync();   // conversation advanced, persist it for signed-in users
     // Pull out any action blocks and show the cleaned human text
     const { actions, clean } = _aiExtractActions(reply);
     if (typing) { typing.innerHTML = _aiMarkdown(clean || (actions.length ? 'On it…' : reply)); typing.classList.remove('typing'); }
@@ -29348,6 +29525,9 @@ async function _loadUserPrefs(uid) {
       _homeLocation = { country:'', state:'', county:'', city:'', ...d.homeLocation };
       setTimeout(_decorateAlertCards, 1200);
     }
+    // Saved Asturio conversations, and whether this account is linked to Discord.
+    if (typeof _aiRestoreChats === 'function') _aiRestoreChats(d.asturioChats, d.asturioActive);
+    if (typeof _aiRenderDiscordState === 'function') _aiRenderDiscordState(d);
     // Notification is absent in some mobile webviews, so never touch it bare.
     const notifOK = (typeof Notification !== 'undefined' && Notification.permission === 'granted');
     if (d.notifEnabled && notifOK) {
@@ -29387,7 +29567,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Added Soundings under Models: a Skew-T of the atmosphere above your map centre, with CAPE, CIN and Lifted Index. The feedback form now sends to Discord.";
+const APP_LATEST_UPDATE = "Asturio chats now save to your account and come back when you sign in, and you can link the account to Discord so the bot shares the same history.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -30263,6 +30443,7 @@ document.addEventListener('DOMContentLoaded', () => {
   _makeDraggable(document.getElementById('tornado-tracks-panel'), document.getElementById('tornado-tracks-drag'));
   _makeDraggable(document.getElementById('cc-modal'), document.getElementById('cc-drag'));
   _makeDraggable(document.getElementById('credits-panel'),        document.getElementById('credits-drag'));
+  _makeDraggable(document.getElementById('sounding-panel'),       document.getElementById('sounding-drag'));
   _makeDraggable(document.getElementById('lqm-ai-overlay'),       document.getElementById('lqm-ai-drag'));
   _makeDraggable(document.getElementById('lqm-settings-overlay'), document.getElementById('lqm-settings-drag'));
   _makeDraggable(document.getElementById('tutorial-modal-inner'), document.getElementById('tut-dialog-drag'));
@@ -30527,6 +30708,16 @@ document.addEventListener('DOMContentLoaded', () => {
         </label>
       </div>
 
+      <!-- Discord link: the code is generated here, the bot claims it -->
+      <div class="lqm-notif-row">
+        <div>
+          <div class="lqm-notif-label"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-robot></use></svg> Asturio on Discord</div>
+          <div class="lqm-notif-sublabel" id="lqm-discord-state">Not linked</div>
+          <div class="lqm-notif-sublabel" id="lqm-discord-code" style="color:#e8b800"></div>
+        </div>
+        <button class="lqm-profile-action-btn" style="flex:0 0 auto" onclick="lqmGenerateDiscordCode()">Get Code</button>
+      </div>
+
       <button class="lqm-profile-signout-btn" onclick="authSignOut()">Sign Out</button>
     </div>
 
@@ -30682,6 +30873,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- Sounding panel: forecast Skew-T for the current map centre -->
 <div id="sounding-panel">
   <div id="sounding-head">
+    <div class="snd-drag" id="sounding-drag" title="Drag to move">⠿</div>
     <span id="sounding-title">Sounding</span>
     <button class="snd-btn" onclick="loadSounding()" title="Reload for the current map centre">Here</button>
     <button class="snd-btn" onclick="closeSoundingPanel()" title="Close">Close</button>

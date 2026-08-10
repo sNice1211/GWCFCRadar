@@ -13,6 +13,7 @@ import {
   Client, GatewayIntentBits, Partials, Events,
   REST, Routes, SlashCommandBuilder,
 } from 'discord.js';
+import { findUserByLinkCode, findUserByDiscordId, patchUser } from './firestore.mjs';
 
 const TOKEN     = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -159,6 +160,45 @@ function chunk(text, limit = DISCORD_LIMIT) {
   return out.length ? out : ['(empty response)'];
 }
 
+// ── Linked-account chat history ───────────────────────────────────────────
+// A linked user's Discord conversation is written into the same asturioChats
+// field the website reads, so a question asked here shows up in the panel and
+// vice versa. Same trimming rules as the site, for the same reason: the whole
+// user profile shares one 1 MiB document.
+const AI_SYNC_MAX_TURNS = 40;
+const DISCORD_CHAT_NAME = 'Discord';
+
+function discordChatFrom(chats) {
+  const list = Array.isArray(chats) ? chats : [];
+  const idx = list.findIndex(c => c && c.name === DISCORD_CHAT_NAME);
+  return { list, idx };
+}
+
+async function loadHistory(discordId) {
+  const found = await findUserByDiscordId(discordId).catch(() => null);
+  if (!found) return { uid: null, history: [], chats: [] };
+  const { list, idx } = discordChatFrom(found.data.asturioChats);
+  const hist = idx >= 0 ? (list[idx].history || []) : [];
+  return {
+    uid: found.uid,
+    chats: list,
+    history: hist.map(m => ({ role: m.role === 'model' ? 'model' : 'user', parts: [{ text: String(m.text ?? '') }] })),
+  };
+}
+
+async function saveHistory(uid, chats, question, answer) {
+  if (!uid) return;
+  const { list, idx } = discordChatFrom(chats);
+  const turns = (idx >= 0 ? (list[idx].history || []) : []).concat(
+    { role: 'user',  text: String(question).slice(0, 6000) },
+    { role: 'model', text: String(answer).slice(0, 6000) },
+  ).slice(-AI_SYNC_MAX_TURNS);
+
+  const entry = { id: idx >= 0 ? list[idx].id : 9001, name: DISCORD_CHAT_NAME, history: turns };
+  const next = idx >= 0 ? list.map((c, i) => (i === idx ? entry : c)) : [...list, entry];
+  await patchUser(uid, { asturioChats: next }).catch(e => console.warn('save history:', e.message));
+}
+
 // ── Discord ───────────────────────────────────────────────────────────────
 const commands = [
   new SlashCommandBuilder()
@@ -169,6 +209,14 @@ const commands = [
   new SlashCommandBuilder()
     .setName('alerts')
     .setDescription('Current nationwide NWS alert summary'),
+  new SlashCommandBuilder()
+    .setName('link')
+    .setDescription('Link this Discord account to your GWCFC Radar account')
+    .addStringOption(o => o.setName('code')
+      .setDescription('The code shown in your profile on the site').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('unlink')
+    .setDescription('Disconnect this Discord account from GWCFC Radar'),
 ].map(c => c.toJSON());
 
 async function registerCommands() {
@@ -210,11 +258,38 @@ client.on(Events.InteractionCreate, async (i) => {
       }
       return;
     }
+    if (i.commandName === 'link') {
+      const code = i.options.getString('code', true).trim().toUpperCase();
+      await i.deferReply({ ephemeral: true });   // the code is a credential, keep it out of the channel
+      const found = await findUserByLinkCode(code);
+      if (!found)        return i.editReply('No account is waiting on that code. Generate a fresh one in your profile on the site.');
+      if (found.expired) return i.editReply('That code has expired. Codes last 10 minutes, so generate a new one.');
+      await patchUser(found.uid, {
+        discordId: i.user.id,
+        discordTag: i.user.username,
+        // Clear the code so it cannot be claimed twice.
+        discordLinkCode: '',
+        discordLinkExpires: 0,
+      });
+      return i.editReply('Linked. Your Discord chats with Asturio now save to your GWCFC Radar account, and your saved chats are available here.');
+    }
+
+    if (i.commandName === 'unlink') {
+      await i.deferReply({ ephemeral: true });
+      const found = await findUserByDiscordId(i.user.id);
+      if (!found) return i.editReply('This Discord account is not linked to anything.');
+      await patchUser(found.uid, { discordId: '', discordTag: '' });
+      return i.editReply('Unlinked. Chats here are no longer saved to your account.');
+    }
+
     if (i.commandName === 'ask') {
       const q = i.options.getString('question', true);
       // Answers take several seconds, well past Discord's 3 second window.
       await i.deferReply();
-      const answer = await askAsturio(q);
+      // A linked account carries its history in, so follow-up questions work.
+      const prior = await loadHistory(i.user.id).catch(() => ({ uid: null, history: [], chats: [] }));
+      const answer = await askAsturio(q, prior.history);
+      saveHistory(prior.uid, prior.chats, q, answer).catch(() => {});
       for (const [n, part] of chunk(answer).entries()) {
         n === 0 ? await i.editReply(part) : await i.followUp(part);
       }
@@ -235,7 +310,9 @@ client.on(Events.MessageCreate, async (m) => {
   if (!q) { await m.reply(`Ask me something, or use /ask. Live map: ${SITE_URL}`); return; }
   try {
     await m.channel.sendTyping();
-    const answer = await askAsturio(q);
+    const prior = await loadHistory(m.author.id).catch(() => ({ uid: null, history: [], chats: [] }));
+    const answer = await askAsturio(q, prior.history);
+    saveHistory(prior.uid, prior.chats, q, answer).catch(() => {});
     for (const part of chunk(answer)) await m.reply(part);
   } catch (e) {
     console.error('mention:', e);
