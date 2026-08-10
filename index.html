@@ -7443,6 +7443,26 @@ function rmActivate(id) {
 
 // ── GLOBALS ──
 let map, radarLayer = null, satelliteLayer = null;
+
+// ── MAP READINESS GATE ──
+// init() runs on window's load event, so initMap() does not exist until every
+// image, font and script has settled. Firebase resolves auth from IndexedDB in
+// a few hundred ms and calls _loadUserPrefs long before that. Anything that
+// needs a live map has to wait for this signal rather than a timer or a frame,
+// or it runs against an undefined map and silently fails.
+let _mapReady = false;
+let _mapReadyQueue = [];
+function _whenMapReady(fn) {
+  if (_mapReady) { try { fn(); } catch(e) { console.warn('mapReady task:', e); } return; }
+  _mapReadyQueue.push(fn);
+}
+function _signalMapReady() {
+  if (_mapReady) return;
+  _mapReady = true;
+  const q = _mapReadyQueue;
+  _mapReadyQueue = [];
+  q.forEach(fn => { try { fn(); } catch(e) { console.warn('mapReady task:', e); } });
+}
 let goesLayer = null;
 let alertsLayer = null, spcLayer = null, lightningMarkers = [];
 let radarFrames = [], currentFrame = 0, playing = false, playTimer = null;
@@ -16253,6 +16273,10 @@ async function init() {
   } catch(e) {
     console.warn('Map init error:', e);
   }
+  // Release anything queued on the map, above all the saved layer/overlay
+  // preset. Fires outside the try so a partial init still lets the queue drain
+  // rather than stranding it forever; each queued task guards itself.
+  _signalMapReady();
 
   // loadNEXRAD is effectively synchronous (no awaits inside) - completes in < 100 ms.
   // _doLoadAlerts runs in the background; we don't block the loading screen on it.
@@ -28352,6 +28376,16 @@ async function authSaveLayerPreset() {
 // the rest of the restore.
 function _applyViewState(d) {
   if (_viewStateApplied) return;
+  // Never spend the one-shot guard on a run that cannot succeed: without a live
+  // map every toggle below throws into its own catch and the preset is lost for
+  // the rest of the session. Only re-queue while the map signal is still
+  // pending - once it has fired, a missing map means initMap() itself failed,
+  // and re-queueing would call straight back into here forever.
+  if (typeof map === 'undefined' || !map) {
+    if (!_mapReady) { _whenMapReady(() => _applyViewState(d)); }
+    else { console.warn('_applyViewState: map unavailable, preset not applied'); }
+    return;
+  }
   _viewStateApplied = true;
   if (d.savedMapType && typeof setMapType === 'function') {
     try { setMapType(d.savedMapType); } catch(e) { console.warn('restore basemap:', e); }
@@ -28456,10 +28490,11 @@ async function _loadUserPrefs(uid) {
     if (d.homeRegion && typeof d.homeRegion.lat === 'number' && map) {
       map.setView([d.homeRegion.lat, d.homeRegion.lng], d.homeRegion.zoom || 7);
     }
-    // Re-apply the saved layers, overlays, tools and basemap. Deferred to the
-    // next frame because auth can resolve before the overlay pills and tool
-    // buttons this reads have finished rendering.
-    requestAnimationFrame(() => _applyViewState(d));
+    // Re-apply the saved layers, overlays, tools and basemap. Queued behind the
+    // map rather than a frame: auth resolves from IndexedDB well before init()
+    // runs on window's load event, so a rAF here fired while map was still
+    // undefined and every toggle threw.
+    _whenMapReady(() => _applyViewState(d));
   } catch(e) { console.warn('loadUserPrefs:', e); }
 }
 
@@ -28477,7 +28512,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Your saved layers now load once when you open the app instead of switching themselves back on afterwards, so turning a layer off stays off.";
+const APP_LATEST_UPDATE = "Saved layers and overlays now actually come back when you reload. The restore was running before the map finished loading, so it silently did nothing.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
