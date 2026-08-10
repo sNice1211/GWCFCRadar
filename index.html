@@ -2194,6 +2194,54 @@ body {
 }
 
 /* ── TROPICAL / SEVERE MODEL PANELS ── */
+/* ── Sounding (Skew-T) panel ── */
+#sounding-panel {
+  display: none;
+  position: absolute;
+  top: 52px; right: 8px;
+  width: min(330px, calc(100vw - 24px));
+  z-index: 900;
+  flex-direction: column;
+  gap: 6px;
+  background: rgb(8,4,4);
+  border: 1px solid rgba(170,0,0,0.4);
+  border-radius: 10px;
+  padding: 8px 9px 10px;
+  box-shadow: 0 10px 34px rgba(0,0,0,0.6);
+  font-family: 'Comfortaa', sans-serif;
+}
+#sounding-head { display: flex; align-items: center; gap: 6px; }
+#sounding-title {
+  flex: 1; font-size: 11px; font-weight: 700; color: #fff; letter-spacing: 0.5px;
+}
+.snd-btn {
+  background: rgba(0,140,186,0.14);
+  border: 1px solid rgba(0,140,186,0.4);
+  color: #008CBA;
+  border-radius: 6px; cursor: pointer;
+  font-size: 10px; padding: 3px 8px;
+  font-family: 'Comfortaa', sans-serif;
+}
+.snd-btn:hover { background: rgba(0,140,186,0.26); color: #fff; }
+#sounding-canvas {
+  width: 100%; height: 320px; display: block;
+  border-radius: 6px; background: rgba(0,0,0,0.25);
+}
+#sounding-indices {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  font-family: var(--mono); font-size: 9.5px; color: rgba(212,232,255,0.75);
+}
+#sounding-indices b { color: #e8b800; font-weight: 700; }
+#sounding-status {
+  font-family: var(--mono); font-size: 8.5px;
+  color: rgba(212,232,255,0.45); letter-spacing: 0.3px;
+}
+#sounding-legend {
+  display: flex; gap: 10px; font-family: var(--mono); font-size: 8.5px;
+  color: rgba(212,232,255,0.6);
+}
+#sounding-legend i { display: inline-block; width: 10px; height: 2px; vertical-align: middle; margin-right: 3px; }
+
 #severe-model-panel {
   display: none;
   position: absolute;
@@ -14021,6 +14069,7 @@ function toggleSatelliteSub() {
 // them (Radar's Reflectivity/Velocity/etc, Satellite's GOES channels, Alerts'
 // sub-panels). Shown in the same ⓘ tooltip used for the overlay pills.
 const LAYER_DESCRIPTIONS = {
+  soundings:      'A vertical slice of the atmosphere above the middle of your map, drawn as a Skew-T. The red line is temperature and the green line is dew point: the closer they sit together, the more humid that layer is. CAPE is how much fuel a storm has, CIN is the lid holding it down, and a negative Lifted Index means the air wants to rise on its own.',
   mrms:           'NOAA MRMS, a 1 km national mosaic built by blending every radar in the network and quality-controlling the result. Sharper than the standard mosaic and much cleaner around ground clutter and beam blockage. Covers the lower 48.',
   geocolor:       'Full-colour satellite imagery, the kind you see on TV weather. By day it looks close to true colour, and at night it switches to infrared cloud shading with city lights, so it stays readable around the clock rather than going dark like the plain visible channels. One image built from several ABI bands, from NASA GIBS, updated about every 10 minutes. Detail stops sharpening past roughly zoom 7, where it scales the last real imagery up rather than going blank.',
   waves:          'Ocean conditions - wave height, period, direction, swell, and sea surface temperature - shown as a smooth color map over the water. Tap a product below to pick which one.',
@@ -14114,7 +14163,7 @@ function _getBubbleActive(id) {
   if (id === 'wind')        return !!windActive;
   if (id === 'temperature') return !!temperatureActive;
   if (id === 'pressure')    return !!pressureActive;
-  if (id === 'models')      return _runModelsPanelIsOpen() || _spaghettiModelsPanelIsOpen();
+  if (id === 'models')      return _runModelsPanelIsOpen() || _spaghettiModelsPanelIsOpen() || _soundingPanelIsOpen();
   return !!activeBubbles[id];
 }
 
@@ -16677,9 +16726,249 @@ function _spaghettiModelsPanelIsOpen() {
 // Models sub-menu: Run Models / Spaghetti Models as their own sub-bubbles
 // (same picker pattern Radar/Satellite/Waves use), each independently
 // toggling its own panel.
+// ── SOUNDINGS (Skew-T) ────────────────────────────────────────────────────
+// Forecast vertical profile for wherever the map is centred, drawn as a
+// Skew-T log-P. Data is Open-Meteo's pressure-level API, already a dependency
+// here, so there is no new host and nothing raw to decode: it answers with
+// temperature, dew point and wind on standard levels as plain JSON.
+const SOUNDING_LEVELS = [1000,975,950,925,900,850,800,700,600,500,400,300,250,200,150,100];
+let _sndData = null;      // { levels:[{p,t,td,ws,wd,z}], sfc:{...}, meta:{...} }
+let _sndLoading = false;
+let _sndAbort = null;
+
+function _soundingPanelIsOpen() {
+  const el = document.getElementById('sounding-panel');
+  return !!el && el.style.display === 'flex';
+}
+
+function closeSoundingPanel() {
+  const el = document.getElementById('sounding-panel');
+  if (el) el.style.display = 'none';
+  if (_sndAbort) { try { _sndAbort.abort(); } catch(e) {} _sndAbort = null; }
+}
+
+function openSoundingPanel() {
+  const el = document.getElementById('sounding-panel');
+  if (!el) return;
+  el.style.display = 'flex';
+  loadSounding();
+}
+
+function _sndSetStatus(msg) {
+  const s = document.getElementById('sounding-status');
+  if (s) s.textContent = msg;
+}
+
+// Builds the pressure-level query. One request covers every level and variable;
+// asking per level would be 16 round trips for the same answer.
+function _sndUrl(lat, lon) {
+  const vars = [];
+  SOUNDING_LEVELS.forEach(p => {
+    vars.push(`temperature_${p}hPa`, `dew_point_${p}hPa`,
+              `wind_speed_${p}hPa`, `wind_direction_${p}hPa`,
+              `geopotential_height_${p}hPa`);
+  });
+  // Surface fields and the instability indices Open-Meteo already computes, so
+  // the panel does not have to derive CAPE itself from a coarse profile.
+  vars.push('temperature_2m', 'dew_point_2m', 'surface_pressure',
+            'wind_speed_10m', 'wind_direction_10m', 'cape', 'lifted_index',
+            'convective_inhibition');
+  return `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}` +
+         `&longitude=${lon.toFixed(3)}&hourly=${vars.join(',')}` +
+         `&wind_speed_unit=kn&forecast_days=2&timezone=UTC`;
+}
+
+async function loadSounding() {
+  if (_sndLoading) return;
+  if (typeof map === 'undefined' || !map) { _sndSetStatus('Map not ready'); return; }
+  _sndLoading = true;
+  if (_sndAbort) { try { _sndAbort.abort(); } catch(e) {} }
+  _sndAbort = new AbortController();
+  const c = map.getCenter();
+  _sndSetStatus('Loading profile…');
+
+  try {
+    const res = await fetch(_sndUrl(c.lat, c.lng), { signal: _sndAbort.signal });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const j = await res.json();
+    const h = j.hourly;
+    if (!h || !h.time || !h.time.length) throw new Error('no hourly data');
+
+    // Nearest hour at or before now, so the profile matches the current map view
+    // rather than whatever happens to be first in the response.
+    const now = Date.now();
+    let idx = 0;
+    for (let i = 0; i < h.time.length; i++) {
+      if (new Date(h.time[i] + 'Z').getTime() <= now) idx = i; else break;
+    }
+
+    const levels = [];
+    SOUNDING_LEVELS.forEach(p => {
+      const t  = h[`temperature_${p}hPa`]?.[idx];
+      const td = h[`dew_point_${p}hPa`]?.[idx];
+      if (t == null || td == null) return;   // level not published by this model
+      levels.push({
+        p,
+        t, td,
+        ws: h[`wind_speed_${p}hPa`]?.[idx] ?? null,
+        wd: h[`wind_direction_${p}hPa`]?.[idx] ?? null,
+        z:  h[`geopotential_height_${p}hPa`]?.[idx] ?? null
+      });
+    });
+    if (levels.length < 4) throw new Error('profile too sparse to plot');
+
+    _sndData = {
+      levels,
+      sfc: {
+        t:  h.temperature_2m?.[idx],
+        td: h.dew_point_2m?.[idx],
+        p:  h.surface_pressure?.[idx],
+        ws: h.wind_speed_10m?.[idx],
+        wd: h.wind_direction_10m?.[idx]
+      },
+      idx: {
+        cape: h.cape?.[idx],
+        li:   h.lifted_index?.[idx],
+        cin:  h.convective_inhibition?.[idx]
+      },
+      meta: { lat: c.lat, lon: c.lng, time: h.time[idx] }
+    };
+    _sndDraw();
+    _sndSetStatus(`${c.lat.toFixed(2)}, ${c.lng.toFixed(2)} · ${h.time[idx].replace('T',' ')}Z`);
+  } catch(e) {
+    if (e.name === 'AbortError') return;
+    console.warn('sounding:', e);
+    _sndSetStatus('Sounding unavailable here - try another location');
+    const cv = document.getElementById('sounding-canvas');
+    if (cv) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+  } finally {
+    _sndLoading = false;
+  }
+}
+
+// ── Skew-T geometry ──
+// y is log pressure so the vertical spacing matches a real chart; x is
+// temperature sheared right with height, which is what makes it a *skew* T and
+// what lets you read lapse rate off the slope.
+const _SND_PTOP = 100, _SND_PBOT = 1050;
+const _SND_TMIN = -90, _SND_TMAX = 45;
+const _SND_SKEW = 0.9;   // temperature units shifted per unit of normalised height
+
+function _sndY(p, h) {
+  const f = (Math.log(p) - Math.log(_SND_PTOP)) / (Math.log(_SND_PBOT) - Math.log(_SND_PTOP));
+  return h - f * h;
+}
+function _sndX(t, p, w, h) {
+  const yf = 1 - (_sndY(p, h) / h);                    // 0 at bottom, 1 at top
+  const tt = t + _SND_SKEW * yf * (_SND_TMAX - _SND_TMIN) * 0.5;
+  return ((tt - _SND_TMIN) / (_SND_TMAX - _SND_TMIN)) * w;
+}
+
+function _sndDraw() {
+  const cv = document.getElementById('sounding-canvas');
+  if (!cv || !_sndData) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = cv.clientWidth || 300, cssH = cv.clientHeight || 340;
+  cv.width = cssW * dpr; cv.height = cssH * dpr;
+  const g = cv.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cssW, cssH);
+
+  const padL = 30, padR = 42, padT = 8, padB = 18;
+  const w = cssW - padL - padR, h = cssH - padT - padB;
+  g.save();
+  g.translate(padL, padT);
+
+  g.fillStyle = 'rgba(0,0,0,0.35)';
+  g.fillRect(0, 0, w, h);
+
+  // Pressure grid
+  g.font = '8px ui-monospace, monospace';
+  g.textBaseline = 'middle';
+  [1000,850,700,500,300,200,100].forEach(p => {
+    const y = _sndY(p, h);
+    g.strokeStyle = 'rgba(255,255,255,0.16)';
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+    g.fillStyle = 'rgba(212,232,255,0.55)';
+    g.textAlign = 'right';
+    g.fillText(String(p), -4, y);
+  });
+
+  // Skewed isotherms, with 0 C picked out since it anchors the eye
+  for (let t = _SND_TMIN; t <= _SND_TMAX; t += 10) {
+    g.strokeStyle = (t === 0) ? 'rgba(0,190,255,0.5)' : 'rgba(255,255,255,0.09)';
+    g.lineWidth = (t === 0) ? 1.4 : 1;
+    g.beginPath();
+    let started = false;
+    for (let p = _SND_PBOT; p >= _SND_PTOP; p -= 25) {
+      const x = _sndX(t, p, w, h), y = _sndY(p, h);
+      if (x < -40 || x > w + 40) { started = false; continue; }
+      if (!started) { g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+    }
+    g.stroke();
+    if (t % 20 === 0) {
+      const x = _sndX(t, _SND_PBOT, w, h);
+      if (x > 0 && x < w) {
+        g.fillStyle = 'rgba(212,232,255,0.45)';
+        g.textAlign = 'center';
+        g.fillText(String(t), x, h + 8);
+      }
+    }
+  }
+
+  const pts = _sndData.levels.slice().sort((a, b) => b.p - a.p);
+  const trace = (key, color, width) => {
+    g.strokeStyle = color; g.lineWidth = width;
+    g.beginPath();
+    let started = false;
+    pts.forEach(L => {
+      const v = L[key];
+      if (v == null) return;
+      const x = _sndX(v, L.p, w, h), y = _sndY(L.p, h);
+      if (!started) { g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+    });
+    g.stroke();
+  };
+  trace('td', '#2ecc71', 2);   // dew point
+  trace('t',  '#ff4d4d', 2);   // temperature
+
+  g.restore();
+
+  // Wind barbs column: speed as a number is easier to read at this size than
+  // true barbs, with the arrow carrying direction.
+  g.save();
+  g.translate(cssW - padR + 6, padT);
+  g.font = '7px ui-monospace, monospace';
+  g.textAlign = 'left'; g.textBaseline = 'middle';
+  pts.forEach(L => {
+    if (L.ws == null || L.wd == null) return;
+    const y = _sndY(L.p, h);
+    g.save(); g.translate(6, y); g.rotate((L.wd + 180) * Math.PI / 180);
+    g.strokeStyle = 'rgba(212,232,255,0.75)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0,-5); g.lineTo(0,5); g.moveTo(0,5); g.lineTo(-2.5,1.5); g.moveTo(0,5); g.lineTo(2.5,1.5);
+    g.stroke(); g.restore();
+    g.fillStyle = 'rgba(212,232,255,0.7)';
+    g.fillText(Math.round(L.ws) + 'kt', 14, y);
+  });
+  g.restore();
+
+  // Indices
+  const ix = _sndData.idx || {};
+  const fmt = (v, unit) => (v == null || Number.isNaN(v)) ? '--' : Math.round(v) + unit;
+  const el = document.getElementById('sounding-indices');
+  if (el) {
+    el.innerHTML =
+      `<span><b>CAPE</b> ${fmt(ix.cape, '')}</span>` +
+      `<span><b>CIN</b> ${fmt(ix.cin, '')}</span>` +
+      `<span><b>LI</b> ${fmt(ix.li, '')}</span>`;
+  }
+}
+
 const MODELS_SUB_BUBBLES = [
   { id: 'run-models',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-up></use></svg>', label: 'Run Models' },
   { id: 'spaghetti-models', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', label: 'Spaghetti Models' },
+  { id: 'soundings',        icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-bar></use></svg>', label: 'Soundings' },
 ];
 
 function toggleModelsSub() {
@@ -16691,7 +16980,9 @@ function toggleModelsSub() {
   back.onclick = () => { _syncParentBubble('models'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
   MODELS_SUB_BUBBLES.forEach(b => {
-    const isOpen = b.id === 'run-models' ? _runModelsPanelIsOpen() : _spaghettiModelsPanelIsOpen();
+    const isOpen = b.id === 'run-models'  ? _runModelsPanelIsOpen()
+                 : b.id === 'soundings'   ? _soundingPanelIsOpen()
+                 : _spaghettiModelsPanelIsOpen();
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isOpen ? ' active' : '');
     el.id = 'sub-' + b.id;
@@ -16699,10 +16990,14 @@ function toggleModelsSub() {
     el.onclick = () => {
       if (b.id === 'run-models') {
         _runModelsPanelIsOpen() ? closeRunModelsPanel() : openRunModelsPanel();
+      } else if (b.id === 'soundings') {
+        _soundingPanelIsOpen() ? closeSoundingPanel() : openSoundingPanel();
       } else {
         _spaghettiModelsPanelIsOpen() ? closeSpaghettiModelsPanel() : openSpaghettiModelsPanel();
       }
-      el.classList.toggle('active', b.id === 'run-models' ? _runModelsPanelIsOpen() : _spaghettiModelsPanelIsOpen());
+      el.classList.toggle('active', b.id === 'run-models' ? _runModelsPanelIsOpen()
+                                  : b.id === 'soundings'  ? _soundingPanelIsOpen()
+                                  : _spaghettiModelsPanelIsOpen());
       _syncParentBubble('models');
     };
     wrap.appendChild(el);
@@ -29092,7 +29387,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "MRMS 1km now stays selected when you tap it. It was loading before, but the menu closed itself so there was no way to tell.";
+const APP_LATEST_UPDATE = "Added Soundings under Models: a Skew-T of the atmosphere above your map centre, with CAPE, CIN and Lifted Index. The feedback form now sends to Discord.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -30384,6 +30679,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <!-- Results popover, opens above the toolbar (same pattern as the
      font/color popovers) so it reads as attached to it, not separate -->
+<!-- Sounding panel: forecast Skew-T for the current map centre -->
+<div id="sounding-panel">
+  <div id="sounding-head">
+    <span id="sounding-title">Sounding</span>
+    <button class="snd-btn" onclick="loadSounding()" title="Reload for the current map centre">Here</button>
+    <button class="snd-btn" onclick="closeSoundingPanel()" title="Close">Close</button>
+  </div>
+  <canvas id="sounding-canvas"></canvas>
+  <div id="sounding-legend">
+    <span><i style="background:#ff4d4d"></i>Temp</span>
+    <span><i style="background:#2ecc71"></i>Dew pt</span>
+  </div>
+  <div id="sounding-indices"></div>
+  <div id="sounding-status">Pan the map, then press Here.</div>
+</div>
+
 <div id="stormcone-panel">
   <div class="sc-summary" id="sc-summary">No storm cone drawn yet.</div>
   <div class="sc-results-wrap">
@@ -32260,11 +32571,19 @@ function closeCredits() {
 // ════════════════════════════════════════════════════════════
 //  FEEDBACK - posts straight to a Discord channel via webhook
 // ════════════════════════════════════════════════════════════
-// Paste a Discord webhook URL here (Server Settings → Integrations →
-// Webhooks → New Webhook → Copy Webhook URL) to start receiving messages.
-// Left blank, the form still works but tells the user it isn't connected
-// yet instead of silently failing a network call.
-const FEEDBACK_DISCORD_WEBHOOK_URL = '';
+// Discord webhook the feedback form posts to.
+//
+// This is a public page, so this URL ships in the page source and in the repo.
+// Anyone who reads either can post to the channel, and Discord treats the URL
+// itself as the only credential. It cannot be scoped or rate limited per user.
+// If it gets abused, delete the webhook in Discord and make a new one: that
+// instantly invalidates this URL.
+//
+// The durable fix is to move it behind one of the Cloudflare Workers this
+// project already runs, have the page POST to the worker, and keep the webhook
+// in the worker's secrets. Only the worker URL would then be public, and it can
+// rate limit. Left inline for now because that is what was asked for.
+const FEEDBACK_DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1536447010092224553/MckjWCKVY3-xc7lqNByqw9WloXZtcTN1ttMagQP50SUJY3CW-06tzJoX1rfE3a6y2nXY';
 
 let _fbType = 'Bug';
 
