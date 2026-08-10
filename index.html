@@ -14956,7 +14956,11 @@ const SEV_PRODUCTS = {
   // DWD ICON global - every product the GeoServer publishes for this dataset:
   // 6 surface fields + 5 pressure-level (upper-air) fields.
   dwd:   [{v:'t2m',l:'2m Temp'},{v:'pmsl',l:'MSL Pressure'},{v:'precip',l:'Total Precip'},{v:'precip6',l:'6h Precip'},{v:'precip24',l:'24h Precip'},{v:'wind',l:'10m Wind'},{v:'gh500',l:'500mb Height'},{v:'t850',l:'850mb Temp'},{v:'rh700',l:'700mb Humidity'},{v:'wind250',l:'250mb Wind (Jet)'},{v:'omega700',l:'700mb Vert. Motion'}],
-  // Environment Canada GeoMet - HRDPS only (hi-res continental).
+  // Environment Canada GeoMet. Every entry's v must exist as a key in
+  // GEOMET_LAYERS[section] or the renderer has no layer to ask for and shows
+  // "Pick a product" instead; _sevCheckGeoMetProducts() asserts that on load.
+  rdps:  [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'}],
+  gdps:  [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'}],
   hrdps: [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'},{v:'snow',l:'Snow Depth'}],
   // NWS NDFD - the official US forecast grid (CONUS).
   ndfd:  [{v:'temp',l:'Temperature'},{v:'maxt',l:'Max Temp'},{v:'td',l:'Dew Point'},{v:'wind',l:'Wind Speed'},{v:'wdir',l:'Wind Direction'},{v:'sky',l:'Sky Cover'},{v:'pop12',l:'Precip Chance'},{v:'qpf',l:'Precip Amount'},{v:'snow',l:'Snow Amount'},{v:'wx',l:'Weather Type'}],
@@ -14964,7 +14968,32 @@ const SEV_PRODUCTS = {
   icon_ens: SEV_ENS_PRODUCT_LIST,
   gem_ens:  SEV_ENS_PRODUCT_LIST,
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp', gfs_ens:'temperature_2m', icon_ens:'temperature_2m', gem_ens:'temperature_2m'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', rdps:'temp', gdps:'temp', ndfd:'temp', gfs_ens:'temperature_2m', icon_ens:'temperature_2m', gem_ens:'temperature_2m'};
+
+// A GeoMet section is configured in two independent places: GEOMET_LAYERS says
+// which WMS layer backs each variable, and SEV_PRODUCTS says which variables the
+// dropdown offers. RDPS and GDPS shipped in the first but not the second, so
+// they silently inherited HRRR's products and every one of them resolved to no
+// layer. This catches that pairing being wrong at load rather than in the UI.
+function _sevCheckGeoMetProducts() {
+  Object.keys(GEOMET_LAYERS).forEach(section => {
+    const prods = SEV_PRODUCTS[section];
+    if (!prods) {
+      console.warn(`Model config: GEOMET_LAYERS has "${section}" but SEV_PRODUCTS does not, so it will fall back to another model's products and render nothing.`);
+      return;
+    }
+    prods.forEach(p => {
+      if (!GEOMET_LAYERS[section][p.v]) {
+        console.warn(`Model config: ${section} offers product "${p.v}" with no layer in GEOMET_LAYERS.`);
+      }
+    });
+    const def = SEV_DEFAULT_VAR[section];
+    if (!def || !GEOMET_LAYERS[section][def]) {
+      console.warn(`Model config: ${section} has no usable SEV_DEFAULT_VAR ("${def}").`);
+    }
+  });
+}
+try { _sevCheckGeoMetProducts(); } catch(e) { console.warn('model config check:', e); }
 
 function _sevUpdateProducts() {
   const sel=document.getElementById('sev-var-sel');if(!sel)return;
@@ -28894,7 +28923,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Alert notifications no longer show raw icon code in their text, and tapping one now flies the map to that alert and flashes it.";
+const APP_LATEST_UPDATE = "Fixed the RDPS and GDPS models, which were offering the wrong product list and so had no data to draw.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
