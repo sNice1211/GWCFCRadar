@@ -27181,6 +27181,15 @@ const FIREBASE_READY = GWCFC_FB_CONFIG.apiKey !== "YOUR_API_KEY";
 
 let _fbApp, _fbAuth, _fbDb, _currentUser = null;
 
+// A saved layer/overlay preset is applied once per page load and never again.
+// onAuthStateChanged fires more than once in a session - notably after
+// saveProfileChanges() calls updateProfile() - and each fire re-ran
+// _loadUserPrefs. Without this guard the preset kept being forced back on top
+// of whatever the user had switched since, so turning a layer off would not
+// stick. Declared here, beside the other auth state, so it is initialised
+// before any auth callback can read it.
+let _viewStateApplied = false;
+
 function _fbInit() {
   if (!FIREBASE_READY || _fbApp) return FIREBASE_READY;
   try {
@@ -27208,6 +27217,9 @@ function _onSignedIn(user) {
 
 function _onSignedOut() {
   _currentUser = null;
+  // Clear the once-per-load guard so signing in as a different account applies
+  // that account's preset instead of being suppressed by the previous one.
+  _viewStateApplied = false;
   _updateProfileBadge(null);
   // Sign in anonymously so all Firestore writes (Cloud Capture, guest tracking)
   // pass the "request.auth != null" security rule without requiring an account.
@@ -28334,10 +28346,13 @@ async function authSaveLayerPreset() {
   }
 }
 
-// Re-applies a saved snapshot. Each item is toggled only when it differs from
+// Re-applies a saved snapshot. Guarded by _viewStateApplied so it runs once per
+// page load. Each item is toggled only when it differs from
 // the current state, and each is caught on its own so one failure cannot abort
 // the rest of the restore.
 function _applyViewState(d) {
+  if (_viewStateApplied) return;
+  _viewStateApplied = true;
   if (d.savedMapType && typeof setMapType === 'function') {
     try { setMapType(d.savedMapType); } catch(e) { console.warn('restore basemap:', e); }
   }
@@ -28462,7 +28477,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Save Layers now saves everything you have switched on: all 28 overlays, your active tool and your basemap, not just the menu layers. Signing back in puts it all back.";
+const APP_LATEST_UPDATE = "Your saved layers now load once when you open the app instead of switching themselves back on afterwards, so turning a layer off stays off.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
