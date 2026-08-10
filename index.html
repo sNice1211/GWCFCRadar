@@ -27886,11 +27886,13 @@ async function lqmToggleRainDetect(enabled) {
       _userCoords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
       _rainDetectEnabled = true;
       if (sub) sub.textContent = 'On - checking every 5 min';
-      if (_currentUser && _fbDb)
+      if (_currentUser && _fbDb) {
         _fbDb.collection('users').doc(_currentUser.uid).update({
           rainDetectEnabled: true,
           rainCoords: _userCoords,
-        }).catch(()=>{});
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }).catch(e => console.warn('Save rain coords failed:', e));
+      }
       // Send coords to SW for background checks
       _postLocationToSW();
       // Start polling
@@ -28191,19 +28193,29 @@ async function authSignInWithGoogle() {
 async function authSaveHomeRegion() {
   if (!_currentUser || !_fbDb) return;
   const c = map.getCenter();
-  await _fbDb.collection('users').doc(_currentUser.uid).update({
-    homeRegion: { lat: c.lat, lng: c.lng, zoom: map.getZoom() }
-  }).catch(()=>{});
-  if (typeof _lqmToast === 'function') _lqmToast('Home region saved <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>');
+  try {
+    await _fbDb.collection('users').doc(_currentUser.uid).update({
+      homeLocation: { lat: c.lat, lng: c.lng, zoom: map.getZoom() }
+    });
+    if (typeof _lqmToast === 'function') _lqmToast('Home region saved <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>');
+  } catch(e) {
+    console.warn('Save region failed:', e);
+    if (typeof _lqmToast === 'function') _lqmToast('Failed to save region');
+  }
 }
 
 async function authSaveLayerPreset() {
   if (!_currentUser || !_fbDb) return;
-  await _fbDb.collection('users').doc(_currentUser.uid).update({
-    savedLayers: { ...activeLayers },
-    lastSaved: firebase.firestore.FieldValue.serverTimestamp()
-  }).catch(()=>{});
-  if (typeof _lqmToast === 'function') _lqmToast('Layer preset saved <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>');
+  try {
+    await _fbDb.collection('users').doc(_currentUser.uid).update({
+      savedLayers: { ...activeLayers },
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    if (typeof _lqmToast === 'function') _lqmToast('Layer preset saved <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>');
+  } catch(e) {
+    console.warn('Save layers failed:', e);
+    if (typeof _lqmToast === 'function') _lqmToast('Failed to save layers');
+  }
 }
 
 async function _loadUserPrefs(uid) {
@@ -28229,6 +28241,7 @@ async function _loadUserPrefs(uid) {
     _selectedAvatarImage = d.avatarImage || null;
     _selectedAvatarShape = d.avatarShape || 'circle';
     _selectedNameFont = d.nameFont || null;
+    _selectedEmoji = d.avatarEmoji || null;
     _updateProfileBadge(_currentUser, {
       avatarEmoji: d.avatarEmoji || null,
       avatarImage: d.avatarImage || null,
@@ -28258,10 +28271,18 @@ async function _loadUserPrefs(uid) {
         _rainDetectInterval = setInterval(_pollRainRadar, 5 * 60 * 1000);
       }
     }
-    if (d.homeRegion) map.setView([d.homeRegion.lat, d.homeRegion.lng], d.homeRegion.zoom || 7);
-    if (d.savedLayers) {
-      Object.entries(d.savedLayers).forEach(([id, on]) => {
-        if (on !== !!activeLayers[id] && typeof toggleLayer === 'function') toggleLayer(id);
+    // Restore map view (check both old and new field names)
+    const home = d.homeLocation || d.homeRegion;
+    if (home && map) map.setView([home.lat, home.lng], home.zoom || 7);
+    // Restore saved layers
+    if (d.savedLayers && map) {
+      Object.entries(d.savedLayers).forEach(([id, shouldBeOn]) => {
+        const isCurrentlyOn = !!activeLayers[id];
+        if (shouldBeOn !== isCurrentlyOn) {
+          try {
+            if (typeof rmToggle === 'function') rmToggle(id);
+          } catch(e) { console.warn('Restore layer failed:', id, e); }
+        }
       });
     }
   } catch(e) { console.warn('loadUserPrefs:', e); }
