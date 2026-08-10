@@ -2,6 +2,31 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GWCFC Radar</title>
+<meta name="description" content="Live NEXRAD radar, NWS warnings, satellite, models and storm tools on one map.">
+<meta name="theme-color" content="#140404">
+
+<!-- Link preview. Absolute URLs are required: Slack, Discord, iMessage and X
+     fetch these server-side, where a relative path has no origin to resolve
+     against. og-image.png is 1200x630, the ratio every one of them crops to. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="GWCFC Radar">
+<meta property="og:title" content="GWCFC Radar">
+<meta property="og:description" content="Live NEXRAD radar, NWS warnings, satellite, models and storm tools on one map.">
+<meta property="og:url" content="https://ralphhtml.github.io/GWCFCRadar/">
+<meta property="og:image" content="https://ralphhtml.github.io/GWCFCRadar/og-image.png">
+<meta property="og:image:secure_url" content="https://ralphhtml.github.io/GWCFCRadar/og-image.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="GWCFC Radar logo">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="GWCFC Radar">
+<meta name="twitter:description" content="Live NEXRAD radar, NWS warnings, satellite, models and storm tools on one map.">
+<meta name="twitter:image" content="https://ralphhtml.github.io/GWCFCRadar/og-image.png">
+<link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
 <!-- Register service worker first , caches all tile responses for instant loads -->
 <script>if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js',{scope:'./'});</script>
 <script>
@@ -22,8 +47,6 @@ setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.tra
 <link rel="dns-prefetch" href="https://marine-api.open-meteo.com">
 <link rel="dns-prefetch" href="https://www.spc.noaa.gov">
 
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GWCFC Radar</title>
 
 <!-- Leaflet -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
@@ -16496,16 +16519,21 @@ async function init() {
     }
   }
   if (_mapOK) _watchBasemap();
-  // Release anything queued on the map, above all the saved layer/overlay
-  // preset. Fires outside the try so a partial init still lets the queue drain
-  // rather than stranding it forever; each queued task guards itself.
-  _signalMapReady();
 
   // loadNEXRAD is effectively synchronous (no awaits inside) - completes in < 100 ms.
   // _doLoadAlerts runs in the background; we don't block the loading screen on it.
   updateLoadStatus('Loading radar…');
   try { loadNEXRAD(); } catch(e) { console.warn('Radar init:', e); }
   _syncNexradSites();
+
+  // Release anything queued on the map, the saved layer preset above all. This
+  // has to come after loadNEXRAD(), not straight after initMap(): restoring a
+  // preset with radar on calls toggleLayer('nexrad'), which calls showFrame(),
+  // and with no frames built yet that threw into the restore's catch and left
+  // radar half-enabled with its site markers never synced. Firing outside any
+  // try so a failed radar init still drains the queue; each task guards itself.
+  _signalMapReady();
+
   _doLoadAlerts(true).catch(e => console.warn('Alerts init:', e));
 
   // Wait until the current radar frame has at least one tile, or bail after 8 s with no progress.
@@ -28923,7 +28951,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed the RDPS and GDPS models, which were offering the wrong product list and so had no data to draw.";
+const APP_LATEST_UPDATE = "Sharing a link to the site now shows the GWCFC logo as a preview card, and notifications finally have an icon instead of a missing image.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
