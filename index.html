@@ -13542,7 +13542,6 @@ function toggleSmooth() {
 
 // Products - IEM WMS channel suffix per product type.
 const GOES_PRODUCTS = [
-  { id: 'geocolor', label: 'GeoColor RGB', ch: null, src: 'gibs', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-image></use></svg>', note: 'Day and night' },
   { id: 'ch01', label: 'Blue Visible',      ch: 'ch01', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg>', note: 'Daytime only' },
   { id: 'ch02', label: 'Red Visible',       ch: 'ch02', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sun></use></svg>', note: 'Daytime only' },
   { id: 'ch03', label: 'Veggie',            ch: 'ch03', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-leaf></use></svg>', note: 'Daytime only' },
@@ -13564,144 +13563,6 @@ const GOES_PRODUCTS = [
 // Shared WMS base URLs.
 const _GOES_E = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
 const _GOES_W = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_west.cgi';
-// NASA GIBS - free, no API key, CORS-enabled, and serves EPSG:3857, so it sits
-// alongside the Iowa Mesonet layers without any extra plumbing.
-const _GIBS_WMS = 'https://gibs.earthdata.nasa.gov/wms/epsg3857/best/wms.cgi';
-
-// GeoColor is a full RGB composite, not one ABI channel, so it does not follow
-// the {sector}_{channel} naming every other product here uses. There is one
-// layer per satellite and it covers the whole disk, so only East vs West
-// matters - the sector part of the region choice does not apply.
-const GIBS_GEOCOLOR = { east: 'GOES-East_ABI_GeoColor', west: 'GOES-West_ABI_GeoColor' };
-
-// GIBS stops publishing GeoColor tiles past about this zoom. Capping it makes
-// Leaflet scale up the last real tiles instead of requesting empty ones, which
-// would otherwise look like the layer had broken. Raise it if GIBS adds levels.
-const GIBS_MAX_NATIVE_ZOOM = 7;
-
-// The names above are a starting guess. A WMS server handed a layer name it
-// does not know just returns errors, and Leaflet paints that as an empty map
-// with no explanation, which is how this went wrong the last time GIBS was
-// tried here. Rather than hard-code a guess and hope, the layer name is
-// confirmed against the server the first time GeoColor actually fails, and
-// the answer is remembered so the lookup happens at most once.
-// GIBS's primary interface is WMTS, not WMS - its WMS is a wrapper that does
-// not necessarily expose every layer. The one GIBS layer this repo is known to
-// have rendered successfully (the old MODIS true colour, removed in e0668e3
-// for being twice-daily rather than for being broken) used this REST form, so
-// that is what GeoColor uses now.
-const GIBS_WMTS = 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best';
-
-// Which tile matrix set and file type a layer uses varies per layer and cannot
-// be guessed reliably, so they are probed once against a known tile and the
-// working combination is remembered. Ordered most likely first.
-const GIBS_MATRIX_SETS = ['GoogleMapsCompatible_Level7', 'GoogleMapsCompatible_Level8',
-                          'GoogleMapsCompatible_Level6', 'GoogleMapsCompatible_Level9',
-                          'EPSG3857_250m', 'EPSG3857_500m', 'EPSG3857_1km'];
-const GIBS_EXTS = ['png', 'jpg'];
-const GIBS_TMPL_CACHE_KEY = 'lqm_gibs_geocolor_tmpl';
-let _gibsTmpl = null;      // { set, ext } once known
-let _gibsProbing = null;
-
-// Builds the tile URL template Leaflet fills in per tile. {time} is supplied
-// from the layer's options in YYYY-MM-DD format, or 'default' for latest.
-function _gibsTileUrl(layerName) {
-  const t = _gibsTmpl || { set: GIBS_MATRIX_SETS[0], ext: GIBS_EXTS[0] };
-  // Use {time} placeholder that Leaflet will fill in from layer.options.time
-  return `${GIBS_WMTS}/${layerName}/{time}/${t.set}/{z}/{y}/{x}.${t.ext}`;
-}
-
-// Ask for one known tile until a combination answers with an actual image.
-// 'default' as the time means "most recent", which keeps the probe independent
-// of whether any particular timestamp is available.
-async function _gibsProbeTemplate(layerName) {
-  if (_gibsTmpl) return _gibsTmpl;
-  if (_gibsProbing) return _gibsProbing;
-  _gibsProbing = (async () => {
-    const now = new Date();
-    const pad = n => String(n).padStart(2, '0');
-    const dateStr = `${now.getUTCFullYear()}-${pad(now.getUTCMonth()+1)}-${pad(now.getUTCDate())}`;
-
-    // Try with today's date first, then fall back to 'default' if that fails
-    const timeParams = [dateStr, 'default'];
-
-    for (const timeParam of timeParams) {
-      for (const set of GIBS_MATRIX_SETS) {
-        for (const ext of GIBS_EXTS) {
-          const url = `${GIBS_WMTS}/${layerName}/${timeParam}/${set}/2/1/1.${ext}`;
-          try {
-            const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-            if (r.ok && (r.headers.get('content-type') || '').startsWith('image/')) {
-              _gibsTmpl = { set, ext, at: Date.now() };
-              try { localStorage.setItem(GIBS_TMPL_CACHE_KEY, JSON.stringify(_gibsTmpl)); } catch(e) {}
-              console.info('GIBS GeoColor tiles found:', set, ext, 'with time param:', timeParam);
-              return _gibsTmpl;
-            }
-          } catch(e) {
-            console.debug('GIBS probe failed for', set, ext, 'time:', timeParam, r?.status, e?.message || '');
-          }
-        }
-      }
-    }
-    throw new Error('no working tile matrix set for ' + layerName);
-  })().finally(() => { _gibsProbing = null; });
-  return _gibsProbing;
-}
-
-const GIBS_CAPS_URL = _GIBS_WMS + '?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.3.0';
-const GIBS_NAME_CACHE_KEY = 'lqm_gibs_geocolor_names';
-const GIBS_NAME_CACHE_TTL = 30 * 24 * 3600 * 1000;
-let _gibsResolving = null;
-
-// Load previously confirmed names, so a returning visitor never pays for the
-// lookup again.
-(function _gibsLoadCachedNames() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(GIBS_NAME_CACHE_KEY) || 'null');
-    if (raw && Date.now() - raw.at < GIBS_NAME_CACHE_TTL && raw.east && raw.west) {
-      GIBS_GEOCOLOR.east = raw.east;
-      GIBS_GEOCOLOR.west = raw.west;
-    }
-  } catch(e) {}
-})();
-
-// Load previously confirmed tile template (matrix set + file type).
-(function _gibsLoadCachedTemplate() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(GIBS_TMPL_CACHE_KEY) || 'null');
-    if (raw && raw.set && raw.ext && Date.now() - raw.at < 30 * 24 * 3600 * 1000) {
-      _gibsTmpl = raw;
-    } else {
-      // Clear expired or invalid cache entry
-      localStorage.removeItem(GIBS_TMPL_CACHE_KEY);
-    }
-  } catch(e) {}
-})();
-
-// Ask GIBS what it actually publishes and pick the GeoColor layers out of it.
-// Only ever called after a real failure, never on the happy path - the
-// capabilities document is large and not worth fetching speculatively.
-async function _gibsResolveNames() {
-  if (_gibsResolving) return _gibsResolving;
-  _gibsResolving = (async () => {
-    const r = await fetch(GIBS_CAPS_URL, { signal: AbortSignal.timeout(20000) });
-    if (!r.ok) throw new Error('capabilities HTTP ' + r.status);
-    const xml = await r.text();
-    const names = (xml.match(/<Name>[^<]*<\/Name>/g) || []).map(n => n.slice(6, -7));
-    const geo = names.filter(n => /geocolor/i.test(n));
-    if (!geo.length) throw new Error('GIBS WMS publishes no GeoColor layer');
-    const east = geo.find(n => /east/i.test(n));
-    const west = geo.find(n => /west/i.test(n));
-    if (!east && !west) throw new Error('found GeoColor layers but none for GOES East/West: ' + geo.slice(0, 4).join(', '));
-    const resolved = { east: east || west, west: west || east };
-    GIBS_GEOCOLOR.east = resolved.east;
-    GIBS_GEOCOLOR.west = resolved.west;
-    try { localStorage.setItem(GIBS_NAME_CACHE_KEY, JSON.stringify({ ...resolved, at: Date.now() })); } catch(e) {}
-    console.info('Resolved GIBS GeoColor layers from the server:', resolved);
-    return resolved;
-  })().finally(() => { _gibsResolving = null; });
-  return _gibsResolving;
-}
 
 // Regions - IEM WMS endpoint + layer-name prefix.
 // Layer name = prefix + '_' + ch from the active product.
@@ -13740,11 +13601,6 @@ function _detectGoesConfig() {
     else if (lat >= 24 && lat <= 50 && lng <= -100 && lng >= -125) { base = _GOES_W; prefix = 'conus'; }
   }
 
-  // GeoColor comes from GIBS as one whole-disk layer per satellite, so the
-  // sector is irrelevant and only the East/West choice carries over.
-  if (product.src === 'gibs') {
-    return { url: _GIBS_WMS, layer: GIBS_GEOCOLOR[base === _GOES_W ? 'west' : 'east'], gibs: true };
-  }
   return { url: base, layer: `${prefix}_${ch}` };
 }
 
@@ -13782,7 +13638,7 @@ function _makeGoesLayer(timeStr, opacity) {
     version:           '1.1.1',
     opacity:           opacity !== undefined ? opacity : 0.85,
     zIndex:            11,
-    attribution:       cfg.gibs ? '© NASA GIBS · GOES ABI GeoColor' : '© Iowa Mesonet · GOES',
+    attribution:       '© Iowa Mesonet · GOES',
     crossOrigin:       'anonymous',
     noWrap:            true,
     TIME:              timeStr,
@@ -13790,73 +13646,7 @@ function _makeGoesLayer(timeStr, opacity) {
     updateWhenIdle:    _isIOS,
     updateWhenZooming: false,
   };
-  // GIBS is served as plain WMTS tiles; everything else stays on WMS.
-  if (cfg.gibs) {
-    // GIBS GeoColor uses date (YYYY-MM-DD) or 'default' for most recent
-    const gibsTime = timeStr.split('T')[0] || 'default';
-    const layer = L.tileLayer(_gibsTileUrl(cfg.layer), {
-      time:              gibsTime,
-      opacity:           opts.opacity,
-      zIndex:            opts.zIndex,
-      attribution:       opts.attribution,
-      crossOrigin:       'anonymous',
-      noWrap:            true,
-      maxNativeZoom:     GIBS_MAX_NATIVE_ZOOM,
-      keepBuffer:        opts.keepBuffer,
-      updateWhenIdle:    opts.updateWhenIdle,
-      updateWhenZooming: false,
-    }).addTo(map);
-    _watchGibsTiles(layer, cfg.layer);
-    return layer;
-  }
   return L.tileLayer.wms(`${cfg.url}?_cb=${Date.now()}`, opts).addTo(map);
-}
-
-// A WMS server handed a layer name it does not recognise just returns errors,
-// and Leaflet renders that as nothing at all - an empty map with no clue why.
-// That is exactly how the earlier GIBS attempt failed. So when no tiles arrive:
-// ask GIBS what it really publishes, correct the name and rebuild; and if that
-// cannot be done, report the reason the server gave rather than a blank map.
-function _watchGibsTiles(layer, layerName) {
-  let anyLoaded = false, errors = 0, handled = false;
-  layer.on('tileload', () => { anyLoaded = true; });
-  layer.on('tileerror', async (ev) => {
-    if (anyLoaded || handled || ++errors < 3) return;
-    handled = true;
-
-    let serverSaid = '';
-    try {
-      const r = await fetch(ev?.tile?.src || '', { signal: AbortSignal.timeout(10000) });
-      const body = await r.text();
-      const m = body.match(/<ServiceException(?:\s[^>]*)?>([\s\S]*?)<\/ServiceException>/i);
-      if (m) serverSaid = m[1].trim().replace(/\s+/g, ' ').slice(0, 200);
-    } catch(e) {}
-
-    try {
-      // Most likely cause is the tile matrix set or file type, so try those
-      // first - it is a handful of small requests against one known tile.
-      const before = _gibsTmpl && _gibsTmpl.set + _gibsTmpl.ext;
-      try {
-        const t = await _gibsProbeTemplate(layerName);
-        if (before !== t.set + t.ext) { console.info('GeoColor tile format resolved, reloading'); _reloadGoesIfActive(); return; }
-      } catch (probeErr) {
-        // Tiles fail for every format, so the layer name itself is suspect.
-        const resolved = await _gibsResolveNames();
-        if (resolved.east !== layerName && resolved.west !== layerName) {
-          console.info('GeoColor layer name corrected, reloading');
-          _gibsTmpl = null;
-          _reloadGoesIfActive();
-          return;
-        }
-        throw probeErr;
-      }
-      throw new Error('server publishes "' + layerName + '" but served no tiles' + (serverSaid ? ': ' + serverSaid : ''));
-    } catch (e) {
-      showToast('GeoColor unavailable: ' + (serverSaid || e.message).slice(0, 90), 6000);
-      console.warn('NASA GIBS GeoColor failed for layer "' + layerName + '".',
-        serverSaid ? 'Server said: ' + serverSaid : '', e);
-    }
-  });
 }
 
 function _clearGoesLayer() {
@@ -13926,16 +13716,8 @@ function showGoesFrame(idx) {
 
   if (_goesLayer) {
     // Reuse existing layer - update the timestamp in place (fast path, no tile-cache
-    // invalidation needed since each time value is a different URL anyway). WMS layers
-    // carry it as a request parameter; the GIBS WMTS layer has it in the URL template.
-    if (_goesLayer.setParams) {
-      _goesLayer.setParams({ TIME: frame.timeStr }, false);
-    } else {
-      // GIBS GeoColor tiles use date (YYYY-MM-DD) or 'default' for most recent
-      const gimsTime = frame.timeStr.split('T')[0] || 'default';
-      _goesLayer.options.time = gimsTime;
-      _goesLayer.redraw();
-    }
+    // invalidation needed since each time value is a different URL anyway).
+    _goesLayer.setParams({ TIME: frame.timeStr }, false);
     if (activeLayers.satellite) _goesLayer.setOpacity(0.85);
   } else {
     // Build fresh layer (first show, or after 60-s cache-bust rebuild)
@@ -28455,7 +28237,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "GeoColor satellite: expanded tile matrix set probing to include EPSG3857 variants, added fallback to 'default' time parameter for compatibility with different GIBS tile configurations.";
+const APP_LATEST_UPDATE = "GeoColor satellite layer removed. Using Iowa Mesonet channels only.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
