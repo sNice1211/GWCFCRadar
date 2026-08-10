@@ -5956,8 +5956,11 @@ footer {
 .lqm-avatar-edit-btn.remove:hover { border-color: rgba(255,60,60,0.6); color: #fff; }
 
 /* Avatar crop modal - matches #gwcfc-auth-modal's fixed/inset/z-index convention */
+/* No !important on the base display - it would outrank the .open rule below
+   and pin the modal shut, which also collapses the crop viewport to 0px wide
+   and makes every crop degenerate. */
 #avatar-crop-modal {
-  display: none !important; position: fixed; inset: 0; z-index: 9999;
+  display: none; position: fixed; inset: 0; z-index: 9999;
   background: rgba(0,0,0,0.82); align-items: center; justify-content: center;
 }
 #avatar-crop-modal.open { display: flex; }
@@ -27370,9 +27373,12 @@ let _avatarCropBaseScale = 1, _avatarCropZoom = 1;
 let _avatarCropTx = 0, _avatarCropTy = 0;
 let _avatarCropDragging = false, _avatarCropDragSX = 0, _avatarCropDragSY = 0, _avatarCropDragTX0 = 0, _avatarCropDragTY0 = 0;
 
+// Falls back to 280 when the element is missing OR measures 0 - a hidden modal
+// reports 0 width, which would make baseScale 0 and every crop coordinate NaN.
 function _avatarCropViewportSize() {
   const vp = document.getElementById('avatar-crop-viewport');
-  return vp ? vp.getBoundingClientRect().width : 280;
+  const w  = vp ? vp.getBoundingClientRect().width : 0;
+  return w > 0 ? w : 280;
 }
 
 function _avatarCropOpen(img) {
@@ -27446,6 +27452,10 @@ function _avatarCropConfirm() {
   if (url.length > 300000) url = render(200, 0.65);
   if (url.length > 300000) url = render(160, 0.55);
   _selectedAvatarImage = url;
+  // Photo and emoji are mutually exclusive - the photo wins on render, so drop
+  // the emoji here to keep the saved state and the visible avatar in agreement.
+  _selectedEmoji = null;
+  document.querySelectorAll('.lqm-emoji-opt').forEach(b => b.classList.remove('selected'));
   _renderAvatarPreview(document.getElementById('lqm-avatar-edit-preview'), _selectedEmoji,
     (_currentUser && _currentUser.displayName ? _currentUser.displayName.charAt(0).toUpperCase() : '?'));
   const modal = document.getElementById('avatar-crop-modal');
@@ -27527,13 +27537,21 @@ function lqmCloseEditView() {
 }
 
 function selectProfileEmoji(emoji) {
-  _selectedEmoji = emoji;
+  // Clicking the same emoji again clears it and falls back to the initial.
+  const next = (_selectedEmoji === emoji) ? null : emoji;
+  _selectedEmoji = next;
+  // An uploaded photo always wins over an emoji when both are set, so picking
+  // an emoji has to drop the photo - otherwise the choice looks like a no-op.
+  if (next) {
+    _selectedAvatarImage = null;
+    const fileInput = document.getElementById('lqm-avatar-file');
+    if (fileInput) fileInput.value = '';
+  }
   document.querySelectorAll('.lqm-emoji-opt').forEach(b => {
-    b.classList.toggle('selected', b.textContent === emoji);
+    b.classList.toggle('selected', next !== null && b.textContent === next);
   });
-  // Live preview of emoji
   const init = _currentUser && _currentUser.displayName ? _currentUser.displayName.charAt(0).toUpperCase() : '?';
-  _renderAvatarPreview(document.getElementById('lqm-avatar-edit-preview'), emoji, init);
+  _renderAvatarPreview(document.getElementById('lqm-avatar-edit-preview'), next, init);
 }
 
 async function saveProfileChanges() {
@@ -27563,10 +27581,11 @@ async function saveProfileChanges() {
     lqmCloseEditView();
     if (typeof _lqmToast === 'function') _lqmToast('Profile updated <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>');
   } catch(e) {
-    if (typeof _lqmToast === 'function') _lqmToast('Save failed - try again');
+    if (typeof _lqmToast === 'function') _lqmToast('Save failed - ' + (e.code || 'try again'));
     console.warn('saveProfileChanges:', e);
   } finally {
-    if (saveBtn) { saveBtn.textContent = 'SAVE'; saveBtn.disabled = false; }
+    // Must match the button's markup label, or a failed save silently renames it.
+    if (saveBtn) { saveBtn.textContent = 'SAVE CHANGES'; saveBtn.disabled = false; }
   }
 }
 
@@ -27642,7 +27661,7 @@ async function lqmToggleNotifications(enabled) {
     _notifPollInterval = null;
     if (sub) sub.textContent = 'Off - enable to get alerts for your area';
     if (_currentUser && _fbDb)
-      _fbDb.collection('users').doc(_currentUser.uid).update({ notifEnabled: false }).catch(()=>{});
+      _fbDb.collection('users').doc(_currentUser.uid).set({ notifEnabled: false }, { merge: true }).catch(e=>console.warn('notifEnabled off:', e));
     return;
   }
 
@@ -27658,7 +27677,7 @@ async function lqmToggleNotifications(enabled) {
 
   if (sub) sub.textContent = 'On - watching for alerts in your area';
   if (_currentUser && _fbDb)
-    _fbDb.collection('users').doc(_currentUser.uid).update({ notifEnabled: true }).catch(()=>{});
+    _fbDb.collection('users').doc(_currentUser.uid).set({ notifEnabled: true }, { merge: true }).catch(e=>console.warn('notifEnabled on:', e));
 
   // 2. Subscribe push + register periodic sync
   if ('serviceWorker' in navigator) {
@@ -27670,9 +27689,9 @@ async function lqmToggleNotifications(enabled) {
           applicationServerKey: _urlBase64ToUint8Array(GWCFC_VAPID_KEY),
         });
         if (_currentUser && _fbDb) {
-          _fbDb.collection('users').doc(_currentUser.uid).update({
+          _fbDb.collection('users').doc(_currentUser.uid).set({
             pushSubscription: JSON.stringify(pushSub),
-          }).catch(()=>{});
+          }, { merge: true }).catch(e=>console.warn('pushSubscription:', e));
         }
       } catch(e) { console.warn('Push subscribe:', e); }
 
@@ -27855,6 +27874,55 @@ let _rainDetectInterval = null;
 let _rainWasRaining     = false; // true while actively raining (prevents repeat notifs)
 let _userCoords         = null;  // { lat, lon } from Geolocation API
 
+// Writes the current GPS fix to the signed-in account. Kept separate from the
+// rain toggle so anything else that obtains a fix can persist it the same way.
+// set({merge:true}) so it also works on accounts whose doc predates these fields.
+async function _persistUserLocation(extra) {
+  if (!_currentUser || !_fbDb || !_userCoords) return;
+  try {
+    await _fbDb.collection('users').doc(_currentUser.uid).set({
+      rainCoords: _userCoords,
+      lastKnownCoords: _userCoords,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      ...(extra || {})
+    }, { merge: true });
+  } catch(e) { console.warn('_persistUserLocation:', e); }
+}
+
+// Turns a GPS fix into country/state/city text and saves it as homeLocation,
+// which is what _alertMatchesHome() compares against to flag "My Area" alerts.
+// Uses api.weather.gov/points, already used elsewhere in this file, so there is
+// no new host to allow. US-only by nature; failures leave homeLocation as-is.
+async function _resolveHomeLocationFromCoords(coords) {
+  if (!coords) return;
+  const lat = coords.lat.toFixed(4), lon = coords.lon.toFixed(4);
+  const r = await fetch(`https://api.weather.gov/points/${lat},${lon}`,
+    { headers: { 'Accept': 'application/geo+json' }, signal: _abortSignal(8000) });
+  if (!r.ok) return;
+  const j = await r.json();
+  const rel = j?.properties?.relativeLocation?.properties;
+  if (!rel) return;
+  // properties.county is a zone URL like .../zones/county/FLC086 - the readable
+  // county name is not in this payload, so city/state carry the match.
+  const resolved = {
+    country: 'US',
+    state:   rel.state || '',
+    county:  _homeLocation.county || '',
+    city:    rel.city  || ''
+  };
+  _homeLocation = { ..._homeLocation, ...resolved };
+  if (_currentUser && _fbDb) {
+    try {
+      await _fbDb.collection('users').doc(_currentUser.uid)
+        .set({ homeLocation: _homeLocation }, { merge: true });
+    } catch(e) { console.warn('save homeLocation:', e); }
+  }
+  const rv = document.getElementById('lqm-profile-region-val');
+  if (rv) rv.textContent = [resolved.city, resolved.state].filter(Boolean).join(', ') || '-';
+  _postLocationToSW();
+  if (typeof _decorateAlertCards === 'function') _decorateAlertCards();
+}
+
 async function lqmToggleRainDetect(enabled) {
   const sub = document.getElementById('lqm-rain-sublabel');
   const cb  = document.getElementById('lqm-rain-toggle');
@@ -27865,7 +27933,7 @@ async function lqmToggleRainDetect(enabled) {
     _rainDetectInterval = null;
     if (sub) sub.textContent = 'Off - notify when rain starts near you';
     if (_currentUser && _fbDb)
-      _fbDb.collection('users').doc(_currentUser.uid).update({ rainDetectEnabled: false }).catch(()=>{});
+      _fbDb.collection('users').doc(_currentUser.uid).set({ rainDetectEnabled: false }, { merge: true }).catch(e=>console.warn('rainDetect off:', e));
     return;
   }
 
@@ -27893,13 +27961,11 @@ async function lqmToggleRainDetect(enabled) {
       _userCoords = { lat: pos.coords.latitude, lon: pos.coords.longitude };
       _rainDetectEnabled = true;
       if (sub) sub.textContent = 'On - checking every 5 min';
-      if (_currentUser && _fbDb) {
-        _fbDb.collection('users').doc(_currentUser.uid).update({
-          rainDetectEnabled: true,
-          rainCoords: _userCoords,
-          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-        }).catch(e => console.warn('Save rain coords failed:', e));
-      }
+      // Persist the coords immediately, then fill in the place names once the
+      // reverse lookup returns - the toggle must not wait on the network.
+      _persistUserLocation({ rainDetectEnabled: true });
+      _resolveHomeLocationFromCoords(_userCoords)
+        .catch(e => console.warn('reverse geocode:', e));
       // Send coords to SW for background checks
       _postLocationToSW();
       // Start polling
@@ -27964,7 +28030,7 @@ async function _pollRainRadar() {
       blob = hit ? await hit.blob() : null;
     }
     if (!blob) {
-      const r = await fetch(tileUrl, { signal: AbortSignal.timeout(8000) });
+      const r = await fetch(tileUrl, { signal: _abortSignal(8000) });
       if (!r.ok) return;
       blob = await r.blob();
     }
@@ -28197,31 +28263,45 @@ async function authSignInWithGoogle() {
 }
 
 // ── SAVE / LOAD USER PREFS ───────────────────────────────────
+// homeRegion is the map view (lat/lng/zoom). It is deliberately separate from
+// homeLocation, which holds the country/state/county/city text used to match
+// alerts to "My Area" - writing map coords into homeLocation breaks that match.
+// set({merge:true}) rather than update(): update() rejects outright when the
+// user doc is missing, which silently lost every save on older accounts.
 async function authSaveHomeRegion() {
-  if (!_currentUser || !_fbDb) return;
+  if (!_currentUser || !_fbDb) {
+    if (typeof _lqmToast === 'function') _lqmToast('Sign in first to save your region');
+    return;
+  }
   const c = map.getCenter();
   try {
-    await _fbDb.collection('users').doc(_currentUser.uid).update({
-      homeLocation: { lat: c.lat, lng: c.lng, zoom: map.getZoom() }
-    });
+    await _fbDb.collection('users').doc(_currentUser.uid).set({
+      homeRegion: { lat: c.lat, lng: c.lng, zoom: map.getZoom() },
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
     if (typeof _lqmToast === 'function') _lqmToast('Home region saved <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>');
   } catch(e) {
-    console.warn('Save region failed:', e);
-    if (typeof _lqmToast === 'function') _lqmToast('Failed to save region');
+    console.warn('authSaveHomeRegion:', e);
+    if (typeof _lqmToast === 'function') _lqmToast('Could not save region - ' + (e.code || 'try again'));
   }
 }
 
 async function authSaveLayerPreset() {
-  if (!_currentUser || !_fbDb) return;
+  if (!_currentUser || !_fbDb) {
+    if (typeof _lqmToast === 'function') _lqmToast('Sign in first to save your layers');
+    return;
+  }
   try {
-    await _fbDb.collection('users').doc(_currentUser.uid).update({
+    // Spread into a plain object - Firestore rejects anything non-primitive,
+    // and activeLayers is a flat id -> bool map, which is exactly what restores.
+    await _fbDb.collection('users').doc(_currentUser.uid).set({
       savedLayers: { ...activeLayers },
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-    });
+    }, { merge: true });
     if (typeof _lqmToast === 'function') _lqmToast('Layer preset saved <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg>');
   } catch(e) {
-    console.warn('Save layers failed:', e);
-    if (typeof _lqmToast === 'function') _lqmToast('Failed to save layers');
+    console.warn('authSaveLayerPreset:', e);
+    if (typeof _lqmToast === 'function') _lqmToast('Could not save layers - ' + (e.code || 'try again'));
   }
 }
 
@@ -28278,18 +28358,25 @@ async function _loadUserPrefs(uid) {
         _rainDetectInterval = setInterval(_pollRainRadar, 5 * 60 * 1000);
       }
     }
-    // Restore map view (check both old and new field names)
-    const home = d.homeLocation || d.homeRegion;
-    if (home && map) map.setView([home.lat, home.lng], home.zoom || 7);
-    // Restore saved layers
-    if (d.savedLayers && map) {
+    // Restore the saved map view. Guarded on `map` because auth state can
+    // resolve before initMap() has run.
+    if (d.homeRegion && typeof d.homeRegion.lat === 'number' && map) {
+      map.setView([d.homeRegion.lat, d.homeRegion.lng], d.homeRegion.zoom || 7);
+    }
+    // Restore saved layers. toggleLayer() is the real toggle - it flips
+    // activeLayers[id] and runs the matching add/remove side effects, so it
+    // must only be called for ids whose state actually differs.
+    if (d.savedLayers && typeof toggleLayer === 'function') {
       Object.entries(d.savedLayers).forEach(([id, shouldBeOn]) => {
-        const isCurrentlyOn = !!activeLayers[id];
-        if (shouldBeOn !== isCurrentlyOn) {
-          try {
-            if (typeof rmToggle === 'function') rmToggle(id);
-          } catch(e) { console.warn('Restore layer failed:', id, e); }
-        }
+        if (!(id in activeLayers)) return;      // ignore ids from older builds
+        if (!!shouldBeOn === !!activeLayers[id]) return;
+        try { toggleLayer(id); }
+        catch(e) { console.warn('restore layer', id, e); }
+      });
+      // Re-sync the overlay pills so their active state matches what restored.
+      ['lightning','radio','forecasts'].forEach(id => {
+        const pill = document.getElementById('op-' + id);
+        if (pill) pill.classList.toggle('active', !!activeLayers[id]);
       });
     }
   } catch(e) { console.warn('loadUserPrefs:', e); }
@@ -28309,7 +28396,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Redesigned account profile editor with improved styling for avatar editing, input fields, and save controls.";
+const APP_LATEST_UPDATE = "Account fixes: photo cropping works again, picking an emoji now actually sets your avatar, and Save Region and Save Layers really save. Turning on Rain Near Me stores your location on your account.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
