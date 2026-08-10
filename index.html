@@ -7560,8 +7560,10 @@ function initMap() {
 
   // ── MapTiler tile layers ──
   const MT_KEY  = window.__MAPTILER_KEY__ || 'LBJrsFKOW9Nra6lmFyne';
+  // MapTiler renders its tiles from OpenStreetMap data, so OSM has to stay
+  // credited here whatever else changes: it is a condition of the ODbL licence
+  // the basemap data is published under, not an optional label.
   const mtAttr  = '© <a href="https://www.maptiler.com/">MapTiler</a> © <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
-  const osmAttr = '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a>';
 
   // keepBuffer bumped up so fast pans reveal already-loaded tiles from the
   // surrounding buffer instead of the (now dark, but still a gap) empty
@@ -7572,20 +7574,31 @@ function initMap() {
   const satellite  = L.tileLayer(`https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=${MT_KEY}`,         _mtOpts);
   const topo       = L.tileLayer(`https://api.maptiler.com/maps/topo-v2/{z}/{x}/{y}.webp?key=${MT_KEY}`,       _mtOpts);
 
-  // OSM fallback if MapTiler becomes unavailable
-  const _osmFallback = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-    { attribution: osmAttr, maxZoom: 19, noWrap: true, keepBuffer: _isIOS ? 2 : 4 });
-  let _mtFailed = false, _mtErrors = 0;
+  // The OSM tile-server fallback that used to sit here has been removed by
+  // request. Nothing swaps in when MapTiler fails now, so a sustained outage
+  // leaves the dark container background with the radar, alerts and overlays
+  // still drawn on top rather than a second basemap. Retry the layer instead of
+  // replacing it: MapTiler failures are usually transient (a rate limit or a
+  // dropped connection), and redraw() re-requests only the tiles still missing.
+  let _mtErrors = 0, _mtRetries = 0, _mtRetryTimer = null;
   [cartoDark, cartoLight, satellite, topo].forEach(layer => {
     layer.on('tileerror', () => {
-      if (_mtFailed) return;
       _mtErrors++;
-      if (_mtErrors < 10) return;
-      _mtFailed = true;
-      Object.values(mapTileLayers).forEach(l => { try { map.removeLayer(l); } catch(e){} });
-      _osmFallback.addTo(map);
-      _osmFallback.bringToBack();
+      if (_mtErrors < 10 || _mtRetryTimer || _mtRetries >= 3) return;
+      // Back off 5s, 10s, 20s so a hard outage is not hammered.
+      const wait = 5000 * Math.pow(2, _mtRetries);
+      _mtRetries++;
+      console.warn(`Basemap tiles failing; retry ${_mtRetries}/3 in ${wait / 1000}s.`);
+      _mtRetryTimer = setTimeout(() => {
+        _mtRetryTimer = null;
+        _mtErrors = 0;
+        Object.values(mapTileLayers).forEach(l => {
+          try { if (map.hasLayer(l)) l.redraw(); } catch(e) {}
+        });
+      }, wait);
     });
+    // A tile arriving means the service recovered, so let it earn its retries back.
+    layer.on('load', () => { _mtErrors = 0; _mtRetries = 0; });
   });
 
   mapTileLayers = { dark: cartoDark, light: cartoLight, satellite, topo };
@@ -28702,7 +28715,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "A profile photo that fails to load now falls back to your initial instead of showing a blank coloured circle, and the app tells you when a photo could not be processed or saved.";
+const APP_LATEST_UPDATE = "Removed the OpenStreetMap fallback basemap. If MapTiler tiles fail the app now retries them instead of switching to a second map service.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -31657,7 +31670,7 @@ function _ovLoadOrder(){
         <div class="credit-info">
           <div class="credit-name">OpenStreetMap contributors</div>
           <div class="credit-full">Open Database License (ODbL)</div>
-          <div class="credit-desc">The underlying road, place and boundary data in every basemap style, and the fallback tile layer.</div>
+          <div class="credit-desc">The underlying road, place and boundary data behind every basemap style. MapTiler renders its tiles from OpenStreetMap, so this credit is required by the ODbL licence that data is published under.</div>
           <div class="credit-uses"><span class="credit-use">Basemaps</span><span class="credit-use">Place Names</span></div>
           <a class="credit-link" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">openstreetmap.org/copyright</a>
         </div>
