@@ -8811,6 +8811,46 @@ function _buildAlertPopupHTML(p, color) {
 let alertsLayerVisible = true;  // always on
 
 let _lastAlertFeatures = [];
+let _alertLayerById = {};   // alert id -> its Leaflet polygon, set by renderAlerts
+let _pendingFocusAlertId = null; // requested before the alerts had loaded
+
+// Flies to an alert and flashes its polygon, the same thing clicking its card
+// does. Used when a notification is tapped. Alerts arrive asynchronously, so a
+// request for an id we have not loaded yet is parked and retried once they do.
+function _focusAlertById(id) {
+  if (!id) return false;
+  const f = (_lastAlertFeatures || []).find(x => {
+    const p = x.properties || {};
+    return (p.id || p['@id'] || x.id) === id;
+  });
+  if (!f) { _pendingFocusAlertId = id; return false; }
+  _pendingFocusAlertId = null;
+  try {
+    if (typeof map !== 'undefined' && map) {
+      const bounds = L.geoJSON(f).getBounds();
+      if (bounds.isValid()) map.flyToBounds(bounds, { padding: [60, 60], duration: 0.8 });
+    }
+  } catch(e) { console.warn('focus alert bounds:', e); }
+  // Open the alerts panel so the matching card is on screen too.
+  try {
+    const panel = document.getElementById('alerts-panel');
+    if (panel && panel.style.display !== 'flex' && typeof toggleAlertsPanel === 'function') toggleAlertsPanel();
+  } catch(e) {}
+  const fl = _alertLayerById[id];
+  if (fl) {
+    const origColor = _alertColorFor((f.properties && f.properties.event) || '');
+    let flashes = 0;
+    const t = setInterval(() => {
+      try {
+        fl.setStyle(flashes % 2 === 0
+          ? { fillOpacity: 0.75, weight: _ALERT_BORDER + 1, color: '#ffffff' }
+          : { fillOpacity: 0.4,  weight: _ALERT_BORDER,     color: origColor });
+      } catch(e) {}
+      if (++flashes >= 6) clearInterval(t);
+    }, 220);
+  }
+  return true;
+}
 let _alertFlashRAF = null;
 let _alertNewLayers = [];   // { layer, fillLayer, color, until }
 
@@ -8940,7 +8980,12 @@ function renderAlerts(features) {
   });
 
   // Main colored outline + translucent fill (keeps the existing click popup).
+  // Published to _alertLayerById as well so a notification tap can fly to and
+  // flash the same polygon a card click does, without duplicating that logic.
   const layerMap = {};
+  _alertLayerById = layerMap;
+  // A notification tapped before this batch loaded parked its id; now it exists.
+  if (_pendingFocusAlertId) setTimeout(() => _focusAlertById(_pendingFocusAlertId), 0);
   const main = L.geoJSON({ type: 'FeatureCollection', features: filtered }, {
     pane: 'alertsPane',
     style: f => {
@@ -15745,7 +15790,9 @@ function showToast(msg, durationMs) {
     document.body.appendChild(t);
   }
   clearTimeout(t._tid);
-  t.textContent = msg;
+  // Same reason as _fireNotification: this writes textContent, so an inline
+  // SVG icon in the message would show up as literal markup.
+  t.textContent = (typeof _plainText === 'function') ? _plainText(msg) : msg;
   t.style.opacity = '1';
   t._tid = setTimeout(() => { t.style.opacity = '0'; }, durationMs || 3000);
 }
@@ -26292,7 +26339,9 @@ function _lqmToast(msg) {
     t.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:rgba(18,0,0,0.92);border:1px solid rgba(0,140,186,0.4);color:var(--accent2);font-family:var(--mono);font-size:12px;letter-spacing:1px;padding:8px 18px;border-radius:20px;z-index:9999;pointer-events:none;transition:opacity 0.3s;opacity:0;';
     document.body.appendChild(t);
   }
-  t.textContent = msg;
+  // Same reason as _fireNotification: this writes textContent, so an inline
+  // SVG icon in the message would show up as literal markup.
+  t.textContent = (typeof _plainText === 'function') ? _plainText(msg) : msg;
   t.style.opacity = '1';
   clearTimeout(t._timer);
   t._timer = setTimeout(() => { t.style.opacity = '0'; }, 2200);
@@ -27973,19 +28022,57 @@ const _EAS_TYPE_SEV = {
 };
 
 // ── Shared notification dispatcher ───────────────────────────
-function _fireNotification(id, title, body, severity) {
+// Notification titles and bodies are plain text. The icon set in this app is
+// inline SVG markup, so passing an icon through renders the literal
+// "<svg class=svgi width=1em ...>" in the notification shade. Strip any markup
+// here, at the one place every notification goes through, rather than at each
+// call site where the next one added would reintroduce it.
+function _plainText(s) {
+  return String(s == null ? '' : s)
+    .replace(/<[^>]*>/g, '')      // drop tags, including the inline SVG icons
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+// Tapping a notification routes here. An already-open tab is told by message
+// so it keeps its state; a cold start carries the id in ?alert= instead. Either
+// way _focusAlertById parks the id if that alert has not loaded yet.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => {
+    const d = e.data || {};
+    if (d.type === 'FOCUS_ALERT' && d.alertId) {
+      _whenMapReady(() => _focusAlertById(d.alertId));
+    }
+  });
+}
+document.addEventListener('DOMContentLoaded', () => {
+  let id = null;
+  try { id = new URLSearchParams(location.search).get('alert'); } catch(e) {}
+  if (!id) return;
+  _whenMapReady(() => _focusAlertById(id));
+  // Drop the parameter so a refresh does not keep yanking the map back.
+  try { history.replaceState(null, '', location.pathname); } catch(e) {}
+});
+
+function _fireNotification(id, title, body, severity, alertId) {
   if (_notifSeenIds.has(id)) return false;
   _notifSeenIds.add(id);
   const isUrgent = severity >= 3;
   const opts = {
-    body,
+    body:    _plainText(body),
     icon:    './icons/icon-192.png',
     badge:   './icons/icon-192.png',
     tag:     id,
     vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
     requireInteraction: isUrgent,
-    data: { url: location.href },
+    // alertId lets the tap fly straight to the polygon instead of just focusing
+    // the tab. The url carries it too, for the case where no tab is open.
+    data: {
+      url: location.origin + location.pathname + (alertId ? '?alert=' + encodeURIComponent(alertId) : ''),
+      alertId: alertId || null
+    },
   };
+  title = _plainText(title);
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.ready
       .then(reg => reg.showNotification(title, opts))
@@ -28056,7 +28143,7 @@ async function _pollNWSAlerts(terms, locationSet) {
     if (ends)  lines.push(`Until: ${ends}`);
     const body = lines.join(' · ');
 
-    if (_fireNotification('nws:' + id, title, body, sev)) fired++;
+    if (_fireNotification('nws:' + id, title, body, sev, id)) fired++;
     if (fired >= 5) break; // max 5 NWS per poll to avoid spam
   }
 }
@@ -28113,7 +28200,7 @@ async function _pollEASAlerts(terms, locationSet) {
     const title = `${emoji} EAS: ${label}${orig}${call}`;
     const body  = [trans, endStr ? `Until ${endStr}` : ''].filter(Boolean).join(' · ');
 
-    if (_fireNotification('eas:' + id, title, body, sev)) fired++;
+    if (_fireNotification('eas:' + id, title, body, sev, id)) fired++;
     if (fired >= 3) break; // max 3 EAS per poll
   }
 }
@@ -28318,7 +28405,7 @@ async function _pollRainRadar() {
         'Radar shows precipitation within ~5 miles of your location',
         sev
       );
-      if (sub) sub.textContent = `${emoji} ${label} detected on radar nearby`;
+      if (sub) sub.textContent = `${label} detected on radar nearby`;
     } else if (!isRaining && _rainWasRaining) {
       _rainWasRaining = false;
       if (sub) sub.textContent = 'On - radar clear near you';
@@ -28807,7 +28894,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed the map failing to start. A harmless error after startup was making it try to build the map a second time, which Leaflet refuses and which left the map dead.";
+const APP_LATEST_UPDATE = "Alert notifications no longer show raw icon code in their text, and tapping one now flies the map to that alert and flashes it.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

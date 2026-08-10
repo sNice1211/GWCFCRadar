@@ -75,11 +75,20 @@ self.addEventListener('push', e => {
 // ── Notification tap: focus or open app ─────────────────────
 self.addEventListener('notificationclick', e => {
   e.notification.close();
-  const url = (e.notification.data && e.notification.data.url) || self.location.origin;
+  const data    = e.notification.data || {};
+  const url     = data.url || self.location.origin;
+  const alertId = data.alertId || null;
   e.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
       const match = list.find(c => c.url.startsWith(self.location.origin));
-      if (match) return match.focus();
+      if (match) {
+        // Focusing alone left the user staring at wherever they already were.
+        // Tell the open tab which alert to fly to; the id travels by message
+        // because navigating an existing tab would throw away its state.
+        if (alertId) { try { match.postMessage({ type: 'FOCUS_ALERT', alertId }); } catch(e) {} }
+        return match.focus();
+      }
+      // Nothing open, so the id has to ride in on the URL instead.
       return clients.openWindow(url);
     })
   );
