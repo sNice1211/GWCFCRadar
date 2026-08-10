@@ -27315,6 +27315,28 @@ function _onSignedOut() {
   }
 }
 
+// Paints an avatar image onto a badge element and verifies it actually decodes.
+// A stored image that fails to decode used to leave the element with the
+// has-image class still on, which sets font-size to 0 and hides the initial,
+// while the name-hash colour from the previous render stayed underneath. The
+// result was a plain coloured circle with no letter and nothing in the console
+// to explain it. On failure this now hands back to the emoji/initial rendering.
+function _paintAvatarImage(el, url, onFail) {
+  el.style.backgroundImage = `url(${url})`;
+  // Drop the name-hash colour, so a decode failure cannot pose as an avatar.
+  el.style.backgroundColor = 'transparent';
+  el.classList.add('has-image');
+  el.textContent = '';
+  const probe = new Image();
+  probe.onerror = () => {
+    console.warn('Avatar image failed to decode, falling back to initial/emoji.');
+    el.style.backgroundImage = '';
+    el.classList.remove('has-image');
+    if (typeof onFail === 'function') onFail();
+  };
+  probe.src = url;
+}
+
 function _updateProfileBadge(user, avatarEmoji) {
   const sm  = document.getElementById('lqm-profile-avatar-sm');
   const lbl = document.getElementById('lqm-profile-label');
@@ -27334,18 +27356,16 @@ function _updateProfileBadge(user, avatarEmoji) {
     const hue   = [...name].reduce((h,c)=>c.charCodeAt(0)+((h<<5)-h),0) % 360;
     const emoji = _selectedEmoji;
     const hasImg = !!_selectedAvatarImage;
+    const paintSmFallback = () => {
+      sm.style.backgroundImage = '';
+      sm.classList.remove('has-image');
+      sm.textContent = emoji || init;
+      sm.style.fontSize = emoji ? '16px' : '';
+      sm.style.background = emoji ? 'rgba(0,0,0,0.25)' : `hsl(${Math.abs(hue)},60%,42%)`;
+    };
     if (sm) {
-      if (hasImg) {
-        sm.style.backgroundImage = `url(${_selectedAvatarImage})`;
-        sm.classList.add('has-image');
-        sm.textContent = '';
-      } else {
-        sm.style.backgroundImage = '';
-        sm.classList.remove('has-image');
-        sm.textContent = emoji || init;
-        sm.style.fontSize = emoji ? '16px' : '';
-        sm.style.background = emoji ? 'rgba(0,0,0,0.25)' : `hsl(${Math.abs(hue)},60%,42%)`;
-      }
+      if (hasImg) _paintAvatarImage(sm, _selectedAvatarImage, paintSmFallback);
+      else        paintSmFallback();
       sm.style.color = '#fff';
       sm.style.border = '1px solid rgba(255,255,255,0.25)';
     }
@@ -27353,17 +27373,15 @@ function _updateProfileBadge(user, avatarEmoji) {
     const lg = document.getElementById('lqm-profile-avatar-lg');
     const nm = document.getElementById('lqm-profile-name-txt');
     if (lg) {
-      if (hasImg) {
-        lg.style.backgroundImage = `url(${_selectedAvatarImage})`;
-        lg.classList.add('has-image');
-        lg.textContent = '';
-      } else {
+      const paintLgFallback = () => {
         lg.style.backgroundImage = '';
         lg.classList.remove('has-image');
         lg.textContent = emoji || init;
         lg.style.fontSize = emoji ? '28px' : '';
         lg.style.background = emoji ? 'rgba(0,0,0,0.2)' : `hsl(${Math.abs(hue)},60%,38%)`;
-      }
+      };
+      if (hasImg) _paintAvatarImage(lg, _selectedAvatarImage, paintLgFallback);
+      else        paintLgFallback();
       lg.style.color = '#fff';
       lg.style.border = '2px solid rgba(255,255,255,0.2)';
     }
@@ -27545,9 +27563,25 @@ function _avatarCropConfirm() {
     c.getContext('2d').drawImage(img, sx, sy, sSize, sSize, 0, 0, size, size);
     return c.toDataURL('image/jpeg', q);
   };
-  let url = render(256, 0.75);
-  if (url.length > 300000) url = render(200, 0.65);
-  if (url.length > 300000) url = render(160, 0.55);
+  let url;
+  try {
+    url = render(256, 0.75);
+    if (url.length > 300000) url = render(200, 0.65);
+    if (url.length > 300000) url = render(160, 0.55);
+  } catch(e) {
+    // toDataURL throws a SecurityError on a tainted canvas. Report it rather
+    // than letting the handler die mid-way and leave the modal stuck open.
+    console.warn('_avatarCropConfirm render:', e);
+    if (typeof _lqmToast === 'function') _lqmToast('Could not process that image - try a different file');
+    return;
+  }
+  // A data URL that will not decode would render as a blank coloured circle
+  // with no way to tell anything went wrong, so reject it here instead.
+  if (!url || url.length < 64 || url.indexOf('data:image/') !== 0) {
+    console.warn('_avatarCropConfirm: produced an unusable data URL, length', url && url.length);
+    if (typeof _lqmToast === 'function') _lqmToast('Could not process that image - try a different file');
+    return;
+  }
   _selectedAvatarImage = url;
   // Photo and emoji are mutually exclusive - the photo wins on render, so drop
   // the emoji here to keep the saved state and the visible avatar in agreement.
@@ -27669,6 +27703,20 @@ async function saveProfileChanges() {
       nameFont: _selectedNameFont || null,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
     }, { merge: true });
+    // Read the avatar back. A photo is by far the largest thing stored here, so
+    // if anything rejects or truncates it the user would otherwise find out only
+    // by seeing a blank circle after their next sign-in.
+    if (_selectedAvatarImage) {
+      try {
+        const back = await _fbDb.collection('users').doc(_currentUser.uid).get();
+        const stored = back.exists ? (back.data().avatarImage || '') : '';
+        if (stored.length !== _selectedAvatarImage.length) {
+          console.warn('Avatar did not round-trip: sent', _selectedAvatarImage.length,
+                       'chars, stored', stored.length);
+          if (typeof _lqmToast === 'function') _lqmToast('Photo may not have saved - try a smaller image');
+        }
+      } catch(e) { console.warn('avatar verify:', e); }
+    }
     // Refresh badge with new avatar data
     _updateProfileBadge(_currentUser, {
       avatarEmoji: _selectedEmoji,
@@ -28654,7 +28702,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Save Layers now remembers which product you picked inside Waves, Air, Wind, Temperature and Pressure, so Sea Surface Temperature comes back. Added RDPS and GDPS models.";
+const APP_LATEST_UPDATE = "A profile photo that fails to load now falls back to your initial instead of showing a blank coloured circle, and the app tells you when a photo could not be processed or saved.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
