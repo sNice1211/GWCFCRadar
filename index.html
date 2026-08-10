@@ -28216,14 +28216,29 @@ document.addEventListener('DOMContentLoaded', () => {
   try { history.replaceState(null, '', location.pathname); } catch(e) {}
 });
 
+// Severity to badge art. Kept beside _fireNotification so the mapping lives in
+// one place rather than being repeated at each call site.
+function _severityBadge(severity) {
+  const s = Number(severity) || 0;
+  if (s >= 4) return './icons/badge-extreme.png';
+  if (s >= 3) return './icons/badge-severe.png';
+  if (s >= 2) return './icons/badge-moderate.png';
+  return './icons/badge-info.png';
+}
+
 function _fireNotification(id, title, body, severity, alertId) {
   if (_notifSeenIds.has(id)) return false;
   _notifSeenIds.add(id);
   const isUrgent = severity >= 3;
   const opts = {
     body:    _plainText(body),
+    // icon is the large slot: always the logo, so the notification is
+    // recognisably this app at a glance.
     icon:    './icons/icon-192.png',
-    badge:   './icons/icon-192.png',
+    // badge is the small slot: severity, so the colour tells you how bad it is
+    // without reading. Android masks the badge to a monochrome silhouette, so
+    // each badge also differs in SHAPE and still reads when the colour is lost.
+    badge:   _severityBadge(severity),
     tag:     id,
     vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
     requireInteraction: isUrgent,

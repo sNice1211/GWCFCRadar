@@ -6,6 +6,23 @@ const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 const IEM_L3_RE = /\/cache\/tile\.py\/1\.0\.0\/nexrad-n0q-\d{12}\//;
 const RV_TILE_RE = /\/v2\/radar\/\d+\//;
 
+// Severity to badge art, mirroring the page's _severityBadge(). The large icon
+// slot always carries the logo; the small badge slot carries severity.
+function _severityBadge(severity) {
+  const s = Number(severity) || 0;
+  if (s >= 4) return './icons/badge-extreme.png';
+  if (s >= 3) return './icons/badge-severe.png';
+  if (s >= 2) return './icons/badge-moderate.png';
+  return './icons/badge-info.png';
+}
+
+// Notification titles are plain text. The page strips markup before calling
+// showNotification, but strip here too so a stale cached page cannot put raw
+// markup in front of the user.
+function _plainText(v) {
+  return String(v == null ? '' : v).replace(/<[^>]*>/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+
 const CACHE_HOSTS = new Set([
   'api.maptiler.com',
   'mesonet.agron.iastate.edu',
@@ -61,10 +78,10 @@ self.addEventListener('push', e => {
   const body  = payload.body  || '';
   const url   = payload.url   || self.location.origin + '/GWCFCRadar/';
   e.waitUntil(
-    self.registration.showNotification(title, {
-      body,
+    self.registration.showNotification(_plainText(title), {
+      body: _plainText(body),
       icon:    './icons/icon-192.png',
-      badge:   './icons/icon-192.png',
+      badge:   _severityBadge(payload.severe ? 3 : 1),
       tag:     payload.id || 'gwcfc-alert',
       vibrate: payload.severe ? [200, 100, 200] : [100],
       data:    { url },
@@ -173,10 +190,10 @@ async function _checkAndNotify() {
     if (await _isSeen(id)) return;
     await _markSeen(id);
     const isUrgent = sevRank >= 3;
-    await self.registration.showNotification(title, {
-      body,
+    await self.registration.showNotification(_plainText(title), {
+      body: _plainText(body),
       icon:    './icons/icon-192.png',
-      badge:   './icons/icon-192.png',
+      badge:   _severityBadge(sevRank),
       tag:     id,
       vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
       requireInteraction: isUrgent,
@@ -316,7 +333,7 @@ async function _checkAndNotify() {
         await self.registration.showNotification(`${emoji} ${label} Near You`, {
           body:    'Radar shows precipitation within ~25 miles of your location',
           icon:    './icons/icon-192.png',
-          badge:   './icons/icon-192.png',
+          badge:   _severityBadge(2),
           tag:     'rain-near-me',
           vibrate: [150],
           data:    { url: self.location.origin + '/GWCFCRadar/' },
