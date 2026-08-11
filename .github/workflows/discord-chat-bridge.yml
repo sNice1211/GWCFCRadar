@@ -1,0 +1,44 @@
+name: Discord chat bridge
+
+# Carries messages from the Discord channel onto the radar's Live Chat.
+#
+# Messages going the other way (radar -> Discord) do not use this at all: the
+# website posts those straight to the webhook and they arrive instantly. This
+# is only the return direction, which a webhook cannot do - a webhook can post
+# into a channel but Discord gives it no way to read one.
+#
+# Five minutes is the shortest schedule GitHub offers, and busy periods delay
+# it further, so expect a Discord message to appear on the map within about
+# five minutes. For ~1 minute instead, deploy chat-bridge/ to Cloudflare
+# (see chat-bridge/README.md) - same code, faster timer.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:          # run it now, from the Actions tab
+
+# Nothing here writes to the repo.
+permissions:
+  contents: read
+
+# Never let two runs poll at once: both would read the same cursor and relay
+# the same messages twice.
+concurrency:
+  group: discord-chat-bridge
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Relay new Discord messages to the radar
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          CHAT_CHANNEL_ID: ${{ secrets.CHAT_CHANNEL_ID }}
+        run: node chat-bridge/poll.mjs
