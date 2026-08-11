@@ -2337,6 +2337,19 @@ body {
 .sev-dd-wrap select:focus {
   border-color: rgba(232,184,0,0.6);
 }
+/* The Model list is long enough now to be grouped. Native <optgroup> labels
+   default to a light-theme grey that vanishes on this panel's dark red. */
+.sev-dd-wrap select optgroup {
+  background: rgba(30,8,8,0.98);
+  color: rgba(232,184,0,0.75);
+  font-style: normal;
+  font-weight: 600;
+}
+.sev-dd-wrap select option {
+  background: rgba(30,8,8,0.98);
+  color: rgba(255,220,160,0.9);
+  font-weight: 400;
+}
 #trop-model-tabs, #trop-src-tabs, #sev-model-tabs, #sev-var-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -7144,14 +7157,28 @@ body.clean-mode #clean-hint { opacity: 1; }
         <div class="sev-dd-wrap">
           <label class="sev-dd-label">Model</label>
           <select id="sev-model-sel" onchange="_sevSetSection(this.value)">
-            <option value="dwd">DWD ICON (Global)</option>
-            <option value="ecmwf">ECMWF IFS (Global)</option>
-            <option value="hrdps">HRDPS (Hi-Res N. America)</option>
-            <option value="ndfd">NWS NDFD (US Forecast)</option>
-            <option value="hrrr">HRRR (18h)</option>
-            <option value="gfs_ens">GFS Ensemble Mean (NOAA)</option>
-            <option value="icon_ens">ICON Ensemble Mean (DWD)</option>
-            <option value="gem_ens">GEM Ensemble Mean (ECCC)</option>
+            <optgroup label="Map Charts">
+              <option value="dwd">DWD ICON (Global)</option>
+              <option value="ecmwf">ECMWF IFS (Global)</option>
+              <option value="hrdps">HRDPS (Hi-Res N. America)</option>
+              <option value="ndfd">NWS NDFD (US Forecast)</option>
+              <option value="hrrr">HRRR (18h)</option>
+            </optgroup>
+            <optgroup label="Global Deterministic">
+              <option value="gfs">GFS (NOAA)</option>
+              <option value="gem">GEM (ECCC Canada)</option>
+              <option value="ukmo">UKMO (UK Met Office)</option>
+              <option value="arpege">ARPEGE (Meteo-France)</option>
+              <option value="jma">JMA (Japan)</option>
+              <option value="aifs">ECMWF AIFS (AI Model)</option>
+              <option value="cma">CMA GRAPES (China)</option>
+              <option value="bom">BOM ACCESS-G (Australia)</option>
+            </optgroup>
+            <optgroup label="Ensemble Mean">
+              <option value="gfs_ens">GFS Ensemble Mean (NOAA)</option>
+              <option value="icon_ens">ICON Ensemble Mean (DWD)</option>
+              <option value="gem_ens">GEM Ensemble Mean (ECCC)</option>
+            </optgroup>
           </select>
           <button id="sev-sounding-btn" onclick="_sevToggleSounding()" title="View sounding at map center" style="margin-left:4px;padding:3px 8px;background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);color:#008CBA;border-radius:4px;cursor:pointer;font-size:10px;font-family:Comfortaa;">Sounding</button>
         </div>
@@ -15057,6 +15084,7 @@ function _sevRender() {
   if(GEOMET_LAYERS[_sevSection]) { _sevRenderGeoMet(body); return; }
   if(_sevSection === 'ndfd')  { _sevRenderNDFD(body);  return; }
   if(SEV_ENSEMBLE_SECTIONS[_sevSection]) { _sevRenderEnsemble(body); return; }
+  if(SEV_DET_SECTIONS[_sevSection]) { _sevRenderDeterministic(body); return; }
   const ok = _sevRenderIEM(body);
   if(!ok && body && body.innerHTML.includes('⟳')) body.innerHTML=`<div class="trop-model-err">Nothing loaded for this one.</div>`;
 }
@@ -15073,6 +15101,38 @@ const SEV_ENS_PRODUCT_LIST = [
   {v:'precipitation',l:'Precipitation'},
   {v:'wind_speed_10m',l:'10m Wind Speed'},
   {v:'wind_gusts_10m',l:'Wind Gusts'},
+  {v:'surface_pressure',l:'Surface Pressure'},
+];
+
+// Deterministic (single-run, not ensemble) global models from Open-Meteo's
+// plain forecast API, keyed the same way SEV_ENSEMBLE_SECTIONS is: dropdown
+// value -> Open-Meteo model id. These are the world's national-agency models,
+// none of which publish a free WMS tile service we could point at, so they get
+// the same fetch-a-grid-and-paint-it treatment the ensemble mean already uses.
+// "_seamless" means Open-Meteo automatically splices the agency's high-res
+// regional model into its global one where the regional one has coverage.
+const SEV_DET_SECTIONS = {
+  gfs:    'gfs_seamless',              // NOAA GFS (+ HRRR/NBM over the US)
+  gem:    'gem_seamless',              // Environment Canada GEM global
+  ukmo:   'ukmo_seamless',             // UK Met Office UM
+  arpege: 'meteofrance_arpege_world',  // Meteo-France ARPEGE
+  jma:    'jma_seamless',              // Japan Meteorological Agency GSM/MSM
+  aifs:   'ecmwf_aifs025_single',      // ECMWF AIFS - machine-learning model
+  cma:    'cma_grapes_global',         // China Meteorological Administration
+  bom:    'bom_access_global',         // Australian Bureau of Meteorology
+};
+// One product list shared by every deterministic model. Each product is fetched
+// on its own (hourly=<one variable>), so if a given agency doesn't publish one
+// of these, only that product shows the "unavailable" message - the rest of the
+// model still works.
+const SEV_DET_PRODUCT_LIST = [
+  {v:'temperature_2m',l:'2m Temperature'},
+  {v:'dew_point_2m',l:'2m Dew Point'},
+  {v:'relative_humidity_2m',l:'Rel. Humidity'},
+  {v:'precipitation',l:'Precipitation'},
+  {v:'wind_speed_10m',l:'10m Wind Speed'},
+  {v:'wind_gusts_10m',l:'Wind Gusts'},
+  {v:'cloud_cover',l:'Cloud Cover'},
   {v:'surface_pressure',l:'Surface Pressure'},
 ];
 
@@ -15093,6 +15153,13 @@ const SEV_PRODUCTS = {
   gem_ens:  SEV_ENS_PRODUCT_LIST,
 };
 const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp', gfs_ens:'temperature_2m', icon_ens:'temperature_2m', gem_ens:'temperature_2m'};
+// Every deterministic model shares the same product list and default product,
+// so fill those in from SEV_DET_SECTIONS instead of repeating eight identical
+// lines - adding a model to SEV_DET_SECTIONS is then the only edit needed.
+Object.keys(SEV_DET_SECTIONS).forEach(s => {
+  SEV_PRODUCTS[s] = SEV_DET_PRODUCT_LIST;
+  SEV_DEFAULT_VAR[s] = 'temperature_2m';
+});
 
 // A GeoMet section is configured in two independent places: GEOMET_LAYERS says
 // which WMS layer backs each variable, and SEV_PRODUCTS says which variables the
@@ -15147,6 +15214,9 @@ const SEV_RUN_CFG = {
   icon_ens: { cycleH: 1, lagH: 0, maxRuns: 1 },
   gem_ens:  { cycleH: 1, lagH: 0, maxRuns: 1 },
 };
+// Same story for the deterministic Open-Meteo models: the API always answers
+// with the newest run it has, so the Run selector shows exactly one entry.
+Object.keys(SEV_DET_SECTIONS).forEach(s => { SEV_RUN_CFG[s] = { cycleH: 1, lagH: 0, maxRuns: 1 }; });
 
 function _sevPopulateRuns() {
   const sel=document.getElementById('sev-run-sel');if(!sel)return;
@@ -15370,7 +15440,11 @@ let _sevDraggingIdx = -1;
 let _sevGroups = {}; // name -> [{section,var,run}, ...], persisted to localStorage
 let _sevCurrentGroup = '';
 
-const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR', gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble' };
+const SEV_MODEL_LABELS = {
+  dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR',
+  gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble',
+  gfs:'GFS', gem:'GEM', ukmo:'UKMO', arpege:'ARPEGE', jma:'JMA', aifs:'ECMWF AIFS', cma:'CMA GRAPES', bom:'BOM ACCESS-G',
+};
 
 // Per-model forecast range, shared by A (via _sevMaxFrame/_sevStartFrame
 // below) and every extra slot, so both A and every comparison slot clamp
@@ -15381,11 +15455,13 @@ function _sevMaxFrameFor(section) {
   if (section === 'hrdps') return 16; // 16 × 3h = 48h
   if (section === 'ndfd')  return 32; // 32 × 3h = 96h
   if (SEV_ENSEMBLE_SECTIONS[section]) return SEV_ENS_MAX_FRAME; // 8 × 6h = 48h
+  if (SEV_DET_SECTIONS[section]) return SEV_DET_MAX_FRAME;      // 20 × 6h = 120h
   return 6; // hrrr
 }
-// ecmwf and every ensemble model publish 6-hourly steps; everything else here is 3-hourly.
+// ecmwf and every Open-Meteo model (ensemble or deterministic) is stepped at
+// 6-hourly here; everything else is 3-hourly.
 function _sevStepHoursFor(section) {
-  return (section === 'ecmwf' || SEV_ENSEMBLE_SECTIONS[section]) ? 6 : 3;
+  return (section === 'ecmwf' || SEV_ENSEMBLE_SECTIONS[section] || SEV_DET_SECTIONS[section]) ? 6 : 3;
 }
 function _sevMinFrameFor(section, variable) {
   if (section === 'dwd' && DWD_MIN_FRAME[variable]) return DWD_MIN_FRAME[variable];
@@ -15798,6 +15874,10 @@ const SEV_ENS_VAR_LABELS = {
   wind_speed_10m:  '10m Wind Speed',
   wind_gusts_10m:  'Wind Gusts',
   surface_pressure:'Surface Pressure',
+  // Extra products the deterministic models offer on top of the ensemble five.
+  dew_point_2m:        '2m Dew Point',
+  relative_humidity_2m:'Rel. Humidity',
+  cloud_cover:         'Cloud Cover',
 };
 const SEV_ENS_COLS = 18, SEV_ENS_ROWS = 11;
 const SEV_ENS_MAX_FRAME = 8;  // 9 frames: F+000 .. F+048 at a 6h step
@@ -15810,6 +15890,13 @@ const SEV_ENS_SCALES = {
   wind_speed_10m:   [[0,[0,60,140]],[10,[0,150,220]],[20,[0,220,180]],[35,[255,204,0]],[50,[255,80,0]],[70,[200,0,220]]],
   wind_gusts_10m:   [[0,[0,60,140]],[15,[0,150,220]],[30,[0,220,180]],[50,[255,204,0]],[70,[255,80,0]],[90,[200,0,220]]],
   surface_pressure: [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]],
+  // Dew point tops out far lower than air temperature, so it needs its own
+  // (compressed) stops or everything above 60F would render the same red.
+  dew_point_2m:     [[0,[80,0,180]],[20,[0,90,220]],[35,[0,200,60]],[50,[100,210,70]],[60,[255,204,0]],[70,[255,90,0]],[80,[220,0,0]]],
+  // Dry = brown, saturated = deep blue.
+  relative_humidity_2m: [[0,[150,100,40]],[30,[210,190,90]],[50,[120,200,120]],[70,[0,180,180]],[85,[0,110,220]],[100,[40,40,190]]],
+  // Clear = dark, overcast = white, so it reads like a satellite picture.
+  cloud_cover:      [[0,[10,30,60]],[25,[70,100,130]],[50,[140,160,180]],[75,[205,215,225]],[100,[255,255,255]]],
 };
 
 // All 9 frames' painted layers for the currently-loaded section|var combo -
@@ -15826,11 +15913,13 @@ function _sevEnsShowFrame(body, frames) {
   const f = frames[_sevFrame];
   if (f && f.layer) {
     _sevOverlayLayer = f.layer.addTo(map);
-    _sevEnsGridCache = { grid: f.grid, cols: SEV_ENS_COLS, rows: SEV_ENS_ROWS, isAngle: false, varName: _sevVar };
+    // cols/rows travel with the frame because the deterministic models below
+    // reuse this same cache at a finer grid than the ensemble's.
+    _sevEnsGridCache = { grid: f.grid, cols: f.cols || SEV_ENS_COLS, rows: f.rows || SEV_ENS_ROWS, isAngle: false, varName: _sevVar };
     if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.85)">${f.statusText}</div>`;
   } else if (body) {
     _sevEnsGridCache = null;
-    body.innerHTML = `<div class="trop-model-err">No ensemble data for this forecast hour.</div>`;
+    body.innerHTML = `<div class="trop-model-err">No data for this forecast hour.</div>`;
   }
 }
 
@@ -15870,7 +15959,7 @@ async function _sevRenderEnsemble(body) {
       if (!grid.some(v => v != null)) { frames.push(null); continue; }
       const layer = _paintInterpolatedOverlay(grid, SEV_ENS_COLS, SEV_ENS_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale));
       const { date, flbl } = _sevFcastDateTime(i);
-      frames.push({ layer, grid, statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
+      frames.push({ layer, grid, cols: SEV_ENS_COLS, rows: SEV_ENS_ROWS, statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
     }
     if (!frames.some(f => f)) throw new Error('no ensemble members in response');
     if (token !== _sevEnsLoadToken) return;
@@ -15882,6 +15971,68 @@ async function _sevRenderEnsemble(body) {
     console.warn('Run Models ensemble layer error:', e);
     if (token !== _sevEnsLoadToken) return;
     if (body) body.innerHTML = `<div class="trop-model-err">${modelLabel} ensemble data unavailable right now - try a different model.</div>`;
+  }
+}
+
+// ── RUN MODELS: DETERMINISTIC GLOBAL MODELS (Open-Meteo Forecast API) ───────
+// Same idea as the ensemble renderer above, with two differences. First, a
+// deterministic run has one value per hour instead of ~30 members to average,
+// so the response is far lighter and we can afford a finer grid and a longer
+// forecast range. Second, it reads loc.hourly[varName] directly rather than
+// hunting for "_memberNN" keys. Everything downstream (the Run selector, the
+// playbar, the frame cache, the Inspector readout) is shared with the ensemble
+// path, so these models behave exactly like every other model in the panel.
+const SEV_DET_COLS = 26, SEV_DET_ROWS = 15;
+const SEV_DET_MAX_FRAME = 20;   // 21 frames: F+000 .. F+120 at a 6h step
+const SEV_DET_STEP_H = 6;
+const SEV_DET_DAYS = 6;         // 144 hourly values, comfortably past F+120
+
+async function _sevRenderDeterministic(body) {
+  const key = _sevEnsCacheKey();
+  if (_sevEnsFramesKey === key && _sevEnsFrames) { _sevEnsShowFrame(body, _sevEnsFrames); return; }
+
+  const model = SEV_DET_SECTIONS[_sevSection];
+  const modelLabel = SEV_MODEL_LABELS[_sevSection] || model;
+  const varName = _sevVar;
+  if (body) body.innerHTML = `<div class="trop-model-err">⟳ Loading ${modelLabel}…</div>`;
+  const token = ++_sevEnsLoadToken;
+
+  const pts = _sampleGrid(SEV_DET_COLS, SEV_DET_ROWS, WORLD_MAP_BOUNDS);
+  try {
+    const locations = await _fetchGridChunkedRaw(pts, chunk => {
+      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
+      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
+      return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
+        `&hourly=${varName}&models=${model}&forecast_days=${SEV_DET_DAYS}` +
+        `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
+    }, 40);
+    if (token !== _sevEnsLoadToken) return;
+
+    const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
+    const frames = [];
+    for (let i = 0; i <= SEV_DET_MAX_FRAME; i++) {
+      const hourIdx = i * SEV_DET_STEP_H;
+      const grid = locations.map(loc => {
+        const v = loc?.hourly?.[varName]?.[hourIdx];
+        return (v != null && isFinite(v)) ? v : null;
+      });
+      if (!grid.some(v => v != null)) { frames.push(null); continue; }
+      const layer = _paintInterpolatedOverlay(grid, SEV_DET_COLS, SEV_DET_ROWS, WORLD_MAP_BOUNDS, false, v => _colorScale(v, scale));
+      const { date, flbl } = _sevFcastDateTime(i);
+      frames.push({ layer, grid, cols: SEV_DET_COLS, rows: SEV_DET_ROWS, statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} · ${flbl} (${date})` });
+    }
+    // A model that simply doesn't publish this variable comes back all-null
+    // rather than erroring, so treat that the same as a failed fetch.
+    if (!frames.some(f => f)) throw new Error('no values in response');
+    if (token !== _sevEnsLoadToken) return;
+
+    _sevEnsFrames = frames;
+    _sevEnsFramesKey = key;
+    _sevEnsShowFrame(body, frames);
+  } catch(e) {
+    console.warn('Run Models deterministic layer error:', e);
+    if (token !== _sevEnsLoadToken) return;
+    if (body) body.innerHTML = `<div class="trop-model-err">${modelLabel} doesn't publish this product right now - try another product or model.</div>`;
   }
 }
 
@@ -19170,7 +19321,8 @@ function _inspSevEnsRow(center) {
   if (v == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
   const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
   const [r, g, b] = _colorScale(v, scale);
-  const units = { temperature_2m: '°F', precipitation: 'in', wind_speed_10m: 'mph', wind_gusts_10m: 'mph', surface_pressure: 'hPa' };
+  const units = { temperature_2m: '°F', precipitation: 'in', wind_speed_10m: 'mph', wind_gusts_10m: 'mph', surface_pressure: 'hPa',
+                  dew_point_2m: '°F', relative_humidity_2m: '%', cloud_cover: '%' };
   return { label, value: v.toFixed(2), unit: units[varName] || '', color: `rgb(${r},${g},${b})` };
 }
 
@@ -27880,13 +28032,18 @@ function lqmSetTZ(tz) {
       <p class="fc-body">The official US forecast grid. Temperature, Max Temp, Dew Point, Wind Speed/Direction, Sky Cover, Precip Chance/Amount, Snow Amount, and Weather Type.</p>
     </div>
     <div class="feature-card">
+      <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-globe></use></svg></div>
+      <div class="fc-title">Global Deterministic (8 models)</div>
+      <p class="fc-body">The world's national-agency models, each a single forecast run rather than an ensemble: <strong>GFS</strong> (NOAA), <strong>GEM</strong> (Environment Canada), <strong>UKMO</strong> (UK Met Office), <strong>ARPEGE</strong> (Meteo-France), <strong>JMA</strong> (Japan), <strong>ECMWF AIFS</strong> (ECMWF's machine-learning model), <strong>CMA GRAPES</strong> (China) and <strong>BOM ACCESS-G</strong> (Australia). Each runs out to F+120 in 6h steps, with 2m Temperature, 2m Dew Point, Rel. Humidity, Precipitation, 10m Wind Speed, Wind Gusts, Cloud Cover and Surface Pressure. Not every agency publishes every one of those, so if a product comes back empty the panel says so and the model's other products still work.</p>
+    </div>
+    <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dice></use></svg></div>
       <div class="fc-title">Ensemble Mean (GFS / ICON / GEM)</div>
       <p class="fc-body">Pick any of the three Ensemble Mean entries to see that model's members averaged into one smooth color layer, out to F+048 in 6h steps. Variables: 2m Temperature, Precipitation, 10m Wind Speed, Wind Gusts, Surface Pressure.</p>
     </div>
   </div>
 
-  <p>Use the <strong>Run</strong> selector and hour slider (or <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Play) to step through the forecast for whichever model and variable you've picked, this works the same way for the Ensemble Mean models too, since Open-Meteo's ensemble data only ever has one "Latest" run, the Run selector just shows that single entry.</p>
+  <p>Use the <strong>Run</strong> selector and hour slider (or <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> Play) to step through the forecast for whichever model and variable you've picked, this works the same way for the Global Deterministic and Ensemble Mean models too, since Open-Meteo only ever serves its newest run, the Run selector just shows that single entry.</p>
 
   <h3 style="font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:1px;color:#fff;margin:24px 0 10px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> Compare Runs / Models</h3>
   <p>Tap <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> Compare Runs / Models</strong> inside Run Models to split the map into side-by-side panes, each an independent Model/Product/Run combination, so you can compare two different models (or two runs of the same model) at the same forecast hour without switching back and forth. Drag the <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-swap></use></svg> divider on the map to resize either side; <strong>+ Add Comparison</strong> adds another pane. Under <strong>Saved Comparisons</strong>, type a name and hit <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-save></use></svg> Save</strong> to store the current set of panes, then reload it later from the dropdown, edit any pane afterward and it detaches from the saved name until you save it again.</p>
@@ -29670,7 +29827,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Soundings moved to Run Models panel - click the Sounding button in any model to view.";
+const APP_LATEST_UPDATE = "Run Models now has 8 more global models: GFS, GEM, UKMO, ARPEGE, JMA, ECMWF AIFS, CMA and BOM, out to F+120.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
