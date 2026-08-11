@@ -15483,6 +15483,19 @@ function _sevToggleSounding(){
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
+// Same label, but anchored to an explicit start time instead of whatever
+// _sevRun currently says. The Open-Meteo models need this: their frames are
+// cached for hours, while _sevRun advances every hour, so labels generated from
+// _sevRun would slide away from the data they belong to.
+function _sevFcastFrom(baseMs, frame, stepH) {
+  const hrs = frame * stepH;
+  const t = new Date(baseMs + hrs * 3600000);
+  return {
+    date: `${DAYS[t.getUTCDay()]} ${MONS[t.getUTCMonth()]} ${t.getUTCDate()} - ${String(t.getUTCHours()).padStart(2,'0')}:00z`,
+    flbl: 'F+' + String(hrs).padStart(3,'0')
+  };
+}
+
 function _sevFcastDateTime(frame) {
   if (!_sevRun || _sevRun.length < 10) return { date: '-', flbl: 'F+000' };
   const step = _sevStepHoursFor(_sevSection);
@@ -16194,15 +16207,34 @@ async function _sevRenderEnsemble(body) {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       return `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latStr}&longitude=${lngStr}` +
-        `&hourly=${varName}&models=${model}&forecast_days=3` +
+        `&hourly=${varName}&models=${model}&forecast_days=4` +
         `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
     }, 15);
     if (token !== _sevEnsLoadToken) return;
 
+    // Same anchoring the deterministic models need: the ensemble API also
+    // starts its hourly series at 00:00 UTC of the current day, so reading from
+    // index 0 shows this morning while the label says now.
+    const _ensMs = t => (typeof t === 'number') ? t * 1000
+      : (typeof t === 'string' ? Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(t) ? t : t + 'Z') : NaN);
+    const ensRunMs = (_sevRun && _sevRun.length >= 10)
+      ? Date.UTC(+_sevRun.slice(0,4), +_sevRun.slice(4,6) - 1, +_sevRun.slice(6,8), +_sevRun.slice(8,10))
+      : Date.now();
+    const ensTime = locations.find(l => Array.isArray(l?.hourly?.time) && l.hourly.time.length > 1)?.hourly.time;
+    let ensBase = 0, ensBaseMs = ensRunMs, ensSlotH = 1;
+    if (ensTime) {
+      const d = (_ensMs(ensTime[1]) - _ensMs(ensTime[0])) / 3600000;
+      if (Number.isFinite(d) && d > 0) ensSlotH = Math.max(1, Math.round(d));
+      const found = ensTime.findIndex(t => _ensMs(t) >= ensRunMs - 60000);
+      if (found > 0) ensBase = found;
+      const bm = _ensMs(ensTime[ensBase]);
+      if (Number.isFinite(bm)) ensBaseMs = bm;
+    }
+
     const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
     const frames = [];
     for (let i = 0; i <= SEV_ENS_MAX_FRAME; i++) {
-      const hourIdx = i * SEV_ENS_STEP_H;
+      const hourIdx = ensBase + Math.round(i * SEV_ENS_STEP_H / ensSlotH);
       const grid = locations.map(loc => {
         if (!loc || !loc.hourly) return null;
         const memberKeys = Object.keys(loc.hourly).filter(k => k.startsWith(varName + '_member'));
@@ -16212,7 +16244,7 @@ async function _sevRenderEnsemble(body) {
         return n ? sum / n : null;
       });
       if (!grid.some(v => v != null)) { frames.push(null); continue; }
-      const { date, flbl } = _sevFcastDateTime(i);
+      const { date, flbl } = _sevFcastFrom(ensBaseMs, i, SEV_ENS_STEP_H);
       frames.push({ layer: null, grid, scale, cols: SEV_ENS_COLS, rows: SEV_ENS_ROWS, statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
     }
     if (!frames.some(f => f)) throw new Error('no ensemble members in response');
@@ -16257,7 +16289,7 @@ async function _sevRenderEnsemble(body) {
 const SEV_DET_COLS = 18, SEV_DET_ROWS = 11;
 const SEV_DET_MAX_FRAME = 20;   // 21 frames: F+000 .. F+120 at a 6h step
 const SEV_DET_STEP_H = 6;
-const SEV_DET_DAYS = 6;         // covers F+120 with room to spare
+const SEV_DET_DAYS = 7;         // F+120 measured from the run hour, which can be 23h into day 0
 // Below this fraction of the grid actually returned, the picture stops being a
 // forecast. _fillNullsNearest copies the nearest real value into every hole, so
 // a grid with gaps still paints a confident, invented blob field. Set high
@@ -16333,7 +16365,7 @@ async function _sevSharedRead(key) {
     const d = snap.data() || {};
     if (!d.v || typeof d.at !== 'number') return null;
     if (Date.now() - d.at > SEV_SHARED_TTL) return null;
-    const entry = { at: d.at, slotH: d.slotH || 1, grids: JSON.parse(d.v) };
+    const entry = { at: d.at, slotH: d.slotH || 1, baseMs: d.baseMs || d.at, grids: JSON.parse(d.v) };
     return _sevDetGridOk(entry) ? entry : null;
   } catch (e) {
     console.warn('shared model cache read:', e);
@@ -16352,7 +16384,7 @@ async function _sevSharedReadAny(key) {
     if (!snap.exists) return null;
     const d = snap.data() || {};
     if (!d.v) return null;
-    const entry = { at: d.at || 0, slotH: d.slotH || 1, grids: JSON.parse(d.v) };
+    const entry = { at: d.at || 0, slotH: d.slotH || 1, baseMs: d.baseMs || d.at || 0, grids: JSON.parse(d.v) };
     return _sevDetGridOk(entry) ? entry : null;
   } catch (e) { console.warn('shared model cache read:', e); return null; }
 }
@@ -16365,6 +16397,7 @@ function _sevSharedWrite(key, entry) {
     _fbDb.collection('modelCache').doc(_sevSharedDocId(key)).set({
       at: entry.at,
       slotH: entry.slotH,
+      baseMs: entry.baseMs || entry.at,
       cols: SEV_DET_COLS, rows: SEV_DET_ROWS,
       v: JSON.stringify(entry.grids.map(g => g && g.map(x => x == null ? null : Math.round(x * 10) / 10))),
       by: _currentUser.uid
@@ -16391,11 +16424,13 @@ function _sevDetCacheWrite(key, entry) {
 
 // Rebuilds the display frames from cached grids. Values are stored rounded to
 // 2dp to keep the cache small; that is far finer than any color step.
-function _sevDetFramesFromGrids(grids, varName, modelLabel) {
+function _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs) {
   const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
   return grids.map((grid, i) => {
     if (!grid) return null;
-    const { date, flbl } = _sevFcastDateTime(i);
+    // Labelled from the hour the data actually starts at, which is stored with
+    // the grids, so a cached set stays correctly labelled however old it is.
+    const { date, flbl } = baseMs ? _sevFcastFrom(baseMs, i, SEV_DET_STEP_H) : _sevFcastDateTime(i);
     return { layer: null, grid, scale, cols: SEV_DET_COLS, rows: SEV_DET_ROWS,
              statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} · ${flbl} (${date})` };
   });
@@ -16413,7 +16448,7 @@ async function _sevRenderDeterministic(body) {
   // Already bought this one. Rebuild the frames and spend nothing.
   const cached = _sevDetCacheRead(key);
   if (_sevDetCacheFresh(cached)) {
-    const frames = _sevDetFramesFromGrids(cached.grids, varName, modelLabel);
+    const frames = _sevDetFramesFromGrids(cached.grids, varName, modelLabel, cached.baseMs);
     _sevEnsFrames = frames; _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
     return;
@@ -16434,7 +16469,7 @@ async function _sevRenderDeterministic(body) {
   if (token !== _sevEnsLoadToken) return;
   if (shared) {
     _sevDetCacheWrite(key, shared);         // keep a local copy too
-    const frames = _sevDetFramesFromGrids(shared.grids, varName, modelLabel);
+    const frames = _sevDetFramesFromGrids(shared.grids, varName, modelLabel, shared.baseMs);
     _sevEnsFrames = frames; _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
     return;
@@ -16512,12 +16547,28 @@ async function _sevRenderDeterministic(body) {
       if (Number.isFinite(d) && d > 0) slotH = Math.max(1, Math.round(d));
     }
 
+    // Where F+000 actually is in the series. Open-Meteo starts hourly data at
+    // 00:00 UTC of the current day, NOT at the current hour, so reading from
+    // index 0 was showing the small hours of this morning while labelling it
+    // as now - and every later frame was shifted by the same amount. Find the
+    // first timestamp at or after the run hour and count from there.
+    const runMs = (_sevRun && _sevRun.length >= 10)
+      ? Date.UTC(+_sevRun.slice(0,4), +_sevRun.slice(4,6) - 1, +_sevRun.slice(6,8), +_sevRun.slice(8,10))
+      : Date.now();
+    let baseIdx = 0, baseMs = runMs;
+    if (refTime) {
+      const found = refTime.findIndex(t => _slotMs(t) >= runMs - 60000);
+      if (found > 0) baseIdx = found;
+      const bm = _slotMs(refTime[baseIdx]);
+      if (Number.isFinite(bm)) baseMs = bm;   // label from the data's own clock
+    }
+
     const grids = [];
     for (let i = 0; i <= SEV_DET_MAX_FRAME; i++) {
       // Frame i is F+(i*6h); convert that to an index in this model's series.
       // A model with a shorter range simply runs off the end and the frame
       // comes back empty, rather than silently showing the wrong hour.
-      const hourIdx = Math.round(i * SEV_DET_STEP_H / slotH);
+      const hourIdx = baseIdx + Math.round(i * SEV_DET_STEP_H / slotH);
       const grid = locations.map(loc => {
         const v = loc?.hourly?.[varName]?.[hourIdx];
         return (v != null && isFinite(v)) ? Math.round(v * 100) / 100 : null;
@@ -16529,10 +16580,10 @@ async function _sevRenderDeterministic(body) {
     if (!grids.some(g => g)) throw new Error('no values in response');
     if (token !== _sevEnsLoadToken) return;
 
-    const entry = { at: Date.now(), slotH, grids };
+    const entry = { at: Date.now(), slotH, grids, baseMs };
     _sevDetCacheWrite(key, entry);
     _sevSharedWrite(key, entry);   // pay it forward: nobody else has to fetch this
-    const frames = _sevDetFramesFromGrids(grids, varName, modelLabel);
+    const frames = _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs);
     _sevEnsFrames = frames;
     _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames);
@@ -16553,7 +16604,7 @@ async function _sevRenderDeterministic(body) {
       if (!stale) stale = await _sevSharedReadAny(key);
       if (token !== _sevEnsLoadToken) return;
       if (stale && Array.isArray(stale.grids)) {
-        const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel);
+        const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel, stale.baseMs);
         const mins = Math.round((Date.now() - (stale.at || 0)) / 60000);
         const age = mins < 90 ? `${mins}m` : `${Math.round(mins / 60)}h`;
         frames.forEach(f => { if (f) f.statusText += ` · saved copy, ${age} old`; });
