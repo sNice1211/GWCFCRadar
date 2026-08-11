@@ -5588,6 +5588,10 @@ footer {
   align-items: center;
   gap: 10px;
   margin-bottom: 18px;
+  /* The longer pill no longer fits beside the title on a narrow phone. Let it
+     drop to its own line instead, which keeps the name whole - it used to
+     break as "GWCFC / RADAR" mid-name. */
+  flex-wrap: wrap;
 }
 .auth-logo-row h2 {
   font-family: 'Comfortaa', sans-serif;
@@ -5595,11 +5599,17 @@ footer {
   font-weight: 700;
   letter-spacing: 2px;
   color: #fff;
+  white-space: nowrap;
 }
 .auth-logo-row span {
   font-family: 'Comfortaa', sans-serif;
   font-size: 9px;
-  letter-spacing: 2px;
+  /* "SIGN UP / LOGIN" is a good deal longer than the "ACCOUNT" this used to
+     read, so it keeps to one line and is allowed to shrink rather than push
+     the title off the panel on a narrow phone. */
+  letter-spacing: 1.2px;
+  white-space: nowrap;
+  flex: 0 1 auto;
   color: #008CBA;
   border: 1px solid rgba(0,140,186,0.3);
   background: rgba(0,140,186,0.08);
@@ -16137,17 +16147,91 @@ const SEV_DET_CACHE_TTL = 3 * 3600 * 1000;
 const SEV_DET_CACHE_MAX = 10;   // entries; each is ~35KB of JSON
 const _sevDetMem = new Map();   // key -> { at, slotH, grids }
 
+// A cached grid is only meaningful at the grid size it was sampled on. If that
+// size ever changes, every stored entry becomes an array of the wrong length
+// and would be painted as nonsense, so the size is part of what gets checked.
+function _sevDetGridOk(e) {
+  const n = SEV_DET_COLS * SEV_DET_ROWS;
+  return !!e && Array.isArray(e.grids) && e.grids.every(g => g == null || g.length === n);
+}
+
 function _sevDetCacheRead(key) {
   const hit = _sevDetMem.get(key);
-  if (hit) return hit;
+  if (hit) return _sevDetGridOk(hit) ? hit : null;
   try {
     const all = JSON.parse(localStorage.getItem(SEV_DET_CACHE_KEY) || '{}');
     const e = all[key];
-    if (e && Array.isArray(e.grids)) { _sevDetMem.set(key, e); return e; }
+    if (_sevDetGridOk(e)) { _sevDetMem.set(key, e); return e; }
   } catch(err) { console.warn('model cache read:', err); }
   return null;
 }
 function _sevDetCacheFresh(e) { return !!e && (Date.now() - (e.at || 0)) < SEV_DET_CACHE_TTL; }
+
+// ── Shared cache (Firestore) ────────────────────────────────────────────────
+// The local cache above only helps the person who already paid for the data.
+// Open-Meteo's free allowance is counted per IP address per day, so once one
+// is used up nothing that browser sends can bring the models back until it
+// resets - not a smaller request, not a different one.
+//
+// So the data stops being per-person. The first client to load a model writes
+// its frame grids into Firestore, and everyone after that reads them from
+// there and calls Open-Meteo not at all. That fixes the exhausted allowance
+// (you read what someone else already fetched) and it also means this app now
+// asks the free service for one copy per model per few hours in total, rather
+// than one copy per visitor, which is the polite way to use it.
+//
+// Firestore rejects directly nested arrays, so the grids travel as a JSON
+// string. Rounded to 1dp it is roughly 25KB, well inside the 1MB doc limit.
+const SEV_SHARED_TTL = 3 * 3600 * 1000;
+const _sevSharedTried = new Set();   // keys already attempted this session
+
+function _sevSharedDocId(key) { return key.replace(/[^a-z0-9_]+/gi, '_'); }
+
+async function _sevSharedRead(key) {
+  if (!_fbDb) return null;
+  try {
+    const snap = await _fbDb.collection('modelCache').doc(_sevSharedDocId(key)).get();
+    if (!snap.exists) return null;
+    const d = snap.data() || {};
+    if (!d.v || typeof d.at !== 'number') return null;
+    if (Date.now() - d.at > SEV_SHARED_TTL) return null;
+    const entry = { at: d.at, slotH: d.slotH || 1, grids: JSON.parse(d.v) };
+    return _sevDetGridOk(entry) ? entry : null;
+  } catch (e) {
+    console.warn('shared model cache read:', e);
+    return null;
+  }
+}
+
+// Same read, ignoring the freshness limit. Used only once the allowance is
+// gone, where a several-hour-old real forecast is plainly better than an
+// empty panel, as long as its age is shown.
+async function _sevSharedReadAny(key) {
+  if (!_fbDb) return null;
+  try {
+    const snap = await _fbDb.collection('modelCache').doc(_sevSharedDocId(key)).get();
+    if (!snap.exists) return null;
+    const d = snap.data() || {};
+    if (!d.v) return null;
+    const entry = { at: d.at || 0, slotH: d.slotH || 1, grids: JSON.parse(d.v) };
+    return _sevDetGridOk(entry) ? entry : null;
+  } catch (e) { console.warn('shared model cache read:', e); return null; }
+}
+
+// Fire and forget: publishing is a favour to the next visitor, never something
+// the current one waits on or fails over.
+function _sevSharedWrite(key, entry) {
+  if (!_fbDb || !_currentUser) return;   // rules only permit signed-in writes
+  try {
+    _fbDb.collection('modelCache').doc(_sevSharedDocId(key)).set({
+      at: entry.at,
+      slotH: entry.slotH,
+      cols: SEV_DET_COLS, rows: SEV_DET_ROWS,
+      v: JSON.stringify(entry.grids.map(g => g && g.map(x => x == null ? null : Math.round(x * 10) / 10))),
+      by: _currentUser.uid
+    }).catch(e => console.warn('shared model cache write:', e));
+  } catch (e) { console.warn('shared model cache write:', e); }
+}
 
 function _sevDetCacheWrite(key, entry) {
   _sevDetMem.set(key, entry);
@@ -16203,6 +16287,19 @@ async function _sevRenderDeterministic(body) {
   // selection lands in the meantime, this one never spends anything.
   await new Promise(res => setTimeout(res, 350));
   if (token !== _sevEnsLoadToken) return;
+
+  // Before spending anything, see whether another visitor already fetched this
+  // and published it. This is the step that makes the models work on a browser
+  // whose own daily allowance is gone.
+  const shared = await _sevSharedRead(key);
+  if (token !== _sevEnsLoadToken) return;
+  if (shared) {
+    _sevDetCacheWrite(key, shared);         // keep a local copy too
+    const frames = _sevDetFramesFromGrids(shared.grids, varName, modelLabel);
+    _sevEnsFrames = frames; _sevEnsFramesKey = key;
+    _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
+    return;
+  }
 
   const pts = _sampleGrid(SEV_DET_COLS, SEV_DET_ROWS, WORLD_MAP_BOUNDS);
   // Kept outside the try so a failure can log the exact URL that was sent -
@@ -16293,7 +16390,9 @@ async function _sevRenderDeterministic(body) {
     if (!grids.some(g => g)) throw new Error('no values in response');
     if (token !== _sevEnsLoadToken) return;
 
-    _sevDetCacheWrite(key, { at: Date.now(), slotH, grids });
+    const entry = { at: Date.now(), slotH, grids };
+    _sevDetCacheWrite(key, entry);
+    _sevSharedWrite(key, entry);   // pay it forward: nobody else has to fetch this
     const frames = _sevDetFramesFromGrids(grids, varName, modelLabel);
     _sevEnsFrames = frames;
     _sevEnsFramesKey = key;
@@ -16309,16 +16408,21 @@ async function _sevRenderDeterministic(body) {
     // rather than nothing. Stale real data beats an empty panel, as long as it
     // says so.
     if (quota) {
-      const stale = _sevDetCacheRead(key);
+      // Out of allowance. Any copy at all beats nothing: this browser's own
+      // saved copy first, then an older shared one that the TTL had rejected.
+      let stale = _sevDetCacheRead(key);
+      if (!stale) stale = await _sevSharedReadAny(key);
+      if (token !== _sevEnsLoadToken) return;
       if (stale && Array.isArray(stale.grids)) {
         const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel);
         const mins = Math.round((Date.now() - (stale.at || 0)) / 60000);
-        frames.forEach(f => { if (f) f.statusText += ` · cached ${mins}m ago`; });
+        const age = mins < 90 ? `${mins}m` : `${Math.round(mins / 60)}h`;
+        frames.forEach(f => { if (f) f.statusText += ` · saved copy, ${age} old`; });
         _sevEnsFrames = frames; _sevEnsFramesKey = key;
         _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
         return;
       }
-      if (body) body.innerHTML = `<div class="trop-model-err">${modelLabel}: the free weather data service's request allowance for today is used up. Models you have already viewed still work from the saved copy; new ones come back when the allowance resets (00:00 UTC).</div>`;
+      if (body) body.innerHTML = `<div class="trop-model-err">${modelLabel}: this network's daily allowance with the free weather service is used up, and nobody has loaded this model recently enough to share. It resets at 00:00 UTC. Anything already loaded still works, and loading this once on a different connection (phone data) publishes it for everyone.</div>`;
       return;
     }
 
@@ -30320,7 +30424,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The new global models no longer burn through the weather service's daily request allowance: viewing one is now saved, so going back to it costs nothing. Owners also get a Manage Members panel in the profile menu.";
+const APP_LATEST_UPDATE = "Run Models now shares one copy of each model between everyone instead of every visitor fetching their own, so it no longer runs out of the free weather service's daily requests. The sign-in box now says Sign Up / Login.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -31285,7 +31389,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     <div class="auth-logo-row">
       <h2><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-storm></use></svg> GWCFC RADAR</h2>
-      <span>ACCOUNT</span>
+      <span>SIGN UP / LOGIN</span>
     </div>
 
     <!-- Sign In / Create tabs -->

@@ -23,9 +23,14 @@ HOW TO PUBLISH THEM
 4. Replace what is there with everything between the two lines below
 5. Press Publish
 
-Read your existing rules first. If you have collections beyond `users` and
-`guests`, copy those blocks across too, or they will stop working the moment
-you publish. Anything not explicitly allowed is denied.
+Read your existing rules first. If you have collections beyond `users`,
+`guests` and `modelCache`, copy those blocks across too, or they will stop
+working the moment you publish. Anything not explicitly allowed is denied.
+
+Publishing these also switches on the shared weather-model cache, which is
+what stops the Run Models panel running out of the free weather service's
+daily request allowance. Until they are published, that cache cannot be read
+or written and each visitor falls back to spending their own allowance.
 
 
 ------------------------------- COPY FROM HERE -------------------------------
@@ -75,6 +80,23 @@ service cloud.firestore {
     // but each document is only its own session id.
     match /guests/{gid} {
       allow read, write: if true;
+    }
+
+    // Shared weather-model cache. The free weather service counts requests per
+    // network per day, so instead of every visitor fetching the same forecast
+    // and burning their own allowance, the first one to load a model stores it
+    // here and everyone else reads it for free.
+    //
+    // Readable by anyone, including signed-out visitors, because that is the
+    // whole point. Writable only by signed-in accounts, so a passer-by cannot
+    // publish invented weather to every user of the site. The size cap keeps a
+    // single document from being used as free storage.
+    match /modelCache/{docId} {
+      allow read: if true;
+      allow write: if isSignedIn()
+        && request.resource.data.v is string
+        && request.resource.data.v.size() < 400000
+        && request.resource.data.at is number;
     }
   }
 }
