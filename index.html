@@ -4151,6 +4151,8 @@ body {
 }
 #sev-compare-btn:hover { background: rgba(232,184,0,0.22); }
 #sev-compare-btn.active { background: #e8b800; border-color: #e8b800; color: #1a0900; }
+#sev-sounding-btn:hover { background: rgba(0,140,186,0.25); }
+#sev-sounding-btn.active { background: #008CBA; border-color: #008CBA; color: #fff; }
 #sev-compare-panel {
   border-top: 1px dashed rgba(232,184,0,0.25); border-bottom: 1px dashed rgba(232,184,0,0.25);
   padding: 6px 0; margin-bottom: 5px;
@@ -7144,13 +7146,16 @@ body.clean-mode #clean-hint { opacity: 1; }
           <select id="sev-model-sel" onchange="_sevSetSection(this.value)">
             <option value="dwd">DWD ICON (Global)</option>
             <option value="ecmwf">ECMWF IFS (Global)</option>
+            <option value="gfs">GFS (Global)</option>
             <option value="hrdps">HRDPS (Hi-Res N. America)</option>
+            <option value="nam">NAM (N. America)</option>
             <option value="ndfd">NWS NDFD (US Forecast)</option>
             <option value="hrrr">HRRR (18h)</option>
             <option value="gfs_ens">GFS Ensemble Mean (NOAA)</option>
             <option value="icon_ens">ICON Ensemble Mean (DWD)</option>
             <option value="gem_ens">GEM Ensemble Mean (ECCC)</option>
           </select>
+          <button id="sev-sounding-btn" onclick="_sevToggleSounding()" title="View sounding at map center" style="margin-left:4px;padding:3px 8px;background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);color:#008CBA;border-radius:4px;cursor:pointer;font-size:10px;font-family:Comfortaa;">Sounding</button>
         </div>
         <div class="sev-dd-wrap">
           <label class="sev-dd-label">Product</label>
@@ -15085,11 +15090,13 @@ const SEV_PRODUCTS = {
   hrdps: [{v:'temp',l:'2m Temp'},{v:'td',l:'2m Dew Point'},{v:'precip',l:'Total Precip'},{v:'wind',l:'10m Wind'},{v:'gust',l:'Wind Gusts'},{v:'pmsl',l:'MSL Pressure'},{v:'rh',l:'Rel. Humidity'},{v:'cloud',l:'Cloud Cover'},{v:'snow',l:'Snow Depth'}],
   // NWS NDFD - the official US forecast grid (CONUS).
   ndfd:  [{v:'temp',l:'Temperature'},{v:'maxt',l:'Max Temp'},{v:'td',l:'Dew Point'},{v:'wind',l:'Wind Speed'},{v:'wdir',l:'Wind Direction'},{v:'sky',l:'Sky Cover'},{v:'pop12',l:'Precip Chance'},{v:'qpf',l:'Precip Amount'},{v:'snow',l:'Snow Amount'},{v:'wx',l:'Weather Type'}],
+  gfs:   [{v:'temp',l:'Temperature'},{v:'precip',l:'Precipitation'},{v:'cape',l:'CAPE'},{v:'wind',l:'Wind Speed'}],
+  nam:   [{v:'temp',l:'Temperature'},{v:'precip',l:'Precipitation'},{v:'cape',l:'CAPE'},{v:'wind',l:'Wind Speed'}],
   gfs_ens:  SEV_ENS_PRODUCT_LIST,
   icon_ens: SEV_ENS_PRODUCT_LIST,
   gem_ens:  SEV_ENS_PRODUCT_LIST,
 };
-const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp', gfs_ens:'temperature_2m', icon_ens:'temperature_2m', gem_ens:'temperature_2m'};
+const SEV_DEFAULT_VAR = {hrrr:'refc', ecmwf:'t2m', dwd:'t2m', hrdps:'temp', ndfd:'temp', gfs:'temp', nam:'temp', gfs_ens:'temperature_2m', icon_ens:'temperature_2m', gem_ens:'temperature_2m'};
 
 // A GeoMet section is configured in two independent places: GEOMET_LAYERS says
 // which WMS layer backs each variable, and SEV_PRODUCTS says which variables the
@@ -15137,6 +15144,8 @@ const SEV_RUN_CFG = {
   dwd:   { cycleH: 6,  lagH: 3.5, maxRuns: 2  }, // 00/06/12/18z; GeoServer keeps the latest run
   hrdps: { cycleH: 6,  lagH: 4,   maxRuns: 2  }, // 00/06/12/18z; GeoMet serves the latest run
   ndfd:  { cycleH: 1,  lagH: 1,   maxRuns: 1  }, // continuously updated; anchor to the current hour
+  gfs:   { cycleH: 6,  lagH: 3,   maxRuns: 2  }, // 00/06/12/18z; Open-Meteo serves latest runs
+  nam:   { cycleH: 6,  lagH: 2.5, maxRuns: 2  }, // 00/06/12/18z; Open-Meteo serves latest runs
   // Open-Meteo's ensemble endpoint has no concept of picking a past run - it
   // only ever answers with "now". Same single-entry pattern as NDFD above,
   // just with zero lag since there's nothing to wait on.
@@ -15181,6 +15190,11 @@ function _sevSetVar(v){
   _sevFrame=_sevStartFrame();_sevBuildFrameGrid();_sevRender();
 }
 function _sevSetRun(v){_sevRun=v;_sevFrame=_sevStartFrame();_sevBuildFrameGrid();_sevRender();}
+function _sevToggleSounding(){
+  _soundingPanelIsOpen() ? closeSoundingPanel() : openSoundingPanel();
+  const btn = document.getElementById('sev-sounding-btn');
+  if(btn) btn.classList.toggle('active', _soundingPanelIsOpen());
+}
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -15362,7 +15376,7 @@ let _sevDraggingIdx = -1;
 let _sevGroups = {}; // name -> [{section,var,run}, ...], persisted to localStorage
 let _sevCurrentGroup = '';
 
-const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR', gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble' };
+const SEV_MODEL_LABELS = { dwd:'DWD ICON', ecmwf:'ECMWF IFS', hrdps:'HRDPS', ndfd:'NDFD', hrrr:'HRRR', gfs:'GFS', nam:'NAM', gfs_ens:'GFS Ensemble', icon_ens:'ICON Ensemble', gem_ens:'GEM Ensemble' };
 
 // Per-model forecast range, shared by A (via _sevMaxFrame/_sevStartFrame
 // below) and every extra slot, so both A and every comparison slot clamp
@@ -17119,7 +17133,6 @@ function _sndDraw() {
 const MODELS_SUB_BUBBLES = [
   { id: 'run-models',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-up></use></svg>', label: 'Run Models' },
   { id: 'spaghetti-models', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', label: 'Spaghetti Models' },
-  { id: 'soundings',        icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-bar></use></svg>', label: 'Soundings' },
 ];
 
 function toggleModelsSub() {
@@ -17132,7 +17145,6 @@ function toggleModelsSub() {
   wrap.appendChild(back);
   MODELS_SUB_BUBBLES.forEach(b => {
     const isOpen = b.id === 'run-models'  ? _runModelsPanelIsOpen()
-                 : b.id === 'soundings'   ? _soundingPanelIsOpen()
                  : _spaghettiModelsPanelIsOpen();
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isOpen ? ' active' : '');
@@ -17141,13 +17153,10 @@ function toggleModelsSub() {
     el.onclick = () => {
       if (b.id === 'run-models') {
         _runModelsPanelIsOpen() ? closeRunModelsPanel() : openRunModelsPanel();
-      } else if (b.id === 'soundings') {
-        _soundingPanelIsOpen() ? closeSoundingPanel() : openSoundingPanel();
       } else {
         _spaghettiModelsPanelIsOpen() ? closeSpaghettiModelsPanel() : openSpaghettiModelsPanel();
       }
       el.classList.toggle('active', b.id === 'run-models' ? _runModelsPanelIsOpen()
-                                  : b.id === 'soundings'  ? _soundingPanelIsOpen()
                                   : _spaghettiModelsPanelIsOpen());
       _syncParentBubble('models');
     };
@@ -29667,7 +29676,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Soundings now show 24-hour forecast and can switch between GFS and ECMWF models.";
+const APP_LATEST_UPDATE = "Added GFS and NAM run models. Sounding moved to Run Models panel - use the Sounding button to view.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
