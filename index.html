@@ -15975,17 +15975,24 @@ async function _sevRenderEnsemble(body) {
 }
 
 // ── RUN MODELS: DETERMINISTIC GLOBAL MODELS (Open-Meteo Forecast API) ───────
-// Same idea as the ensemble renderer above, with two differences. First, a
-// deterministic run has one value per hour instead of ~30 members to average,
-// so the response is far lighter and we can afford a finer grid and a longer
-// forecast range. Second, it reads loc.hourly[varName] directly rather than
-// hunting for "_memberNN" keys. Everything downstream (the Run selector, the
-// playbar, the frame cache, the Inspector readout) is shared with the ensemble
-// path, so these models behave exactly like every other model in the panel.
-const SEV_DET_COLS = 26, SEV_DET_ROWS = 15;
+// Structurally identical to the ensemble renderer above - fetch a grid of
+// points, turn each forecast hour into a color image, cache every frame - and
+// it feeds the same frame cache, playbar and Inspector. Two differences:
+//
+//  1. It reads loc.hourly[varName] straight, instead of averaging the
+//     "_memberNN" keys, because a deterministic run is a single forecast.
+//  2. That makes each point ~30x lighter than an ensemble point, so this runs
+//     at the SAME 64x36 world grid the Waves/Air/Temperature/Pressure overlay
+//     layers use rather than the ensemble's coarse 18x11. Matching those layers
+//     is what makes the painted result look like the rest of the app instead
+//     of a blocky approximation of it.
+//
+// The payload stays small despite the finer grid because of temporal_resolution
+// below: 6-hourly samples are all this panel can display anyway.
+const SEV_DET_COLS = 64, SEV_DET_ROWS = 36;  // same world grid as the overlay layers
 const SEV_DET_MAX_FRAME = 20;   // 21 frames: F+000 .. F+120 at a 6h step
 const SEV_DET_STEP_H = 6;
-const SEV_DET_DAYS = 6;         // 144 hourly values, comfortably past F+120
+const SEV_DET_DAYS = 6;         // covers F+120 with room to spare
 
 async function _sevRenderDeterministic(body) {
   const key = _sevEnsCacheKey();
@@ -15999,19 +16006,35 @@ async function _sevRenderDeterministic(body) {
 
   const pts = _sampleGrid(SEV_DET_COLS, SEV_DET_ROWS, WORLD_MAP_BOUNDS);
   try {
+    // temporal_resolution=hourly_6 asks Open-Meteo to send only every 6th hour,
+    // which is exactly the step this panel animates at - a ~6x smaller response
+    // that is what pays for the 64x36 grid above. timeformat=unixtime makes
+    // hourly.time plain numbers so the real step can be measured below.
     const locations = await _fetchGridChunkedRaw(pts, chunk => {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
       return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
         `&hourly=${varName}&models=${model}&forecast_days=${SEV_DET_DAYS}` +
+        `&temporal_resolution=hourly_6&timeformat=unixtime` +
         `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
-    }, 40);
+    }, 300);
     if (token !== _sevEnsLoadToken) return;
+
+    // How many hours each array slot actually covers. Read from the returned
+    // timestamps rather than assumed, so this stays correct whether the server
+    // honored temporal_resolution (6h per slot) or ignored it and sent every
+    // hour (1h per slot) - and it also lands on the right hour for models that
+    // publish a coarser native step than we asked for.
+    const refTime = locations.find(l => Array.isArray(l?.hourly?.time) && l.hourly.time.length > 1)?.hourly.time;
+    const slotH = refTime ? Math.max(1, Math.round((refTime[1] - refTime[0]) / 3600)) : SEV_DET_STEP_H;
 
     const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
     const frames = [];
     for (let i = 0; i <= SEV_DET_MAX_FRAME; i++) {
-      const hourIdx = i * SEV_DET_STEP_H;
+      // Frame i is F+(i*6h); convert that to an index in this model's series.
+      // A model with a shorter range simply runs off the end and the frame
+      // comes back empty, rather than silently showing the wrong hour.
+      const hourIdx = Math.round(i * SEV_DET_STEP_H / slotH);
       const grid = locations.map(loc => {
         const v = loc?.hourly?.[varName]?.[hourIdx];
         return (v != null && isFinite(v)) ? v : null;
@@ -29827,7 +29850,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Run Models now has 8 more global models: GFS, GEM, UKMO, ARPEGE, JMA, ECMWF AIFS, CMA and BOM, out to F+120.";
+const APP_LATEST_UPDATE = "8 new global models in Run Models (GFS, GEM, UKMO, ARPEGE, JMA, ECMWF AIFS, CMA, BOM), now drawn at the same full map resolution as the Temperature and Pressure layers.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
