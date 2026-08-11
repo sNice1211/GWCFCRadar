@@ -20543,6 +20543,19 @@ function _scStopAnim() {
 }
 
 // Ported from the old Track Maker's save-as-PNG button.
+// Browsers refuse to allocate a canvas past a few thousand pixels a side, and
+// silently hand back a blank one instead of erroring. A wide monitor at 2x
+// device pixel ratio is well past that, so the scale is capped to whatever
+// keeps the result inside the limit.
+function _scCaptureScale() {
+  const mapEl = document.getElementById('map');
+  const dpr = window.devicePixelRatio || 1;
+  if (!mapEl) return Math.min(dpr, 2);
+  const LIMIT = 8000;
+  const longest = Math.max(mapEl.offsetWidth, mapEl.offsetHeight) || 1;
+  return Math.max(1, Math.min(dpr, LIMIT / longest));
+}
+
 function _scSaveImage() {
   const mapEl = document.getElementById('map');
   if (!mapEl) return;
@@ -20550,25 +20563,36 @@ function _scSaveImage() {
   if (btn) { btn.style.opacity = '0.4'; btn.style.pointerEvents = 'none'; }
   const filename = 'gwcfc_stormcone_' + new Date().toISOString().slice(0, 10) + '.png';
   const _doCapture = () => html2canvas(mapEl, {
-    useCORS: true, allowTaint: true, scale: window.devicePixelRatio || 1, backgroundColor: null, logging: false,
+    useCORS: true, allowTaint: false, scale: _scCaptureScale(), backgroundColor: null, logging: false,
   }).then(canvas => {
+    // toDataURL throws SecurityError on a canvas tainted by a cross-origin
+    // image, so this is where a basemap without CORS headers surfaces. It is
+    // reported for what it is rather than blamed on the map still loading.
+    let url;
+    try {
+      url = canvas.toDataURL('image/png');
+    } catch (e) {
+      throw new Error('The basemap blocked the capture. Switch to a different map style and try again.');
+    }
+    if (!url || url.length < 2000) throw new Error('The capture came out blank. Try zooming out a little first.');
     const link = document.createElement('a');
     link.download = filename;
-    link.href = canvas.toDataURL('image/png');
+    link.href = url;
+    // Firefox ignores a click on an anchor that is not in the document.
+    document.body.appendChild(link);
     link.click();
+    link.remove();
   }).catch(err => {
     console.warn('Storm cone save failed:', err);
-    alert('Screenshot failed, try again after the map finishes loading.');
+    showToast(err && err.message ? err.message : 'Could not save the cone image.', 5000);
   }).finally(() => { if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; } });
-  if (typeof html2canvas === 'function') {
-    _doCapture();
-  } else {
-    const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-    s.onload = _doCapture;
-    s.onerror = () => { if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; } alert('Failed to load screenshot library.'); };
-    document.head.appendChild(s);
-  }
+
+  // Reuses the shared loader instead of a second copy of the CDN URL, so the
+  // library is only ever fetched once however the capture was started.
+  _aiLoadHtml2canvas().then(_doCapture).catch(() => {
+    if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+    showToast('Could not load the screenshot library. Check your connection.', 5000);
+  });
 }
 
 // Freeze the active cone in place (keeps its layers on the map) so a new one
@@ -27889,7 +27913,7 @@ async function chatSnapScreen() {
     await _aiLoadHtml2canvas();
     const mapEl = document.getElementById('map');
     if (!mapEl) throw new Error('no map to capture');
-    const canvas = await html2canvas(mapEl, { useCORS: true, scale: 0.5, logging: false, allowTaint: true });
+    const canvas = await html2canvas(mapEl, { useCORS: true, scale: 0.5, logging: false, allowTaint: false });
     let url = '', scale = 1, quality = 0.6;
     for (let attempt = 0; attempt < 4; attempt++) {
       const w = Math.round(canvas.width * scale), h = Math.round(canvas.height * scale);
@@ -28180,7 +28204,7 @@ async function _aiSnap() {
     await _aiLoadHtml2canvas();
     const mapEl = document.getElementById('map');
     if (!mapEl) throw new Error('Map element not found');
-    const canvas = await html2canvas(mapEl, { useCORS: true, scale: 0.5, logging: false, allowTaint: true });
+    const canvas = await html2canvas(mapEl, { useCORS: true, scale: 0.5, logging: false, allowTaint: false });
     const b64 = canvas.toDataURL('image/jpeg', 0.75).split(',')[1];
     if (!input.value.trim()) input.value = 'What do you see on this radar map?';
     await _aiSend(b64);
@@ -28197,7 +28221,7 @@ async function _aiAutoSnap() {
     await _aiLoadHtml2canvas();
     const mapEl = document.getElementById('map');
     if (!mapEl) return null;
-    const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: true, scale: 0.35, logging: false });
+    const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: false, scale: 0.35, logging: false });
     return canvas.toDataURL('image/jpeg', 0.55).split(',')[1];
   } catch { return null; }
 }
