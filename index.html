@@ -4659,6 +4659,69 @@ body {
   color: rgba(212,232,255,0.45); margin-top: 6px; min-height: 13px;
 }
 #lqm-chat-status a { color: #008CBA; cursor: pointer; text-decoration: underline; }
+
+/* Quoted line above a reply, showing what is being replied to. */
+.chat-reply-quote {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10px; color: rgba(212,232,255,0.5);
+  border-left: 2px solid rgba(0,140,186,0.5);
+  padding: 1px 0 1px 6px; margin-bottom: 3px;
+  max-width: 100%; overflow: hidden;
+}
+.chat-reply-quote b { color: rgba(127,212,238,0.85); font-weight: 700; flex: 0 0 auto; }
+.chat-reply-quote span {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+/* Reply affordance, revealed on hover so rows stay clean. */
+.chat-msg { position: relative; }
+.chat-reply-btn {
+  position: absolute; top: 0; right: 0;
+  background: rgba(0,140,186,0.15); border: 1px solid rgba(0,140,186,0.35);
+  color: #7fd4ee; border-radius: 5px; cursor: pointer;
+  font-size: 9px; padding: 1px 5px; opacity: 0; transition: opacity .12s;
+}
+.chat-msg:hover .chat-reply-btn, .chat-reply-btn:focus { opacity: 1; }
+/* Attachments */
+.chat-img {
+  margin-top: 5px; max-width: 100%; border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.12); cursor: pointer; display: block;
+}
+.chat-audio { margin-top: 5px; width: 100%; max-width: 240px; height: 32px; }
+/* Composer extras */
+#lqm-chat-replybar {
+  display: none; align-items: center; gap: 6px;
+  font-size: 10px; color: rgba(212,232,255,0.6);
+  background: rgba(0,140,186,0.08); border-left: 2px solid rgba(0,140,186,0.5);
+  border-radius: 0 6px 6px 0; padding: 4px 7px; margin-bottom: 6px;
+}
+#lqm-chat-replybar.show { display: flex; }
+#lqm-chat-replybar span { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#lqm-chat-replybar button {
+  background: none; border: none; color: rgba(212,232,255,0.5);
+  cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px;
+}
+#lqm-chat-tools { display: flex; gap: 5px; margin-bottom: 6px; align-items: center; }
+.chat-tool {
+  background: rgba(0,140,186,0.1); border: 1px solid rgba(0,140,186,0.3);
+  color: #7fd4ee; border-radius: 7px; cursor: pointer;
+  width: 28px; height: 26px; display: flex; align-items: center; justify-content: center;
+}
+.chat-tool:hover:not(:disabled) { background: rgba(0,140,186,0.22); }
+.chat-tool:disabled { opacity: 0.4; cursor: not-allowed; }
+/* Recording and listening both pulse, so it is obvious the mic is live. */
+.chat-tool.live {
+  background: rgba(200,0,0,0.3); border-color: rgba(255,80,80,0.6); color: #ff8080;
+  animation: chatPulse 1.1s ease-in-out infinite;
+}
+@keyframes chatPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+#lqm-chat-attach {
+  display: none; align-items: center; gap: 7px; margin-bottom: 6px;
+  background: rgba(0,140,186,0.08); border-radius: 7px; padding: 5px 7px;
+}
+#lqm-chat-attach.show { display: flex; }
+#lqm-chat-attach img { height: 34px; border-radius: 4px; }
+#lqm-chat-attach span { flex: 1 1 auto; font-size: 10px; color: rgba(212,232,255,0.6); }
+#lqm-chat-attach button { background: none; border: none; color: rgba(212,232,255,0.5); cursor: pointer; font-size: 14px; }
 @media (max-width: 520px) {
   #lqm-chat-overlay { right: 8px; left: 8px; width: auto; height: calc(100vh - 150px); }
 }
@@ -26420,6 +26483,20 @@ function selectProduct(p) {
   </div>
   <div id="lqm-chat-msgs"></div>
   <div id="lqm-chat-foot">
+    <div id="lqm-chat-replybar">
+      <span id="lqm-chat-replytxt"></span>
+      <button onclick="chatCancelReply()" title="Cancel reply">&times;</button>
+    </div>
+    <div id="lqm-chat-attach">
+      <img id="lqm-chat-attach-img" alt=""/>
+      <span id="lqm-chat-attach-lbl"></span>
+      <button onclick="chatClearAttachment()" title="Remove">&times;</button>
+    </div>
+    <div id="lqm-chat-tools">
+      <button class="chat-tool" id="lqm-chat-snap" onclick="chatSnapScreen()" title="Attach a shot of the map (not saved to your device)"><svg class=svgi width=1em height=1em><use href=#ic-camera></use></svg></button>
+      <button class="chat-tool" id="lqm-chat-dictate" onclick="chatDictate()" title="Voice typing"><svg class=svgi width=1em height=1em><use href=#ic-antenna></use></svg></button>
+      <button class="chat-tool" id="lqm-chat-rec" onclick="chatToggleVoiceMsg()" title="Record a voice message"><svg class=svgi width=1em height=1em><use href=#ic-speaker></use></svg></button>
+    </div>
     <div id="lqm-chat-row">
       <input id="lqm-chat-input" type="text" maxlength="500" placeholder="Message…" autocomplete="off"
              onkeydown="if(event.key==='Enter'){event.preventDefault();chatSend();}"/>
@@ -26461,6 +26538,9 @@ function selectProduct(p) {
       <button id="lqm-ai-send" onclick="_aiSend()">Send</button>
       <button id="lqm-ai-voice" onclick="_aiVoice()" title="Voice input">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>
+      </button>
+      <button id="lqm-ai-speak" onclick="_aiToggleSpeak()" title="Read replies aloud">
+        <svg class=svgi width=1em height=1em><use href=#ic-speaker></use></svg>
       </button>
       <button id="lqm-ai-upload" onclick="document.getElementById('lqm-ai-file').click()" title="Upload image">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
@@ -27664,19 +27744,35 @@ function _chatRender() {
   // the bottom, so a new arrival never yanks them away from older messages they
   // are in the middle of reading.
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-  box.innerHTML = _chatMsgs.map(m => {
+  box.innerHTML = _chatMsgs.map((m, i) => {
     const discord = m.source === 'discord';
     const av = m.avatar && /^https?:/.test(m.avatar)
       ? `<div class="chat-av" style="background-image:url('${_escapeHtml(m.avatar)}')"></div>`
       : `<div class="chat-av" style="background:hsl(${Math.abs(_hashHue(m.name || '?'))},55%,38%)">${_escapeHtml((m.avatar && !/^https?:/.test(m.avatar)) ? m.avatar : (m.name || '?').charAt(0).toUpperCase())}</div>`;
+    // The quoted line above a reply carries a copy of what was replied to, so
+    // it still reads correctly even if that message has scrolled out of the
+    // window we keep on screen.
+    const quote = m.replyTo && m.replyTo.name
+      ? `<div class="chat-reply-quote"><b>${_escapeHtml(m.replyTo.name)}:</b><span>${_escapeHtml(m.replyTo.text || '')}</span></div>`
+      : '';
+    const img = m.image
+      ? `<img class="chat-img" src="${_escapeHtml(m.image)}" alt="shared map view" onclick="window.open(this.src,'_blank')"/>`
+      : '';
+    const audio = m.audio
+      ? `<audio class="chat-audio" controls preload="none" src="${_escapeHtml(m.audio)}"></audio>`
+      : '';
+    const body = _escapeHtml(m.text || '');
     return `<div class="chat-msg">${av}<div class="chat-body">
+      ${quote}
       <div class="chat-meta">
         <span class="chat-name">${_escapeHtml(m.name || 'Anonymous')}</span>
         <span class="chat-from ${discord ? 'discord' : 'radar'}">${discord ? 'DISCORD' : 'RADAR'}</span>
         <span class="chat-time">${_chatTime(m.ts)}</span>
       </div>
-      <div class="chat-text">${_escapeHtml(m.text || '')}</div>
-    </div></div>`;
+      ${body ? `<div class="chat-text">${body}</div>` : ''}
+      ${img}${audio}
+    </div>
+    <button class="chat-reply-btn" title="Reply" onclick="chatReplyTo(${i})">Reply</button></div>`;
   }).join('');
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
@@ -27730,6 +27826,171 @@ function lqmToggleChat() {
   if (el && el.classList.contains('lqm-panel-open')) lqmCloseChat(); else lqmOpenChat();
 }
 
+// ── Replying to a message ───────────────────────────────────────────────────
+// The quoted text is copied onto the reply rather than referenced by id. A
+// reference would break as soon as the original scrolled past the window we
+// keep, and a chat where half the replies quote nothing is worse than one that
+// carries a few duplicated words.
+let _chatReplyTo = null;
+
+function _chatShowReplyBar(reply) {
+  _chatReplyTo = reply;
+  const bar = document.getElementById('lqm-chat-replybar');
+  const txt = document.getElementById('lqm-chat-replytxt');
+  if (txt) txt.textContent = `Replying to ${reply.name}: ${reply.text}`;
+  if (bar) bar.classList.add('show');
+}
+function chatReplyTo(i) {
+  const m = _chatMsgs[i];
+  if (!m) return;
+  _chatShowReplyBar({
+    name: (m.name || 'Anonymous').slice(0, 40),
+    text: (m.text || (m.image ? 'map view' : m.audio ? 'voice message' : '')).slice(0, 120)
+  });
+  document.getElementById('lqm-chat-input')?.focus();
+}
+function chatCancelReply() {
+  _chatReplyTo = null;
+  document.getElementById('lqm-chat-replybar')?.classList.remove('show');
+}
+
+// ── Attachments ─────────────────────────────────────────────────────────────
+// Held in memory only. A screenshot never becomes a file on the device: the
+// canvas goes straight to a data URL and then into the message.
+let _chatAttach = null;   // { image } or { audio, secs }
+
+function chatClearAttachment() {
+  _chatAttach = null;
+  const box = document.getElementById('lqm-chat-attach');
+  if (box) box.classList.remove('show');
+  const img = document.getElementById('lqm-chat-attach-img');
+  if (img) { img.removeAttribute('src'); img.style.display = 'none'; }
+}
+function _chatShowAttachment(label, imgSrc) {
+  const box = document.getElementById('lqm-chat-attach');
+  const img = document.getElementById('lqm-chat-attach-img');
+  const lbl = document.getElementById('lqm-chat-attach-lbl');
+  if (lbl) lbl.textContent = label;
+  if (img) {
+    if (imgSrc) { img.src = imgSrc; img.style.display = ''; }
+    else { img.removeAttribute('src'); img.style.display = 'none'; }
+  }
+  if (box) box.classList.add('show');
+}
+
+// A Firestore document caps at 1MB and base64 inflates by a third, so the
+// picture is scaled and re-compressed until it comfortably fits rather than
+// being sent at whatever size the screen happens to be.
+async function chatSnapScreen() {
+  const btn = document.getElementById('lqm-chat-snap');
+  if (btn) btn.disabled = true;
+  _chatStatus('Capturing…');
+  try {
+    await _aiLoadHtml2canvas();
+    const mapEl = document.getElementById('map');
+    if (!mapEl) throw new Error('no map to capture');
+    const canvas = await html2canvas(mapEl, { useCORS: true, scale: 0.5, logging: false, allowTaint: true });
+    let url = '', scale = 1, quality = 0.6;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const w = Math.round(canvas.width * scale), h = Math.round(canvas.height * scale);
+      const c2 = document.createElement('canvas');
+      c2.width = w; c2.height = h;
+      c2.getContext('2d').drawImage(canvas, 0, 0, w, h);
+      url = c2.toDataURL('image/jpeg', quality);
+      if (url.length < 240000) break;
+      scale *= 0.7; quality -= 0.1;
+    }
+    _chatAttach = { image: url };
+    _chatShowAttachment('Map view ready to send', url);
+    _chatStatus('');
+  } catch (e) {
+    console.warn('chat snap:', e);
+    _chatStatus(`Couldn't capture the map: ${_escapeHtml(e.message || 'unknown error')}`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── Voice typing ────────────────────────────────────────────────────────────
+// Speech to text straight into the box, so it can be read back and corrected
+// before sending rather than going out as whatever was heard.
+let _chatRec = null;
+function chatDictate() {
+  const btn = document.getElementById('lqm-chat-dictate');
+  const input = document.getElementById('lqm-chat-input');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { _chatStatus('Voice typing needs Chrome, Edge or Safari.'); return; }
+  if (_chatRec) { _chatRec.stop(); return; }
+  _chatRec = new SR();
+  _chatRec.lang = 'en-US';
+  _chatRec.interimResults = true;
+  const before = input.value ? input.value + ' ' : '';
+  btn?.classList.add('live');
+  _chatStatus('Listening…');
+  _chatRec.onresult = e => {
+    let s = '';
+    for (let i = 0; i < e.results.length; i++) s += e.results[i][0].transcript;
+    input.value = (before + s).slice(0, 500);
+  };
+  _chatRec.onerror = e => { _chatStatus(`Voice typing: ${e.error}`); };
+  _chatRec.onend = () => { _chatRec = null; btn?.classList.remove('live'); _chatStatus(''); input?.focus(); };
+  try { _chatRec.start(); }
+  catch (e) { _chatRec = null; btn?.classList.remove('live'); _chatStatus('Could not start the microphone.'); }
+}
+
+// ── Voice messages ──────────────────────────────────────────────────────────
+const CHAT_VOICE_MAX_SEC = 30;
+let _chatMediaRec = null, _chatRecStop = null;
+
+async function chatToggleVoiceMsg() {
+  const btn = document.getElementById('lqm-chat-rec');
+  if (_chatMediaRec) { _chatRecStop && _chatRecStop(); return; }
+  if (!navigator.mediaDevices?.getUserMedia) { _chatStatus('This browser cannot record audio.'); return; }
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { _chatStatus('Microphone permission was declined.'); return; }
+
+  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']
+    .find(t => { try { return MediaRecorder.isTypeSupported(t); } catch(_) { return false; } });
+  let mr;
+  try { mr = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+  catch (e) { stream.getTracks().forEach(t => t.stop()); _chatStatus('Could not start recording.'); return; }
+
+  const chunks = [];
+  const started = Date.now();
+  let timer = null, capTimer = null;
+
+  // Always release the microphone, whichever way recording ends.
+  const cleanup = () => {
+    clearInterval(timer); clearTimeout(capTimer);
+    stream.getTracks().forEach(t => t.stop());
+    _chatMediaRec = null; _chatRecStop = null;
+    btn?.classList.remove('live');
+  };
+
+  mr.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+  mr.onstop = async () => {
+    const secs = Math.round((Date.now() - started) / 1000);
+    cleanup();
+    if (secs < 1) { _chatStatus('Too short.'); return; }
+    const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' });
+    const url = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+    if (url.length > 700000) { _chatStatus('That recording is too long to send.'); return; }
+    _chatAttach = { audio: url, secs };
+    _chatShowAttachment(`Voice message, ${secs}s`, null);
+    _chatStatus('');
+  };
+
+  _chatMediaRec = mr;
+  _chatRecStop = () => { try { mr.stop(); } catch(_) { cleanup(); } };
+  btn?.classList.add('live');
+  mr.start();
+  timer = setInterval(() => {
+    _chatStatus(`Recording ${Math.round((Date.now() - started) / 1000)}s - tap again to stop`);
+  }, 500);
+  capTimer = setTimeout(() => _chatRecStop && _chatRecStop(), CHAT_VOICE_MAX_SEC * 1000);
+}
+
 // Posting to Discord is deliberately not awaited by the map write: if Discord
 // is unreachable the message must still appear on the map.
 async function _chatPostToDiscord(name, text) {
@@ -27756,7 +28017,9 @@ async function chatSend() {
   if (!_currentUser || !_fbDb) return;
   const input = document.getElementById('lqm-chat-input');
   const text = (input?.value || '').trim();
-  if (!text) return;
+  // A picture or a voice clip is a message on its own; only block a send that
+  // has nothing in it at all.
+  if (!text && !_chatAttach) return;
   if (Date.now() - _chatLastSent < CHAT_MIN_GAP_MS) {
     _chatStatus('Slow down a moment.');
     return;
@@ -27767,19 +28030,36 @@ async function chatSend() {
   const name = (_currentUser.displayName || (_currentUser.email || '').split('@')[0] || 'Radar user').slice(0, 40);
   input.value = '';
   _chatStatus('');
+  const attach = _chatAttach, reply = _chatReplyTo;
+  chatClearAttachment();
+  chatCancelReply();
   try {
-    await _fbDb.collection('chat').add({
+    const doc = {
       text: text.slice(0, 500),
       name,
       uid: _currentUser.uid,
       source: 'radar',
       avatar: _selectedEmoji || '',
       ts: Date.now()
-    });
-    _chatPostToDiscord(name, text);   // not awaited on purpose
+    };
+    if (reply) doc.replyTo = reply;
+    if (attach?.image) doc.image = attach.image;
+    if (attach?.audio) doc.audio = attach.audio;
+    await _fbDb.collection('chat').add(doc);
+
+    // Discord gets a readable stand-in for anything it cannot show inline:
+    // the audio and the image live in Firestore, not on a public URL.
+    let out = text;
+    if (reply) out = `> ${reply.name}: ${reply.text}\n${out}`;
+    if (attach?.image) out += (out ? '\n' : '') + '[shared a view of the map]';
+    if (attach?.audio) out += (out ? '\n' : '') + `[voice message, ${attach.secs}s]`;
+    _chatPostToDiscord(name, out);   // not awaited on purpose
   } catch (e) {
     console.warn('chat send:', e);
     input.value = text;               // give the message back rather than losing it
+    _chatAttach = attach; _chatReplyTo = reply;
+    if (attach) _chatShowAttachment(attach.image ? 'Map view ready to send' : `Voice message, ${attach.secs}s`, attach.image || null);
+    if (reply) _chatShowReplyBar(reply);
     _chatStatus(`Couldn't send: ${_escapeHtml(e.message || 'permission denied')}`);
   }
 }
@@ -27788,9 +28068,13 @@ function lqmOpenAI() {
   document.getElementById('lqm-ai-overlay')?.classList.add('lqm-panel-open');
   _aiRenderTabs();
   _aiRenderMessages();
+  _aiSyncSpeakBtn();
 }
 function lqmCloseAI() {
   document.getElementById('lqm-ai-overlay')?.classList.remove('lqm-panel-open');
+  // Closing the panel stops it talking; otherwise a long answer keeps going
+  // after the thing that was saying it has gone.
+  try { speechSynthesis.cancel(); } catch(_) {}
 }
 
 function _aiLoadHtml2canvas() {
@@ -27807,6 +28091,46 @@ function _aiChip(text) {
   const input = document.getElementById('lqm-ai-input');
   if (input) { input.value = text; input.focus(); }
   _aiSend();
+}
+
+// ── ASTURIO SPEAKING BACK ───────────────────────────────────────────────────
+// Voice input already existed; this is the other half, so a question asked out
+// loud can be answered out loud without reading the screen. Off by default,
+// because a panel that starts talking unprompted is unwelcome, and the choice
+// is remembered.
+let _aiSpeakOn = localStorage.getItem('gwcfc_ai_speak') === '1';
+
+function _aiSyncSpeakBtn() {
+  const b = document.getElementById('lqm-ai-speak');
+  if (b) { b.classList.toggle('recording', _aiSpeakOn); b.title = _aiSpeakOn ? 'Stop reading replies aloud' : 'Read replies aloud'; }
+}
+function _aiToggleSpeak() {
+  if (!('speechSynthesis' in window)) { _lqmToast('This browser cannot read text aloud.'); return; }
+  _aiSpeakOn = !_aiSpeakOn;
+  localStorage.setItem('gwcfc_ai_speak', _aiSpeakOn ? '1' : '0');
+  if (!_aiSpeakOn) { try { speechSynthesis.cancel(); } catch(_) {} }
+  _aiSyncSpeakBtn();
+}
+// Markdown, code fences and links read terribly out loud, so they are stripped
+// rather than spelled out character by character.
+function _aiSpeak(text) {
+  if (!_aiSpeakOn || !('speechSynthesis' in window) || !text) return;
+  const plain = String(text)
+    .replace(/```[\s\S]*?```/g, ' code block ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/https?:\/\/\S+/g, ' link ')
+    .replace(/[*_`#>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 700);   // long answers get cut rather than monologuing
+  if (!plain) return;
+  try {
+    speechSynthesis.cancel();     // a new answer replaces the previous one
+    const u = new SpeechSynthesisUtterance(plain);
+    u.lang = 'en-US'; u.rate = 1.02;
+    speechSynthesis.speak(u);
+  } catch (e) { console.warn('speak:', e); }
 }
 
 let _aiVoiceRec = null;
@@ -27930,6 +28254,8 @@ async function _aiSend(explicitImageB64) {
     // Pull out any action blocks and show the cleaned human text
     const { actions, clean } = _aiExtractActions(reply);
     if (typing) { typing.innerHTML = _aiMarkdown(clean || (actions.length ? 'On it…' : reply)); typing.classList.remove('typing'); }
+    // Speak the human-readable part, never the action blocks.
+    _aiSpeak(clean || (actions.length ? 'On it' : reply));
     // Run the actions (one permission prompt for the whole batch)
     if (actions.length) {
       const allowed = await _aiAskPermission(actions);
