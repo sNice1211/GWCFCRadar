@@ -16018,14 +16018,16 @@ async function _sevRenderEnsemble(body) {
 //  2. Each point is ~30x lighter than an ensemble point, so this runs on a
 //     much finer grid than the ensemble's 18x11.
 //
-// On grid size: the overlay layers use 64x36, but they ask for a single
-// "current" value per point. This asks for a multi-day forecast series per
-// point, which counts far more against Open-Meteo's free quota, and a request
-// big enough to get rate-limited is worse than a smaller one - see the
-// coverage check below for why. 40x22 is the compromise: dense enough that
-// bicubic upsampling to a 1600px image gives a genuinely smooth field (real
-// weather fields are smooth at this scale), light enough to come back whole.
-const SEV_DET_COLS = 40, SEV_DET_ROWS = 22;
+// On grid size: the overlay layers use 64x36, but they ask for one "current"
+// value per point. This asks for a 6-day hourly series per point, so the same
+// grid would mean a ~24MB download per product. Rendered side by side against
+// 64x36 on an identical field, 26x15 is indistinguishable at global zoom -
+// _buildInterpolatedCanvas bicubic-upsamples to a 1600px image either way, and
+// real weather fields genuinely are smooth at this scale. The honest limit is
+// regional zoom, where a denser grid would show more local structure; getting
+// that properly means sampling around the current view rather than the whole
+// world, which is a bigger change than this.
+const SEV_DET_COLS = 26, SEV_DET_ROWS = 15;
 const SEV_DET_MAX_FRAME = 20;   // 21 frames: F+000 .. F+120 at a 6h step
 const SEV_DET_STEP_H = 6;
 const SEV_DET_DAYS = 6;         // covers F+120 with room to spare
@@ -16048,25 +16050,32 @@ async function _sevRenderDeterministic(body) {
   const token = ++_sevEnsLoadToken;
 
   const pts = _sampleGrid(SEV_DET_COLS, SEV_DET_ROWS, WORLD_MAP_BOUNDS);
+  // Kept outside the try so a failure can log the exact URL that was sent -
+  // the single most useful thing to have when this breaks somewhere I can't
+  // reach the API from.
+  let sampleUrl = '';
   try {
-    // temporal_resolution=hourly_6 asks Open-Meteo to send only every 6th hour,
-    // which is exactly the step this panel animates at - a ~6x smaller
-    // response. timeformat=unixtime makes hourly.time plain numbers so the
-    // real step can be measured below.
+    // Deliberately the same shape as the Wind layer's query, which is known to
+    // work against this API in production: hourly + forecast_days + unit
+    // parameters, nothing else. Open-Meteo answers 400 for a parameter value it
+    // does not recognize, and a 400 fails the whole load, so this asks for
+    // nothing beyond what is already proven. In particular there is no
+    // temporal_resolution here: trimming the response server-side would be
+    // cheaper, but "cheaper" is worthless if the request is rejected.
     const buildUrl = chunk => {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
       const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      return `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
+      const url = `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
         `&hourly=${varName}&models=${model}&forecast_days=${SEV_DET_DAYS}` +
-        `&temporal_resolution=hourly_6&timeformat=unixtime` +
         `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
+      if (!sampleUrl) sampleUrl = url;
+      return url;
     };
     const hasSeries = l => Array.isArray(l?.hourly?.[varName]);
 
-    // 880 points / 150 per request = 6 requests, run 3 at a time: two waves of
-    // round-trips rather than three, without bursting hard enough to provoke
-    // the rate limiter.
-    const locations = await _fetchGridChunkedRaw(pts, buildUrl, 150, { concurrency: 3, retries: 3 });
+    // 390 points / 130 per request = 3 requests, all in flight at once: a
+    // single wave of round-trips.
+    const locations = await _fetchGridChunkedRaw(pts, buildUrl, 130, { concurrency: 3, retries: 3 });
     if (token !== _sevEnsLoadToken) return;
 
     // A chunk that never recovered leaves a whole stripe of the grid empty, and
@@ -16080,7 +16089,7 @@ async function _sevRenderDeterministic(body) {
       // load's error, or the coverage check below never runs and the user gets
       // told the product doesn't exist when the real problem was rate limiting.
       try {
-        const patch = await _fetchGridChunkedRaw(missing.map(i => pts[i]), buildUrl, 150, { concurrency: 2, retries: 2 });
+        const patch = await _fetchGridChunkedRaw(missing.map(i => pts[i]), buildUrl, 130, { concurrency: 2, retries: 2 });
         patch.forEach((l, j) => { if (hasSeries(l)) locations[missing[j]] = l; });
       } catch (e) { console.warn('Gap-fill pass failed, falling back to the coverage check:', e); }
       if (token !== _sevEnsLoadToken) return;
@@ -16097,13 +16106,21 @@ async function _sevRenderDeterministic(body) {
       throw new Error(`only ${Math.round(100 * covered / locations.length)}% of the grid returned`);
     }
 
-    // How many hours each array slot actually covers. Read from the returned
-    // timestamps rather than assumed, so this stays correct whether the server
-    // honored temporal_resolution (6h per slot) or ignored it and sent every
-    // hour (1h per slot) - and it also lands on the right hour for models that
-    // publish a coarser native step than we asked for.
+    // How many hours each array slot actually covers. The request above asks
+    // for plain hourly data, so this is 1 in the normal case - but it is
+    // measured from the returned timestamps rather than assumed, so a model
+    // that publishes a coarser native step still lands on the right forecast
+    // hour instead of silently showing a different one. Handles both the ISO
+    // strings Open-Meteo returns by default and numeric unixtime, and falls
+    // back to hourly if the timestamps are missing or unparseable.
+    const _slotMs = t => (typeof t === 'number') ? t * 1000
+      : (typeof t === 'string' ? Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(t) ? t : t + 'Z') : NaN);
     const refTime = locations.find(l => Array.isArray(l?.hourly?.time) && l.hourly.time.length > 1)?.hourly.time;
-    const slotH = refTime ? Math.max(1, Math.round((refTime[1] - refTime[0]) / 3600)) : SEV_DET_STEP_H;
+    let slotH = 1;
+    if (refTime) {
+      const d = (_slotMs(refTime[1]) - _slotMs(refTime[0])) / 3600000;
+      if (Number.isFinite(d) && d > 0) slotH = Math.max(1, Math.round(d));
+    }
 
     const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
     const frames = [];
@@ -16130,14 +16147,25 @@ async function _sevRenderDeterministic(body) {
     _sevEnsShowFrame(body, frames);
     _sevEnsPrepaint(frames, key);
   } catch(e) {
-    console.warn('Run Models deterministic layer error:', e);
+    console.warn('Run Models deterministic layer error:', e, '\nRequest was:', sampleUrl);
     if (token !== _sevEnsLoadToken) return;
-    // Two very different failures, so say which one it was: an incomplete
-    // download is worth retrying, an unsupported product never will be.
-    const partial = /% of the grid returned/.test(e.message || '');
-    if (body) body.innerHTML = partial
-      ? `<div class="trop-model-err">Couldn't load all of ${modelLabel} (${e.message}) - the data service is rate-limiting. Wait a moment and pick the product again.</div>`
-      : `<div class="trop-model-err">${modelLabel} doesn't publish this product right now - try another product or model.</div>`;
+    const msg = e && e.message ? String(e.message) : '';
+    // Say which failure this actually was. Guessing here is what made an
+    // earlier bug so hard to pin down: every cause reported itself as
+    // "unsupported product", so the real reason never reached anyone. When the
+    // service explains itself, show its own words rather than a paraphrase.
+    let out;
+    if (/% of the grid returned/.test(msg)) {
+      out = `Couldn't load all of ${modelLabel} (${msg}) - the data service is rate-limiting. Wait a moment and pick the product again.`;
+    } else {
+      // Open-Meteo puts a human-readable explanation in {"reason": "..."} on a
+      // 4xx; pull it out so a rejected parameter or model id names itself.
+      const reason = (msg.match(/"reason"\s*:\s*"([^"]+)"/) || [])[1];
+      out = reason
+        ? `${modelLabel} could not be loaded: ${_escapeHtml(reason)}`
+        : `${modelLabel} doesn't publish this product right now - try another product or model.`;
+    }
+    if (body) body.innerHTML = `<div class="trop-model-err">${out}</div>`;
   }
 }
 
@@ -29958,7 +29986,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Run Models loads about 3.5x faster and draws a properly smooth field: the map appears as soon as the first frame is ready, and an incomplete download now says so instead of inventing the missing weather.";
+const APP_LATEST_UPDATE = "Fixed the 8 new global models not loading at all: the data request was asking for an option the weather service rejects, which failed every model. If one ever does fail now, the panel shows the service's actual reason.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
