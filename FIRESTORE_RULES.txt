@@ -23,9 +23,10 @@ HOW TO PUBLISH THEM
 4. Replace what is there with everything between the two lines below
 5. Press Publish
 
-Read your existing rules first. If you have collections beyond `users`,
-`guests` and `modelCache`, copy those blocks across too, or they will stop
-working the moment you publish. Anything not explicitly allowed is denied.
+These are MERGED with the rules that were already published on the project:
+the cloudcam, sharedAlerts and analytics blocks are carried over untouched.
+If you add a collection later, add a block for it here too - Firestore denies
+anything not explicitly allowed.
 
 Publishing these also switches on the shared weather-model cache, which is
 what stops the Run Models panel running out of the free weather service's
@@ -42,10 +43,9 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // The owner is identified by the email on the sign-in token, which is
-    // issued by Firebase Auth and cannot be forged from the browser. It is
-    // deliberately NOT read from a database field, because a database field
-    // could be edited by whoever can write to that document.
+    // The owner is identified by the email on the sign-in token, which Firebase
+    // Auth issues and the browser cannot forge. Deliberately NOT read from a
+    // database field, because a field can be edited by whoever can write it.
     function isOwner() {
       return isSignedIn()
         && request.auth.token.email != null
@@ -58,39 +58,77 @@ service cloud.firestore {
         .hasAny(['staffRole', 'staffRoleSetBy', 'staffRoleSetAt']);
     }
 
+    function isStaff() {
+      return isOwner() || (isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.staffRole
+           in ['moderator', 'administrator', 'leadership']);
+    }
+
+    // Anonymous sign-in counts as signed in. The chat bridge uses it, so
+    // anywhere a real account is required has to say so explicitly.
+    function realAccount() {
+      return isSignedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    // ── EXISTING - unchanged ──────────────────────────────────────────────
+
+    match /cloudcam/{doc} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Shared alerts: anyone can read, people manage their own.
+    match /sharedAlerts/{alertId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn() && request.auth.uid == resource.data.uid;
+    }
+
+    // Hit counter: anyone can read, only an increment by one is accepted.
+    match /analytics/hits {
+      allow read: if true;
+      allow update: if request.resource.data.count == resource.data.count + 1;
+    }
+
+    // ── USERS - now protects the role fields ──────────────────────────────
+    // This replaces the previous blanket "the owner of the document may write
+    // anything in it" rule. People still control their whole profile; the only
+    // difference is they can no longer hand themselves a staff role.
+    //
+    // No /{document=**} here on purpose. That wildcard also matches the user
+    // document itself, so a permissive rule under it would grant exactly the
+    // self-promotion this is meant to stop. Nothing in the app stores
+    // subcollections under a user, so nothing needs it.
     match /users/{uid} {
-      // Owner can list everyone (that is the member panel). Everyone else can
-      // read only themselves.
       allow read: if isOwner() || (isSignedIn() && request.auth.uid == uid);
 
-      // A new account may create its own document, but may not hand itself a
-      // role while doing so.
       allow create: if isOwner()
         || (isSignedIn() && request.auth.uid == uid
             && !('staffRole' in request.resource.data));
 
-      // People edit their own profile freely, except the role fields.
       allow update: if isOwner()
         || (isSignedIn() && request.auth.uid == uid && !touchesRoleFields());
 
       allow delete: if isOwner();
     }
 
-    // Anonymous visit counter. Visitors are not signed in, so this stays open,
-    // but each document is only its own session id.
+    // ── NEW ───────────────────────────────────────────────────────────────
+
+    // Anonymous visit counter. Visitors are not signed in, so this stays open;
+    // each document is only its own session id. There was no rule for this
+    // before, which means these writes were being silently refused.
     match /guests/{gid} {
       allow read, write: if true;
     }
 
     // Shared weather-model cache. The free weather service counts requests per
-    // network per day, so instead of every visitor fetching the same forecast
-    // and burning their own allowance, the first one to load a model stores it
-    // here and everyone else reads it for free.
-    //
-    // Readable by anyone, including signed-out visitors, because that is the
-    // whole point. Writable only by signed-in accounts, so a passer-by cannot
-    // publish invented weather to every user of the site. The size cap keeps a
-    // single document from being used as free storage.
+    // network per day, so rather than every visitor fetching the same forecast
+    // and burning their own allowance, the first to load a model stores it here
+    // and everyone else reads it for free. Readable by signed-out visitors too,
+    // which is the point. Writable only by accounts, so a passer-by cannot
+    // publish invented weather to the whole site. The size cap stops a document
+    // being used as free storage.
     match /modelCache/{docId} {
       allow read: if true;
       allow write: if isSignedIn()
@@ -99,26 +137,12 @@ service cloud.firestore {
         && request.resource.data.at is number;
     }
 
-    // Live chat, shared with a Discord channel. Anyone may read, including
-    // signed-out visitors, so the conversation is visible without an account.
-    //
-    // Posting needs an account, which is what makes a spammer traceable and
-    // bannable. The chat bridge Worker signs in anonymously, so anonymous
-    // writes are allowed only for relayed Discord messages, never for messages
-    // claiming to come from the site.
-    //
-    // Nothing may be edited after the fact; only moderators and above can
-    // delete, which is what the Manage Members panel grants.
-    function isStaff() {
-      return isOwner() || (isSignedIn()
-        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.staffRole
-           in ['moderator', 'administrator', 'leadership']);
-    }
-    function realAccount() {
-      return isSignedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
-    }
-
+    // Live chat, shared with the Discord channel. Anyone may read, so the
+    // conversation is visible without an account. Posting needs a real account,
+    // which is what makes a spammer traceable and bannable. The bridge Worker
+    // signs in anonymously, so anonymous writes are accepted only for messages
+    // relayed from Discord, never for ones claiming to come from the site.
+    // Nothing can be edited after the fact; moderators and above can delete.
     match /chat/{msgId} {
       allow read: if true;
       allow create: if request.resource.data.text is string
@@ -126,10 +150,8 @@ service cloud.firestore {
         && request.resource.data.text.size() <= 500
         && request.resource.data.ts is number
         && (
-          // From the website: a real account, posting as itself.
           (request.resource.data.source == 'radar' && realAccount()
             && request.resource.data.uid == request.auth.uid)
-          // Relayed from Discord by the bridge Worker.
           || (request.resource.data.source == 'discord' && isSignedIn())
         );
       allow update: if false;
