@@ -117,6 +117,34 @@ export async function patchUser(uid, fields) {
   });
 }
 
+// ── Live chat bridge ────────────────────────────────────────────────────────
+// A Discord webhook can only post INTO Discord; there is no way to read a
+// channel with one. So the website posts to the webhook directly, and this is
+// the other direction: the bot sees a Discord message and drops it into the
+// same Firestore collection the website is already listening to, which is what
+// makes the two halves a single conversation.
+//
+// createDocument rather than PATCH, because each message is a new document and
+// Firestore generates the id.
+export async function addChatMessage({ text, name, discordId, avatar }) {
+  return call('/chat', {
+    method: 'POST',
+    body: JSON.stringify({
+      fields: Object.fromEntries(Object.entries({
+        text,
+        name,
+        source: 'discord',
+        discordId: discordId || '',
+        avatar: avatar || '',
+        // Client-side milliseconds rather than a server timestamp: the website
+        // orders on this field, and it needs a value the instant the document
+        // lands rather than one that is briefly null.
+        ts: Date.now(),
+      }).map(([k, v]) => [k, toValue(v)])),
+    }),
+  });
+}
+
 export async function getUser(uid) {
   try {
     const doc = await call(`/users/${uid}`);

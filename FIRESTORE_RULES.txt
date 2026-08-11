@@ -98,6 +98,49 @@ service cloud.firestore {
         && request.resource.data.v.size() < 400000
         && request.resource.data.at is number;
     }
+
+    // Live chat, shared with a Discord channel. Anyone may read, including
+    // signed-out visitors, so the conversation is visible without an account.
+    //
+    // Posting needs an account, which is what makes a spammer traceable and
+    // bannable. The chat bridge Worker signs in anonymously, so anonymous
+    // writes are allowed only for relayed Discord messages, never for messages
+    // claiming to come from the site.
+    //
+    // Nothing may be edited after the fact; only moderators and above can
+    // delete, which is what the Manage Members panel grants.
+    function isStaff() {
+      return isOwner() || (isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.staffRole
+           in ['moderator', 'administrator', 'leadership']);
+    }
+    function realAccount() {
+      return isSignedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    match /chat/{msgId} {
+      allow read: if true;
+      allow create: if request.resource.data.text is string
+        && request.resource.data.text.size() > 0
+        && request.resource.data.text.size() <= 500
+        && request.resource.data.ts is number
+        && (
+          // From the website: a real account, posting as itself.
+          (request.resource.data.source == 'radar' && realAccount()
+            && request.resource.data.uid == request.auth.uid)
+          // Relayed from Discord by the bridge Worker.
+          || (request.resource.data.source == 'discord' && isSignedIn())
+        );
+      allow update: if false;
+      allow delete: if isStaff();
+    }
+
+    // Where the chat bridge remembers the last Discord message it relayed.
+    match /chatBridge/{docId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
   }
 }
 -------------------------------- TO HERE -------------------------------------

@@ -13,7 +13,7 @@ import {
   Client, GatewayIntentBits, Partials, Events,
   REST, Routes, SlashCommandBuilder,
 } from 'discord.js';
-import { findUserByLinkCode, findUserByDiscordId, patchUser } from './firestore.mjs';
+import { findUserByLinkCode, findUserByDiscordId, patchUser, addChatMessage } from './firestore.mjs';
 
 const TOKEN     = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -299,6 +299,33 @@ client.on(Events.InteractionCreate, async (i) => {
     const msg = `Could not answer that: ${e.message}`;
     try { i.deferred ? await i.editReply(msg) : await i.reply({ content: msg, ephemeral: true }); }
     catch {}
+  }
+});
+
+// ── CHAT BRIDGE: Discord -> radar ───────────────────────────────────────────
+// Set CHAT_CHANNEL_ID to the channel that should be mirrored onto the map.
+// Everything said there (by people, not bots) is copied into Firestore, which
+// the website is listening to live.
+const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID || '';
+
+client.on(Events.MessageCreate, async (m) => {
+  if (!CHAT_CHANNEL_ID || m.channelId !== CHAT_CHANNEL_ID) return;
+  // Messages the website sent arrive here as webhook posts. Relaying those back
+  // would copy every website message into Firestore a second time, so the
+  // webhookId check is what stops the bridge feeding itself in a loop.
+  if (m.webhookId) return;
+  if (m.author.bot) return;
+  const text = (m.content || '').trim();
+  if (!text) return;   // attachment-only posts have nothing to show on the map
+  try {
+    await addChatMessage({
+      text: text.slice(0, 500),
+      name: m.member?.displayName || m.author.globalName || m.author.username,
+      discordId: m.author.id,
+      avatar: m.author.displayAvatarURL({ extension: 'png', size: 64 }),
+    });
+  } catch (e) {
+    console.error('chat bridge (Discord -> radar):', e.message || e);
   }
 });
 
