@@ -1,0 +1,105 @@
+GWCFC RADAR - FIRESTORE SECURITY RULES
+======================================
+
+WHY THIS FILE EXISTS
+--------------------
+The "Manage Members" panel in the profile menu is owner-only, but that check
+happens in the browser, and anything that happens in the browser can be
+bypassed by anyone who opens the developer console. The rules below are the
+part that actually enforces it, because they run on Google's servers where
+nobody can edit them.
+
+They are also REQUIRED for the panel to work at all. Under typical starter
+rules each signed-in person may only touch their own user document, so the
+owner reading the whole member list, or writing a role onto someone else's
+document, is refused. If the panel says "permission denied", this is why.
+
+
+HOW TO PUBLISH THEM
+-------------------
+1. Go to https://console.firebase.google.com
+2. Pick the "gwcfc-radar" project
+3. Left sidebar: Build -> Firestore Database -> Rules tab
+4. Replace what is there with everything between the two lines below
+5. Press Publish
+
+Read your existing rules first. If you have collections beyond `users` and
+`guests`, copy those blocks across too, or they will stop working the moment
+you publish. Anything not explicitly allowed is denied.
+
+
+------------------------------- COPY FROM HERE -------------------------------
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // The owner is identified by the email on the sign-in token, which is
+    // issued by Firebase Auth and cannot be forged from the browser. It is
+    // deliberately NOT read from a database field, because a database field
+    // could be edited by whoever can write to that document.
+    function isOwner() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == 'ralphies1005@gmail.com';
+    }
+
+    // Fields only the owner may ever set.
+    function touchesRoleFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['staffRole', 'staffRoleSetBy', 'staffRoleSetAt']);
+    }
+
+    match /users/{uid} {
+      // Owner can list everyone (that is the member panel). Everyone else can
+      // read only themselves.
+      allow read: if isOwner() || (isSignedIn() && request.auth.uid == uid);
+
+      // A new account may create its own document, but may not hand itself a
+      // role while doing so.
+      allow create: if isOwner()
+        || (isSignedIn() && request.auth.uid == uid
+            && !('staffRole' in request.resource.data));
+
+      // People edit their own profile freely, except the role fields.
+      allow update: if isOwner()
+        || (isSignedIn() && request.auth.uid == uid && !touchesRoleFields());
+
+      allow delete: if isOwner();
+    }
+
+    // Anonymous visit counter. Visitors are not signed in, so this stays open,
+    // but each document is only its own session id.
+    match /guests/{gid} {
+      allow read, write: if true;
+    }
+  }
+}
+-------------------------------- TO HERE -------------------------------------
+
+
+WHAT THESE RULES GUARANTEE
+--------------------------
+- Only the signed-in owner email can read the full member list.
+- Only the owner can set anyone's staffRole, including their own.
+- A member cannot promote themselves, even by calling the write directly from
+  the browser console. The server refuses it.
+- Members keep full control of their own profile: name, avatar, saved layers,
+  home region, notification settings.
+- The owner badge is not stored in the database at all. The app derives it
+  from the signed-in email, so it cannot be granted by editing a document.
+
+
+CHANGING THE OWNER EMAIL
+------------------------
+It appears in two places and must match in both, lowercase:
+  1. This rules file, in isOwner()
+  2. index.html, the GWCFC_OWNER_EMAIL constant
+
+A note on sign-in method: the owner check reads the email from the auth token.
+Signing in with Google as ralphies1005@gmail.com, or with email/password using
+that address, both work. Signing in by phone number produces a token with no
+email, and will not be recognised as the owner.

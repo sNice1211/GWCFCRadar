@@ -5938,6 +5938,85 @@ footer {
 #lqm-view-edit.open {
   display: block;
 }
+/* Staff / roles view - owner only */
+#lqm-view-staff { display: none; }
+#lqm-view-staff.open { display: block; }
+#lqm-staff-search {
+  width: 100%;
+  background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(0,140,186,0.35);
+  border-radius: 8px;
+  color: #d4e8ff;
+  font-family: 'Comfortaa', sans-serif;
+  font-size: 12px;
+  padding: 8px 10px;
+  outline: none;
+  margin-bottom: 10px;
+}
+#lqm-staff-search:focus { border-color: rgba(0,140,186,0.75); }
+#lqm-staff-list {
+  max-height: 340px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lqm-staff-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 9px;
+  padding: 7px 9px;
+}
+.lqm-staff-av {
+  width: 30px; height: 30px; flex: 0 0 30px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #fff;
+  background-size: cover; background-position: center;
+  border: 1px solid rgba(255,255,255,0.18);
+}
+.lqm-staff-meta { flex: 1 1 auto; min-width: 0; }
+.lqm-staff-name {
+  font-family: 'Comfortaa', sans-serif; font-size: 12px; color: #eaf4ff;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lqm-staff-email {
+  font-size: 10px; color: rgba(212,232,255,0.45);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.lqm-staff-sel {
+  flex: 0 0 auto;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(0,140,186,0.35);
+  border-radius: 6px;
+  color: #d4e8ff;
+  font-family: 'Comfortaa', sans-serif;
+  font-size: 10px;
+  padding: 4px 5px;
+  cursor: pointer;
+  outline: none;
+}
+.lqm-staff-sel:disabled { opacity: 0.45; cursor: not-allowed; }
+.lqm-staff-note {
+  font-family: 'Comfortaa', sans-serif; font-size: 10px;
+  color: rgba(212,232,255,0.45); line-height: 1.5; margin: 10px 0 0;
+}
+/* Role badge, shown next to the name on the profile summary */
+.lqm-role-badge {
+  display: inline-block; vertical-align: middle;
+  margin-left: 6px; padding: 2px 7px;
+  border-radius: 999px;
+  font-family: 'Comfortaa', sans-serif; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.5px; text-transform: uppercase;
+}
+.lqm-role-owner         { background: rgba(232,184,0,0.18);  color: #e8b800; border: 1px solid rgba(232,184,0,0.45); }
+.lqm-role-leadership    { background: rgba(200,80,255,0.16); color: #c850ff; border: 1px solid rgba(200,80,255,0.45); }
+.lqm-role-administrator { background: rgba(255,90,90,0.16);  color: #ff6b6b; border: 1px solid rgba(255,90,90,0.45); }
+.lqm-role-moderator     { background: rgba(0,200,140,0.16);  color: #00c88c; border: 1px solid rgba(0,200,140,0.45); }
+.lqm-role-member        { background: rgba(255,255,255,0.07); color: rgba(212,232,255,0.6); border: 1px solid rgba(255,255,255,0.12); }
 .lqm-edit-header {
   display: flex;
   align-items: center;
@@ -28710,6 +28789,8 @@ function _updateProfileBadge(user, avatarEmoji) {
     // Show profile summary view by default (not edit view)
     document.getElementById('lqm-view-profile').classList.add('open');
     document.getElementById('lqm-view-edit').classList.remove('open');
+    document.getElementById('lqm-view-staff')?.classList.remove('open');
+    _syncOwnerUi();
   } else {
     if (sm)  { sm.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-user></use></svg>'; sm.style.background = ''; sm.style.color = '#008CBA'; sm.style.border = '1px solid rgba(0,140,186,0.5)'; }
     if (lbl) lbl.textContent = 'Sign In';
@@ -28990,6 +29071,151 @@ function lqmOpenEditView() {
 function lqmCloseEditView() {
   document.getElementById('lqm-view-edit').classList.remove('open');
   document.getElementById('lqm-view-profile').classList.add('open');
+}
+
+// ── MEMBER ROLES (owner only) ───────────────────────────────
+// Note the separate field: the existing `role` is what someone picked about
+// themselves at signup ("Trained Spotter", "Pilot"). Permission level is a
+// different thing entirely and lives in `staffRole`, so granting someone
+// moderator never overwrites what they told us they do.
+const GWCFC_OWNER_EMAIL = 'ralphies1005@gmail.com';
+const STAFF_ROLES = ['member', 'moderator', 'administrator', 'leadership'];
+const STAFF_ROLE_LABELS = {
+  member: 'Member', moderator: 'Moderator',
+  administrator: 'Administrator', leadership: 'Leadership', owner: 'Owner'
+};
+let _staffUsers = [];
+
+function _isOwnerEmail(email) {
+  return !!email && String(email).trim().toLowerCase() === GWCFC_OWNER_EMAIL;
+}
+function _isOwner() { return !!_currentUser && _isOwnerEmail(_currentUser.email); }
+
+// The owner's badge is derived from the signed-in email, never read from the
+// database, so it cannot be granted to anyone by editing a document.
+function _staffRoleFor(email, staffRole) {
+  if (_isOwnerEmail(email)) return 'owner';
+  return STAFF_ROLES.includes(staffRole) ? staffRole : 'member';
+}
+function _roleBadgeHtml(role) {
+  return `<span class="lqm-role-badge lqm-role-${role}">${STAFF_ROLE_LABELS[role] || role}</span>`;
+}
+
+// Shows/hides the owner's entry point. Called whenever auth state settles.
+function _syncOwnerUi() {
+  const owner = _isOwner();
+  const btn = document.getElementById('lqm-staff-btn');
+  if (btn) btn.style.display = owner ? '' : 'none';
+  // If whoever is signed in changes while the panel is open - a sign-out, or
+  // a different account - drop out of it rather than leaving the member list
+  // on screen for someone who should not be looking at it.
+  if (!owner) {
+    const staff = document.getElementById('lqm-view-staff');
+    if (staff && staff.classList.contains('open')) {
+      staff.classList.remove('open');
+      document.getElementById('lqm-view-profile')?.classList.add('open');
+      _staffUsers = [];
+      const list = document.getElementById('lqm-staff-list');
+      if (list) list.innerHTML = '';
+    }
+  }
+}
+
+async function lqmOpenStaffView() {
+  if (!_isOwner()) return;   // the panel is owner-only even if the button leaks
+  document.getElementById('lqm-view-profile').classList.remove('open');
+  document.getElementById('lqm-view-staff').classList.add('open');
+  const list = document.getElementById('lqm-staff-list');
+  if (list) list.innerHTML = `<div class="lqm-staff-note">Loading members…</div>`;
+  try {
+    const snap = await _fbDb.collection('users').get();
+    _staffUsers = snap.docs.map(d => {
+      const v = d.data() || {};
+      return {
+        uid: d.id,
+        name: v.displayName || v.name || '(no name)',
+        email: v.email || '',
+        avatarImage: v.avatarImage || '',
+        emoji: v.avatarEmoji || v.emoji || '',
+        staffRole: _staffRoleFor(v.email, v.staffRole)
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    _staffRenderList(document.getElementById('lqm-staff-search')?.value || '');
+  } catch (e) {
+    console.warn('Load members failed:', e);
+    if (list) list.innerHTML = `<div class="lqm-staff-note">Couldn't load members: ${_escapeHtml(e.message || 'permission denied')}.<br>If this says "permission denied", the Firestore rules in FIRESTORE_RULES.txt still need to be published.</div>`;
+  }
+}
+function lqmCloseStaffView() {
+  document.getElementById('lqm-view-staff').classList.remove('open');
+  document.getElementById('lqm-view-profile').classList.add('open');
+}
+
+function _staffRenderList(filter) {
+  const list = document.getElementById('lqm-staff-list');
+  const note = document.getElementById('lqm-staff-note');
+  if (!list) return;
+  const q = (filter || '').trim().toLowerCase();
+  const rows = _staffUsers.filter(u =>
+    !q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q));
+
+  if (!rows.length) {
+    list.innerHTML = `<div class="lqm-staff-note">${_staffUsers.length ? 'No members match that search.' : 'No accounts yet.'}</div>`;
+  } else {
+    list.innerHTML = rows.map(u => {
+      const isOwnerRow = u.staffRole === 'owner';
+      const av = u.avatarImage
+        ? `<div class="lqm-staff-av" style="background-image:url('${_escapeHtml(u.avatarImage)}')"></div>`
+        : `<div class="lqm-staff-av" style="background:hsl(${Math.abs(_hashHue(u.name))},60%,38%)">${_escapeHtml(u.emoji || u.name.charAt(0).toUpperCase())}</div>`;
+      // The owner's own row is fixed: there is no way to demote yourself and
+      // lock everyone, including you, out of this panel.
+      const opts = isOwnerRow
+        ? `<option>Owner</option>`
+        : STAFF_ROLES.map(r => `<option value="${r}"${r === u.staffRole ? ' selected' : ''}>${STAFF_ROLE_LABELS[r]}</option>`).join('');
+      return `<div class="lqm-staff-row">
+        ${av}
+        <div class="lqm-staff-meta">
+          <div class="lqm-staff-name">${_escapeHtml(u.name)}</div>
+          <div class="lqm-staff-email">${_escapeHtml(u.email || u.uid)}</div>
+        </div>
+        <select class="lqm-staff-sel" ${isOwnerRow ? 'disabled' : ''} onchange="staffSetRole('${u.uid}', this.value, this)">${opts}</select>
+      </div>`;
+    }).join('');
+  }
+  if (note) note.textContent = `${_staffUsers.length} account${_staffUsers.length === 1 ? '' : 's'} total. Changes save immediately.`;
+}
+
+// Small stable hue from a name, so an avatar without a picture still gets a
+// consistent color instead of a different one on every render.
+function _hashHue(s) {
+  let h = 0;
+  for (let i = 0; i < (s || '').length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h % 360;
+}
+
+async function staffSetRole(uid, role, selEl) {
+  if (!_isOwner() || !_fbDb) return;
+  if (!STAFF_ROLES.includes(role)) return;
+  const rec = _staffUsers.find(u => u.uid === uid);
+  const previous = rec ? rec.staffRole : 'member';
+  if (selEl) selEl.disabled = true;
+  try {
+    await _fbDb.collection('users').doc(uid).set({
+      staffRole: role,
+      staffRoleSetBy: _currentUser.email || _currentUser.uid,
+      staffRoleSetAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+    if (rec) rec.staffRole = role;
+    showToast(`${rec ? rec.name : 'Member'} is now ${STAFF_ROLE_LABELS[role]}`, 2600);
+  } catch (e) {
+    console.warn('Set role failed:', e);
+    // Put the dropdown back where it was, so it never shows a change that
+    // did not actually save.
+    if (selEl) selEl.value = previous;
+    showToast(`Couldn't change role: ${e.message || 'permission denied'}`, 4000);
+  } finally {
+    if (selEl) selEl.disabled = false;
+  }
 }
 
 function selectProfileEmoji(emoji) {
@@ -30023,6 +30249,17 @@ async function _loadUserPrefs(uid) {
       rv.textContent = loc || d.region || '-';
     }
     if (ro) ro.textContent = d.role || '-';
+    // Permission level sits beside the display name, separate from the
+    // self-declared role row above it.
+    try {
+      const nameEl = document.getElementById('lqm-profile-name-txt');
+      const lvl = _staffRoleFor(_currentUser && _currentUser.email, d.staffRole);
+      if (nameEl) {
+        nameEl.querySelector('.lqm-role-badge')?.remove();
+        if (lvl !== 'member') nameEl.insertAdjacentHTML('beforeend', _roleBadgeHtml(lvl));
+      }
+      _syncOwnerUi();
+    } catch(e) { console.warn('staff badge:', e); }
     if (d.avatarImage) {
       const img = new Image();
       img.onload = () => { _rawImageEl = img; };
@@ -30083,7 +30320,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed the 8 new global models not loading at all: the data request was asking for an option the weather service rejects, which failed every model. If one ever does fail now, the panel shows the service's actual reason.";
+const APP_LATEST_UPDATE = "The new global models no longer burn through the weather service's daily request allowance: viewing one is now saved, so going back to it costs nothing. Owners also get a Manage Members panel in the profile menu.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -31188,6 +31425,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <button class="lqm-profile-action-btn" onclick="authSaveHomeRegion()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> Save Region</button>
         <button class="lqm-profile-action-btn" onclick="authSaveLayerPreset()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-folder></use></svg> Save Layers</button>
         <button class="lqm-profile-action-btn" onclick="lqmOpenEditView()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pencil></use></svg> Edit Profile</button>
+        <button class="lqm-profile-action-btn" id="lqm-staff-btn" style="display:none;" onclick="lqmOpenStaffView()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-user></use></svg> Manage Members</button>
       </div>
 
       <hr class="lqm-profile-divider" style="margin:10px 0;">
@@ -31238,6 +31476,17 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
 
     <!-- VIEW: edit profile -->
+    <!-- VIEW: member roles, owner only -->
+    <div id="lqm-view-staff">
+      <div class="lqm-edit-header">
+        <button class="lqm-edit-back" onclick="lqmCloseStaffView()" title="Back"><svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(180deg)><use href=#ic-arrow></use></svg></button>
+        <span class="lqm-edit-title">Manage Members</span>
+      </div>
+      <input id="lqm-staff-search" type="text" placeholder="Search name or email…" oninput="_staffRenderList(this.value)" autocomplete="off"/>
+      <div id="lqm-staff-list"></div>
+      <p class="lqm-staff-note" id="lqm-staff-note"></p>
+    </div>
+
     <div id="lqm-view-edit">
       <div class="lqm-edit-header">
         <button class="lqm-edit-back" onclick="lqmCloseEditView()" title="Back"><svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(180deg)><use href=#ic-arrow></use></svg></button>
