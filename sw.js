@@ -1,5 +1,5 @@
 // GWCFCRadar Service Worker - radar tile cache + background alert notifications
-const CACHE       = 'gwcfc-v17';
+const CACHE       = 'gwcfc-v18';
 const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
@@ -11,12 +11,13 @@ const RV_TILE_RE = /\/v2\/radar\/\d+\//;
 // small badge slot (left) carries severity, masked to its shape. Both halves
 // must agree with index.html, or a notification would look different depending
 // on which path happened to fire it.
+// Must match _ICON_V in index.html. The art changes while the filenames stay
+// put, so without a version the browser serves the copy it already holds.
+const _ICON_V = '2';
 function _severityBadge(severity) {
   const s = Number(severity) || 0;
-  if (s >= 4) return './icons/badge-extreme.png';
-  if (s >= 3) return './icons/badge-severe.png';
-  if (s >= 2) return './icons/badge-moderate.png';
-  return './icons/badge-info.png';
+  const n = s >= 4 ? 'extreme' : s >= 3 ? 'severe' : s >= 2 ? 'moderate' : 'info';
+  return `./icons/badge-${n}.png?v=${_ICON_V}`;
 }
 
 // Notification titles are plain text. The page strips markup before calling
@@ -83,7 +84,7 @@ self.addEventListener('push', e => {
   e.waitUntil(
     self.registration.showNotification(_plainText(title), {
       body: _plainText(body),
-      icon:    './icons/icon-192.png',
+      icon:    `./icons/icon-192.png?v=${_ICON_V}`,
       badge:   _severityBadge(payload.severe ? 3 : 1),
       tag:     payload.id || 'gwcfc-alert',
       vibrate: payload.severe ? [200, 100, 200] : [100],
@@ -200,7 +201,7 @@ async function _checkAndNotify() {
     const isUrgent = sevRank >= 3;
     await self.registration.showNotification(_plainText(title), {
       body: _plainText(body),
-      icon:    './icons/icon-192.png',
+      icon:    `./icons/icon-192.png?v=${_ICON_V}`,
       badge:   _severityBadge(sevRank),
       tag:     id,
       vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
@@ -342,7 +343,7 @@ async function _checkAndNotify() {
         else if (bestG > 150 && bestR < 120) { emoji = '🌦️'; label = 'Light Rain'; }
         await self.registration.showNotification(`${emoji} ${label} Near You`, {
           body:    'Radar shows precipitation within ~25 miles of your location',
-          icon:    './icons/icon-192.png',
+          icon:    `./icons/icon-192.png?v=${_ICON_V}`,
           badge:   _severityBadge(2),
           tag:     'rain-near-me',
           vibrate: [150],
