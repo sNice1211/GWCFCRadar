@@ -29,6 +29,14 @@ const SITE_URL  = 'https://ralphhtml.github.io/GWCFCRadar/';
 // running the bot when the Worker is not deployed.
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 
+// Google retires model names, and a retired one fails as a confusing 404 rather
+// than anything that mentions deprecation. Pinning a current name here and
+// allowing an override means the next retirement is an env change, not a patch.
+// gemini-flash-latest rather than a pinned version: Google closes old names to
+// new projects, so a version pinned today can stop working for a fresh key
+// tomorrow even though nothing here changed.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+
 // Discord user id of the owner. Asturio addresses this person as "god".
 // Left blank means nobody gets the treatment, which is the safe default.
 const OWNER_ID  = process.env.DISCORD_OWNER_ID || '';
@@ -219,7 +227,7 @@ async function askAsturio(question, ctx, history = []) {
     { role: 'user', parts: [{ text: question }] },
   ];
   const endpoint = GEMINI_API_KEY
-    ? `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`
+    ? `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`
     : AI_WORKER;
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -246,8 +254,27 @@ async function askAsturio(question, ctx, history = []) {
 function explainApiError(msg) {
   if (!msg) return '';
   if (/generativelanguage\.googleapis\.com.*blocked|API_KEY_SERVICE_BLOCKED/i.test(msg)) {
-    return 'The Gemini API is switched off for this Google Cloud project. Enable "Generative Language API" at '
-         + 'console.cloud.google.com/apis/library/generativelanguage.googleapis.com?project=gwcfc-radar';
+    return 'This API key is not allowed to call Gemini. On the key at '
+         + 'console.cloud.google.com/apis/credentials, set API restrictions to "Gemini API". '
+         + 'Google will not let one key hold Gemini alongside other APIs, so Gemini needs its own key.';
+  }
+  // A retired model name comes back as a plain 404 that never says "deprecated".
+  if (/no longer available to new users/i.test(msg)) {
+    return `The model "${GEMINI_MODEL}" is closed to new projects. `
+         + 'Set GEMINI_MODEL to gemini-flash-latest.';
+  }
+  if (/is not found for API version|models\/.*is not found/i.test(msg)) {
+    return `The model "${GEMINI_MODEL}" does not exist. Google retired it. `
+         + 'Set GEMINI_MODEL to gemini-flash-latest.';
+  }
+  // Out of budget, which is not a bug and not something restarting will fix.
+  if (/prepayment credits are depleted/i.test(msg)) {
+    return 'Gemini is out of prepaid credit. Top the project up at ai.studio/projects. '
+         + 'Google Cloud trial credit does not cover the Gemini API, it is billed separately.';
+  }
+  if (/exceeded your current quota/i.test(msg)) {
+    return 'Gemini free-tier quota for today is used up. It resets at midnight Pacific, '
+         + 'or add billing at ai.studio/projects to lift the cap.';
   }
   return msg;
 }
