@@ -4399,7 +4399,27 @@ body.shot-mode #animbar,
 body.shot-mode #top-search-bar,
 body.shot-mode .leaflet-control-zoom,
 body.shot-mode #overlay-panel-stack,
-body.shot-mode #_toast {
+body.shot-mode #_toast,
+body.shot-mode #tutorial-modal-overlay,
+body.shot-mode #alerts-panel,
+body.shot-mode #eas-panel,
+body.shot-mode #forecast-panel,
+body.shot-mode #run-models-panel,
+body.shot-mode #spaghetti-models-panel,
+body.shot-mode #sev-compare-panel,
+body.shot-mode #nwr-rec-panel,
+body.shot-mode #storm-reports-panel {
+  display: none !important;
+}
+
+/* Everything hanging directly off body is interface: the loading screen, the
+   top bar, the floating buttons, the status bar. The map lives inside #main,
+   so keeping that one and dropping its siblings clears the rest without having
+   to name each one and without breaking when a new panel is added later.
+   Scripts, styles and the icon sprite are left alone: the sprite is what the
+   <use> references resolve against. */
+body.shot-mode > div:not(#main),
+body.shot-mode > button {
   display: none !important;
 }
 
@@ -17348,9 +17368,12 @@ function _actuallyDismiss() {
     else el.style.display = 'none';
     try { map.invalidateSize({ pan: false }); } catch(e){}
     _syncFabClearance();
-    // Auto-open tutorial for first-time visitors, after loading screen is fully gone
+    // Auto-open tutorial for first-time visitors, after loading screen is fully gone.
+    // Never in screenshot mode: a headless browser has empty storage, so it is
+    // always a first-time visitor, and the tutorial would cover every capture.
     try {
-      if (localStorage.getItem('gwcfc_tutorial_seen') !== '1') {
+      if (!document.body.classList.contains('shot-mode')
+          && localStorage.getItem('gwcfc_tutorial_seen') !== '1') {
         setTimeout(() => openTutorial(), 400);
       }
     } catch(e) {}
@@ -30471,13 +30494,13 @@ function _fireNotification(id, title, body, severity, alertId) {
   const isUrgent = severity >= 3;
   const opts = {
     body:    _plainText(body),
-    // icon is the large slot: always the logo, so the notification is
-    // recognisably this app at a glance.
-    icon:    './icons/icon-192.png',
-    // badge is the small slot: severity, so the colour tells you how bad it is
-    // without reading. Android masks the badge to a monochrome silhouette, so
-    // each badge also differs in SHAPE and still reads when the colour is lost.
-    badge:   _severityBadge(severity),
+    // icon is the large slot, shown on the right: the severity badge, so how
+    // bad it is reads from across the room, in full colour.
+    icon:    _severityBadge(severity),
+    // badge is the small slot, shown on the left beside the title: the logo,
+    // so the notification is identifiably this app. Android masks this one to
+    // a monochrome silhouette, so it reads as the logo's shape, not its colours.
+    badge:   './icons/icon-192.png',
     tag:     id,
     vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
     requireInteraction: isUrgent,
@@ -31324,7 +31347,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Dragging overlays into a new order now restacks the map as you drag, and it works for every overlay rather than only some of them. Map screenshots in Discord are quicker too.";
+const APP_LATEST_UPDATE = "Alert notifications now show the logo on the left and the severity badge on the right, so you can tell how bad it is at a glance.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
