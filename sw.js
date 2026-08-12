@@ -1,5 +1,5 @@
 // GWCFCRadar Service Worker - radar tile cache + background alert notifications
-const CACHE       = 'gwcfc-v13';
+const CACHE       = 'gwcfc-v14';
 const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
@@ -83,7 +83,7 @@ self.addEventListener('push', e => {
     self.registration.showNotification(_plainText(title), {
       body: _plainText(body),
       icon:    _severityBadge(payload.severe ? 3 : 1),
-      badge:   './icons/icon-192.png',
+      badge:   './icons/badge-logo.png',
       tag:     payload.id || 'gwcfc-alert',
       vibrate: payload.severe ? [200, 100, 200] : [100],
       data:    { url },
@@ -195,7 +195,7 @@ async function _checkAndNotify() {
     await self.registration.showNotification(_plainText(title), {
       body: _plainText(body),
       icon:    _severityBadge(sevRank),
-      badge:   './icons/icon-192.png',
+      badge:   './icons/badge-logo.png',
       tag:     id,
       vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
       requireInteraction: isUrgent,
@@ -335,7 +335,7 @@ async function _checkAndNotify() {
         await self.registration.showNotification(`${emoji} ${label} Near You`, {
           body:    'Radar shows precipitation within ~25 miles of your location',
           icon:    _severityBadge(2),
-          badge:   './icons/icon-192.png',
+          badge:   './icons/badge-logo.png',
           tag:     'rain-near-me',
           vibrate: [150],
           data:    { url: self.location.origin + '/GWCFCRadar/' },
