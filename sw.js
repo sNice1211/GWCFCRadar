@@ -1,5 +1,5 @@
 // GWCFCRadar Service Worker - radar tile cache + background alert notifications
-const CACHE       = 'gwcfc-v16';
+const CACHE       = 'gwcfc-v17';
 const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
