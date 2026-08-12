@@ -344,8 +344,18 @@ const PLACES = {
 // most of the wait. One is kept warm and reused instead, so only the first
 // screenshot after a restart pays for the launch.
 let _browser = null;
+// Puppeteer renamed this: older builds expose isConnected(), newer ones a
+// connected getter. Checking both means the warm browser is actually reused
+// instead of silently relaunching every time on whichever version is installed.
+function browserAlive(b) {
+  if (!b) return false;
+  if (typeof b.connected === 'boolean') return b.connected;
+  if (typeof b.isConnected === 'function') return b.isConnected();
+  return false;
+}
+
 async function getBrowser() {
-  if (_browser && _browser.connected) return _browser;
+  if (browserAlive(_browser)) return _browser;
 
   let puppeteer;
   try {
@@ -363,7 +373,9 @@ async function getBrowser() {
   try {
     _browser = await puppeteer.launch({
       executablePath: chrome,
-      headless: 'new',
+      // true, not the old 'new' string: recent Puppeteer treats that as an
+      // invalid value rather than a deprecated one.
+      headless: true,
       args: [
         '--no-sandbox',
         // A Pi has little shared memory, and Chromium crashes rendering a large
@@ -423,7 +435,10 @@ async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) 
         { timeout: SHOT_READY_MS }).catch(() => {});
       // jpeg, not png: a map photo is a photograph, and on a slow uplink a
       // 200 KB jpeg reaches Discord far sooner than a 2 MB png of the same thing.
-      return { image: await page.screenshot({ type: 'jpeg', quality: 82 }), url };
+      const shot = await page.screenshot({ type: 'jpeg', quality: 82 });
+      // Newer Puppeteer returns a Uint8Array where it used to return a Buffer,
+      // and discord.js will not accept the former as an attachment.
+      return { image: Buffer.from(shot), url };
     } finally {
       // Close the page but keep the browser, which is the whole point of holding one.
       if (page) await page.close().catch(() => {});
