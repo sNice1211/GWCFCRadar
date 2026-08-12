@@ -27463,20 +27463,64 @@ function _aiMakeLinkCode() {
   return out;
 }
 
+// Linking is a handshake through a scratch document rather than the bot writing
+// to the account directly, because the bot cannot touch the account at all: it
+// signs in anonymously, and users/{uid} is readable and writable only by the
+// person it belongs to. The old flow had the bot search every user for a code,
+// which the rules refused, so /link could never have worked.
+//
+// So the browser, which IS signed in as the owner, does both halves:
+//   1. here, write discordLinks/{CODE} saying which account is waiting
+//   2. the bot fills in who ran /link
+//   3. the listener below copies that into the account and clears the scratch doc
+//
+// Only step 2 belongs to the bot, and all it can do is add a Discord id to a
+// document that already names its target. It never gains access to an account.
+let _discordLinkUnsub = null;
+
 async function lqmGenerateDiscordCode() {
   const out = document.getElementById('lqm-discord-code');
   if (!_currentUser || !_fbDb) {
     if (out) out.textContent = 'Sign in first to link Discord.';
     return;
   }
+  // Abandon any previous wait, so an older code cannot land on the account
+  // after a newer one has been generated.
+  if (_discordLinkUnsub) { try { _discordLinkUnsub(); } catch(_) {} _discordLinkUnsub = null; }
+
   const code = _aiMakeLinkCode();
   const expires = Date.now() + AI_LINK_CODE_TTL_MS;
+  const uid = _currentUser.uid;
   try {
-    await _fbDb.collection('users').doc(_currentUser.uid).set({
-      discordLinkCode: code,
-      discordLinkExpires: expires
-    }, { merge: true });
-    if (out) out.innerHTML = `Run <b>/link ${code}</b> in Discord within 10 minutes.`;
+    await _fbDb.collection('discordLinks').doc(code).set({ uid, expires });
+    if (out) out.innerHTML = `Run <b>/link ${code}</b> in Discord within 10 minutes. Keep this page open.`;
+
+    const ref = _fbDb.collection('discordLinks').doc(code);
+    _discordLinkUnsub = ref.onSnapshot(async snap => {
+      const d = snap.data();
+      if (!d || !d.discordId) return;          // still waiting
+      try {
+        await _fbDb.collection('users').doc(uid).set({
+          discordId:  d.discordId,
+          discordTag: d.discordTag || '',
+        }, { merge: true });
+        if (out) out.textContent = `Linked to Discord${d.discordTag ? ' as ' + d.discordTag : ''}.`;
+        showToast('Discord linked.', 4000);
+      } catch(e) {
+        console.warn('discord link save:', e);
+        if (out) out.textContent = 'Could not save the link - ' + (e.code || 'try again');
+      }
+      // The scratch document has done its job; leaving it would let the same
+      // code be replayed.
+      try { await ref.delete(); } catch(_) {}
+      if (_discordLinkUnsub) { _discordLinkUnsub(); _discordLinkUnsub = null; }
+    }, err => console.warn('discord link watch:', err));
+
+    // Stop listening when the code expires, rather than holding a subscription
+    // open for the rest of the session.
+    setTimeout(() => {
+      if (_discordLinkUnsub) { try { _discordLinkUnsub(); } catch(_) {} _discordLinkUnsub = null; }
+    }, AI_LINK_CODE_TTL_MS);
   } catch(e) {
     console.warn('discord link code:', e);
     if (out) out.textContent = 'Could not create a code - ' + (e.code || 'try again');
@@ -31470,7 +31514,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed NHC storm icons being painted over by their own forecast cone, and storm popups now match the alert popup layout.";
+const APP_LATEST_UPDATE = "Discord account linking works now. It never could before: the bot was asking Firestore for something the rules refused.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

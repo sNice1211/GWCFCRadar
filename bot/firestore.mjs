@@ -77,27 +77,45 @@ function fromFields(f) {
   return Object.fromEntries(Object.entries(f || {}).map(([k, v]) => [k, fromValue(v)]));
 }
 
-// Finds the account holding a link code. Codes are short and expire, so this is
-// also where an expired one is rejected rather than at the call site.
-export async function findUserByLinkCode(code) {
-  const res = await call(':runQuery', {
-    method: 'POST',
+// ── Linking ─────────────────────────────────────────────────────────────────
+// This used to search the whole users collection for a code, which the rules
+// refuse: users/{uid} is readable only by the account it belongs to, and this
+// bot is an anonymous visitor. It could not have worked.
+//
+// Instead the browser leaves a scratch document naming the account that is
+// waiting, and the bot only says who ran /link. The browser, which IS the
+// owner, copies the result onto the account and deletes the scratch doc. The
+// bot never reads or writes an account.
+
+export async function getLinkCode(code) {
+  let doc;
+  try {
+    doc = await call(`/discordLinks/${encodeURIComponent(code)}`);
+  } catch (e) {
+    if (/404|NOT_FOUND/i.test(e.message)) return null;
+    throw e;
+  }
+  const data = fromFields(doc.fields);
+  if (!data.uid) return null;
+  const expired = !data.expires || Date.now() > Number(data.expires);
+  return { code, data, expired, claimed: !!data.discordId };
+}
+
+// Adds only the Discord identity. uid and expires are left untouched, and the
+// rules enforce that, so a claim cannot be repointed at a different account.
+export async function claimLinkCode(code, discordId, discordTag) {
+  const mask = ['discordId', 'discordTag', 'claimedAt']
+    .map(k => `updateMask.fieldPaths=${k}`).join('&');
+  return call(`/discordLinks/${encodeURIComponent(code)}?${mask}`, {
+    method: 'PATCH',
     body: JSON.stringify({
-      structuredQuery: {
-        from: [{ collectionId: 'users' }],
-        where: { fieldFilter: { field: { fieldPath: 'discordLinkCode' }, op: 'EQUAL', value: { stringValue: code } } },
-        limit: 1,
+      fields: {
+        discordId:  toValue(String(discordId)),
+        discordTag: toValue(String(discordTag || '')),
+        claimedAt:  toValue(Date.now()),
       },
     }),
   });
-  const row = (Array.isArray(res) ? res : []).find(r => r.document);
-  if (!row) return null;
-  const uid = row.document.name.split('/').pop();
-  const data = fromFields(row.document.fields);
-  if (!data.discordLinkExpires || Date.now() > Number(data.discordLinkExpires)) {
-    return { uid, data, expired: true };
-  }
-  return { uid, data, expired: false };
 }
 
 export async function findUserByDiscordId(discordId) {

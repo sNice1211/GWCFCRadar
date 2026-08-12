@@ -14,7 +14,7 @@ import {
   REST, Routes, SlashCommandBuilder,
 } from 'discord.js';
 import { existsSync } from 'node:fs';
-import { findUserByLinkCode, findUserByDiscordId, patchUser, addChatMessage, getUser } from './firestore.mjs';
+import { getLinkCode, claimLinkCode, findUserByDiscordId, patchUser, addChatMessage, getUser } from './firestore.mjs';
 
 const TOKEN     = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -662,17 +662,14 @@ client.on(Events.InteractionCreate, async (i) => {
     if (i.commandName === 'link') {
       const code = i.options.getString('code', true).trim().toUpperCase();
       await i.deferReply({ ephemeral: true });   // the code is a credential, keep it out of the channel
-      const found = await findUserByLinkCode(code);
+      const found = await getLinkCode(code);
       if (!found)        return i.editReply('No account is waiting on that code. Generate a fresh one in your profile on the site.');
       if (found.expired) return i.editReply('That code has expired. Codes last 10 minutes, so generate a new one.');
-      await patchUser(found.uid, {
-        discordId: i.user.id,
-        discordTag: i.user.username,
-        // Clear the code so it cannot be claimed twice.
-        discordLinkCode: '',
-        discordLinkExpires: 0,
-      });
-      return i.editReply('Linked. Your Discord chats with Asturio now save to your GWCFC Radar account, and your saved chats are available here.');
+      if (found.claimed) return i.editReply('That code has already been used. Generate a fresh one.');
+      await claimLinkCode(code, i.user.id, i.user.username);
+      // The browser finishes the job, because only it can write to the account.
+      return i.editReply('Claimed. The site finishes linking within a second or two, so leave that page open. '
+        + 'If nothing happens there, the page was closed and the code needs generating again.');
     }
 
     if (i.commandName === 'unlink') {

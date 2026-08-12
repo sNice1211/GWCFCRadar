@@ -113,6 +113,45 @@ service cloud.firestore {
       allow delete: if isOwner();
     }
 
+    // Discord account linking, as a handshake through a scratch document.
+    //
+    // The bot cannot touch users/{uid}: it signs in anonymously, and the rules
+    // above allow only the owner. The previous flow had it search every user
+    // for a link code, which was refused, so /link never worked at all.
+    //
+    // Now the browser writes a document here naming the account that is
+    // waiting, the bot adds who ran /link, and the browser copies the result
+    // onto its own account and deletes this. The bot never reads or writes an
+    // account, and the worst it can do is attach its own Discord id to a code
+    // someone is currently offering, which is what /link is for.
+    //
+    // The document id IS the code: six random characters, live for ten
+    // minutes, deleted the moment it is used.
+    match /discordLinks/{code} {
+      // Only ever create one pointing at yourself.
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'expires']);
+
+      // Any signed-in client may read one: the bot has to, and knowing a code
+      // is the whole credential. Nothing sensitive lives in here.
+      allow read: if isSignedIn();
+
+      // The bot may add its identity and nothing else. uid and expires cannot
+      // be touched, so a claim cannot be repointed at somebody else's account,
+      // and an already-claimed code cannot be overwritten by a second person.
+      allow update: if isSignedIn()
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.expires == resource.data.expires
+        && request.time.toMillis() < resource.data.expires
+        && resource.data.get('discordId', '') == ''
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['discordId', 'discordTag', 'claimedAt']);
+
+      // Cleaned up by the account it belongs to once linking is done.
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
     // ── NEW ───────────────────────────────────────────────────────────────
 
     // Anonymous visit counter. Visitors are not signed in, so this stays open;
