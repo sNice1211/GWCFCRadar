@@ -28,7 +28,28 @@
 <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
 <link rel="apple-touch-icon" href="./icons/icon-192.png">
 <!-- Register service worker first , caches all tile responses for instant loads -->
-<script>if('serviceWorker'in navigator)navigator.serviceWorker.register('./sw.js',{scope:'./'});</script>
+<script>
+// Registering alone is not enough to keep the worker current. The browser only
+// looks for a new sw.js on a navigation, and this is kept open or installed as
+// an app for days at a time, so a shipped fix could sit undelivered while the
+// old worker carried on raising notifications the old way. Asking explicitly on
+// load, and then hourly, is what actually makes a deploy arrive.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js', { scope: './' }).then(reg => {
+    reg.update().catch(() => {});
+    setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
+  }).catch(() => {});
+  // sw.js calls skipWaiting, so a new worker takes over mid-session. Reload once
+  // so the page and the worker are the same version, guarding against the reload
+  // loop this causes if the worker is replaced again during startup.
+  let _swReloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (_swReloaded) return;
+    _swReloaded = true;
+    location.reload();
+  });
+}
+</script>
 <script>
 // Earliest possible loading failsafe - runs before Leaflet, Firebase, or any app code.
 // Removes #loading after 10 s no matter what (CDN down, JS error, window.load never fires).
@@ -30504,6 +30525,14 @@ function _fireNotification(id, title, body, severity, alertId) {
     tag:     id,
     vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
     requireInteraction: isUrgent,
+    // A tag makes a repeat REPLACE the previous notification, and a silent
+    // replacement is how an updated warning arrives without anyone noticing.
+    // renotify makes it alert again, which is the point of sending it twice.
+    renotify: true,
+    // Be explicit rather than relying on the default. A silent notification is
+    // filed straight into the tray, which is exactly what must not happen to a
+    // tornado warning.
+    silent:  false,
     // alertId lets the tap fly straight to the polygon instead of just focusing
     // the tab. The url carries it too, for the case where no tab is open.
     data: {
@@ -31347,7 +31376,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Alert notifications show the logo in full colour on the right and the severity mark on the left, so you can tell an alert apart at a glance.";
+const APP_LATEST_UPDATE = "Alerts now pop up on screen instead of landing silently in the tray, and the app checks for its own updates so fixes actually reach you.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

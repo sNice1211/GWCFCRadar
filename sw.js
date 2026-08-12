@@ -1,5 +1,5 @@
 // GWCFCRadar Service Worker - radar tile cache + background alert notifications
-const CACHE       = 'gwcfc-v15';
+const CACHE       = 'gwcfc-v16';
 const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
@@ -87,6 +87,11 @@ self.addEventListener('push', e => {
       badge:   _severityBadge(payload.severe ? 3 : 1),
       tag:     payload.id || 'gwcfc-alert',
       vibrate: payload.severe ? [200, 100, 200] : [100],
+      requireInteraction: !!payload.severe,
+      // A tag makes a repeat replace the previous notification silently, which
+      // is how an updated warning arrives unnoticed. These two make it alert.
+      renotify: true,
+      silent:  false,
       data:    { url },
     })
   );
@@ -200,6 +205,8 @@ async function _checkAndNotify() {
       tag:     id,
       vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
       requireInteraction: isUrgent,
+      renotify: true,
+      silent:  false,
       data:    { url: self.location.origin + '/GWCFCRadar/' },
     });
   }
@@ -339,6 +346,8 @@ async function _checkAndNotify() {
           badge:   _severityBadge(2),
           tag:     'rain-near-me',
           vibrate: [150],
+          renotify: true,
+          silent:  false,
           data:    { url: self.location.origin + '/GWCFCRadar/' },
         });
       } else if (!isRaining) {
