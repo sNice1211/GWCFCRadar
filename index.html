@@ -29437,6 +29437,62 @@ const GWCFC_FB_CONFIG = {
 };
 const FIREBASE_READY = GWCFC_FB_CONFIG.apiKey !== "YOUR_API_KEY";
 
+// ── DISCORD SIGN-IN ─────────────────────────────────────────────────────────
+// The Client ID is public - it appears in every invite link - so it lives here.
+// The client secret does not and never can: the code-for-identity exchange, and
+// signing the Firebase session, both happen in discord-auth/ where a visitor
+// cannot read them. See that folder's README.
+const DISCORD_CLIENT_ID = '1499924805833723944';
+const DISCORD_AUTH_WORKER = 'https://gwcfcradar-discord-auth.ralphies1005.workers.dev';
+
+function authDiscordLogin() {
+  if (!DISCORD_AUTH_WORKER) { _showAuthError('Discord sign-in is not set up yet.'); return; }
+  // Return to this page without any query or fragment already on it, so the
+  // address the Worker checks is the plain page address.
+  const back = location.origin + location.pathname;
+  location.href = `${DISCORD_AUTH_WORKER}/login?redirect=${encodeURIComponent(back)}`;
+}
+
+// Runs on load. The Worker sends the session token back in the fragment, which
+// browsers do not send to servers, so it stays out of proxy and referrer logs.
+// It is cleared from the address bar before anything else happens.
+async function _handleDiscordReturn() {
+  if (!location.hash || location.hash.length < 2) return;
+  const p = new URLSearchParams(location.hash.slice(1));
+  const err = p.get('discord_error'), token = p.get('discord_token');
+  if (!err && !token) return;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (err) { showToast('Discord sign-in: ' + err, 6000); return; }
+  if (!_fbAuth || !_fbDb) { showToast('Accounts are still starting up, try again.', 4000); return; }
+  try {
+    const cred = await _fbAuth.signInWithCustomToken(token);
+    const name = (p.get('discord_name') || 'Discord user').slice(0, 40);
+    if (cred.user.displayName !== name) {
+      await cred.user.updateProfile({ displayName: name }).catch(() => {});
+    }
+    // createdAt is only written the first time, so signing in again does not
+    // keep resetting the date the account was made.
+    const ref = _fbDb.collection('users').doc(cred.user.uid);
+    const existing = await ref.get().catch(() => null);
+    const doc = {
+      displayName: name,
+      authMethod: 'discord',
+      email: p.get('discord_email') || null,
+      discordId: (p.get('discord_token') ? cred.user.uid.replace(/^discord:/, '') : ''),
+      discordTag: name,
+      avatarImage: p.get('discord_avatar') || null,
+      lastVisit: firebase.firestore.FieldValue.serverTimestamp(),
+    };
+    if (!existing || !existing.exists) doc.createdAt = firebase.firestore.FieldValue.serverTimestamp();
+    await ref.set(doc, { merge: true });
+    closeAuthModal();
+    showToast('Signed in with Discord as ' + name, 3500);
+  } catch (e) {
+    console.warn('Discord sign-in:', e);
+    showToast('Could not finish the Discord sign-in: ' + (e.message || 'unknown error'), 6000);
+  }
+}
+
 let _fbApp, _fbAuth, _fbDb, _currentUser = null;
 
 // A saved layer/overlay preset is applied once per page load and never again.
@@ -29455,6 +29511,9 @@ function _fbInit() {
     _fbAuth = firebase.auth();
     _fbDb   = firebase.firestore();
     _fbAuth.onAuthStateChanged(u => u ? _onSignedIn(u) : _onSignedOut());
+    // Coming back from Discord, finish the sign-in. Deliberately after auth is
+    // wired up, so onAuthStateChanged catches the result.
+    _handleDiscordReturn().catch(e => console.warn('discord return:', e));
     return true;
   } catch(e) { console.warn('Firebase init:', e); return false; }
 }
@@ -32096,13 +32155,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     <!-- Discord coming-soon info -->
     <div id="auth-discord-info">
-      <strong>Discord login coming soon!</strong><br><br>
-      To enable Discord login you'll need to:<br>
-      1. Go to <a href="https://discord.com/developers/applications" target="_blank" rel="noopener noreferrer">discord.com/developers/applications</a><br>
-      2. Create a new application named <strong>GWCFC Radar</strong><br>
-      3. Under OAuth2 <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-arrow></use></svg> add redirect URI for your radar domain<br>
-      4. Copy the <strong>Client ID</strong> and paste it into the DISCORD_CLIENT_ID variable in the code<br><br>
-      For now, use <strong>Email</strong> or <strong>Phone</strong> to create your account.
+      <div class="auth-google-btn" onclick="authDiscordLogin()" style="cursor:pointer;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="#5865F2"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.24.5c1.6.38 3.07 1.05 4.43 1.98a15.3 15.3 0 0 0-15.2 0A15.4 15.4 0 0 1 8.84 3.5L8.6 3a19.8 19.8 0 0 0-4.9 1.4C.9 8.5.16 12.6.5 16.6a19.9 19.9 0 0 0 6.06 3.07l.79-1.1a12.9 12.9 0 0 1-1.94-.94l.48-.37a14.2 14.2 0 0 0 12.22 0l.48.37c-.61.36-1.26.68-1.94.94l.79 1.1a19.9 19.9 0 0 0 6.06-3.07c.4-4.63-.68-8.7-2.86-12.2zM8.3 14.2c-1.18 0-2.15-1.08-2.15-2.4s.95-2.42 2.15-2.42c1.2 0 2.17 1.09 2.15 2.42 0 1.32-.95 2.4-2.15 2.4zm7.4 0c-1.18 0-2.15-1.08-2.15-2.4s.95-2.42 2.15-2.42c1.2 0 2.17 1.09 2.15 2.42 0 1.32-.95 2.4-2.15 2.4z"/></svg>
+        Continue with Discord
+      </div>
+      <p style="margin-top:10px;font-size:10px;line-height:1.5;color:rgba(212,232,255,0.5);">
+        Signs you in with your Discord account. We only read your username, avatar and email.
+      </p>
     </div>
 
     <!-- Display name (signup only) -->
