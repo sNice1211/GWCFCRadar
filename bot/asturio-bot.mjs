@@ -66,7 +66,11 @@ async function getUserContext(user, guild) {
     id: user.id,
     nickname: user.username,
     roles: [],
-    isOwner: !!OWNER_ID && user.id === OWNER_ID,
+    // Whoever owns the server is the owner, with DISCORD_OWNER_ID as an
+    // override. Deriving it means this works with nothing configured, rather
+    // than silently treating the owner as a stranger because an id was never
+    // filled in.
+    isOwner: (!!OWNER_ID && user.id === OWNER_ID) || (!!guild && user.id === guild.ownerId),
     radarLinked: false,
     radarProfile: null,
   };
@@ -213,7 +217,12 @@ rumour as an official product.
 Rules:
 - Answer in plain Discord text. Short paragraphs, no tables, no headers.
 - Keep it under about 250 words unless asked for detail.
-- Ground answers in the live data above. If it does not cover the question, say what you do not know rather than guessing.
+- Ground answers in the live data above. You can also search the web, so look
+  things up rather than guessing or saying your knowledge is out of date.
+- Say when something came from a search rather than the feeds above, so nobody
+  mistakes a news report for an official NWS product.
+- People can ask you for a picture of the map with /map, so mention that when
+  someone is trying to describe a place or a setup in words.
 - Use who you are talking to. Their name, their region and what was just said in the channel are all fair to reference.
 - Answer whatever is asked, weather or not. If it is off topic, still answer, then bring it back to something useful.
 - You are in Discord, not on the map, so you cannot see the user's screen, toggle layers or move the map. If they want that, point them at the site.
@@ -235,8 +244,12 @@ async function askAsturio(question, ctx, history = []) {
     body: JSON.stringify({
       system_instruction: { parts: [{ text: systemPrompt({ alerts, reports, ...ctx }) }] },
       contents,
+      // Google Search grounding. Without it the model answers weather questions
+      // from training data that is months stale, which for this subject is worse
+      // than useless. With it, anything outside the feeds above is looked up.
+      tools: [{ google_search: {} }],
     }),
-    signal: withTimeout(45000),
+    signal: withTimeout(60000),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(explainApiError(data?.error?.message) || `Asturio HTTP ${res.status}`);
@@ -277,6 +290,79 @@ function explainApiError(msg) {
          + 'or add billing at ai.studio/projects to lift the cap.';
   }
   return msg;
+}
+
+// ── Photographing the map ──────────────────────────────────────────────────
+// The site takes its view from the URL (?lat, ?lon, ?z, ?basemap, ?layers,
+// ?overlays, ?shot=1), so a screenshot is a matter of opening the right link
+// in a headless browser and waiting for it to say it has settled.
+//
+// puppeteer-core, not puppeteer: the full package downloads its own ~200 MB
+// Chromium, which on a Pi is a slow download onto an SD card for a browser the
+// system already has. This drives the installed one instead.
+//
+// Imported lazily so a machine without it still runs every other command, and
+// /map is the only thing that reports the problem.
+const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/chromium-browser';
+const SHOT_W = 1280, SHOT_H = 800;
+
+// Named places, so nobody has to know coordinates to ask for a picture.
+const PLACES = {
+  us:        { lat: 39.5,  lon: -98.4, z: 4 },
+  southeast: { lat: 33.5,  lon: -84.4, z: 6 },
+  midwest:   { lat: 41.9,  lon: -93.6, z: 6 },
+  northeast: { lat: 42.4,  lon: -73.5, z: 6 },
+  plains:    { lat: 35.5,  lon: -98.0, z: 6 },
+  gulf:      { lat: 27.8,  lon: -90.0, z: 6 },
+  west:      { lat: 39.0,  lon: -119.0, z: 5 },
+  atlantic:  { lat: 25.0,  lon: -60.0, z: 4 },
+};
+
+async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) {
+  let puppeteer;
+  try {
+    puppeteer = (await import('puppeteer-core')).default;
+  } catch {
+    throw new Error('Screenshots need puppeteer-core. On the bot machine run: npm install puppeteer-core');
+  }
+
+  const spot = PLACES[String(place || '').toLowerCase()] || {};
+  const q = new URLSearchParams({ shot: '1' });
+  const setNum = (k, v) => { if (v !== null && v !== undefined && v !== '') q.set(k, String(v)); };
+  setNum('lat', lat ?? spot.lat);
+  setNum('lon', lon ?? spot.lon);
+  setNum('z',   z   ?? spot.z);
+  if (basemap) q.set('basemap', basemap);
+  if (layers)   q.set('layers', layers);
+  if (overlays) q.set('overlays', overlays);
+
+  const url = `${SITE_URL}?${q}`;
+  let browser;
+  try {
+    browser = await puppeteer.launch({
+      executablePath: CHROME_PATH,
+      headless: 'new',
+      // A Pi has little shared memory, and Chromium crashes rendering a large
+      // map without this.
+      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+    const page = await browser.newPage();
+    await page.setViewport({ width: SHOT_W, height: SHOT_H, deviceScaleFactor: 1 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // The page sets this once its tiles have stopped loading, so this waits on
+    // the map actually being drawn rather than on a guessed delay.
+    await page.waitForFunction(() => document.body.dataset.shotReady === '1', { timeout: 60000 })
+      .catch(() => {});   // a stalled layer should still yield a picture
+    return { image: await page.screenshot({ type: 'png' }), url };
+  } catch (e) {
+    if (/ENOENT|executablePath|Failed to launch/i.test(e.message)) {
+      throw new Error(`No browser at ${CHROME_PATH}. Install one with: sudo apt install -y chromium-browser`
+        + ' , or set CHROME_PATH to where yours lives.');
+    }
+    throw e;
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
 }
 
 // Split on paragraph, then line, then hard-cut, so a long answer never gets
@@ -362,6 +448,27 @@ const commands = [
   new SlashCommandBuilder()
     .setName('unlink')
     .setDescription('Disconnect this Discord account from GWCFC Radar'),
+  new SlashCommandBuilder()
+    .setName('map')
+    .setDescription('Post a picture of the radar map')
+    .addStringOption(o => o.setName('place')
+      .setDescription('Where to look')
+      .addChoices(...Object.keys(PLACES).map(k => ({ name: k, value: k }))))
+    .addStringOption(o => o.setName('layers')
+      .setDescription('Comma separated, e.g. nexrad,tornado,lightning'))
+    .addStringOption(o => o.setName('overlays')
+      .setDescription('Comma separated, e.g. alerts,spc-outlook,wind-particles'))
+    .addStringOption(o => o.setName('basemap')
+      .setDescription('Basemap style')
+      .addChoices(
+        { name: 'satellite', value: 'satellite' },
+        { name: 'dark',      value: 'dark' },
+        { name: 'light',     value: 'light' },
+        { name: 'topo',      value: 'topo' },
+      ))
+    .addNumberOption(o => o.setName('lat').setDescription('Latitude, overrides place'))
+    .addNumberOption(o => o.setName('lon').setDescription('Longitude, overrides place'))
+    .addIntegerOption(o => o.setName('zoom').setDescription('Zoom, 3 to 12')),
 ].map(c => c.toJSON());
 
 async function registerCommands() {
@@ -403,6 +510,25 @@ client.on(Events.InteractionCreate, async (i) => {
       }
       return;
     }
+    if (i.commandName === 'map') {
+      // Launching a browser and waiting for tiles runs well past Discord's
+      // three second reply window.
+      await i.deferReply();
+      const { image, url } = await screenshotMap({
+        place:    i.options.getString('place'),
+        lat:      i.options.getNumber('lat'),
+        lon:      i.options.getNumber('lon'),
+        z:        i.options.getInteger('zoom'),
+        basemap:  i.options.getString('basemap'),
+        layers:   i.options.getString('layers'),
+        overlays: i.options.getString('overlays'),
+      });
+      return i.editReply({
+        content: `<${url}>`,
+        files: [{ attachment: image, name: 'radar.png' }],
+      });
+    }
+
     if (i.commandName === 'link') {
       const code = i.options.getString('code', true).trim().toUpperCase();
       await i.deferReply({ ephemeral: true });   // the code is a credential, keep it out of the channel
