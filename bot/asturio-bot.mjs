@@ -320,7 +320,13 @@ function findChrome() {
   for (const p of CHROME_CANDIDATES) if (existsSync(p)) return p;
   return null;
 }
-const SHOT_W = 1280, SHOT_H = 800;
+// Sized for a Pi rather than for a desktop. Every extra pixel is more tiles to
+// fetch and more canvas to rasterise on a machine with no GPU, and this is still
+// comfortably legible in Discord.
+const SHOT_W = Number(process.env.SHOT_WIDTH)  || 1000;
+const SHOT_H = Number(process.env.SHOT_HEIGHT) || 640;
+const SHOT_NAV_MS   = 45000;   // loading the page itself
+const SHOT_READY_MS = 20000;   // then waiting for tiles to settle
 
 // Named places, so nobody has to know coordinates to ask for a picture.
 const PLACES = {
@@ -334,7 +340,13 @@ const PLACES = {
   atlantic:  { lat: 25.0,  lon: -60.0, z: 4 },
 };
 
-async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) {
+// Starting a browser is the single most expensive thing here, and on a Pi it is
+// most of the wait. One is kept warm and reused instead, so only the first
+// screenshot after a restart pays for the launch.
+let _browser = null;
+async function getBrowser() {
+  if (_browser && _browser.connected) return _browser;
+
   let puppeteer;
   try {
     puppeteer = (await import('puppeteer-core')).default;
@@ -342,6 +354,50 @@ async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) 
     throw new Error('Screenshots need puppeteer-core. On the bot machine run: npm install puppeteer-core');
   }
 
+  const chrome = findChrome();
+  if (!chrome) {
+    throw new Error('No Chromium found. Install one with: sudo apt install -y chromium'
+      + ' , or set CHROME_PATH if yours lives somewhere unusual.');
+  }
+
+  try {
+    _browser = await puppeteer.launch({
+      executablePath: chrome,
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        // A Pi has little shared memory, and Chromium crashes rendering a large
+        // map without this.
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        // None of this is wanted for a single offscreen page, and all of it
+        // costs startup time and memory on a small machine.
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-sync',
+        '--no-first-run',
+        '--mute-audio',
+      ],
+    });
+  } catch (e) {
+    throw new Error(`Chromium at ${chrome} would not start: ${String(e.message).split('\n')[0]}`);
+  }
+  // If it dies (Pi runs out of memory, say), do not keep handing out a corpse.
+  _browser.on('disconnected', () => { _browser = null; });
+  return _browser;
+}
+
+// One screenshot at a time. Two headless page loads at once on a Pi is how both
+// end up slower than either would have been alone, and how it runs out of memory.
+let _shotQueue = Promise.resolve();
+function queueShot(fn) {
+  const run = _shotQueue.then(fn, fn);
+  // Keep the chain alive regardless of this job's outcome.
+  _shotQueue = run.then(() => {}, () => {});
+  return run;
+}
+
+async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) {
   const spot = PLACES[String(place || '').toLowerCase()] || {};
   const q = new URLSearchParams({ shot: '1' });
   const setNum = (k, v) => { if (v !== null && v !== undefined && v !== '') q.set(k, String(v)); };
@@ -352,38 +408,27 @@ async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) 
   if (layers)   q.set('layers', layers);
   if (overlays) q.set('overlays', overlays);
 
-  const chrome = findChrome();
-  if (!chrome) {
-    throw new Error('No Chromium found. Install one with: sudo apt install -y chromium'
-      + ' , or set CHROME_PATH if yours lives somewhere unusual.');
-  }
-
   const url = `${SITE_URL}?${q}`;
-  let browser;
-  try {
-    browser = await puppeteer.launch({
-      executablePath: chrome,
-      headless: 'new',
-      // A Pi has little shared memory, and Chromium crashes rendering a large
-      // map without this.
-      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
-    });
-    const page = await browser.newPage();
-    await page.setViewport({ width: SHOT_W, height: SHOT_H, deviceScaleFactor: 1 });
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    // The page sets this once its tiles have stopped loading, so this waits on
-    // the map actually being drawn rather than on a guessed delay.
-    await page.waitForFunction(() => document.body.dataset.shotReady === '1', { timeout: 60000 })
-      .catch(() => {});   // a stalled layer should still yield a picture
-    return { image: await page.screenshot({ type: 'png' }), url };
-  } catch (e) {
-    if (/ENOENT|executablePath|Failed to launch/i.test(e.message)) {
-      throw new Error(`Chromium at ${chrome} would not start: ${e.message.split('\n')[0]}`);
+  return queueShot(async () => {
+    const browser = await getBrowser();
+    let page;
+    try {
+      page = await browser.newPage();
+      await page.setViewport({ width: SHOT_W, height: SHOT_H, deviceScaleFactor: 1 });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: SHOT_NAV_MS });
+      // The page sets this once its tiles have stopped loading, so this waits on
+      // the map actually being drawn rather than on a guessed delay. A stalled
+      // layer should still produce a picture, so a timeout here is not fatal.
+      await page.waitForFunction(() => document.body.dataset.shotReady === '1',
+        { timeout: SHOT_READY_MS }).catch(() => {});
+      // jpeg, not png: a map photo is a photograph, and on a slow uplink a
+      // 200 KB jpeg reaches Discord far sooner than a 2 MB png of the same thing.
+      return { image: await page.screenshot({ type: 'jpeg', quality: 82 }), url };
+    } finally {
+      // Close the page but keep the browser, which is the whole point of holding one.
+      if (page) await page.close().catch(() => {});
     }
-    throw e;
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
+  });
 }
 
 // Split on paragraph, then line, then hard-cut, so a long answer never gets
@@ -546,7 +591,7 @@ client.on(Events.InteractionCreate, async (i) => {
       });
       return i.editReply({
         content: `<${url}>`,
-        files: [{ attachment: image, name: 'radar.png' }],
+        files: [{ attachment: image, name: 'radar.jpg' }],
       });
     }
 
