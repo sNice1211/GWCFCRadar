@@ -30423,6 +30423,14 @@ document.addEventListener('DOMContentLoaded', () => {
 //
 //   ?lat=35.2&lon=-97.4&z=8&basemap=dark&layers=nexrad&overlays=alerts&shot=1
 //
+// Sub-products pick what a layer actually shows, which is usually the real
+// question: "radar" is rarely what someone means, "velocity" is.
+//
+//   ?product=vel          radar product, switches radar on by itself
+//   ?satproduct=ch13      GOES band, switches satellite on by itself
+//   ?model=gfs&modelvar=precip
+//   ?wind=wind-surface    one parameter per product family, named after it
+//
 // shot=1 additionally strips the interface, so the capture is map only.
 // Deliberately shorter than the screenshot tool's own wait, so a slow layer
 // makes the page declare itself ready and get photographed as-is, rather than
@@ -30465,7 +30473,63 @@ function _applyUrlView(p) {
       try { toggleOverlayPill(id); } catch(e) { console.warn('url overlay', id, e); }
     }
   }
+
+  // ── Sub-products ──
+  // Turning a layer on only gets the family. These pick which product inside
+  // it, which is usually the thing someone actually wanted: "radar" is rarely
+  // the question, "velocity" is.
+
+  // Radar product (ref, vel, zdr, cc, kdp, sw, hc, accum, boha). Needs the
+  // radar layer on to show anything, so switch it on rather than silently
+  // producing a blank map when only a product was asked for.
+  const product = (p.get('product') || '').trim();
+  if (product && typeof selectProduct === 'function') {
+    try {
+      if (!activeLayers.nexrad && typeof toggleLayer === 'function') toggleLayer('nexrad');
+      selectProduct(product);
+    } catch(e) { console.warn('url product:', e); }
+  }
+
+  // Satellite band (ch01 to ch16), same reasoning.
+  const sat = (p.get('satproduct') || '').trim();
+  if (sat && typeof _setGoesProduct === 'function') {
+    try {
+      if (!activeLayers.satellite && typeof toggleLayer === 'function') toggleLayer('satellite');
+      _setGoesProduct(sat);
+    } catch(e) { console.warn('url satproduct:', e); }
+  }
+
+  // Model and its variable. Plain globals rather than a setter, matching how
+  // the saved-preset restore does it.
+  const model = (p.get('model') || '').trim();
+  const mvar  = (p.get('modelvar') || '').trim();
+  if (model && typeof currentModel !== 'undefined') currentModel = model;
+  if (mvar  && typeof currentModelVar !== 'undefined') currentModelVar = mvar;
+  if ((model || mvar) && typeof updateModelInfo === 'function') {
+    try { updateModelInfo(currentModel); } catch(e) { console.warn('url model:', e); }
+  }
+
+  // The product families each expose apply(product), which switches the family
+  // on and selects the product in one go. Driving them off that registry means
+  // a family added later needs no change here: ?wind=wind-surface, ?waves=
+  // wave-height, and so on, one parameter per family, named after it.
+  try {
+    for (const fam of _PRODUCT_FAMILIES) {
+      const want = (p.get(fam.id) || '').trim();
+      if (!want) continue;
+      try { fam.apply(want); } catch(e) { console.warn('url family', fam.id, e); }
+    }
+  } catch(e) { console.warn('url families unavailable:', e); }
 }
+
+// Every parameter _applyUrlView understands. Kept beside it so adding one there
+// cannot be forgotten here, which would leave the parameter silently ignored
+// whenever it is the only one in the link.
+const _URL_VIEW_PARAMS = [
+  'lat','lon','z','basemap','layers','overlays','shot',
+  'product','satproduct','model','modelvar',
+  'waves','air','temperature','pressure','wind',
+];
 
 // Resolves once no tile in the document is still loading, so a screenshot is
 // not taken of a half-drawn map. Falls back on a timeout, because a layer that
@@ -30486,7 +30550,7 @@ function _whenTilesSettled(timeout = _URL_VIEW_MAX_WAIT) {
 document.addEventListener('DOMContentLoaded', () => {
   let p = null;
   try { p = new URLSearchParams(location.search); } catch(e) { return; }
-  const wanted = ['lat','lon','z','basemap','layers','overlays','shot'].some(k => p.has(k));
+  const wanted = _URL_VIEW_PARAMS.some(k => p.has(k));
   if (!wanted) return;
 
   if (p.get('shot') === '1') document.body.classList.add('shot-mode');
@@ -31378,7 +31442,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Alert notifications now show a severity symbol on the left that actually differs by how serious the alert is, instead of the same blank circle every time.";
+const APP_LATEST_UPDATE = "Links can now pick the product inside a layer, not just the layer: velocity instead of radar, a particular satellite band, a wind or wave product.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

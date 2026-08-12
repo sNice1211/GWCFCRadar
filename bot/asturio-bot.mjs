@@ -409,16 +409,21 @@ function queueShot(fn) {
   return run;
 }
 
-async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) {
+async function screenshotMap(opt) {
+  const { place, lat, lon, z } = opt;
   const spot = PLACES[String(place || '').toLowerCase()] || {};
   const q = new URLSearchParams({ shot: '1' });
   const setNum = (k, v) => { if (v !== null && v !== undefined && v !== '') q.set(k, String(v)); };
   setNum('lat', lat ?? spot.lat);
   setNum('lon', lon ?? spot.lon);
   setNum('z',   z   ?? spot.z);
-  if (basemap) q.set('basemap', basemap);
-  if (layers)   q.set('layers', layers);
-  if (overlays) q.set('overlays', overlays);
+  // Everything else is passed through verbatim under the name the page already
+  // uses, so a parameter added to the page needs only a command option here,
+  // not a translation step in between.
+  for (const k of ['basemap','layers','overlays','product','satproduct',
+                   'model','modelvar','waves','air','temperature','pressure','wind']) {
+    if (opt[k]) q.set(k, String(opt[k]));
+  }
 
   const url = `${SITE_URL}?${q}`;
   return queueShot(async () => {
@@ -547,6 +552,41 @@ const commands = [
         { name: 'light',     value: 'light' },
         { name: 'topo',      value: 'topo' },
       ))
+    .addStringOption(o => o.setName('product')
+      .setDescription('Radar product. Switches radar on by itself')
+      .addChoices(
+        { name: 'reflectivity',        value: 'ref' },
+        { name: 'velocity',            value: 'vel' },
+        { name: 'correlation (CC)',    value: 'cc' },
+        { name: 'differential (ZDR)',  value: 'zdr' },
+        { name: 'specific phase (KDP)',value: 'kdp' },
+        { name: 'spectrum width',      value: 'sw' },
+        { name: 'hydrometeor class',   value: 'hc' },
+        { name: 'storm accumulation',  value: 'accum' },
+        { name: 'one hour accum',      value: 'boha' },
+      ))
+    .addStringOption(o => o.setName('satellite')
+      .setDescription('GOES band. Switches satellite on by itself')
+      .addChoices(
+        { name: 'clean IR (ch13)',        value: 'ch13' },
+        { name: 'red visible (ch02)',     value: 'ch02' },
+        { name: 'mid water vapor (ch09)', value: 'ch09' },
+        { name: 'upper water vapor (ch08)', value: 'ch08' },
+        { name: 'shortwave IR (ch07)',    value: 'ch07' },
+        { name: 'cloud top temp (ch11)',  value: 'ch11' },
+        { name: 'fire temp (ch12)',       value: 'ch12' },
+        { name: 'snow and ice (ch05)',    value: 'ch05' },
+      ))
+    .addStringOption(o => o.setName('wind')
+      .setDescription('Wind product, e.g. wind-surface'))
+    .addStringOption(o => o.setName('temperature')
+      .setDescription('Temperature product, e.g. air-temp or dew-point'))
+    .addStringOption(o => o.setName('waves')
+      .setDescription('Wave product, e.g. wave-height, wave-period, swell-height'))
+    .addStringOption(o => o.setName('air')
+      .setDescription('Air quality product, e.g. us-aqi, pm2_5, ozone'))
+    .addStringOption(o => o.setName('pressure')
+      .setDescription('Pressure product, e.g. sea-level'))
     .addNumberOption(o => o.setName('lat').setDescription('Latitude, overrides place'))
     .addNumberOption(o => o.setName('lon').setDescription('Longitude, overrides place'))
     .addIntegerOption(o => o.setName('zoom').setDescription('Zoom, 3 to 12')),
@@ -603,6 +643,15 @@ client.on(Events.InteractionCreate, async (i) => {
         basemap:  i.options.getString('basemap'),
         layers:   i.options.getString('layers'),
         overlays: i.options.getString('overlays'),
+        product:  i.options.getString('product'),
+        // The command calls it satellite because that is what a person asking
+        // for one would say; the page calls it satproduct.
+        satproduct:  i.options.getString('satellite'),
+        wind:        i.options.getString('wind'),
+        temperature: i.options.getString('temperature'),
+        waves:       i.options.getString('waves'),
+        air:         i.options.getString('air'),
+        pressure:    i.options.getString('pressure'),
       });
       return i.editReply({
         content: `<${url}>`,
