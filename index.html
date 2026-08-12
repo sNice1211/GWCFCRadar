@@ -15322,7 +15322,7 @@ const SEV_ENS_PRODUCT_LIST = [
   {v:'precipitation',l:'Precipitation'},
   {v:'wind_speed_10m',l:'10m Wind Speed'},
   {v:'wind_gusts_10m',l:'Wind Gusts'},
-  {v:'surface_pressure',l:'Surface Pressure'},
+  {v:'pressure_msl',l:'MSL Pressure'},
 ];
 
 // Deterministic (single-run, not ensemble) global models from Open-Meteo's
@@ -15354,7 +15354,7 @@ const SEV_DET_PRODUCT_LIST = [
   {v:'wind_speed_10m',l:'10m Wind Speed'},
   {v:'wind_gusts_10m',l:'Wind Gusts'},
   {v:'cloud_cover',l:'Cloud Cover'},
-  {v:'surface_pressure',l:'Surface Pressure'},
+  {v:'pressure_msl',l:'MSL Pressure'},
 ];
 
 const SEV_PRODUCTS = {
@@ -16108,6 +16108,7 @@ const SEV_ENS_VAR_LABELS = {
   wind_speed_10m:  '10m Wind Speed',
   wind_gusts_10m:  'Wind Gusts',
   surface_pressure:'Surface Pressure',
+  pressure_msl:'MSL Pressure',
   // Extra products the deterministic models offer on top of the ensemble five.
   dew_point_2m:        '2m Dew Point',
   relative_humidity_2m:'Rel. Humidity',
@@ -16123,6 +16124,9 @@ const SEV_ENS_SCALES = {
   precipitation:    [[0,[0,60,140]],[0.02,[0,150,220]],[0.08,[0,220,180]],[0.25,[255,204,0]],[0.6,[255,80,0]],[1.2,[200,0,220]]],
   wind_speed_10m:   [[0,[0,60,140]],[10,[0,150,220]],[20,[0,220,180]],[35,[255,204,0]],[50,[255,80,0]],[70,[200,0,220]]],
   wind_gusts_10m:   [[0,[0,60,140]],[15,[0,150,220]],[30,[0,220,180]],[50,[255,204,0]],[70,[255,80,0]],[90,[200,0,220]]],
+  // Sea-level pressure, which is what a pressure map means. Kept separate
+  // from surface_pressure, whose values fall away with altitude.
+  pressure_msl:     [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]],
   surface_pressure: [[970,[200,0,220]],[990,[0,90,220]],[1005,[0,200,60]],[1015,[255,204,0]],[1025,[255,90,0]],[1040,[220,0,0]]],
   // Dew point tops out far lower than air temperature, so it needs its own
   // (compressed) stops or everything above 60F would render the same red.
@@ -16306,7 +16310,11 @@ const SEV_DET_MIN_COVERAGE = 0.97;
 // same data either - which is what turned ordinary testing into an exhausted
 // daily allowance. Model runs refresh every 6h, so a 3h life is well inside
 // the window where the data is still the current run.
-const SEV_DET_CACHE_KEY = 'gwcfc_sev_det_cache_v1';
+// The version in this key is what retires cached data whose meaning has
+// changed. v2 discards everything sampled before the forecast-hour fix,
+// which otherwise kept being served and made the fix look like it had not
+// worked. Bump it again whenever what a stored grid means changes.
+const SEV_DET_CACHE_KEY = 'gwcfc_sev_det_cache_v2';
 const SEV_DET_CACHE_TTL = 3 * 3600 * 1000;
 const SEV_DET_CACHE_MAX = 10;   // entries; each is ~35KB of JSON
 const _sevDetMem = new Map();   // key -> { at, slotH, grids }
@@ -16349,7 +16357,10 @@ function _sevDetCacheFresh(e) { return !!e && (Date.now() - (e.at || 0)) < SEV_D
 const SEV_SHARED_TTL = 3 * 3600 * 1000;
 const _sevSharedTried = new Set();   // keys already attempted this session
 
-function _sevSharedDocId(key) { return key.replace(/[^a-z0-9_]+/gi, '_'); }
+// Same versioning for the shared copy: without it, one browser holding old
+// grids would keep republishing them to everybody else.
+const SEV_SHARED_VERSION = 'v2';
+function _sevSharedDocId(key) { return SEV_SHARED_VERSION + '_' + key.replace(/[^a-z0-9_]+/gi, '_'); }
 
 // Why the shared cache last failed, if it did. Without this a project whose
 // Firestore rules have not been published yet looks identical to a project
@@ -19958,7 +19969,7 @@ function _inspSevEnsRow(center) {
   if (v == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
   const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
   const [r, g, b] = _colorScale(v, scale);
-  const units = { temperature_2m: '°F', precipitation: 'in', wind_speed_10m: 'mph', wind_gusts_10m: 'mph', surface_pressure: 'hPa',
+  const units = { temperature_2m: '°F', precipitation: 'in', wind_speed_10m: 'mph', wind_gusts_10m: 'mph', surface_pressure: 'hPa', pressure_msl: 'hPa',
                   dew_point_2m: '°F', relative_humidity_2m: '%', cloud_cover: '%' };
   return { label, value: v.toFixed(2), unit: units[varName] || '', color: `rgb(${r},${g},${b})` };
 }
