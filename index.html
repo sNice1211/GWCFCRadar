@@ -29474,8 +29474,30 @@ const FIREBASE_READY = GWCFC_FB_CONFIG.apiKey !== "YOUR_API_KEY";
 const DISCORD_CLIENT_ID = '1499924805833723944';
 const DISCORD_AUTH_WORKER = 'https://gwcfcradar-discord-auth.ralphies1005.workers.dev';
 
-function authDiscordLogin() {
+async function authDiscordLogin() {
   if (!DISCORD_AUTH_WORKER) { _showAuthError('Discord sign-in is not set up yet.'); return; }
+  const btn = document.querySelector('#auth-discord-info .auth-google-btn');
+  const label = btn ? btn.innerHTML : '';
+  if (btn) btn.style.pointerEvents = 'none';
+
+  // Ask the Worker whether it can actually complete a login before sending
+  // anyone to it. Until it is deployed and its secrets are set, navigating
+  // would dump the visitor on a Cloudflare error page away from the site,
+  // with no way back and nothing explaining what happened.
+  try {
+    const r = await fetch(`${DISCORD_AUTH_WORKER}/health`, { signal: AbortSignal.timeout(6000) });
+    const h = await r.json();
+    if (!h.ok) {
+      _showAuthError(`Discord sign-in isn't finished being set up yet${Array.isArray(h.missing) && h.missing.length ? ' (missing: ' + h.missing.join(', ') + ')' : ''}. Use Google or email for now.`);
+      return;
+    }
+  } catch (e) {
+    _showAuthError("Discord sign-in isn't switched on yet. Use Google or email for now.");
+    return;
+  } finally {
+    if (btn) { btn.style.pointerEvents = ''; btn.innerHTML = label; }
+  }
+
   // Return to this page without any query or fragment already on it, so the
   // address the Worker checks is the plain page address.
   const back = location.origin + location.pathname;
