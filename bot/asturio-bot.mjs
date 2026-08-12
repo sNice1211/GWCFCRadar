@@ -4,7 +4,8 @@
 // Knows about all GWCFC Radar features, layers, models, and capabilities.
 // Answers weather questions with live NWS alerts and SPC storm reports.
 
-import 'dotenv/config.js';
+import dotenv from 'dotenv';
+dotenv.config({ path: '/home/gwcfc-pi/GWCFCRadar/bot/.env' });
 import {
   Client, GatewayIntentBits, Partials, Events,
   REST, Routes, SlashCommandBuilder,
