@@ -16206,7 +16206,15 @@ let _sevEnsLoadToken = 0;
 let _sevEnsGridCache = null; // {grid, cols, rows, isAngle, varName} for whichever frame is currently shown - read by the Inspector tool
 let _sevEnsPrepaintHandle = null;
 
-function _sevEnsCacheKey() { return `${_sevSection}|${_sevVar}`; }
+// The sampled box is part of the identity of a loaded set: the same model and
+// product over a different area is different data, and returning the previous
+// area's grid for it would draw one place's weather over another.
+function _sevEnsCacheKey() {
+  const b = (typeof _sevDetBounds === 'function' && SEV_DET_SECTIONS[_sevSection])
+    ? _sevDetBounds() : null;
+  const box = b ? `|${b[0][0]},${b[0][1]},${b[1][0]},${b[1][1]}` : '';
+  return `${_sevSection}|${_sevVar}${box}`;
+}
 
 // Turning a frame's grid into its map image costs ~100ms of blocking main
 // thread, because it bicubic-interpolates the grid up to a 1600px picture.
@@ -16216,7 +16224,9 @@ function _sevEnsCacheKey() { return `${_sevSection}|${_sevVar}`; }
 // way the Temperature/Pressure overlays work - then keeps it for later.
 function _sevEnsFrameLayer(f) {
   if (!f.layer) {
-    f.layer = _paintInterpolatedOverlay(f.grid, f.cols, f.rows, WORLD_MAP_BOUNDS, false, v => _colorScale(v, f.scale));
+    // Frames made before the grid followed the map carry no bounds of their
+    // own, so the world box stays the fallback and old cached sets still draw.
+    f.layer = _paintInterpolatedOverlay(f.grid, f.cols, f.rows, f.bounds || WORLD_MAP_BOUNDS, false, v => _colorScale(v, f.scale));
   }
   return f.layer;
 }
@@ -16247,7 +16257,11 @@ function _sevEnsShowFrame(body, frames) {
     _sevOverlayLayer = _sevEnsFrameLayer(f).addTo(map);
     // cols/rows travel with the frame because the deterministic models below
     // reuse this same cache at a finer grid than the ensemble's.
-    _sevEnsGridCache = { grid: f.grid, cols: f.cols || SEV_ENS_COLS, rows: f.rows || SEV_ENS_ROWS, isAngle: false, varName: _sevVar };
+    // bounds travel too: the deterministic grid is sampled over the visible
+    // map, so reading it against the world box would report a value from
+    // somewhere else entirely.
+    _sevEnsGridCache = { grid: f.grid, cols: f.cols || SEV_ENS_COLS, rows: f.rows || SEV_ENS_ROWS,
+                         bounds: f.bounds || WORLD_MAP_BOUNDS, isAngle: false, varName: _sevVar };
     if (body) body.innerHTML = `<div class="trop-model-err" style="color:rgba(232,184,0,0.85)">${f.statusText}</div>`;
   } else if (body) {
     _sevEnsGridCache = null;
@@ -16354,6 +16368,48 @@ async function _sevRenderEnsemble(body) {
 // and halves that cost. The far bigger saving is the cache below: the old code
 // re-bought the same data every time you switched product and switched back.
 const SEV_DET_COLS = 18, SEV_DET_ROWS = 11;
+
+// The grid used to be sampled across the whole world. 18x11 over 360 degrees is
+// a sample roughly every 21 degrees, about 2350km, which is three points across
+// the United States: at any useful zoom essentially everything on screen was
+// bicubic interpolation between distant samples rather than model output. That
+// is why the models never matched a real forecast, and no amount of fixing the
+// forecast-hour alignment could have changed it.
+//
+// The same 198 points are now spent on what is actually in view, so the request
+// count and the quota are unchanged and the resolution follows the map. Over
+// the United States that is closer to a degree between samples.
+//
+// The box is snapped to a coarse step so nudging the map does not invalidate
+// the cache and refetch. Only a real move to somewhere else does.
+const SEV_DET_SNAP_DEG = 5;
+const SEV_DET_MIN_SPAN = 5;   // never sample a box so small the corners collapse
+
+function _sevDetBounds() {
+  if (typeof map === 'undefined' || !map) return WORLD_MAP_BOUNDS;
+  let b;
+  try { b = map.getBounds(); } catch(e) { return WORLD_MAP_BOUNDS; }
+  const snapDown = v => Math.floor(v / SEV_DET_SNAP_DEG) * SEV_DET_SNAP_DEG;
+  const snapUp   = v => Math.ceil (v / SEV_DET_SNAP_DEG) * SEV_DET_SNAP_DEG;
+
+  let south = snapDown(b.getSouth()), north = snapUp(b.getNorth());
+  let west  = snapDown(b.getWest()),  east  = snapUp(b.getEast());
+
+  // Clamp into the world box the overlays are drawn in. A map wrapped past the
+  // date line reports longitudes outside +-180, which the API rejects.
+  south = Math.max(south, WORLD_MAP_BOUNDS[0][0]);
+  north = Math.min(north, WORLD_MAP_BOUNDS[1][0]);
+  west  = Math.max(west,  WORLD_MAP_BOUNDS[0][1]);
+  east  = Math.min(east,  WORLD_MAP_BOUNDS[1][1]);
+
+  // Zoomed far in, the snapped box can collapse. Grow it rather than sample a
+  // degenerate grid where every point is the same place.
+  if (north - south < SEV_DET_MIN_SPAN) north = Math.min(WORLD_MAP_BOUNDS[1][0], south + SEV_DET_MIN_SPAN);
+  if (east  - west  < SEV_DET_MIN_SPAN) east  = Math.min(WORLD_MAP_BOUNDS[1][1], west  + SEV_DET_MIN_SPAN);
+  if (north <= south || east <= west) return WORLD_MAP_BOUNDS;
+
+  return [[south, west], [north, east]];
+}
 const SEV_DET_MAX_FRAME = 20;   // 21 frames: F+000 .. F+120 at a 6h step
 const SEV_DET_STEP_H = 6;
 const SEV_DET_DAYS = 7;         // F+120 measured from the run hour, which can be 23h into day 0
@@ -16377,7 +16433,7 @@ const SEV_DET_MIN_COVERAGE = 0.97;
 // changed. v2 discards everything sampled before the forecast-hour fix,
 // which otherwise kept being served and made the fix look like it had not
 // worked. Bump it again whenever what a stored grid means changes.
-const SEV_DET_CACHE_KEY = 'gwcfc_sev_det_cache_v4';
+const SEV_DET_CACHE_KEY = 'gwcfc_sev_det_cache_v5';
 const SEV_DET_CACHE_TTL = 3 * 3600 * 1000;
 const SEV_DET_CACHE_MAX = 10;   // entries; each is ~35KB of JSON
 const _sevDetMem = new Map();   // key -> { at, slotH, grids }
@@ -16422,7 +16478,7 @@ const _sevSharedTried = new Set();   // keys already attempted this session
 
 // Same versioning for the shared copy: without it, one browser holding old
 // grids would keep republishing them to everybody else.
-const SEV_SHARED_VERSION = 'v3';
+const SEV_SHARED_VERSION = 'v4';
 function _sevSharedDocId(key) { return SEV_SHARED_VERSION + '_' + key.replace(/[^a-z0-9_]+/gi, '_'); }
 
 // Why the shared cache last failed, if it did. Without this a project whose
@@ -16498,7 +16554,7 @@ function _sevDetCacheWrite(key, entry) {
 
 // Rebuilds the display frames from cached grids. Values are stored rounded to
 // 2dp to keep the cache small; that is far finer than any color step.
-function _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs) {
+function _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs, bounds) {
   const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
   return grids.map((grid, i) => {
     if (!grid) return null;
@@ -16519,12 +16575,32 @@ function _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs) {
       ({ date, flbl } = baseMs ? _sevFcastFrom(baseMs, i, SEV_DET_STEP_H)
                                : _sevFcastDateTime(i));
     }
-    return { layer: null, grid, scale, cols: SEV_DET_COLS, rows: SEV_DET_ROWS,
+    return { layer: null, grid, scale, cols: SEV_DET_COLS, rows: SEV_DET_ROWS, bounds,
              statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} · ${flbl} (${date})` };
   });
 }
 
+// Now that the grid follows the map, moving somewhere else means the loaded
+// grid describes the wrong place. Reload when the snapped box actually changes,
+// which a small nudge does not do, so panning around one area costs nothing.
+let _sevDetLastBoxKey = '';
+function _sevDetWatchMap() {
+  if (typeof map === 'undefined' || !map || _sevDetWatchMap._on) return;
+  _sevDetWatchMap._on = true;
+  map.on('moveend zoomend', () => {
+    if (!SEV_DET_SECTIONS[_sevSection]) return;      // not a model that samples a box
+    if (!_sevOverlayLayer) return;                   // nothing being shown
+    const b = _sevDetBounds();
+    const boxKey = `${b[0][0]},${b[0][1]},${b[1][0]},${b[1][1]}`;
+    if (boxKey === _sevDetLastBoxKey) return;        // same area, nothing to do
+    _sevDetLastBoxKey = boxKey;
+    const panel = document.getElementById('sev-panel-body');
+    _sevRenderDeterministic(panel);
+  });
+}
+
 async function _sevRenderDeterministic(body) {
+  _sevDetWatchMap();
   const key = _sevEnsCacheKey();
   if (_sevEnsFramesKey === key && _sevEnsFrames) { _sevEnsShowFrame(body, _sevEnsFrames); return; }
 
@@ -16536,7 +16612,7 @@ async function _sevRenderDeterministic(body) {
   // Already bought this one. Rebuild the frames and spend nothing.
   const cached = _sevDetCacheRead(key);
   if (_sevDetCacheFresh(cached)) {
-    const frames = _sevDetFramesFromGrids(cached.grids, varName, modelLabel, cached.baseMs, cached.frameMs);
+    const frames = _sevDetFramesFromGrids(cached.grids, varName, modelLabel, cached.baseMs, cached.frameMs, cached.bounds);
     _sevEnsFrames = frames; _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
     return;
@@ -16557,13 +16633,14 @@ async function _sevRenderDeterministic(body) {
   if (token !== _sevEnsLoadToken) return;
   if (shared) {
     _sevDetCacheWrite(key, shared);         // keep a local copy too
-    const frames = _sevDetFramesFromGrids(shared.grids, varName, modelLabel, shared.baseMs, shared.frameMs);
+    const frames = _sevDetFramesFromGrids(shared.grids, varName, modelLabel, shared.baseMs, shared.frameMs, shared.bounds);
     _sevEnsFrames = frames; _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
     return;
   }
 
-  const pts = _sampleGrid(SEV_DET_COLS, SEV_DET_ROWS, WORLD_MAP_BOUNDS);
+  const detBounds = _sevDetBounds();
+  const pts = _sampleGrid(SEV_DET_COLS, SEV_DET_ROWS, detBounds);
   // Kept outside the try so a failure can log the exact URL that was sent -
   // the single most useful thing to have when this breaks somewhere I can't
   // reach the API from.
@@ -16683,10 +16760,10 @@ async function _sevRenderDeterministic(body) {
     if (!grids.some(g => g)) throw new Error('no values in response');
     if (token !== _sevEnsLoadToken) return;
 
-    const entry = { at: Date.now(), slotH, grids, baseMs, frameMs };
+    const entry = { at: Date.now(), slotH, grids, baseMs, frameMs, bounds: detBounds };
     _sevDetCacheWrite(key, entry);
     _sevSharedWrite(key, entry);   // pay it forward: nobody else has to fetch this
-    const frames = _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs);
+    const frames = _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs, detBounds);
     _sevEnsFrames = frames;
     _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames);
@@ -16707,7 +16784,7 @@ async function _sevRenderDeterministic(body) {
       if (!stale) stale = await _sevSharedReadAny(key);
       if (token !== _sevEnsLoadToken) return;
       if (stale && Array.isArray(stale.grids)) {
-        const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel, stale.baseMs, stale.frameMs);
+        const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel, stale.baseMs, stale.frameMs, stale.bounds);
         const mins = Math.round((Date.now() - (stale.at || 0)) / 60000);
         const age = mins < 90 ? `${mins}m` : `${Math.round(mins / 60)}h`;
         frames.forEach(f => { if (f) f.statusText += ` · saved copy, ${age} old`; });
@@ -20079,7 +20156,8 @@ function _inspWindRow(center) {
 function _inspSevEnsRow(center) {
   const varName = _sevEnsGridCache?.varName || _sevVar;
   const label = SEV_ENS_VAR_LABELS[varName] || 'Ensemble';
-  const v = _inspGridValueAt(_sevEnsGridCache, center.lat, center.lng, WORLD_MAP_BOUNDS);
+  const v = _inspGridValueAt(_sevEnsGridCache, center.lat, center.lng,
+                             _sevEnsGridCache?.bounds || WORLD_MAP_BOUNDS);
   if (v == null) return { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
   const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
   const [r, g, b] = _colorScale(v, scale);
@@ -31556,7 +31634,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Open-Meteo models: each frame is now labelled from the timestamp its own data came from, and a response that cannot be aligned says so instead of drawing the wrong hour.";
+const APP_LATEST_UPDATE = "Open-Meteo models now sample the area you are looking at instead of the whole planet, so the detail is roughly six times finer over the US for the same number of requests.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
