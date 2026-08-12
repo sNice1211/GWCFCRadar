@@ -16285,15 +16285,18 @@ async function _sevRenderEnsemble(body) {
       ? Date.UTC(+_sevRun.slice(0,4), +_sevRun.slice(4,6) - 1, +_sevRun.slice(6,8), +_sevRun.slice(8,10))
       : Date.now();
     const ensTime = locations.find(l => Array.isArray(l?.hourly?.time) && l.hourly.time.length > 1)?.hourly.time;
-    let ensBase = 0, ensBaseMs = ensRunMs, ensSlotH = 1;
-    if (ensTime) {
-      const d = (_ensMs(ensTime[1]) - _ensMs(ensTime[0])) / 3600000;
-      if (Number.isFinite(d) && d > 0) ensSlotH = Math.max(1, Math.round(d));
-      const found = ensTime.findIndex(t => _ensMs(t) >= ensRunMs - 60000);
-      if (found > 0) ensBase = found;
-      const bm = _ensMs(ensTime[ensBase]);
-      if (Number.isFinite(bm)) ensBaseMs = bm;
-    }
+    // Same reasoning as the deterministic path: with no timestamps there is no
+    // way to know which slot is now, and assuming index 0 draws this morning
+    // under a label that says now. Refuse rather than mislabel.
+    if (!ensTime) throw new Error('ensemble response carried no timestamps, cannot align to the forecast hour');
+    let ensSlotH = 1;
+    const d = (_ensMs(ensTime[1]) - _ensMs(ensTime[0])) / 3600000;
+    if (Number.isFinite(d) && d > 0) ensSlotH = Math.max(1, Math.round(d));
+    const ensFound = ensTime.findIndex(t => _ensMs(t) >= ensRunMs - 60000);
+    if (ensFound < 0) throw new Error('ensemble series ends before the current hour');
+    const ensBase = ensFound;
+    const ensBaseMs = _ensMs(ensTime[ensBase]);
+    if (!Number.isFinite(ensBaseMs)) throw new Error('ensemble timestamps could not be read');
 
     const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
     const frames = [];
@@ -16374,7 +16377,7 @@ const SEV_DET_MIN_COVERAGE = 0.97;
 // changed. v2 discards everything sampled before the forecast-hour fix,
 // which otherwise kept being served and made the fix look like it had not
 // worked. Bump it again whenever what a stored grid means changes.
-const SEV_DET_CACHE_KEY = 'gwcfc_sev_det_cache_v3';
+const SEV_DET_CACHE_KEY = 'gwcfc_sev_det_cache_v4';
 const SEV_DET_CACHE_TTL = 3 * 3600 * 1000;
 const SEV_DET_CACHE_MAX = 10;   // entries; each is ~35KB of JSON
 const _sevDetMem = new Map();   // key -> { at, slotH, grids }
@@ -16419,7 +16422,7 @@ const _sevSharedTried = new Set();   // keys already attempted this session
 
 // Same versioning for the shared copy: without it, one browser holding old
 // grids would keep republishing them to everybody else.
-const SEV_SHARED_VERSION = 'v2';
+const SEV_SHARED_VERSION = 'v3';
 function _sevSharedDocId(key) { return SEV_SHARED_VERSION + '_' + key.replace(/[^a-z0-9_]+/gi, '_'); }
 
 // Why the shared cache last failed, if it did. Without this a project whose
@@ -16495,13 +16498,27 @@ function _sevDetCacheWrite(key, entry) {
 
 // Rebuilds the display frames from cached grids. Values are stored rounded to
 // 2dp to keep the cache small; that is far finer than any color step.
-function _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs) {
+function _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs) {
   const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
   return grids.map((grid, i) => {
     if (!grid) return null;
-    // Labelled from the hour the data actually starts at, which is stored with
-    // the grids, so a cached set stays correctly labelled however old it is.
-    const { date, flbl } = baseMs ? _sevFcastFrom(baseMs, i, SEV_DET_STEP_H) : _sevFcastDateTime(i);
+    // Prefer the valid time recorded for this exact frame, which came off the
+    // same array index the values did, so the label cannot drift from what is
+    // drawn. baseMs is the fallback for grids cached before frame times were
+    // stored; both are kept with the grids so a cached set stays correctly
+    // labelled however old it is.
+    const exact = Array.isArray(frameMs) ? frameMs[i] : null;
+    let date, flbl;
+    if (exact) {
+      // Lead time measured between the two real timestamps rather than assumed
+      // from the step, so a gap in the series shows the lead it actually has.
+      const leadH = baseMs ? Math.round((exact - baseMs) / 3600000) : i * SEV_DET_STEP_H;
+      ({ date } = _sevFcastFrom(exact, 0, SEV_DET_STEP_H));
+      flbl = 'F+' + String(Math.max(0, leadH)).padStart(3, '0');
+    } else {
+      ({ date, flbl } = baseMs ? _sevFcastFrom(baseMs, i, SEV_DET_STEP_H)
+                               : _sevFcastDateTime(i));
+    }
     return { layer: null, grid, scale, cols: SEV_DET_COLS, rows: SEV_DET_ROWS,
              statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} · ${flbl} (${date})` };
   });
@@ -16519,7 +16536,7 @@ async function _sevRenderDeterministic(body) {
   // Already bought this one. Rebuild the frames and spend nothing.
   const cached = _sevDetCacheRead(key);
   if (_sevDetCacheFresh(cached)) {
-    const frames = _sevDetFramesFromGrids(cached.grids, varName, modelLabel, cached.baseMs);
+    const frames = _sevDetFramesFromGrids(cached.grids, varName, modelLabel, cached.baseMs, cached.frameMs);
     _sevEnsFrames = frames; _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
     return;
@@ -16540,7 +16557,7 @@ async function _sevRenderDeterministic(body) {
   if (token !== _sevEnsLoadToken) return;
   if (shared) {
     _sevDetCacheWrite(key, shared);         // keep a local copy too
-    const frames = _sevDetFramesFromGrids(shared.grids, varName, modelLabel, shared.baseMs);
+    const frames = _sevDetFramesFromGrids(shared.grids, varName, modelLabel, shared.baseMs, shared.frameMs);
     _sevEnsFrames = frames; _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
     return;
@@ -16626,13 +16643,24 @@ async function _sevRenderDeterministic(body) {
     const runMs = (_sevRun && _sevRun.length >= 10)
       ? Date.UTC(+_sevRun.slice(0,4), +_sevRun.slice(4,6) - 1, +_sevRun.slice(6,8), +_sevRun.slice(8,10))
       : Date.now();
-    let baseIdx = 0, baseMs = runMs;
-    if (refTime) {
-      const found = refTime.findIndex(t => _slotMs(t) >= runMs - 60000);
-      if (found >= 0) baseIdx = found;
-      const bm = _slotMs(refTime[baseIdx]);
-      if (Number.isFinite(bm)) baseMs = bm;   // label from the data's own clock
-    }
+
+    // Without timestamps there is no way to know which slot is "now", and
+    // guessing index 0 means drawing this morning's weather under a label that
+    // says now, which is the exact fault this anchoring exists to prevent.
+    // Refusing is the honest outcome; a wrong map that looks right is not.
+    if (!refTime) throw new Error('response carried no timestamps, cannot align to the forecast hour');
+
+    const found = refTime.findIndex(t => _slotMs(t) >= runMs - 60000);
+    if (found < 0) throw new Error('forecast series ends before the current hour');
+    const baseIdx = found;
+    const baseMs = _slotMs(refTime[baseIdx]);
+    if (!Number.isFinite(baseMs)) throw new Error('forecast timestamps could not be read');
+
+    // The valid time of every frame, taken from the series itself rather than
+    // computed from a step. If the array is not perfectly hourly, or has a gap,
+    // the label still describes the hour actually drawn instead of the hour it
+    // was assumed to be.
+    const frameMs = [];
 
     const grids = [];
     for (let i = 0; i <= SEV_DET_MAX_FRAME; i++) {
@@ -16644,17 +16672,21 @@ async function _sevRenderDeterministic(body) {
         const v = loc?.hourly?.[varName]?.[hourIdx];
         return (v != null && isFinite(v)) ? Math.round(v * 100) / 100 : null;
       });
-      grids.push(grid.some(v => v != null) ? grid : null);
+      const has = grid.some(v => v != null);
+      grids.push(has ? grid : null);
+      // Read the label off the same index the values came from.
+      const t = has ? _slotMs(refTime[hourIdx]) : NaN;
+      frameMs.push(Number.isFinite(t) ? t : null);
     }
     // A model that simply doesn't publish this variable comes back all-null
     // rather than erroring, so treat that the same as a failed fetch.
     if (!grids.some(g => g)) throw new Error('no values in response');
     if (token !== _sevEnsLoadToken) return;
 
-    const entry = { at: Date.now(), slotH, grids, baseMs };
+    const entry = { at: Date.now(), slotH, grids, baseMs, frameMs };
     _sevDetCacheWrite(key, entry);
     _sevSharedWrite(key, entry);   // pay it forward: nobody else has to fetch this
-    const frames = _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs);
+    const frames = _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs);
     _sevEnsFrames = frames;
     _sevEnsFramesKey = key;
     _sevEnsShowFrame(body, frames);
@@ -16675,7 +16707,7 @@ async function _sevRenderDeterministic(body) {
       if (!stale) stale = await _sevSharedReadAny(key);
       if (token !== _sevEnsLoadToken) return;
       if (stale && Array.isArray(stale.grids)) {
-        const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel, stale.baseMs);
+        const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel, stale.baseMs, stale.frameMs);
         const mins = Math.round((Date.now() - (stale.at || 0)) / 60000);
         const age = mins < 90 ? `${mins}m` : `${Math.round(mins / 60)}h`;
         frames.forEach(f => { if (f) f.statusText += ` · saved copy, ${age} old`; });
@@ -16773,6 +16805,16 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize, opts) {
         }
       }
       const arr = Array.isArray(data) ? data : [data];
+      // The response is positional: entry j belongs to the j-th coordinate that
+      // was asked for. If the counts disagree, every value after the missing
+      // one lands on the wrong point, and because _chunkAssign interleaves the
+      // grid that scatters wrong numbers across the whole map rather than
+      // leaving an obvious hole. A wrong map that looks right is the worst
+      // outcome here, so treat it as a failed chunk and let the gap-fill and
+      // the coverage check deal with it honestly.
+      if (arr.length !== indices.length) {
+        throw new Error(`response had ${arr.length} entries for ${indices.length} points`);
+      }
       anyOk = true;
       arr.forEach((d, j) => { out[indices[j]] = d; });
     } catch (e) {
@@ -31514,7 +31556,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Discord account linking works now. It never could before: the bot was asking Firestore for something the rules refused.";
+const APP_LATEST_UPDATE = "Open-Meteo models: each frame is now labelled from the timestamp its own data came from, and a response that cannot be aligned says so instead of drawing the wrong hour.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
