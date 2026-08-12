@@ -27,7 +27,16 @@ async function idToken() {
     { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ returnSecureToken: true }) });
   const j = await r.json();
-  if (!r.ok) throw new Error(j?.error?.message || `auth HTTP ${r.status}`);
+  if (!r.ok) {
+    const m = j?.error?.message || `auth HTTP ${r.status}`;
+    // Google reports a switched-off API as a wall of text that never says what
+    // to do about it, and this is the one failure people actually hit.
+    if (/identitytoolkit.*blocked|API_KEY_SERVICE_BLOCKED/i.test(m)) {
+      throw new Error('Firebase sign-in is switched off for this Google Cloud project. Enable "Identity Toolkit API" at '
+        + `console.cloud.google.com/apis/library/identitytoolkit.googleapis.com?project=${PROJECT_ID}`);
+    }
+    throw new Error(m);
+  }
   _idToken = j.idToken;
   _tokenExpires = Date.now() + (Number(j.expiresIn || 3600) * 1000);
   return _idToken;

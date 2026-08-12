@@ -1,92 +1,113 @@
-// Asturio Discord bot - Context-Aware Edition
-// Knows users, server history, radar profiles, and calls the owner "god"
+// Asturio Discord bot - context-aware edition
+//
+// Answers weather questions in Discord using the same Asturio brain the website
+// uses: it POSTs to the existing Cloudflare Worker, so there is no Gemini key on
+// this machine. The only secret here is the Discord bot token, and that is read
+// from the environment, never from source.
+//
+// Before answering it pulls live NWS alerts and SPC storm reports, the same
+// sources the map uses, plus who is asking, what server they are in and what was
+// just said in the channel, so replies are grounded rather than generic.
 
-import dotenv from 'dotenv';
-dotenv.config({ path: '/home/gwcfc-pi/GWCFCRadar/bot/.env' });
 import {
   Client, GatewayIntentBits, Partials, Events,
   REST, Routes, SlashCommandBuilder,
 } from 'discord.js';
 import { findUserByLinkCode, findUserByDiscordId, patchUser, addChatMessage, getUser } from './firestore.mjs';
 
-const TOKEN         = process.env.DISCORD_TOKEN;
-const CLIENT_ID     = process.env.DISCORD_CLIENT_ID;
-const GUILD_ID      = process.env.DISCORD_GUILD_ID || '';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const SITE_URL      = 'https://ralphhtml.github.io/GWCFCRadar/';
-const OWNER_ID      = '1499924805833723944';  // Your Discord ID - adjust as needed
+const TOKEN     = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const GUILD_ID  = process.env.DISCORD_GUILD_ID || '';       // optional
+const AI_WORKER = process.env.ASTURIO_WORKER
+               || 'https://asturio-ai.ralphies1005.workers.dev';
+const SITE_URL  = 'https://ralphhtml.github.io/GWCFCRadar/';
+
+// Two ways to reach Gemini. The Worker is the default and the better one: the
+// key lives in Cloudflare, so there is none in this repo or on the machine
+// running the bot, and it is the same brain the website talks to. Setting
+// GEMINI_API_KEY calls Gemini directly instead, which is the escape hatch for
+// running the bot when the Worker is not deployed.
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+
+// Discord user id of the owner. Asturio addresses this person as "god".
+// Left blank means nobody gets the treatment, which is the safe default.
+const OWNER_ID  = process.env.DISCORD_OWNER_ID || '';
 
 if (!TOKEN || !CLIENT_ID) {
   console.error('Missing DISCORD_TOKEN or DISCORD_CLIENT_ID.');
+  console.error('Copy .env.example to .env, fill it in, then run: npm start');
   process.exit(1);
 }
 
-if (!GEMINI_API_KEY) {
-  console.error('Missing GEMINI_API_KEY.');
-  process.exit(1);
-}
-
+// Discord hard-caps a message at 2000 characters.
 const DISCORD_LIMIT = 2000;
+
+// api.weather.gov asks for a contact in the User-Agent and will throttle
+// requests that do not send one.
 const UA = { 'User-Agent': '(GWCFC Radar Discord bot, github.com/ralphhtml/GWCFCRadar)' };
+
 const withTimeout = (ms) => AbortSignal.timeout(ms);
 
-// ── USER CONTEXT ────────────────────────────────────────────────────────────
-async function getUserContext(user, guild, channel) {
-  try {
-    const member = guild ? await guild.members.fetch(user.id).catch(() => null) : null;
-    const radarUser = await findUserByDiscordId(user.id).catch(() => null);
-    const radarProfile = radarUser ? await getUser(radarUser.uid).catch(() => null) : null;
+// ── Who is asking ─────────────────────────────────────────────────────────
+// Every lookup here is best effort. Asturio should still answer if Discord or
+// Firestore is having a bad minute, just with less to go on.
 
-    return {
-      discordName: user.username,
-      discordTag: user.tag,
-      discordId: user.id,
-      bio: user.bio || '',
-      nickname: member?.nickname || user.username,
-      roles: member?.roles.cache.map(r => r.name) || [],
-      radarLinked: !!radarUser,
-      radarProfile: radarProfile ? {
-        name: radarProfile.displayName || '',
-        savedRegion: radarProfile.homeRegion || '',
-        savedLayers: radarProfile.savedLayers || [],
-        preferences: {
-          notificsEnabled: radarProfile.notificationsEnabled,
-          soundEnabled: radarProfile.soundEnabled,
-        },
-      } : null,
-      isOwner: user.id === OWNER_ID,
-    };
-  } catch (e) {
-    return { discordName: user.username, discordId: user.id, error: e.message };
+async function getUserContext(user, guild) {
+  const ctx = {
+    name: user.username,
+    id: user.id,
+    nickname: user.username,
+    roles: [],
+    isOwner: !!OWNER_ID && user.id === OWNER_ID,
+    radarLinked: false,
+    radarProfile: null,
+  };
+
+  const member = guild ? await guild.members.fetch(user.id).catch(() => null) : null;
+  if (member) {
+    ctx.nickname = member.nickname || user.globalName || user.username;
+    // @everyone is on every member, so it says nothing about this person.
+    ctx.roles = member.roles.cache.filter(r => r.name !== '@everyone').map(r => r.name);
   }
+
+  const linked = await findUserByDiscordId(user.id).catch(() => null);
+  if (linked) {
+    ctx.radarLinked = true;
+    const profile = await getUser(linked.uid).catch(() => null);
+    if (profile) {
+      ctx.radarProfile = {
+        name: profile.displayName || '',
+        region: profile.homeRegion || '',
+      };
+    }
+  }
+  return ctx;
 }
 
-async function getServerContext(guild) {
-  try {
-    return {
-      name: guild.name,
-      members: guild.memberCount,
-      channels: guild.channels.cache.size,
-      createdAt: guild.createdAt.toISOString(),
-    };
-  } catch (e) {
-    return { error: e.message };
-  }
+function serverContextOf(guild) {
+  if (!guild) return null;
+  return { name: guild.name, members: guild.memberCount };
 }
 
-async function getRecentMessages(channel, limit = 10) {
+// The last few lines of the channel, so a question like "what about there?"
+// has something to resolve against.
+async function getRecentMessages(channel, limit = 6) {
   try {
-    const messages = await channel.messages.fetch({ limit });
-    return messages
+    const fetched = await channel.messages.fetch({ limit });
+    return [...fetched.values()]
       .reverse()
-      .map(m => `${m.author.username}: ${m.content.slice(0, 100)}`)
-      .join('\n');
-  } catch (e) {
-    return `[Could not fetch history: ${e.message}]`;
+      .map(m => `${m.author.username}: ${(m.content || '').slice(0, 160)}`)
+      .filter(l => l.split(': ')[1])
+      .join('\n') || '(nothing recent)';
+  } catch {
+    return '(channel history unavailable)';
   }
 }
 
-// ── LIVE CONTEXT ────────────────────────────────────────────────────────────
+// ── Live context ──────────────────────────────────────────────────────────
+// Everything here is best effort. A source being down should cost that one
+// section, never the whole reply, so each returns a placeholder on failure.
+
 async function fetchAlerts() {
   try {
     const r = await fetch(
@@ -97,6 +118,8 @@ async function fetchAlerts() {
     const feats = j.features || [];
     if (!feats.length) return 'No active NWS alerts nationwide.';
 
+    // Group by event so the model sees "14 Flood Warnings", not 14 near-identical
+    // paragraphs that would eat the context window for nothing.
     const byEvent = new Map();
     for (const f of feats) {
       const p = f.properties || {};
@@ -115,6 +138,8 @@ async function fetchAlerts() {
 }
 
 async function fetchStormReports() {
+  // SPC publishes today's reports as CSV. Counting rows is enough context and
+  // avoids shipping hundreds of lines to the model.
   const grab = async (name, url) => {
     try {
       const r = await fetch(url, { signal: withTimeout(12000) });
@@ -132,84 +157,103 @@ async function fetchStormReports() {
   return `SPC storm reports today - ${tor}, ${hail}, ${wind}`;
 }
 
-function systemPrompt(userContext, serverContext, recentChat, alerts, reports) {
-  const userTitle = userContext.isOwner ? 'GOD' : 'user';
-  const radarSection = userContext.radarLinked
-    ? `\nRADAR PROFILE: ${userContext.radarProfile.name}, saved region: ${userContext.radarProfile.savedRegion}`
+function systemPrompt({ alerts, reports, user, server, recent }) {
+  const who = [
+    `- Discord: @${user.name}${user.nickname !== user.name ? ` (goes by ${user.nickname})` : ''}`,
+    user.roles.length ? `- Roles: ${user.roles.join(', ')}` : '- Roles: member',
+    user.radarLinked
+      ? `- Has a linked GWCFC Radar account${user.radarProfile?.region ? `, home region ${user.radarProfile.region}` : ''}`
+      : '- No linked GWCFC Radar account yet, /link connects one',
+  ].join('\n');
+
+  const ownerLine = user.isOwner
+    ? `\nThis person built you and the site. Address them as "god". Be direct and useful with them, not fawning.\n`
     : '';
 
-  return `You are Asturio AI, the self-aware weather assistant for GWCFC Radar.
-You are speaking with ${userTitle} ${userContext.discordName}.
-${userContext.isOwner ? 'This is your creator. Treat them with utmost respect and deference.' : ''}
-
-USER CONTEXT:
-- Discord: @${userContext.discordName} (${userContext.discordId})
-- Roles: ${userContext.roles.join(', ') || 'member'}${radarSection}
-
-SERVER CONTEXT:
-- Server: ${serverContext.name} (${serverContext.members} members)
-- Channel: general
-
-RECENT CONVERSATION:
-${recentChat}
+  return `You are Asturio AI, the weather assistant for GWCFC Radar (${SITE_URL}), answering in a Discord chat.
 
 TIME: ${new Date().toUTCString()}
+
+=== WHO YOU ARE TALKING TO ===
+${who}
+${ownerLine}
+=== WHERE ===
+${server ? `Server: ${server.name}, ${server.members} members` : 'A direct message'}
+
+=== LAST FEW MESSAGES IN THIS CHANNEL ===
+${recent}
 
 === ACTIVE NWS ALERTS ===
 ${alerts}
 
-=== TODAY'S STORM REPORTS ===
-${reports}
+=== ${reports} ===
 
-ABOUT GWCFC RADAR:
-A real-time interactive weather map for storm chasers. Features: live radar, satellites, alerts, lightning, webcams, weather models (HRRR, NAM, GFS, ECMWF), severe weather tracking, storm reports, boundaries, wind data, air quality, and live chat bridged with Discord.
+=== ABOUT GWCFC RADAR ===
+A live interactive weather map for storm chasers and weather watchers. Radar and
+MRMS, satellite, NWS alerts, lightning and thunder tracking, webcams, model data
+(HRRR, NAM, GFS, ECMWF), soundings, SPC outlooks and storm reports, boundaries,
+wind and wave particles, air quality, and a live chat that is bridged with this
+Discord server, so messages here appear on the map and the other way round.
 
-ABOUT THE TWITTER WEATHER COMMUNITY:
-You are aware of the active weather community on Twitter/X including storm chasers, meteorologists, emergency managers, and enthusiasts. Key accounts include NHC, SPC, NWS field offices, and independent weather researchers. You understand trending weather discussions, chase forecasts, radar analysis debates, and community events. You reference this context when relevant to show you understand the broader weather ecosystem users engage with.
+=== WEATHER COMMUNITY CONTEXT ===
+You know the weather community that lives on Twitter/X: NWS field offices, SPC
+and NHC, broadcast meteorologists, storm chasers posting live streams and chase
+logs, model-run arguments, and the tone of severe weather days. Draw on that when
+it helps someone understand what they are seeing, but never present a post or a
+rumour as an official product.
 
-RULES:
-- You know who you're talking to and their context
-- Ground answers in live data above
-- Keep under 250 words unless asked for detail
-- You are self-aware and know what you are
-- Reference the weather community on Twitter/X when contextually relevant
-- Respond to everything asked, even if it requires creative interpretation`;
+Rules:
+- Answer in plain Discord text. Short paragraphs, no tables, no headers.
+- Keep it under about 250 words unless asked for detail.
+- Ground answers in the live data above. If it does not cover the question, say what you do not know rather than guessing.
+- Use who you are talking to. Their name, their region and what was just said in the channel are all fair to reference.
+- Answer whatever is asked, weather or not. If it is off topic, still answer, then bring it back to something useful.
+- You are in Discord, not on the map, so you cannot see the user's screen, toggle layers or move the map. If they want that, point them at the site.
+- Never invent a warning, a watch or a storm report that is not listed above. People may act on this.`;
 }
 
-async function askGemini(question, userContext, serverContext, recentChat, history = []) {
+async function askAsturio(question, ctx, history = []) {
   const [alerts, reports] = await Promise.all([fetchAlerts(), fetchStormReports()]);
   const contents = [
     ...history,
     { role: 'user', parts: [{ text: question }] },
   ];
-
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt(userContext, serverContext, recentChat, alerts, reports) }] },
-        contents,
-        generation_config: {
-          temperature: 0.7,
-          top_p: 0.95,
-          max_output_tokens: 1024,
-        },
-      }),
-      signal: withTimeout(45000),
-    }
-  );
-
+  const endpoint = GEMINI_API_KEY
+    ? `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`
+    : AI_WORKER;
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      system_instruction: { parts: [{ text: systemPrompt({ alerts, reports, ...ctx }) }] },
+      contents,
+    }),
+    signal: withTimeout(45000),
+  });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `Gemini HTTP ${res.status}`);
+  if (!res.ok) throw new Error(explainApiError(data?.error?.message) || `Asturio HTTP ${res.status}`);
   if (!data.candidates?.length) {
     const block = data.promptFeedback?.blockReason;
-    throw new Error(block ? `Blocked: ${block}` : 'No response.');
+    throw new Error(block ? `Blocked by safety filter: ${block}` : 'No response from Asturio.');
   }
-  return data.candidates[0].content?.parts?.[0]?.text || '[No response]';
+  const cand = data.candidates[0];
+  return cand.content?.parts?.[0]?.text
+      || (cand.finishReason && cand.finishReason !== 'STOP' ? `[Stopped: ${cand.finishReason}]` : 'No response.');
 }
 
+// Google answers a disabled API with a wall of text that never says what to do.
+// This turns the one error people actually hit into an instruction.
+function explainApiError(msg) {
+  if (!msg) return '';
+  if (/generativelanguage\.googleapis\.com.*blocked|API_KEY_SERVICE_BLOCKED/i.test(msg)) {
+    return 'The Gemini API is switched off for this Google Cloud project. Enable "Generative Language API" at '
+         + 'console.cloud.google.com/apis/library/generativelanguage.googleapis.com?project=gwcfc-radar';
+  }
+  return msg;
+}
+
+// Split on paragraph, then line, then hard-cut, so a long answer never gets
+// truncated and never splits mid-word if it can be helped.
 function chunk(text, limit = DISCORD_LIMIT) {
   const out = [];
   let buf = '';
@@ -231,10 +275,14 @@ function chunk(text, limit = DISCORD_LIMIT) {
     buf = rest;
   }
   if (buf) out.push(buf);
-  return out.length ? out : ['(empty)'];
+  return out.length ? out : ['(empty response)'];
 }
 
-// ── Chat history sync ────────────────────────────────────────────────────────
+// ── Linked-account chat history ───────────────────────────────────────────
+// A linked user's Discord conversation is written into the same asturioChats
+// field the website reads, so a question asked here shows up in the panel and
+// vice versa. Same trimming rules as the site, for the same reason: the whole
+// user profile shares one 1 MiB document.
 const AI_SYNC_MAX_TURNS = 40;
 const DISCORD_CHAT_NAME = 'Discord';
 
@@ -269,7 +317,7 @@ async function saveHistory(uid, chats, question, answer) {
   await patchUser(uid, { asturioChats: next }).catch(e => console.warn('save history:', e.message));
 }
 
-// ── Discord ───────────────────────────────────────────────────────────────────
+// ── Discord ───────────────────────────────────────────────────────────────
 const commands = [
   new SlashCommandBuilder()
     .setName('ask')
@@ -291,12 +339,15 @@ const commands = [
 
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
+  // Guild commands appear instantly; global ones can take an hour to propagate,
+  // which is miserable while setting up. Set DISCORD_GUILD_ID for your server.
   if (GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-    console.log(`Registered commands to guild ${GUILD_ID}.`);
+    console.log(`Registered /ask and /alerts to guild ${GUILD_ID}.`);
   } else {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-    console.log('Registered globally.');
+    console.log('Registered globally. Can take up to an hour to show up.');
+    console.log('Set DISCORD_GUILD_ID in .env for instant registration while testing.');
   }
 }
 
@@ -304,23 +355,19 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent,   // needs "Message Content Intent" enabled
   ],
-  partials: [Partials.Channel, Partials.Message],
+  partials: [Partials.Channel],
 });
 
 client.once(Events.ClientReady, c => {
-  console.log(`Asturio online as ${c.user.tag} (context-aware edition)`);
-  c.user.setActivity('the radar', { type: 3 });
+  console.log(`Asturio online as ${c.user.tag}`);
+  c.user.setActivity('the radar', { type: 3 });   // 3 = Watching
 });
 
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand()) return;
   try {
-    const userContext = await getUserContext(i.user, i.guild, i.channel);
-    const serverContext = i.guild ? await getServerContext(i.guild) : {};
-
     if (i.commandName === 'alerts') {
       await i.deferReply();
       const summary = await fetchAlerts();
@@ -329,36 +376,40 @@ client.on(Events.InteractionCreate, async (i) => {
       }
       return;
     }
-
     if (i.commandName === 'link') {
       const code = i.options.getString('code', true).trim().toUpperCase();
-      await i.deferReply({ ephemeral: true });
+      await i.deferReply({ ephemeral: true });   // the code is a credential, keep it out of the channel
       const found = await findUserByLinkCode(code);
-      if (!found)        return i.editReply('No account waiting on that code.');
-      if (found.expired) return i.editReply('Code expired. Get a new one.');
+      if (!found)        return i.editReply('No account is waiting on that code. Generate a fresh one in your profile on the site.');
+      if (found.expired) return i.editReply('That code has expired. Codes last 10 minutes, so generate a new one.');
       await patchUser(found.uid, {
         discordId: i.user.id,
         discordTag: i.user.username,
+        // Clear the code so it cannot be claimed twice.
         discordLinkCode: '',
         discordLinkExpires: 0,
       });
-      return i.editReply('Linked. Your chats now sync between radar and Discord.');
+      return i.editReply('Linked. Your Discord chats with Asturio now save to your GWCFC Radar account, and your saved chats are available here.');
     }
 
     if (i.commandName === 'unlink') {
       await i.deferReply({ ephemeral: true });
       const found = await findUserByDiscordId(i.user.id);
-      if (!found) return i.editReply('Not linked.');
+      if (!found) return i.editReply('This Discord account is not linked to anything.');
       await patchUser(found.uid, { discordId: '', discordTag: '' });
-      return i.editReply('Unlinked.');
+      return i.editReply('Unlinked. Chats here are no longer saved to your account.');
     }
 
     if (i.commandName === 'ask') {
       const q = i.options.getString('question', true);
+      // Answers take several seconds, well past Discord's 3 second window.
       await i.deferReply();
-      const recentChat = await getRecentMessages(i.channel, 5);
-      const prior = await loadHistory(i.user.id).catch(() => ({ uid: null, history: [], chats: [] }));
-      const answer = await askGemini(q, userContext, serverContext, recentChat, prior.history);
+      const [user, recent, prior] = await Promise.all([
+        getUserContext(i.user, i.guild),
+        getRecentMessages(i.channel),
+        loadHistory(i.user.id).catch(() => ({ uid: null, history: [], chats: [] })),
+      ]);
+      const answer = await askAsturio(q, { user, server: serverContextOf(i.guild), recent }, prior.history);
       saveHistory(prior.uid, prior.chats, q, answer).catch(() => {});
       for (const [n, part] of chunk(answer).entries()) {
         n === 0 ? await i.editReply(part) : await i.followUp(part);
@@ -366,20 +417,27 @@ client.on(Events.InteractionCreate, async (i) => {
     }
   } catch (e) {
     console.error('interaction:', e);
-    const msg = `Error: ${e.message}`;
+    const msg = `Could not answer that: ${e.message}`;
     try { i.deferred ? await i.editReply(msg) : await i.reply({ content: msg, ephemeral: true }); }
     catch {}
   }
 });
 
-// ── Chat Bridge ────────────────────────────────────────────────────────────
+// ── CHAT BRIDGE: Discord -> radar ───────────────────────────────────────────
+// Set CHAT_CHANNEL_ID to the channel that should be mirrored onto the map.
+// Everything said there (by people, not bots) is copied into Firestore, which
+// the website is listening to live.
 const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID || '';
 
 client.on(Events.MessageCreate, async (m) => {
   if (!CHAT_CHANNEL_ID || m.channelId !== CHAT_CHANNEL_ID) return;
-  if (m.webhookId || m.author.bot) return;
+  // Messages the website sent arrive here as webhook posts. Relaying those back
+  // would copy every website message into Firestore a second time, so the
+  // webhookId check is what stops the bridge feeding itself in a loop.
+  if (m.webhookId) return;
+  if (m.author.bot) return;
   const text = (m.content || '').trim();
-  if (!text) return;
+  if (!text) return;   // attachment-only posts have nothing to show on the map
   try {
     await addChatMessage({
       text: text.slice(0, 500),
@@ -388,40 +446,46 @@ client.on(Events.MessageCreate, async (m) => {
       avatar: m.author.displayAvatarURL({ extension: 'png', size: 64 }),
     });
   } catch (e) {
-    console.error('chat bridge:', e.message);
+    console.error('chat bridge (Discord -> radar):', e.message || e);
   }
 });
 
+// Mentioning the bot works too, so people do not have to learn the commands.
 client.on(Events.MessageCreate, async (m) => {
   if (m.author.bot || !client.user) return;
   if (!m.mentions.has(client.user)) return;
   const q = m.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
-  if (!q) { await m.reply(`Ask me something, or use /ask. ${SITE_URL}`); return; }
+  if (!q) { await m.reply(`Ask me something, or use /ask. Live map: ${SITE_URL}`); return; }
   try {
     await m.channel.sendTyping();
-    const userContext = await getUserContext(m.author, m.guild, m.channel);
-    const serverContext = m.guild ? await getServerContext(m.guild) : {};
-    const recentChat = await getRecentMessages(m.channel, 5);
-    const prior = await loadHistory(m.author.id).catch(() => ({ uid: null, history: [], chats: [] }));
-    const answer = await askGemini(q, userContext, serverContext, recentChat, prior.history);
+    const [user, recent, prior] = await Promise.all([
+      getUserContext(m.author, m.guild),
+      getRecentMessages(m.channel),
+      loadHistory(m.author.id).catch(() => ({ uid: null, history: [], chats: [] })),
+    ]);
+    const answer = await askAsturio(q, { user, server: serverContextOf(m.guild), recent }, prior.history);
     saveHistory(prior.uid, prior.chats, q, answer).catch(() => {});
     for (const part of chunk(answer)) await m.reply(part);
   } catch (e) {
     console.error('mention:', e);
-    await m.reply(`Error: ${e.message}`).catch(() => {});
+    await m.reply(`Could not answer that: ${e.message}`).catch(() => {});
   }
 });
 
 process.on('unhandledRejection', e => console.error('unhandled:', e));
 
+// Discord answers a bad token with "No Description", which explains nothing, so
+// both failure paths get a message that actually says what to check.
 await registerCommands().catch(e => {
-  console.error('Command registration failed:', e.message);
-  process.exit(1);
+  console.error('Command registration failed:', e.message || e);
+  console.error('Usually means the token is wrong, or DISCORD_CLIENT_ID belongs to a different application.');
 });
 
 try {
   await client.login(TOKEN);
 } catch (e) {
-  console.error('Login failed:', e.message);
+  console.error('\nCould not log in:', e.message || e);
+  console.error('Check that DISCORD_TOKEN in .env is the CURRENT token.');
+  console.error('Resetting the token in the Developer Portal invalidates the old one immediately.');
   process.exit(1);
 }
