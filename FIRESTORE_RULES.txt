@@ -152,6 +152,42 @@ service cloud.firestore {
       allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
     }
 
+    // One Asturio conversation shared between the site and Discord.
+    //
+    // The account itself cannot hold it: asturioChats lives on users/{uid},
+    // which the bot may not read or write. So the shared copy lives here, keyed
+    // by Discord id, and the browser mirrors it into the account.
+    //
+    // The browser creates it, naming the account it belongs to. Both sides then
+    // append turns, and neither can change whose conversation it is.
+    //
+    // Worth being plain about the trade-off: any signed-in client that knows a
+    // Discord id can read that conversation, because the bot is anonymous and
+    // has no other way to find it. These are weather questions rather than
+    // anything private, but do not put secrets in them.
+    match /asturioSync/{discordId} {
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid;
+
+      allow read: if isSignedIn();
+
+      // Turns may be appended by either side; ownership may not move. Only the
+      // account it belongs to may write the profile block, so the bot cannot
+      // invent a name or a home region for someone.
+      allow update: if isSignedIn()
+        && request.resource.data.uid == resource.data.uid
+        && (
+          (request.auth.uid == resource.data.uid
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['history', 'updatedAt', 'updatedBy', 'profile']))
+          ||
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['history', 'updatedAt', 'updatedBy'])
+        );
+
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
     // ── NEW ───────────────────────────────────────────────────────────────
 
     // Anonymous visit counter. Visitors are not signed in, so this stays open;

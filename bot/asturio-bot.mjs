@@ -14,7 +14,8 @@ import {
   REST, Routes, SlashCommandBuilder,
 } from 'discord.js';
 import { existsSync } from 'node:fs';
-import { getLinkCode, claimLinkCode, findUserByDiscordId, patchUser, addChatMessage, getUser } from './firestore.mjs';
+import { getLinkCode, claimLinkCode, getSyncHistory, appendSyncHistory,
+         addChatMessage } from './firestore.mjs';
 
 const TOKEN     = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -83,16 +84,13 @@ async function getUserContext(user, guild) {
     ctx.roles = member.roles.cache.filter(r => r.name !== '@everyone').map(r => r.name);
   }
 
-  const linked = await findUserByDiscordId(user.id).catch(() => null);
-  if (linked) {
+  // Linkage and profile both come from the shared conversation document. The
+  // account itself is unreadable from here, so asking it directly returned 403
+  // and every user looked unlinked however many times they had linked.
+  const sync = await getSyncHistory(user.id).catch(() => null);
+  if (sync) {
     ctx.radarLinked = true;
-    const profile = await getUser(linked.uid).catch(() => null);
-    if (profile) {
-      ctx.radarProfile = {
-        name: profile.displayName || '',
-        region: profile.homeRegion || '',
-      };
-    }
+    ctx.radarProfile = sync.profile || null;
   }
   return ctx;
 }
@@ -202,11 +200,42 @@ ${alerts}
 === ${reports} ===
 
 === ABOUT GWCFC RADAR ===
-A live interactive weather map for storm chasers and weather watchers. Radar and
-MRMS, satellite, NWS alerts, lightning and thunder tracking, webcams, model data
-(HRRR, NAM, GFS, ECMWF), soundings, SPC outlooks and storm reports, boundaries,
-wind and wave particles, air quality, and a live chat that is bridged with this
-Discord server, so messages here appear on the map and the other way round.
+A live interactive weather map for storm chasers and weather watchers. You know
+it in detail and can tell anyone how to do a thing in it, precisely.
+
+RADAR: NEXRAD single site and the MRMS 1km national mosaic. Products are
+reflectivity, velocity, hydrometeor classification, storm accumulation and
+one hour accumulation. Reached through the RADAR bubble.
+
+SATELLITE: GOES bands ch01 to ch16, including red visible (ch02), shortwave IR
+(ch07), the three water vapour bands (ch08 to ch10), clean IR (ch13), cloud top
+temperature (ch11) and fire temperature (ch12).
+
+MODELS: GFS, GEM, UKMO, ARPEGE, JMA, ECMWF AIFS, CMA and BoM, plus GFS, ICON
+and GEM ensembles, NDFD and ECMWF. Products include 2m temperature, 2m dew
+point, relative humidity, precipitation, 10m wind speed and gusts. Frames run
+F+000 to F+120 at a six hour step. Soundings are in the models menu.
+
+LAYERS AND OVERLAYS: NWS alert polygons, a WX alert panel and a live EAS feed,
+SPC outlooks day 1 to 8 and storm reports, NHC tropical outlook with cones and
+past tracks, WPC excessive rainfall, CPC outlooks, mesoscale discussions, fire
+weather, Canada alerts, lightning strikes and a thunder tracker, tornado damage
+tracks, wildfires, surface analysis fronts, METAR stations, forecast dots, NOAA
+Weather Radio transmitters, storm spotters and their reports, live chasers, WFO
+offices, traffic cameras, Ambient Weather personal stations, storm centres, wind
+and wave particles, and Cloud Capture for user photos. The overlay list is
+drag-to-reorder, and the order sets what draws on top.
+
+TOOLS AND ACCOUNTS: radius and storm cone tools, an inspector that reads the
+exact value under the crosshair, save layers and save region, a profile with
+avatar, and a live chat bridged with this Discord server so messages appear in
+both places.
+
+SHARING A VIEW: a link can carry the whole setup, and you can hand someone one:
+  ?lat=35.5&lon=-98&z=7&basemap=dark&layers=nexrad&overlays=alerts
+plus product=vel for a radar product, satproduct=ch13 for a band, and one
+parameter per family such as wind=wind-surface. Anyone asking to be shown
+something on the map can be given a link like that, or told to use /map here.
 
 === WEATHER COMMUNITY CONTEXT ===
 You know the weather community that lives on Twitter/X: NWS field offices, SPC
@@ -482,38 +511,23 @@ function chunk(text, limit = DISCORD_LIMIT) {
 // field the website reads, so a question asked here shows up in the panel and
 // vice versa. Same trimming rules as the site, for the same reason: the whole
 // user profile shares one 1 MiB document.
-const AI_SYNC_MAX_TURNS = 40;
-const DISCORD_CHAT_NAME = 'Discord';
-
-function discordChatFrom(chats) {
-  const list = Array.isArray(chats) ? chats : [];
-  const idx = list.findIndex(c => c && c.name === DISCORD_CHAT_NAME);
-  return { list, idx };
-}
-
 async function loadHistory(discordId) {
-  const found = await findUserByDiscordId(discordId).catch(() => null);
-  if (!found) return { uid: null, history: [], chats: [] };
-  const { list, idx } = discordChatFrom(found.data.asturioChats);
-  const hist = idx >= 0 ? (list[idx].history || []) : [];
+  // Reads the conversation shared with the site. Returns empty for anyone who
+  // has not linked an account, which is the normal case, not an error.
+  const sync = await getSyncHistory(discordId).catch(() => null);
+  if (!sync) return { linked: false, history: [] };
   return {
-    uid: found.uid,
-    chats: list,
-    history: hist.map(m => ({ role: m.role === 'model' ? 'model' : 'user', parts: [{ text: String(m.text ?? '') }] })),
+    linked: true,
+    history: sync.history.map(m => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: [{ text: String(m.text ?? '') }],
+    })),
   };
 }
 
-async function saveHistory(uid, chats, question, answer) {
-  if (!uid) return;
-  const { list, idx } = discordChatFrom(chats);
-  const turns = (idx >= 0 ? (list[idx].history || []) : []).concat(
-    { role: 'user',  text: String(question).slice(0, 6000) },
-    { role: 'model', text: String(answer).slice(0, 6000) },
-  ).slice(-AI_SYNC_MAX_TURNS);
-
-  const entry = { id: idx >= 0 ? list[idx].id : 9001, name: DISCORD_CHAT_NAME, history: turns };
-  const next = idx >= 0 ? list.map((c, i) => (i === idx ? entry : c)) : [...list, entry];
-  await patchUser(uid, { asturioChats: next }).catch(e => console.warn('save history:', e.message));
+async function saveHistory(discordId, question, answer) {
+  await appendSyncHistory(discordId, question, answer)
+    .catch(e => console.warn('save history:', e.message));
 }
 
 // ── Discord ───────────────────────────────────────────────────────────────
@@ -689,10 +703,10 @@ client.on(Events.InteractionCreate, async (i) => {
       const [user, recent, prior] = await Promise.all([
         getUserContext(i.user, i.guild),
         getRecentMessages(i.channel),
-        loadHistory(i.user.id).catch(() => ({ uid: null, history: [], chats: [] })),
+        loadHistory(i.user.id).catch(() => ({ linked: false, history: [] })),
       ]);
       const answer = await askAsturio(q, { user, server: serverContextOf(i.guild), recent }, prior.history);
-      saveHistory(prior.uid, prior.chats, q, answer).catch(() => {});
+      saveHistory(i.user.id, q, answer).catch(() => {});
       for (const [n, part] of chunk(answer).entries()) {
         n === 0 ? await i.editReply(part) : await i.followUp(part);
       }
@@ -743,10 +757,10 @@ client.on(Events.MessageCreate, async (m) => {
     const [user, recent, prior] = await Promise.all([
       getUserContext(m.author, m.guild),
       getRecentMessages(m.channel),
-      loadHistory(m.author.id).catch(() => ({ uid: null, history: [], chats: [] })),
+      loadHistory(m.author.id).catch(() => ({ linked: false, history: [] })),
     ]);
     const answer = await askAsturio(q, { user, server: serverContextOf(m.guild), recent }, prior.history);
-    saveHistory(prior.uid, prior.chats, q, answer).catch(() => {});
+    saveHistory(m.author.id, q, answer).catch(() => {});
     for (const part of chunk(answer)) await m.reply(part);
   } catch (e) {
     console.error('mention:', e);

@@ -182,6 +182,59 @@ export async function addChatMessage({ text, name, discordId, avatar }) {
   });
 }
 
+// ── Shared Asturio conversation ─────────────────────────────────────────────
+// The account's own asturioChats field cannot be used from here: users/{uid} is
+// readable and writable only by its owner, and this bot is an anonymous
+// visitor, so every attempt came back 403 and Discord conversations were never
+// remembered. The shared copy lives in its own collection keyed by Discord id,
+// which both the browser and the bot may append to, and the browser mirrors it
+// into the account.
+
+const SYNC_MAX_TURNS = 40;
+
+export async function getSyncHistory(discordId) {
+  let doc;
+  try {
+    doc = await call(`/asturioSync/${encodeURIComponent(discordId)}`);
+  } catch (e) {
+    if (/404|NOT_FOUND/i.test(e.message)) return null;   // not linked yet
+    throw e;
+  }
+  const data = fromFields(doc.fields);
+  const hist = Array.isArray(data.history) ? data.history : [];
+  // profile is written by the browser, because the bot cannot read the account
+  // it describes. It is how the bot knows who it is talking to on the radar.
+  return { uid: data.uid || null, history: hist, profile: data.profile || null };
+}
+
+// Appends and writes back the whole trimmed array. The conversation is short
+// and only one side speaks at a time in practice, so the simplicity is worth
+// more than the last-writer-wins risk of a true append.
+export async function appendSyncHistory(discordId, question, answer) {
+  const existing = await getSyncHistory(discordId);
+  if (!existing) return false;                            // nothing to append to
+  const turns = existing.history.concat(
+    { role: 'user',  text: String(question).slice(0, 6000) },
+    { role: 'model', text: String(answer).slice(0, 6000) },
+  ).slice(-SYNC_MAX_TURNS);
+
+  const mask = ['history', 'updatedAt', 'updatedBy']
+    .map(k => `updateMask.fieldPaths=${k}`).join('&');
+  await call(`/asturioSync/${encodeURIComponent(discordId)}?${mask}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      fields: {
+        history:   toValue(turns),
+        updatedAt: toValue(Date.now()),
+        // Tells the browser this came from Discord, so it merges rather than
+        // echoing it straight back.
+        updatedBy: toValue('discord'),
+      },
+    }),
+  });
+  return true;
+}
+
 export async function getUser(uid) {
   try {
     const doc = await call(`/users/${uid}`);

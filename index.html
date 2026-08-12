@@ -27530,6 +27530,103 @@ function _aiSyncNow() {
     asturioActive: Math.min(_aiActiveChat, Math.max(0, payload.length - 1)),
     asturioSavedAt: firebase.firestore.FieldValue.serverTimestamp()
   }, { merge: true }).catch(e => console.warn('asturio sync:', e));
+  // The shared copy the Discord bot reads. Same moment, same trigger, so a
+  // question asked here is context the bot already has next time it is asked
+  // something in Discord.
+  _aiSyncPushDiscordChat();
+}
+
+// ── Shared conversation with the Discord bot ────────────────────────────────
+// The bot cannot read or write users/{uid}, so the conversation it shares with
+// this panel lives in its own collection keyed by Discord id. The browser owns
+// that document: it creates it, keeps the profile block current, pushes what is
+// said here, and merges back what was said in Discord. The bot only appends
+// turns.
+//
+// The result is one Asturio memory. Ask something here, follow up in Discord,
+// and it knows what you were talking about, and the other way round.
+const DISCORD_CHAT_NAME = 'Discord';
+let _aiSyncUnsub = null;
+let _aiSyncDiscordId = null;
+let _aiSyncLastPushed = '';
+
+function _aiDiscordChatIndex() {
+  return _aiChats.findIndex(c => c && c.name === DISCORD_CHAT_NAME);
+}
+
+// Everything the bot should know about this account, so it can answer as if it
+// knew the person, without ever being able to read the account itself.
+let _aiSyncProfileData = {};
+function _aiSyncProfile() {
+  const d = _aiSyncProfileData || {};
+  return {
+    displayName: String(d.displayName || _currentUser?.displayName || '').slice(0, 60),
+    homeRegion:  String(d.homeRegion || '').slice(0, 120),
+    savedLayers: Object.keys(d.savedLayers || {}).filter(k => d.savedLayers[k]).slice(0, 40),
+  };
+}
+
+async function _aiSyncAttach(discordId) {
+  if (!discordId || !_currentUser || !_fbDb) return;
+  if (_aiSyncDiscordId === discordId && _aiSyncUnsub) return;   // already watching
+  _aiSyncDetach();
+  _aiSyncDiscordId = discordId;
+  const ref = _fbDb.collection('asturioSync').doc(discordId);
+
+  try {
+    const snap = await ref.get();
+    if (!snap.exists) {
+      await ref.set({ uid: _currentUser.uid, history: [], updatedAt: Date.now(),
+                      updatedBy: 'radar', profile: _aiSyncProfile() });
+    } else {
+      await ref.set({ profile: _aiSyncProfile() }, { merge: true }).catch(() => {});
+    }
+  } catch (e) {
+    console.warn('asturio sync attach:', e);
+    return;
+  }
+
+  _aiSyncUnsub = ref.onSnapshot(snap => {
+    const d = snap.data();
+    // Only react to the other side. Merging back our own write would fight the
+    // local state and could loop.
+    if (!d || d.updatedBy !== 'discord' || !Array.isArray(d.history)) return;
+    const incoming = d.history.map(m => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: [{ text: String(m.text ?? '') }],
+    }));
+    const idx = _aiDiscordChatIndex();
+    if (idx >= 0) _aiChats[idx].history = incoming;
+    else _aiChats.push({ id: 9001, name: DISCORD_CHAT_NAME, history: incoming });
+    _aiSyncLastPushed = JSON.stringify(d.history);
+    if (typeof _aiRenderTabs === 'function')     { try { _aiRenderTabs(); } catch(_) {} }
+    if (typeof _aiRenderMessages === 'function') { try { _aiRenderMessages(); } catch(_) {} }
+    _aiScheduleSync();     // fold it into the account copy too
+  }, err => console.warn('asturio sync watch:', err));
+}
+
+function _aiSyncDetach() {
+  if (_aiSyncUnsub) { try { _aiSyncUnsub(); } catch(_) {} }
+  _aiSyncUnsub = null;
+  _aiSyncDiscordId = null;
+}
+
+// Pushes the Discord conversation as it stands here, so a question asked in the
+// panel is context the bot has next time it is spoken to.
+function _aiSyncPushDiscordChat() {
+  if (!_aiSyncDiscordId || !_currentUser || !_fbDb) return;
+  const idx = _aiDiscordChatIndex();
+  if (idx < 0) return;
+  const history = (_aiChats[idx].history || []).slice(-AI_SYNC_MAX_TURNS).map(m => ({
+    role: m.role,
+    text: String(m.parts?.[0]?.text ?? '').slice(0, 6000),
+  }));
+  const json = JSON.stringify(history);
+  if (json === _aiSyncLastPushed) return;    // nothing new since the last push
+  _aiSyncLastPushed = json;
+  _fbDb.collection('asturioSync').doc(_aiSyncDiscordId).set({
+    history, updatedAt: Date.now(), updatedBy: 'radar',
+  }, { merge: true }).catch(e => console.warn('asturio sync push:', e));
 }
 
 // Debounced: a conversation fires several state changes in a row and each one
@@ -27786,18 +27883,32 @@ ${stormRpts || 'unavailable'}
 ${allAlertsText || 'none'}
 
 === APP LAYERS (all available, on or off) ===
-NEXRAD radar: reflectivity (N0Q), velocity (N0U), dual-pol (ZDR/KDP/CC) - single-site or mosaic
+NEXRAD radar: reflectivity, velocity, hydrometeor classification, storm
+  accumulation, one hour accumulation, plus the MRMS 1km national mosaic.
+  Dual-pol (ZDR/KDP/CC) is NOT available, do not offer it.
 NWS alert polygons: tornado warnings, severe thunderstorm warnings, flood warnings, watches, advisories
-METAR wind barbs: surface wind observations at airports/stations
-Temperature stations: current temps at surface obs sites
-Wave heights: ocean/lake buoy + model data
-NOAA Weather Radio (NWR): live audio streams
-Hurricane/tropical tracks: NHC official cone + track points
-SPC storm reports: today's tornado/hail/wind LSRs
-GOES satellite: visible, IR, water vapor
-Lightning: strike density overlay
-Surface fronts: analysis chart fronts
-Model guidance: HRRR (18h), GFS (10d), ECMWF IFS, DWD ICON, Canadian HRDPS
+METAR stations: surface wind and temperature observations at airports/stations
+Waves, wind, temperature, pressure and air quality: world overlays, each with its own products
+NOAA Weather Radio (NWR): transmitter sites with live audio streams
+Hurricane/tropical tracks: NHC cone, forecast points and past track
+SPC outlooks day 1 to 8, and today's tornado/hail/wind storm reports
+GOES satellite: bands ch01 to ch16, including red visible ch02, water vapour
+  ch08 to ch10, clean IR ch13, cloud top temp ch11, fire temp ch12
+Lightning strikes and a thunder tracker
+Surface analysis fronts, WPC excessive rainfall, CPC outlooks, mesoscale
+  discussions, fire weather, Canada alerts, tornado damage tracks, wildfires,
+  storm spotters and reports, live chasers, WFO offices, traffic cameras,
+  Ambient Weather stations, storm centres, Cloud Capture photos
+Model guidance: GFS, GEM, UKMO, ARPEGE, JMA, ECMWF AIFS, CMA, BoM, the GFS/ICON/GEM
+  ensembles, and NDFD. Frames run F+000 to F+120 at a six hour step.
+Overlays are drag-to-reorder, and the order sets what draws on top.
+
+=== SHARING A VIEW ===
+A link can carry a whole setup, so you can hand someone one instead of talking
+them through clicks:
+  ?lat=35.5&lon=-98&z=7&basemap=dark&layers=nexrad&overlays=alerts
+plus product=vel for a radar product, satproduct=ch13 for a satellite band, and
+one parameter per family such as wind=wind-surface.
 ${hasSnap ? '\nA live map screenshot is attached - analyze it visually.' : ''}
 
 === ACTIONS YOU CAN PERFORM (you control the map exactly like a human would click through the UI) ===
@@ -27813,8 +27924,8 @@ Stack MULTIPLE blocks to do things in the right human order. For example, to sho
 Available actions:
 - panTo {"place":"Dallas, TX"} or {"lat":32.78,"lon":-96.80,"zoom":8} -- fly map to a place. Use GPS coords for "my location"/"near me".
 - setZoom {"direction":"in"/"out"} or {"zoom":9}
-- toggleLayer {"layer":"<id>"} -- IDs: nexrad, satellite, tornado, tstm, flood, wind, temp, waves, lightning, radio, nwr, spcrpts, spc1, spc2, spc3, fronts, forecasts, alerts
-- selectProduct {"product":"ref"} -- switch radar product. Options: ref (reflectivity), vel (velocity)
+- toggleLayer {"layer":"<id>"} -- IDs: nexrad, satellite, tornado, tstm, flood, watch, meso, spc1, spc2, spc3, spcrpts, nhc, invest, sst, models, lightning, ltg30, forecasts, radio, cloudcam
+- selectProduct {"product":"ref"} -- switch radar product. Options: ref (reflectivity), vel (velocity), hc (hydrometeor class), accum (storm total), boha (one hour). MRMS is its own bubble, not a selectProduct value.
 - openRadar {"site":"KFWS"} or {"place":"Dallas"} -- open single-site NEXRAD. For "nearest"/"my radar" use the user GPS nearest station above.
 - openForecast {"place":"Miami"} or {"lat":25.7,"lon":-80.2,"name":"My Location"} -- open in-app forecast panel. Use GPS coords for "my forecast".
 
@@ -31595,6 +31706,11 @@ async function _loadUserPrefs(uid) {
     // Saved Asturio conversations, and whether this account is linked to Discord.
     if (typeof _aiRestoreChats === 'function') _aiRestoreChats(d.asturioChats, d.asturioActive);
     if (typeof _aiRenderDiscordState === 'function') _aiRenderDiscordState(d);
+    // A linked account shares one Asturio memory with the Discord bot.
+    if (typeof _aiSyncAttach === 'function') {
+      _aiSyncProfileData = d || {};
+      if (d && d.discordId) _aiSyncAttach(d.discordId); else _aiSyncDetach();
+    }
     // Notification is absent in some mobile webviews, so never touch it bare.
     const notifOK = (typeof Notification !== 'undefined' && Notification.permission === 'granted');
     if (d.notifEnabled && notifOK) {
