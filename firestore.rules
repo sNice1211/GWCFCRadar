@@ -1,0 +1,181 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // The owner is identified by the email on the sign-in token, which Firebase
+    // Auth issues and the browser cannot forge. Deliberately NOT read from a
+    // database field, because a field can be edited by whoever can write it.
+    function isOwner() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == 'ralphies1005@gmail.com';
+    }
+
+    // Fields only the owner may ever set.
+    function touchesRoleFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['staffRole', 'staffRoleSetBy', 'staffRoleSetAt']);
+    }
+
+    function isStaff() {
+      return isOwner() || (isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.staffRole
+           in ['moderator', 'administrator', 'leadership']);
+    }
+
+    // Anonymous sign-in counts as signed in. The chat bridge uses it, so
+    // anywhere a real account is required has to say so explicitly.
+    function realAccount() {
+      return isSignedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    // ── EXISTING - unchanged ──────────────────────────────────────────────
+
+    match /cloudcam/{doc} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // Shared alerts: anyone can read, people manage their own.
+    match /sharedAlerts/{alertId} {
+      allow read: if true;
+      allow create: if isSignedIn();
+      allow update, delete: if isSignedIn() && request.auth.uid == resource.data.uid;
+    }
+
+    // Hit counter: anyone can read, only an increment by one is accepted.
+    match /analytics/hits {
+      allow read: if true;
+      allow update: if request.resource.data.count == resource.data.count + 1;
+    }
+
+    // ── USERS - now protects the role fields ──────────────────────────────
+    // This replaces the previous blanket "the owner of the document may write
+    // anything in it" rule. People still control their whole profile; the only
+    // difference is they can no longer hand themselves a staff role.
+    //
+    // No /{document=**} here on purpose. That wildcard also matches the user
+    // document itself, so a permissive rule under it would grant exactly the
+    // self-promotion this is meant to stop. Nothing in the app stores
+    // subcollections under a user, so nothing needs it.
+    match /users/{uid} {
+      allow read: if isOwner() || (isSignedIn() && request.auth.uid == uid);
+
+      allow create: if isOwner()
+        || (isSignedIn() && request.auth.uid == uid
+            && !('staffRole' in request.resource.data));
+
+      allow update: if isOwner()
+        || (isSignedIn() && request.auth.uid == uid && !touchesRoleFields());
+
+      allow delete: if isOwner();
+    }
+
+    // Discord account linking, as a handshake through a scratch document.
+    //
+    // The bot cannot touch users/{uid}: it signs in anonymously, and the rules
+    // above allow only the owner. The previous flow had it search every user
+    // for a link code, which was refused, so /link never worked at all.
+    //
+    // Now the browser writes a document here naming the account that is
+    // waiting, the bot adds who ran /link, and the browser copies the result
+    // onto its own account and deletes this. The bot never reads or writes an
+    // account, and the worst it can do is attach its own Discord id to a code
+    // someone is currently offering, which is what /link is for.
+    //
+    // The document id IS the code: six random characters, live for ten
+    // minutes, deleted the moment it is used.
+    match /discordLinks/{code} {
+      // Only ever create one pointing at yourself.
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'expires']);
+
+      // Any signed-in client may read one: the bot has to, and knowing a code
+      // is the whole credential. Nothing sensitive lives in here.
+      allow read: if isSignedIn();
+
+      // The bot may add its identity and nothing else. uid and expires cannot
+      // be touched, so a claim cannot be repointed at somebody else's account,
+      // and an already-claimed code cannot be overwritten by a second person.
+      allow update: if isSignedIn()
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.expires == resource.data.expires
+        && request.time.toMillis() < resource.data.expires
+        && resource.data.get('discordId', '') == ''
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['discordId', 'discordTag', 'claimedAt']);
+
+      // Cleaned up by the account it belongs to once linking is done.
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    // ── NEW ───────────────────────────────────────────────────────────────
+
+    // Anonymous visit counter. Visitors are not signed in, so this stays open;
+    // each document is only its own session id. There was no rule for this
+    // before, which means these writes were being silently refused.
+    match /guests/{gid} {
+      allow read, write: if true;
+    }
+
+    // Shared weather-model cache. The free weather service counts requests per
+    // network per day, so rather than every visitor fetching the same forecast
+    // and burning their own allowance, the first to load a model stores it here
+    // and everyone else reads it for free. Readable by signed-out visitors too,
+    // which is the point. Writable only by accounts, so a passer-by cannot
+    // publish invented weather to the whole site. The size cap stops a document
+    // being used as free storage.
+    match /modelCache/{docId} {
+      allow read: if true;
+      allow write: if isSignedIn()
+        && request.resource.data.v is string
+        && request.resource.data.v.size() < 400000
+        && request.resource.data.at is number;
+    }
+
+    // Live chat, shared with the Discord channel. Anyone may read, so the
+    // conversation is visible without an account. Posting needs a real account,
+    // which is what makes a spammer traceable and bannable. The bridge Worker
+    // signs in anonymously, so anonymous writes are accepted only for messages
+    // relayed from Discord, never for ones claiming to come from the site.
+    // Nothing can be edited after the fact; moderators and above can delete.
+    match /chat/{msgId} {
+      allow read: if true;
+      allow create: if request.resource.data.text is string
+        && request.resource.data.text.size() <= 500
+        // A picture or a voice clip is a message on its own, so empty text is
+        // only rejected when there is no attachment either.
+        && (request.resource.data.text.size() > 0
+            || 'image' in request.resource.data
+            || 'audio' in request.resource.data)
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 60
+        && request.resource.data.ts is number
+        // Attachments live in the document itself, so they are capped well
+        // under Firestore's 1MB limit rather than trusted to the sender.
+        && (!('image' in request.resource.data)
+            || request.resource.data.image.size() <= 300000)
+        && (!('audio' in request.resource.data)
+            || request.resource.data.audio.size() <= 750000)
+        && (
+          (request.resource.data.source == 'radar' && realAccount()
+            && request.resource.data.uid == request.auth.uid)
+          || (request.resource.data.source == 'discord' && isSignedIn())
+        );
+      allow update: if false;
+      allow delete: if isStaff();
+    }
+
+    // Where the chat bridge remembers the last Discord message it relayed.
+    match /chatBridge/{docId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+  }
+}
