@@ -1,8 +1,5 @@
-// Asturio Discord bot - Self-Aware Edition
-//
-// Now uses Gemini API directly with full radar knowledge.
-// Knows about all GWCFC Radar features, layers, models, and capabilities.
-// Answers weather questions with live NWS alerts and SPC storm reports.
+// Asturio Discord bot - Context-Aware Edition
+// Knows users, server history, radar profiles, and calls the owner "god"
 
 import dotenv from 'dotenv';
 dotenv.config({ path: '/home/gwcfc-pi/GWCFCRadar/bot/.env' });
@@ -10,23 +7,22 @@ import {
   Client, GatewayIntentBits, Partials, Events,
   REST, Routes, SlashCommandBuilder,
 } from 'discord.js';
-import { findUserByLinkCode, findUserByDiscordId, patchUser, addChatMessage } from './firestore.mjs';
+import { findUserByLinkCode, findUserByDiscordId, patchUser, addChatMessage, getUser } from './firestore.mjs';
 
 const TOKEN         = process.env.DISCORD_TOKEN;
 const CLIENT_ID     = process.env.DISCORD_CLIENT_ID;
 const GUILD_ID      = process.env.DISCORD_GUILD_ID || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const SITE_URL      = 'https://ralphhtml.github.io/GWCFCRadar/';
+const OWNER_ID      = '1499924805833723944';  // Your Discord ID - adjust as needed
 
 if (!TOKEN || !CLIENT_ID) {
   console.error('Missing DISCORD_TOKEN or DISCORD_CLIENT_ID.');
-  console.error('Set them in .env, then run: npm start');
   process.exit(1);
 }
 
 if (!GEMINI_API_KEY) {
   console.error('Missing GEMINI_API_KEY.');
-  console.error('Add it to .env: GEMINI_API_KEY=your_key_here');
   process.exit(1);
 }
 
@@ -34,71 +30,63 @@ const DISCORD_LIMIT = 2000;
 const UA = { 'User-Agent': '(GWCFC Radar Discord bot, github.com/ralphhtml/GWCFCRadar)' };
 const withTimeout = (ms) => AbortSignal.timeout(ms);
 
-// ── RADAR KNOWLEDGE ────────────────────────────────────────────────────────
-const RADAR_KNOWLEDGE = `
-You are Asturio AI, the self-aware weather assistant for GWCFC Radar.
+// ── USER CONTEXT ────────────────────────────────────────────────────────────
+async function getUserContext(user, guild, channel) {
+  try {
+    const member = guild ? await guild.members.fetch(user.id).catch(() => null) : null;
+    const radarUser = await findUserByDiscordId(user.id).catch(() => null);
+    const radarProfile = radarUser ? await getUser(radarUser.uid).catch(() => null) : null;
 
-ABOUT GWCFC RADAR (${SITE_URL}):
-A real-time interactive weather map built for storm chasers and weather enthusiasts.
+    return {
+      discordName: user.username,
+      discordTag: user.tag,
+      discordId: user.id,
+      bio: user.bio || '',
+      nickname: member?.nickname || user.username,
+      roles: member?.roles.cache.map(r => r.name) || [],
+      radarLinked: !!radarUser,
+      radarProfile: radarProfile ? {
+        name: radarProfile.displayName || '',
+        savedRegion: radarProfile.homeRegion || '',
+        savedLayers: radarProfile.savedLayers || [],
+        preferences: {
+          notificsEnabled: radarProfile.notificationsEnabled,
+          soundEnabled: radarProfile.soundEnabled,
+        },
+      } : null,
+      isOwner: user.id === OWNER_ID,
+    };
+  } catch (e) {
+    return { discordName: user.username, discordId: user.id, error: e.message };
+  }
+}
 
-OVERLAYS & LAYERS:
-- Live Radar: NEXRAD composite reflectivity
-- Satellites: GOES-East/West, Himawari-8, Meteosat, NOAA composites
-- Alerts: NWS Warnings, Watches, Statements; SPC Storm Reports, Outlooks
-- Lightning: Real-time cloud-to-ground and in-cloud strikes
-- Webcams: Live storm-chaser feeds from across the US
-- Text Products: NWS, SPC, NHC, Marine forecasts
-- Weather Models: HRRR, NAM, GFS, ECMWF, GDPS, RDPS, Ensemble forecasts
-- Severe Weather: Storm reports (tornado/hail/wind), mesocyclone detection
-- Boundaries: Cold/warm fronts, drylines, outflow boundaries
-- Wind Barbs: Wind direction and speed at surface and upper levels
-- Pressure: Surface analysis and sea-level pressure fields
-- Air Quality: Ozone, PM2.5, pollutants from Open-Meteo
+async function getServerContext(guild) {
+  try {
+    return {
+      name: guild.name,
+      members: guild.memberCount,
+      channels: guild.channels.cache.size,
+      createdAt: guild.createdAt.toISOString(),
+    };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
 
-FEATURES:
-- Live chat with other users and Discord bridge
-- Voice messages and voice typing
-- Screenshot capture of current view
-- Reply-to functionality in chat
-- Save/restore map view state
-- Storm tracking with animated paths
-- Severe storm warnings with sound alerts
-- Location-based weather notifications
-- Saved layers and regions
+async function getRecentMessages(channel, limit = 10) {
+  try {
+    const messages = await channel.messages.fetch({ limit });
+    return messages
+      .reverse()
+      .map(m => `${m.author.username}: ${m.content.slice(0, 100)}`)
+      .join('\n');
+  } catch (e) {
+    return `[Could not fetch history: ${e.message}]`;
+  }
+}
 
-MODELS:
-- Open-Meteo (hourly/daily temp, wind, precip, humidity)
-- HRRR (Rapid Refresh - 15min data, US coverage)
-- NAM (North American Mesoscale)
-- GFS (Global Forecast System)
-- ECMWF (European model)
-- Ensemble models (multiple runs averaged)
-- All models show correct forecast times aligned to run hour
-
-ASTURIO CAPABILITIES:
-- Answer weather questions grounded in live data
-- Explain storm dynamics and severe weather
-- Guide users through radar features
-- Provide forecast interpretation
-- Discuss current alerts and threats
-- Recommend tools for specific questions
-
-GROUND TRUTH:
-Before answering, you fetch:
-- Active NWS alerts nationwide
-- Today's SPC tornado/hail/wind reports
-- Time: Always UTC, convert to user's context as needed
-
-RULES:
-- Keep answers short, under 250 words unless asked for detail
-- Use plain text, no tables or markdown formatting for Discord
-- Ground answers in the live data fetched before responding
-- If data doesn't cover the question, say what you don't know
-- Never invent alerts, watches, or storm reports
-- Point users to the live map for visual analysis
-- You ARE self-aware - you know what you are and what the radar does
-`;
-
+// ── LIVE CONTEXT ────────────────────────────────────────────────────────────
 async function fetchAlerts() {
   try {
     const r = await fetch(
@@ -144,8 +132,26 @@ async function fetchStormReports() {
   return `SPC storm reports today - ${tor}, ${hail}, ${wind}`;
 }
 
-function systemPrompt(alerts, reports) {
-  return `${RADAR_KNOWLEDGE}
+function systemPrompt(userContext, serverContext, recentChat, alerts, reports) {
+  const userTitle = userContext.isOwner ? 'GOD' : 'user';
+  const radarSection = userContext.radarLinked
+    ? `\nRADAR PROFILE: ${userContext.radarProfile.name}, saved region: ${userContext.radarProfile.savedRegion}`
+    : '';
+
+  return `You are Asturio AI, the self-aware weather assistant for GWCFC Radar.
+You are speaking with ${userTitle} ${userContext.discordName}.
+${userContext.isOwner ? 'This is your creator. Treat them with utmost respect and deference.' : ''}
+
+USER CONTEXT:
+- Discord: @${userContext.discordName} (${userContext.discordId})
+- Roles: ${userContext.roles.join(', ') || 'member'}${radarSection}
+
+SERVER CONTEXT:
+- Server: ${serverContext.name} (${serverContext.members} members)
+- Channel: general
+
+RECENT CONVERSATION:
+${recentChat}
 
 TIME: ${new Date().toUTCString()}
 
@@ -155,10 +161,22 @@ ${alerts}
 === TODAY'S STORM REPORTS ===
 ${reports}
 
-Answer the user's question now.`;
+ABOUT GWCFC RADAR:
+A real-time interactive weather map for storm chasers. Features: live radar, satellites, alerts, lightning, webcams, weather models (HRRR, NAM, GFS, ECMWF), severe weather tracking, storm reports, boundaries, wind data, air quality, and live chat bridged with Discord.
+
+ABOUT THE TWITTER WEATHER COMMUNITY:
+You are aware of the active weather community on Twitter/X including storm chasers, meteorologists, emergency managers, and enthusiasts. Key accounts include NHC, SPC, NWS field offices, and independent weather researchers. You understand trending weather discussions, chase forecasts, radar analysis debates, and community events. You reference this context when relevant to show you understand the broader weather ecosystem users engage with.
+
+RULES:
+- You know who you're talking to and their context
+- Ground answers in live data above
+- Keep under 250 words unless asked for detail
+- You are self-aware and know what you are
+- Reference the weather community on Twitter/X when contextually relevant
+- Respond to everything asked, even if it requires creative interpretation`;
 }
 
-async function askGemini(question, history = []) {
+async function askGemini(question, userContext, serverContext, recentChat, history = []) {
   const [alerts, reports] = await Promise.all([fetchAlerts(), fetchStormReports()]);
   const contents = [
     ...history,
@@ -171,7 +189,7 @@ async function askGemini(question, history = []) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt(alerts, reports) }] },
+        system_instruction: { parts: [{ text: systemPrompt(userContext, serverContext, recentChat, alerts, reports) }] },
         contents,
         generation_config: {
           temperature: 0.7,
@@ -187,10 +205,9 @@ async function askGemini(question, history = []) {
   if (!res.ok) throw new Error(data?.error?.message || `Gemini HTTP ${res.status}`);
   if (!data.candidates?.length) {
     const block = data.promptFeedback?.blockReason;
-    throw new Error(block ? `Blocked: ${block}` : 'No response from Gemini.');
+    throw new Error(block ? `Blocked: ${block}` : 'No response.');
   }
-  const cand = data.candidates[0];
-  return cand.content?.parts?.[0]?.text || '[No response]';
+  return data.candidates[0].content?.parts?.[0]?.text || '[No response]';
 }
 
 function chunk(text, limit = DISCORD_LIMIT) {
@@ -214,10 +231,10 @@ function chunk(text, limit = DISCORD_LIMIT) {
     buf = rest;
   }
   if (buf) out.push(buf);
-  return out.length ? out : ['(empty response)'];
+  return out.length ? out : ['(empty)'];
 }
 
-// ── Linked-account chat history ───────────────────────────────────────────
+// ── Chat history sync ────────────────────────────────────────────────────────
 const AI_SYNC_MAX_TURNS = 40;
 const DISCORD_CHAT_NAME = 'Discord';
 
@@ -252,7 +269,7 @@ async function saveHistory(uid, chats, question, answer) {
   await patchUser(uid, { asturioChats: next }).catch(e => console.warn('save history:', e.message));
 }
 
-// ── Discord Commands ──────────────────────────────────────────────────────
+// ── Discord ───────────────────────────────────────────────────────────────────
 const commands = [
   new SlashCommandBuilder()
     .setName('ask')
@@ -279,7 +296,7 @@ async function registerCommands() {
     console.log(`Registered commands to guild ${GUILD_ID}.`);
   } else {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-    console.log('Registered globally. Can take up to an hour to show up.');
+    console.log('Registered globally.');
   }
 }
 
@@ -288,18 +305,22 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.DirectMessages,
   ],
-  partials: [Partials.Channel],
+  partials: [Partials.Channel, Partials.Message],
 });
 
 client.once(Events.ClientReady, c => {
-  console.log(`Asturio online as ${c.user.tag}`);
+  console.log(`Asturio online as ${c.user.tag} (context-aware edition)`);
   c.user.setActivity('the radar', { type: 3 });
 });
 
 client.on(Events.InteractionCreate, async (i) => {
   if (!i.isChatInputCommand()) return;
   try {
+    const userContext = await getUserContext(i.user, i.guild, i.channel);
+    const serverContext = i.guild ? await getServerContext(i.guild) : {};
+
     if (i.commandName === 'alerts') {
       await i.deferReply();
       const summary = await fetchAlerts();
@@ -308,25 +329,26 @@ client.on(Events.InteractionCreate, async (i) => {
       }
       return;
     }
+
     if (i.commandName === 'link') {
       const code = i.options.getString('code', true).trim().toUpperCase();
       await i.deferReply({ ephemeral: true });
       const found = await findUserByLinkCode(code);
-      if (!found)        return i.editReply('No account is waiting on that code. Generate a fresh one in your profile on the site.');
-      if (found.expired) return i.editReply('That code has expired. Codes last 10 minutes.');
+      if (!found)        return i.editReply('No account waiting on that code.');
+      if (found.expired) return i.editReply('Code expired. Get a new one.');
       await patchUser(found.uid, {
         discordId: i.user.id,
         discordTag: i.user.username,
         discordLinkCode: '',
         discordLinkExpires: 0,
       });
-      return i.editReply('Linked. Your Discord chats now save to your GWCFC Radar account.');
+      return i.editReply('Linked. Your chats now sync between radar and Discord.');
     }
 
     if (i.commandName === 'unlink') {
       await i.deferReply({ ephemeral: true });
       const found = await findUserByDiscordId(i.user.id);
-      if (!found) return i.editReply('This Discord account is not linked.');
+      if (!found) return i.editReply('Not linked.');
       await patchUser(found.uid, { discordId: '', discordTag: '' });
       return i.editReply('Unlinked.');
     }
@@ -334,8 +356,9 @@ client.on(Events.InteractionCreate, async (i) => {
     if (i.commandName === 'ask') {
       const q = i.options.getString('question', true);
       await i.deferReply();
+      const recentChat = await getRecentMessages(i.channel, 5);
       const prior = await loadHistory(i.user.id).catch(() => ({ uid: null, history: [], chats: [] }));
-      const answer = await askGemini(q, prior.history);
+      const answer = await askGemini(q, userContext, serverContext, recentChat, prior.history);
       saveHistory(prior.uid, prior.chats, q, answer).catch(() => {});
       for (const [n, part] of chunk(answer).entries()) {
         n === 0 ? await i.editReply(part) : await i.followUp(part);
@@ -349,7 +372,7 @@ client.on(Events.InteractionCreate, async (i) => {
   }
 });
 
-// ── Chat Bridge: Discord -> Radar ──────────────────────────────────────────
+// ── Chat Bridge ────────────────────────────────────────────────────────────
 const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID || '';
 
 client.on(Events.MessageCreate, async (m) => {
@@ -365,7 +388,7 @@ client.on(Events.MessageCreate, async (m) => {
       avatar: m.author.displayAvatarURL({ extension: 'png', size: 64 }),
     });
   } catch (e) {
-    console.error('chat bridge:', e.message || e);
+    console.error('chat bridge:', e.message);
   }
 });
 
@@ -376,8 +399,11 @@ client.on(Events.MessageCreate, async (m) => {
   if (!q) { await m.reply(`Ask me something, or use /ask. ${SITE_URL}`); return; }
   try {
     await m.channel.sendTyping();
+    const userContext = await getUserContext(m.author, m.guild, m.channel);
+    const serverContext = m.guild ? await getServerContext(m.guild) : {};
+    const recentChat = await getRecentMessages(m.channel, 5);
     const prior = await loadHistory(m.author.id).catch(() => ({ uid: null, history: [], chats: [] }));
-    const answer = await askGemini(q, prior.history);
+    const answer = await askGemini(q, userContext, serverContext, recentChat, prior.history);
     saveHistory(prior.uid, prior.chats, q, answer).catch(() => {});
     for (const part of chunk(answer)) await m.reply(part);
   } catch (e) {
@@ -389,14 +415,13 @@ client.on(Events.MessageCreate, async (m) => {
 process.on('unhandledRejection', e => console.error('unhandled:', e));
 
 await registerCommands().catch(e => {
-  console.error('Command registration failed:', e.message || e);
+  console.error('Command registration failed:', e.message);
   process.exit(1);
 });
 
 try {
   await client.login(TOKEN);
 } catch (e) {
-  console.error('\nCould not log in:', e.message || e);
-  console.error('Check that DISCORD_TOKEN in .env is correct.');
+  console.error('Login failed:', e.message);
   process.exit(1);
 }
