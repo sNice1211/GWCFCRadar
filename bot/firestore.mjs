@@ -49,7 +49,17 @@ async function call(path, init = {}) {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t}`, ...(init.headers || {}) },
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j?.error?.message || `Firestore HTTP ${r.status}`);
+  if (!r.ok) {
+    // A bare 403 from Firestore means the rules refused it, and the message
+    // body is usually empty, so the error says nothing about what to do. By
+    // far the most common cause here is the rules not being published yet.
+    if (r.status === 403 || /PERMISSION_DENIED/i.test(j?.error?.status || '')) {
+      throw new Error(`Firestore refused ${path.split('?')[0]}. `
+        + 'Publish the rules from firestore.rules in the Firebase console, '
+        + 'the discordLinks collection in particular.');
+    }
+    throw new Error(j?.error?.message || `Firestore HTTP ${r.status}`);
+  }
   return j;
 }
 

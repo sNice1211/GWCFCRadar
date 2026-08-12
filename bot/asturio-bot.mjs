@@ -673,11 +673,13 @@ client.on(Events.InteractionCreate, async (i) => {
     }
 
     if (i.commandName === 'unlink') {
+      // Unlinking means clearing a field on the account, and the bot has no
+      // access to accounts: it signs in anonymously and the rules let only the
+      // owner write their own document. Attempting it produced a bare 403.
+      // Saying where to go is honest and takes the same one click.
       await i.deferReply({ ephemeral: true });
-      const found = await findUserByDiscordId(i.user.id);
-      if (!found) return i.editReply('This Discord account is not linked to anything.');
-      await patchUser(found.uid, { discordId: '', discordTag: '' });
-      return i.editReply('Unlinked. Chats here are no longer saved to your account.');
+      return i.editReply('Unlink from your profile on the site, under the Discord section: '
+        + `${SITE_URL}\nOnly you can change your own account, which is why this cannot do it for you.`);
     }
 
     if (i.commandName === 'ask') {
