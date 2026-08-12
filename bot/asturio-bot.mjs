@@ -13,6 +13,7 @@ import {
   Client, GatewayIntentBits, Partials, Events,
   REST, Routes, SlashCommandBuilder,
 } from 'discord.js';
+import { existsSync } from 'node:fs';
 import { findUserByLinkCode, findUserByDiscordId, patchUser, addChatMessage, getUser } from './firestore.mjs';
 
 const TOKEN     = process.env.DISCORD_TOKEN;
@@ -303,7 +304,22 @@ function explainApiError(msg) {
 //
 // Imported lazily so a machine without it still runs every other command, and
 // /map is the only thing that reports the problem.
-const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/chromium-browser';
+// Where Chromium lives differs by distro, and on Raspberry Pi OS the package is
+// called chromium-browser while the binary is plain chromium. Rather than make
+// that a setting people have to discover from an error, look in the usual
+// places. CHROME_PATH still wins if it is set.
+const CHROME_CANDIDATES = [
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/snap/bin/chromium',
+];
+function findChrome() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+  for (const p of CHROME_CANDIDATES) if (existsSync(p)) return p;
+  return null;
+}
 const SHOT_W = 1280, SHOT_H = 800;
 
 // Named places, so nobody has to know coordinates to ask for a picture.
@@ -336,11 +352,17 @@ async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) 
   if (layers)   q.set('layers', layers);
   if (overlays) q.set('overlays', overlays);
 
+  const chrome = findChrome();
+  if (!chrome) {
+    throw new Error('No Chromium found. Install one with: sudo apt install -y chromium'
+      + ' , or set CHROME_PATH if yours lives somewhere unusual.');
+  }
+
   const url = `${SITE_URL}?${q}`;
   let browser;
   try {
     browser = await puppeteer.launch({
-      executablePath: CHROME_PATH,
+      executablePath: chrome,
       headless: 'new',
       // A Pi has little shared memory, and Chromium crashes rendering a large
       // map without this.
@@ -356,8 +378,7 @@ async function screenshotMap({ place, lat, lon, z, basemap, layers, overlays }) 
     return { image: await page.screenshot({ type: 'png' }), url };
   } catch (e) {
     if (/ENOENT|executablePath|Failed to launch/i.test(e.message)) {
-      throw new Error(`No browser at ${CHROME_PATH}. Install one with: sudo apt install -y chromium-browser`
-        + ' , or set CHROME_PATH to where yours lives.');
+      throw new Error(`Chromium at ${chrome} would not start: ${e.message.split('\n')[0]}`);
     }
     throw e;
   } finally {
