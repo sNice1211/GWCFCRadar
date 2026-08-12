@@ -1,5 +1,5 @@
 // GWCFCRadar Service Worker - radar tile cache + background alert notifications
-const CACHE       = 'gwcfc-v14';
+const CACHE       = 'gwcfc-v15';
 const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
@@ -7,9 +7,10 @@ const IEM_L3_RE = /\/cache\/tile\.py\/1\.0\.0\/nexrad-n0q-\d{12}\//;
 const RV_TILE_RE = /\/v2\/radar\/\d+\//;
 
 // Severity to badge art, mirroring the page's _severityBadge(). The large icon
-// slot (right) carries severity; the small badge slot (left) carries the logo.
-// Both halves must agree with index.html, or a notification would look
-// different depending on which path happened to fire it.
+// slot (right) carries the logo, the only slot Android renders in colour; the
+// small badge slot (left) carries severity, masked to its shape. Both halves
+// must agree with index.html, or a notification would look different depending
+// on which path happened to fire it.
 function _severityBadge(severity) {
   const s = Number(severity) || 0;
   if (s >= 4) return './icons/badge-extreme.png';
@@ -82,8 +83,8 @@ self.addEventListener('push', e => {
   e.waitUntil(
     self.registration.showNotification(_plainText(title), {
       body: _plainText(body),
-      icon:    _severityBadge(payload.severe ? 3 : 1),
-      badge:   './icons/badge-logo.png',
+      icon:    './icons/icon-192.png',
+      badge:   _severityBadge(payload.severe ? 3 : 1),
       tag:     payload.id || 'gwcfc-alert',
       vibrate: payload.severe ? [200, 100, 200] : [100],
       data:    { url },
@@ -194,8 +195,8 @@ async function _checkAndNotify() {
     const isUrgent = sevRank >= 3;
     await self.registration.showNotification(_plainText(title), {
       body: _plainText(body),
-      icon:    _severityBadge(sevRank),
-      badge:   './icons/badge-logo.png',
+      icon:    './icons/icon-192.png',
+      badge:   _severityBadge(sevRank),
       tag:     id,
       vibrate: isUrgent ? [300, 100, 300, 100, 300] : [150],
       requireInteraction: isUrgent,
@@ -334,8 +335,8 @@ async function _checkAndNotify() {
         else if (bestG > 150 && bestR < 120) { emoji = '🌦️'; label = 'Light Rain'; }
         await self.registration.showNotification(`${emoji} ${label} Near You`, {
           body:    'Radar shows precipitation within ~25 miles of your location',
-          icon:    _severityBadge(2),
-          badge:   './icons/badge-logo.png',
+          icon:    './icons/icon-192.png',
+          badge:   _severityBadge(2),
           tag:     'rain-near-me',
           vibrate: [150],
           data:    { url: self.location.origin + '/GWCFCRadar/' },
