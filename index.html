@@ -27893,6 +27893,13 @@ function _chatSyncComposer() {
     input.placeholder = signedIn ? 'Message…' : 'Sign in to chat';
   }
   if (btn) btn.disabled = !signedIn;
+  // The camera and microphone were left enabled while signed out, so they
+  // recorded happily and then failed at the send. Disable them with everything
+  // else instead of letting someone talk into a dead button.
+  ['lqm-chat-snap','lqm-chat-dictate','lqm-chat-rec'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !signedIn;
+  });
   if (!signedIn) _chatStatus('<a onclick="lqmCloseChat();openAuthModal(\'signin\')">Sign in</a> to join the chat. You can read without signing in.');
   else _chatStatus('');
 }
@@ -28064,7 +28071,12 @@ async function chatToggleVoiceMsg() {
     if (url.length > 700000) { _chatStatus('That recording is too long to send.'); return; }
     _chatAttach = { audio: url, secs };
     _chatShowAttachment(`Voice message, ${secs}s`, null);
-    _chatStatus('');
+    // Sends itself. Stopping a recording is the act of finishing the message;
+    // leaving it sitting in the composer waiting for a second button looked
+    // like nothing had happened.
+    _chatLastSent = 0;
+    _chatStatus('Sending…');
+    chatSend();
   };
 
   _chatMediaRec = mr;
@@ -28146,7 +28158,13 @@ async function chatSend() {
     _chatAttach = attach; _chatReplyTo = reply;
     if (attach) _chatShowAttachment(attach.image ? 'Map view ready to send' : `Voice message, ${attach.secs}s`, attach.image || null);
     if (reply) _chatShowReplyBar(reply);
-    _chatStatus(`Couldn't send: ${_escapeHtml(e.message || 'permission denied')}`);
+    // A voice clip or a screenshot carries no text, which the earlier chat rule
+    // refused outright. That comes back as a bare permission error, so say what
+    // it actually means rather than leaving it looking like the recorder broke.
+    const denied = /permission|insufficient/i.test(e.message || '');
+    _chatStatus(denied && attach
+      ? `Voice messages and screenshots need the updated Firestore rules published (FIRESTORE_RULES.txt). Plain messages still work.`
+      : `Couldn't send: ${_escapeHtml(e.message || 'permission denied')}`);
   }
 }
 
