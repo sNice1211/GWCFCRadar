@@ -27184,6 +27184,17 @@ let _aiNextId = 2;
 function _aiCurrentHistory() { return _aiChats[_aiActiveChat].history; }
 
 // Simple markdown → HTML (bold, italic, headers, bullets, code)
+// Icons cannot be passed to _aiMarkdown as raw markup: it escapes HTML first,
+// which is what keeps model output from injecting anything, so the icon came
+// out as visible <svg ...> text instead of an icon. Callers use :ic-name:
+// instead, which survives escaping and is turned into an icon here. Only names
+// matching this pattern become markup, so a model echoing the token can at
+// worst draw an icon.
+function _aiIconTokens(h) {
+  return h.replace(/:(ic-[a-z0-9-]{1,30}):/g,
+    '<svg class="svgi" width="1em" height="1em" style="vertical-align:-.15em"><use href="#$1"></use></svg>');
+}
+
 function _aiMarkdown(text) {
   let h = text
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
@@ -27209,7 +27220,7 @@ function _aiMarkdown(text) {
     .replace(/\n/g,'<br>');
   // clean up <br> inside ul/li
   h = h.replace(/<ul><br>/g,'<ul>').replace(/<br><\/ul>/g,'</ul>').replace(/<br><li>/g,'<li>').replace(/<\/li><br>/g,'</li>');
-  return h;
+  return _aiIconTokens(h);
 }
 
 function _aiRenderTabs() {
@@ -28213,7 +28224,7 @@ function _aiVoice() {
   const btn = document.getElementById('lqm-ai-voice');
   const input = document.getElementById('lqm-ai-input');
   if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-    _aiAddMsg('bot', '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-warning></use></svg> Voice input is not supported in this browser. Try Chrome.');
+    _aiAddMsg('bot', ':ic-warning: Voice input is not supported in this browser. Try Chrome.');
     return;
   }
   if (_aiVoiceRec) { _aiVoiceRec.stop(); return; }
@@ -28228,7 +28239,7 @@ function _aiVoice() {
     if (input) input.value = transcript;
     _aiSend();
   };
-  _aiVoiceRec.onerror = (e) => { _aiAddMsg('bot', '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-warning></use></svg> Voice error: ' + e.error); _aiVoiceRec = null; if (btn) btn.classList.remove('recording'); };
+  _aiVoiceRec.onerror = (e) => { _aiAddMsg('bot', ':ic-warning: Voice error: ' + e.error); _aiVoiceRec = null; if (btn) btn.classList.remove('recording'); };
   _aiVoiceRec.onend = () => { _aiVoiceRec = null; if (btn) btn.classList.remove('recording'); };
   _aiVoiceRec.start();
 }
@@ -28337,7 +28348,7 @@ async function _aiSend(explicitImageB64) {
       if (allowed) {
         for (const act of actions) {
           const result = await _aiExecuteAction(act);
-          _aiAddMsg('bot', `<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg> ${result}`);
+          _aiAddMsg('bot', `:ic-check: ${result}`);
         }
       } else {
         _aiAddMsg('bot', "Okay, I won't touch the map.");
