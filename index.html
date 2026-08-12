@@ -30479,14 +30479,30 @@ function _applyUrlView(p) {
   // it, which is usually the thing someone actually wanted: "radar" is rarely
   // the question, "velocity" is.
 
-  // Radar product (ref, vel, zdr, cc, kdp, sw, hc, accum, boha). Needs the
-  // radar layer on to show anything, so switch it on rather than silently
-  // producing a blank map when only a product was asked for.
+  // Radar product. Only what the sub-bubbles actually offer: the dual-pol
+  // products (cc, zdr, kdp, sw) are commented out of that row, so accepting
+  // them here would hand back a blank map for a product the app does not show.
+  //
+  // The three paths mirror what the bubbles do, because they genuinely differ.
+  // MRMS is not a selectProduct product at all and has to be loaded directly;
+  // the accumulation products deliberately run with the NEXRAD layer off, and
+  // selectProduct turns it off itself; only ref and vel want it on.
   const product = (p.get('product') || '').trim();
-  if (product && typeof selectProduct === 'function') {
+  if (product) {
     try {
-      if (!activeLayers.nexrad && typeof toggleLayer === 'function') toggleLayer('nexrad');
-      selectProduct(product);
+      if (product === 'mrms') {
+        if (typeof _disableSatellite === 'function') _disableSatellite();
+        activeLayers.nexrad = true;
+        currentProduct = 'mrms';
+        if (typeof _loadMrmsComposite === 'function') _loadMrmsComposite();
+        if (typeof _syncParentBubble === 'function') _syncParentBubble('radar');
+      } else if (['ref','vel','hc','accum','boha'].includes(product)) {
+        if (typeof _disableSatellite === 'function') _disableSatellite();
+        if (product === 'ref' || product === 'vel') activeLayers.nexrad = true;
+        selectProduct(product);
+      } else {
+        console.warn('url: unknown radar product', product);
+      }
     } catch(e) { console.warn('url product:', e); }
   }
 
@@ -31445,7 +31461,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Notification icons are versioned now, so new artwork actually reaches your phone instead of the old copy being served from cache.";
+const APP_LATEST_UPDATE = "Map links can pick the radar product: reflectivity, velocity, MRMS or an accumulation, matching what the radar menu actually offers.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

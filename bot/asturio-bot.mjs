@@ -552,18 +552,18 @@ const commands = [
         { name: 'light',     value: 'light' },
         { name: 'topo',      value: 'topo' },
       ))
+    // Only what the radar sub-bubbles actually offer. The dual-pol products are
+    // commented out of that row, so offering them would promise a picture the
+    // app cannot draw.
     .addStringOption(o => o.setName('product')
       .setDescription('Radar product. Switches radar on by itself')
       .addChoices(
-        { name: 'reflectivity',        value: 'ref' },
-        { name: 'velocity',            value: 'vel' },
-        { name: 'correlation (CC)',    value: 'cc' },
-        { name: 'differential (ZDR)',  value: 'zdr' },
-        { name: 'specific phase (KDP)',value: 'kdp' },
-        { name: 'spectrum width',      value: 'sw' },
-        { name: 'hydrometeor class',   value: 'hc' },
-        { name: 'storm accumulation',  value: 'accum' },
-        { name: 'one hour accum',      value: 'boha' },
+        { name: 'reflectivity',       value: 'ref' },
+        { name: 'velocity',           value: 'vel' },
+        { name: 'MRMS 1km',           value: 'mrms' },
+        { name: 'hydrometeor class',  value: 'hc' },
+        { name: 'storm accumulation', value: 'accum' },
+        { name: 'one hour accum',     value: 'boha' },
       ))
     .addStringOption(o => o.setName('satellite')
       .setDescription('GOES band. Switches satellite on by itself')
