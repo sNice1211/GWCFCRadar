@@ -21019,7 +21019,7 @@ function _mpCreatePanel(i) {
   const base = _mpCloneBasemap();
   if (base) base.addTo(m);
 
-  const panel = { id: MP_PANEL_IDS[i], el, map: m, state: _mpBlankState(), layers: {} };
+  const panel = { id: MP_PANEL_IDS[i], el, map: m, state: _mpBlankState(), layers: {}, overlays: {} };
   m.on('move zoomend', () => _mpSyncFrom(m));
   return panel;
 }
@@ -21052,7 +21052,10 @@ function _mpRefreshLabels() {
       const p = _mpPanels[i - 1];
       const prod = p ? (MP_PRODUCTS.find(x => x.id === p.state.product) || {}).label : null;
       what = (prod && prod !== 'Basemap only') ? prod : 'Empty';
-      if (p && p.state.alerts) what += ' + Alerts';
+      const extras = [];
+      if (p && p.state.alerts) extras.push('Alerts');
+      if (p) Object.keys(p.overlays).forEach(k => { if (p.overlays[k]) extras.push(k === 'spc-reports' ? 'Reports' : (MP_OVERLAYS[k] || {}).label || k); });
+      if (extras.length) what = (what === 'Empty' ? '' : what + ' + ') + extras.join(' + ');
     }
     el.innerHTML = `<b>${MP_PANEL_IDS[i]}</b><span>${what}</span>`;
     el.title = active
@@ -21085,13 +21088,25 @@ function _mpSyncControlUi() {
     const row = document.getElementById(`layer-${id}`);
     if (row) row.classList.toggle('active', !!on);
   };
+  const pill = (ovid, on) => {
+    const el = document.getElementById('op-' + ovid);
+    if (el) el.classList.toggle('active', !!on);
+  };
+  const panel = onMain ? null : _mpPanels[_mpActive - 1];
   if (onMain) {
     Object.keys(activeLayers).forEach(k => set(k, activeLayers[k]));
+    // Restore the app's own pill states, which the panel view overwrote.
+    pill('alerts', true);
+    pill('spc-outlook', typeof _spcOutlookOn !== 'undefined' && _spcOutlookOn);
+    pill('wpc-outlook', typeof _wpcOutlookActive !== 'undefined' && _wpcOutlookActive);
+    pill('spc-reports', !!activeLayers.spcrpts);
   } else {
     Object.keys(activeLayers).forEach(k => set(k, false));
     set('nexrad', st.product === 'nexrad');
     set('satellite', st.product.startsWith('goes'));
     ['tornado', 'tstm', 'flood', 'watch'].forEach(k => set(k, st.alerts));
+    pill('alerts', st.alerts);
+    ['spc-outlook', 'wpc-outlook', 'spc-reports'].forEach(k => pill(k, panel && panel.overlays[k]));
   }
   document.body.classList.toggle('mp-on-comparison', !onMain);
 }
@@ -21155,6 +21170,142 @@ async function _mpPanelSetAlerts(panel, on) {
     if (typeof showToast === 'function') showToast('Could not load alerts for that panel.', 2400);
   }
 }
+
+
+// ── PER-PANEL OVERLAYS ────────────────────────────────────────────────────
+// The overlay pills have the same singleton problem the layer toggles do:
+// each one keeps its layer in a global (_wpcOutlookLayer and friends), so a
+// second panel loading the same overlay would overwrite the first panel's
+// handle. These are therefore fetched and built per panel as well.
+//
+// Only overlays that are genuinely a map layer are here. The side panels
+// (WX Alerts, EAS) are windows rather than map content, so they stay global
+// and are left to panel A.
+const MP_OVERLAYS = {
+  'spc-outlook': {
+    label: 'SPC Outlook',
+    url: () => 'https://www.spc.noaa.gov/products/outlook/day1otlk_cat.nolyr.geojson',
+    // SPC ships the categorical colours in the features themselves, so the
+    // panel copy matches the real product instead of inventing a palette.
+    style: f => ({
+      color: (f.properties && f.properties.stroke) || '#ffffff',
+      fillColor: (f.properties && f.properties.fill) || '#888888',
+      weight: 1.4, opacity: 0.95, fillOpacity: 0.30,
+    }),
+    popup: f => `<b>SPC Day 1</b><br>${(f.properties && (f.properties.LABEL2 || f.properties.LABEL)) || ''}`,
+  },
+  'wpc-outlook': {
+    label: 'WPC Outlook',
+    url: () => 'https://www.wpc.ncep.noaa.gov/exper/ero/geojson/ero_day1.geojson',
+    style: f => ({
+      color: (f.properties && f.properties.stroke) || '#ffffff',
+      fillColor: (f.properties && f.properties.fill) || '#3aa655',
+      weight: 1.4, opacity: 0.95, fillOpacity: 0.28,
+    }),
+    popup: f => `<b>WPC Excessive Rainfall</b><br>${(f.properties && (f.properties.LABEL2 || f.properties.LABEL)) || ''}`,
+  },
+};
+
+// Storm reports arrive as CSV rather than GeoJSON, so they get their own
+// builder instead of being forced into the table above.
+async function _mpBuildStormReports() {
+  const d = new Date();
+  const ds = `${String(d.getUTCFullYear()).slice(2)}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  const kinds = [
+    { k: 'torn', color: '#ff1a00' },
+    { k: 'hail', color: '#00b7ff' },
+    { k: 'wind', color: '#1aff8f' },
+  ];
+  const group = L.layerGroup();
+  let any = false;
+  for (const { k, color } of kinds) {
+    try {
+      const res = await fetch(`https://www.spc.noaa.gov/climo/reports/${ds}_rpts_${k}.csv`,
+        { signal: typeof _abortSignal === 'function' ? _abortSignal(12000) : undefined });
+      if (!res.ok) continue;
+      const rows = (await res.text()).trim().split('\n');
+      if (rows.length < 2) continue;
+      // Column order differs between the three files, so the header is read
+      // rather than assumed.
+      const head = rows[0].split(',').map(h => h.trim().toLowerCase());
+      const iLat = head.indexOf('lat'), iLon = head.indexOf('lon');
+      if (iLat < 0 || iLon < 0) continue;
+      rows.slice(1).forEach(line => {
+        const c = line.split(',');
+        const lat = parseFloat(c[iLat]), lon = parseFloat(c[iLon]);
+        if (!isFinite(lat) || !isFinite(lon)) return;
+        any = true;
+        L.circleMarker([lat, lon], {
+          radius: 4, weight: 1, color: '#000', fillColor: color, fillOpacity: 0.9,
+        }).bindPopup(`<b>${k.toUpperCase()} report</b><br>${(c[2] || '').slice(0, 80)}`).addTo(group);
+      });
+    } catch (e) { /* one kind failing should not lose the other two */ }
+  }
+  return any ? group : null;
+}
+
+async function _mpPanelToggleOverlay(panel, ovid) {
+  const on = !panel.overlays[ovid];
+  panel.overlays[ovid] = on;
+  _mpRefreshLabels();
+
+  if (!on) {
+    const l = panel.layers[ovid];
+    if (l) { try { panel.map.removeLayer(l); } catch (e) {} panel.layers[ovid] = null; }
+    return;
+  }
+
+  try {
+    let layer;
+    if (ovid === 'spc-reports') {
+      layer = await _mpBuildStormReports();
+      if (!layer) throw new Error('no reports today');
+    } else {
+      const def = MP_OVERLAYS[ovid];
+      const res = await fetch(def.url(),
+        { signal: typeof _abortSignal === 'function' ? _abortSignal(15000) : undefined });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const gj = await res.json();
+      layer = L.geoJSON(gj, {
+        pane: 'alertsPane',
+        filter: f => !!f.geometry,
+        style: def.style,
+        onEachFeature: (f, l) => l.bindPopup(def.popup(f)),
+      });
+    }
+    if (!panel.overlays[ovid]) return;          // switched off while loading
+    if (panel.layers[ovid]) { try { panel.map.removeLayer(panel.layers[ovid]); } catch (e) {} }
+    panel.layers[ovid] = layer;
+    layer.addTo(panel.map);
+  } catch (e) {
+    panel.overlays[ovid] = false;
+    _mpRefreshLabels();
+    _mpSyncControlUi();
+    if (typeof showToast === 'function') {
+      showToast(`Could not load ${ovid.replace('-', ' ')} for that panel.`, 2400);
+    }
+  }
+}
+
+// Same wrapping trick as the layer toggles: redirect to the selected
+// comparison panel, otherwise let the app's own handler run untouched.
+const _mpOrigToggleOverlayPill = toggleOverlayPill;
+toggleOverlayPill = function (id) {
+  if (!_multiPanelEnabled || _multiPanelMode !== 'split' || _mpActive === 0) {
+    return _mpOrigToggleOverlayPill.apply(this, arguments);
+  }
+  const panel = _mpPanels[_mpActive - 1];
+  if (!panel) return;
+  if (id === 'alerts') {
+    _mpPanelSetAlerts(panel, !panel.state.alerts);
+  } else if (MP_OVERLAYS[id] || id === 'spc-reports') {
+    _mpPanelToggleOverlay(panel, id);
+  } else if (typeof showToast === 'function') {
+    showToast('That overlay only runs on panel A. Select A to use it.', 2200);
+    return;
+  }
+  _mpSyncControlUi();
+};
 
 // ── CONTROL ROUTING ───────────────────────────────────────────────────────
 // The app's own handlers are wrapped rather than edited: while a comparison
@@ -32916,7 +33067,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Split view now goes up to four panels, each with a labelled A/B/C/D tab. Click a panel's label and the radar, satellite and alert controls act on that panel only.";
+const APP_LATEST_UPDATE = "Click a panel's A/B/C/D label and the layers and overlays you turn on land on that panel only. Each label shows what that panel is carrying.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
