@@ -21020,7 +21020,6 @@ function _mpCreatePanel(i) {
   if (base) base.addTo(m);
 
   const panel = { id: MP_PANEL_IDS[i], el, map: m, state: _mpBlankState(), layers: {}, overlays: {} };
-  m.on('move zoomend', () => _mpSyncFrom(m));
   return panel;
 }
 
@@ -21345,7 +21344,6 @@ function _mpEnableSplit(count) {
   const seed = ['nexrad', 'goes_ir', 'goes_vis'];
   _mpPanels.forEach((p, i) => _mpPanelSetProduct(p, seed[i] || 'none'));
 
-  map.on('move zoomend', _mpSyncFromMain);
   _mpBuildLabels();
   _mpBuildSplitToolbar();
   _mpApplyGeometry();
@@ -21423,7 +21421,6 @@ function _mpToggleLayout() {
 }
 
 function _mpTeardownSplit() {
-  map.off('move zoomend', _mpSyncFromMain);
   _mpPanels.forEach(p => { try { p.map.remove(); } catch (e) {} p.el.remove(); });
   _mpPanels = [];
   _mpLabelEls.forEach(el => el.remove());
@@ -21588,25 +21585,6 @@ function _mpApplyProductToMain(productId) {
 // A guard flag, because setView on one map fires 'move' on it, which would
 // otherwise bounce straight back and fight the gesture.
 let _mpSyncing = false;
-
-function _mpSyncFromMain() {
-  if (_mpSyncing || !_mpPanels.length) return;
-  _mpSyncing = true;
-  const c = map.getCenter(), z = map.getZoom();
-  _mpPanels.forEach(p => p.map.setView(c, z, { animate: false }));
-  _mpSyncing = false;
-}
-
-// Panning any comparison panel moves every other view with it, so the panels
-// never drift apart and stop being a comparison.
-function _mpSyncFrom(src) {
-  if (_mpSyncing || !_multiPanelEnabled) return;
-  _mpSyncing = true;
-  const c = src.getCenter(), z = src.getZoom();
-  if (map !== src) map.setView(c, z, { animate: false });
-  _mpPanels.forEach(p => { if (p.map !== src) p.map.setView(c, z, { animate: false }); });
-  _mpSyncing = false;
-}
 
 function _mpSyncPipFromMain() {
   if (_mpSyncing || !_mpPipMap) return;
@@ -33067,7 +33045,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Click a panel's A/B/C/D label and the layers and overlays you turn on land on that panel only. Each label shows what that panel is carrying.";
+const APP_LATEST_UPDATE = "Split panels now zoom and pan on their own. Moving one panel no longer drags the others with it.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
