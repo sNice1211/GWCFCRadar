@@ -2953,17 +2953,56 @@ body {
    #map-wrap is left as a plain positioned box on purpose: it also holds the
    compare dividers and the build stamp, and making it a grid would reflow
    them. */
-#map-wrap.mp-split.horizontal > #map { width: 50%; }
-#map-wrap.mp-split.horizontal > #mp-panel {
-  position: absolute; top: 0; left: 50%; width: 50%; height: 100%;
-  border-left: 2px solid var(--border);
+/* Split panels are positioned from JS (percentages worked out per count and
+   orientation), so there is no rule per combination here. */
+.mp-panel {
+  position: absolute; z-index: 405; background: #0b0f14;
+  border: 1px solid var(--border);
 }
-#map-wrap.mp-split.stacked > #map { height: 50%; }
-#map-wrap.mp-split.stacked > #mp-panel {
-  position: absolute; top: 50%; left: 0; width: 100%; height: 50%;
-  border-top: 2px solid var(--border);
+
+/* Panel label. Clicking one points the layer controls at that panel, so it
+   has to read as a control rather than a caption: the selected one is filled
+   with the panel's colour and the rest are outlined. */
+.mp-label {
+  position: absolute; z-index: 660;
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 4px 9px; cursor: pointer;
+  background: rgba(8,8,10,0.82);
+  border: 1px solid var(--mp-color, #00e5ff);
+  border-left: 3px solid var(--mp-color, #00e5ff);
+  border-radius: 6px;
+  font-family: var(--mono); font-size: 10px;
+  color: rgba(255,255,255,0.75);
+  max-width: 46%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: background .15s, color .15s, box-shadow .15s;
 }
-#mp-panel { z-index: 405; background: #0b0f14; }
+.mp-label b { font-size: 12px; color: var(--mp-color, #00e5ff); font-weight: 700; }
+.mp-label span { opacity: .8; overflow: hidden; text-overflow: ellipsis; }
+.mp-label:hover { background: rgba(8,8,10,0.95); color: #fff; }
+.mp-label.active {
+  background: color-mix(in srgb, var(--mp-color, #00e5ff) 22%, rgba(8,8,10,0.9));
+  color: #fff;
+  box-shadow: 0 0 0 1px var(--mp-color, #00e5ff), 0 0 12px -2px var(--mp-color, #00e5ff);
+}
+.mp-label.active b { color: #fff; }
+
+/* While a comparison panel holds the controls, mark the layer list so it is
+   obvious the clicks are not going to the main map. */
+body.mp-on-comparison #overlay-pills-row::before,
+body.mp-on-comparison #layer-list::before {
+  content: 'Controls are pointed at a comparison panel';
+  display: block; margin: 0 0 6px;
+  padding: 4px 8px; border-radius: 5px;
+  background: rgba(0,140,186,0.16);
+  border: 1px solid rgba(0,140,186,0.45);
+  font-family: var(--mono); font-size: 9px; color: var(--text);
+}
+
+#mp-toolbar .mp-count { font-family: var(--mono); font-weight: 700; }
+#mp-toolbar .mp-count.active {
+  background: rgba(0,140,186,0.28);
+  border-color: var(--accent2); color: #fff;
+}
 
 /* Mode picker, opened by the toolbar button. Fixed, so it is positioned
    against the viewport and cannot be clipped by an ancestor. */
@@ -2990,9 +3029,11 @@ body {
 #mp-mode-menu .mp-menu-icon { font-size: 15px; line-height: 1; opacity: .9; }
 
 /* Split-view controls. */
+/* Bottom-centre, above #animbar: the top of the map is already occupied by
+   the sign-in button, the logo and the search bar. */
 #mp-toolbar {
-  position: absolute; top: 10px; left: 10px; z-index: 620;
-  display: flex; flex-direction: column; gap: 6px;
+  position: absolute; bottom: 132px; left: 50%; transform: translateX(-50%);
+  z-index: 700; display: flex; flex-direction: row; gap: 6px;
   background: rgba(8,12,16,0.92);
   border: 1px solid #2a2f36; border-radius: 8px; padding: 6px;
 }
@@ -3018,9 +3059,6 @@ body {
 .mp-product-select:focus { outline: none; border-color: var(--accent2); }
 .mp-product-select option { background: #0b0f14; color: var(--text); }
 
-#mp-panel-product {
-  position: absolute; top: 10px; right: 10px; z-index: 620;
-}
 
 /* Picture-in-picture window. */
 /* bottom clears #animbar, which occupies the lowest ~120px on desktop and
@@ -20732,14 +20770,12 @@ function _inspRemovePin(idx) {
 let _multiPanelEnabled = false;
 let _multiPanelLayout  = 'horizontal'; // 'horizontal' | 'stacked'
 let _multiPanelMode    = null;         // 'split' | 'pip'
-let _mpPanelMap        = null;         // the second map (split mode)
-let _mpPanelEl         = null;
 let _mpPipMap          = null;         // the small map (pip mode)
 let _mpPipEl           = null;
 let _mpDragging        = false;
 let _mpDragOffset      = { x: 0, y: 0 };
 let _mpDragMoved       = false;
-let _mpProductLayers   = { panel: null, pip: null };
+let _mpProductLayers   = { pip: null };
 
 // Products a panel can show. Every entry uses an endpoint this app already
 // talks to elsewhere, so nothing here depends on a service that has not
@@ -20790,7 +20826,7 @@ function _mpCloneBasemap() {
 
 // Swap a panel's overlay for a different product.
 function _mpSetProduct(which, productId) {
-  const targetMap = which === 'pip' ? _mpPipMap : _mpPanelMap;
+  const targetMap = _mpPipMap;
   if (!targetMap) return;
   const existing = _mpProductLayers[which];
   if (existing) { try { targetMap.removeLayer(existing); } catch (e) {} }
@@ -20829,19 +20865,21 @@ function _multiPanelOpenMenu() {
   const menu = document.createElement('div');
   menu.id = 'mp-mode-menu';
 
-  const mk = (icon, label, mode) => {
+  const mk = (icon, label, mode, count) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.innerHTML = `<span class="mp-menu-icon">${icon}</span><span>${label}</span>`;
     b.addEventListener('click', (e) => {
       e.stopPropagation();
       menu.remove();
-      _multiPanelEnable(mode);
+      _multiPanelEnable(mode, count);
     });
     return b;
   };
 
-  menu.appendChild(mk('▥', 'Split view', 'split'));
+  menu.appendChild(mk('▥', 'Split: 2 panels', 'split', 2));
+  menu.appendChild(mk('▥', 'Split: 3 panels', 'split', 3));
+  menu.appendChild(mk('▦', 'Split: 4 panels', 'split', 4));
   menu.appendChild(mk('▣', 'Picture-in-picture', 'pip'));
   document.body.appendChild(menu);
 
@@ -20866,92 +20904,391 @@ function _multiPanelOpenMenu() {
   setTimeout(() => document.addEventListener('pointerdown', closeMenu, true), 0);
 }
 
-function _multiPanelEnable(mode) {
+function _multiPanelEnable(mode, count) {
   if (_multiPanelEnabled) _multiPanelDisable();
   _multiPanelEnabled = true;
   _multiPanelMode = mode;
   document.getElementById('tool-comparison')?.classList.add('insp-on');
-  if (mode === 'split') _mpEnableSplit();
+  if (mode === 'split') _mpEnableSplit(count || 2);
   else _mpEnablePip();
 }
 
-// ── SPLIT VIEW ────────────────────────────────────────────────────────────
-function _mpEnableSplit() {
-  const wrap = document.getElementById('map-wrap');
-  if (!wrap) return;
-  wrap.classList.add('mp-split', _multiPanelLayout);
+// ── SPLIT VIEW: UP TO FOUR PANELS ─────────────────────────────────────────
+// Panel A is the app's own map. B, C and D are comparison panels, each with
+// its own independent set of layers.
+//
+// Why comparison panels do not simply reuse the app's layer code: that code is
+// a singleton. There is one global `map`, one `activeLayers`, and the loaders
+// stash their layer handles in globals (_nwrLayer and friends). Pointing it at
+// a second map would let two panels overwrite each other's handles, orphaning
+// layers that could then never be removed. So panel A keeps the app exactly as
+// it is, and comparison panels carry their own layers built per panel.
+//
+// Selecting a panel by its label is what makes the controls follow: while B is
+// selected, the radar, satellite and alert controls act on B, and A is left
+// alone. Selecting A hands everything straight back to the app.
 
-  _mpPanelEl = document.createElement('div');
-  _mpPanelEl.id = 'mp-panel';
-  wrap.appendChild(_mpPanelEl);
+const MP_PANEL_IDS    = ['A', 'B', 'C', 'D'];
+const MP_PANEL_COLORS = ['#00e5ff', '#ffd23f', '#7cff6b', '#ff7ac4'];
 
-  _mpPanelMap = L.map(_mpPanelEl, {
-    center: map.getCenter(),
-    zoom: map.getZoom(),
-    zoomControl: false,
-    attributionControl: false,
+let _mpPanels    = [];   // comparison panels only; index 0 here is panel B
+let _mpCount     = 2;    // total panels on screen, A included
+let _mpActive    = 0;    // 0 = panel A (the app), 1..3 = a comparison panel
+let _mpLabelEls  = [];
+
+// What a comparison panel is currently showing.
+function _mpBlankState() {
+  return { product: 'none', alerts: false };
+}
+
+// ── GEOMETRY ──────────────────────────────────────────────────────────────
+// Each panel's share of #map-wrap, as percentages. Worked out here rather than
+// in CSS because the count crossed with the orientation is a lot of rules, and
+// #map-wrap cannot become a grid (it also holds the compare dividers and the
+// build stamp, which a grid would reflow).
+function _mpRects(count, layout) {
+  if (count === 2) {
+    return layout === 'stacked'
+      ? [{ l: 0, t: 0, w: 100, h: 50 }, { l: 0, t: 50, w: 100, h: 50 }]
+      : [{ l: 0, t: 0, w: 50, h: 100 }, { l: 50, t: 0, w: 50, h: 100 }];
+  }
+  if (count === 3) {
+    return layout === 'stacked'
+      ? [{ l: 0, t: 0, w: 100, h: 100/3 }, { l: 0, t: 100/3, w: 100, h: 100/3 }, { l: 0, t: 200/3, w: 100, h: 100/3 }]
+      : [{ l: 0, t: 0, w: 100/3, h: 100 }, { l: 100/3, t: 0, w: 100/3, h: 100 }, { l: 200/3, t: 0, w: 100/3, h: 100 }];
+  }
+  // Four reads best as a quadrant regardless of orientation.
+  return [
+    { l: 0,  t: 0,  w: 50, h: 50 }, { l: 50, t: 0,  w: 50, h: 50 },
+    { l: 0,  t: 50, w: 50, h: 50 }, { l: 50, t: 50, w: 50, h: 50 },
+  ];
+}
+
+function _mpApplyGeometry() {
+  const rects = _mpRects(_mpCount, _multiPanelLayout);
+  const mapEl = document.getElementById('map');
+  const put = (el, r) => {
+    el.style.position = 'absolute';
+    el.style.left   = r.l + '%';
+    el.style.top    = r.t + '%';
+    el.style.width  = r.w + '%';
+    el.style.height = r.h + '%';
+  };
+  put(mapEl, rects[0]);
+  _mpPanels.forEach((p, i) => rects[i + 1] && put(p.el, rects[i + 1]));
+
+  // Labels ride along at each panel's top-left corner.
+  // A label in the top row would sit under the app's own header (sign-in,
+  // logo, search), so that row is dropped clear of it. Lower rows only need
+  // to clear their own panel edge.
+  _mpLabelEls.forEach((el, i) => {
+    const r = rects[i];
+    if (!r) return;
+    el.style.left = `calc(${r.l}% + 8px)`;
+    el.style.top  = r.t === 0 ? '54px' : `calc(${r.t}% + 8px)`;
   });
 
-  const base = _mpCloneBasemap();
-  if (base) base.addTo(_mpPanelMap);
-  _mpSetProduct('panel', 'nexrad');
-
-  // Keep the two views on the same place, without the echo of each one
-  // re-triggering the other.
-  map.on('move zoomend', _mpSyncFromMain);
-  _mpPanelMap.on('move zoomend', _mpSyncFromPanel);
-
-  _mpBuildSplitToolbar();
-
-  // #map only just changed size; Leaflet has to be told.
   map.invalidateSize();
-  setTimeout(() => { map.invalidateSize(); _mpPanelMap?.invalidateSize(); }, 60);
+  _mpPanels.forEach(p => p.map.invalidateSize());
+  setTimeout(() => {
+    map.invalidateSize();
+    _mpPanels.forEach(p => p.map.invalidateSize());
+  }, 60);
+}
+
+// ── PANEL CREATION ────────────────────────────────────────────────────────
+function _mpCreatePanel(i) {
+  const wrap = document.getElementById('map-wrap');
+  const el = document.createElement('div');
+  el.className = 'mp-panel';
+  el.dataset.panel = MP_PANEL_IDS[i];
+  wrap.appendChild(el);
+
+  const m = L.map(el, {
+    center: map.getCenter(), zoom: map.getZoom(),
+    zoomControl: false, attributionControl: false,
+  });
+
+  // Layers built here ask for these panes by name; without them Leaflet has
+  // nowhere to put the tiles.
+  const rp = m.createPane('radarPane');
+  rp.style.zIndex = 400; rp.style.pointerEvents = 'none';
+  const ap = m.createPane('alertsPane');
+  ap.style.zIndex = 450; ap.style.pointerEvents = 'none';
+
+  const base = _mpCloneBasemap();
+  if (base) base.addTo(m);
+
+  const panel = { id: MP_PANEL_IDS[i], el, map: m, state: _mpBlankState(), layers: {} };
+  m.on('move zoomend', () => _mpSyncFrom(m));
+  return panel;
+}
+
+function _mpBuildLabels() {
+  const wrap = document.getElementById('map-wrap');
+  _mpLabelEls.forEach(el => el.remove());
+  _mpLabelEls = [];
+  for (let i = 0; i < _mpCount; i++) {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'mp-label';
+    el.dataset.idx = i;
+    el.style.setProperty('--mp-color', MP_PANEL_COLORS[i]);
+    el.addEventListener('click', (e) => { e.stopPropagation(); _mpSelectPanel(i); });
+    wrap.appendChild(el);
+    _mpLabelEls.push(el);
+  }
+  _mpRefreshLabels();
+}
+
+function _mpRefreshLabels() {
+  _mpLabelEls.forEach((el, i) => {
+    const active = i === _mpActive;
+    el.classList.toggle('active', active);
+    let what;
+    if (i === 0) {
+      what = 'Main';
+    } else {
+      const p = _mpPanels[i - 1];
+      const prod = p ? (MP_PRODUCTS.find(x => x.id === p.state.product) || {}).label : null;
+      what = (prod && prod !== 'Basemap only') ? prod : 'Empty';
+      if (p && p.state.alerts) what += ' + Alerts';
+    }
+    el.innerHTML = `<b>${MP_PANEL_IDS[i]}</b><span>${what}</span>`;
+    el.title = active
+      ? `Panel ${MP_PANEL_IDS[i]} is selected. Layer controls apply here.`
+      : `Click to select panel ${MP_PANEL_IDS[i]}`;
+  });
+}
+
+// ── SELECTION ─────────────────────────────────────────────────────────────
+// Selecting a panel is what redirects the controls. Panel A hands them back to
+// the app untouched, which is why the main map never loses anything.
+function _mpSelectPanel(i) {
+  if (i < 0 || i >= _mpCount) return;
+  _mpActive = i;
+  _mpRefreshLabels();
+  _mpSyncControlUi();
+  if (typeof showToast === 'function') {
+    showToast(i === 0
+      ? 'Panel A selected. Controls act on the main map.'
+      : `Panel ${MP_PANEL_IDS[i]} selected. Radar, satellite and alerts now act on it.`, 1900);
+  }
+}
+
+// Make the layer rows reflect whichever panel is selected, so the controls are
+// never showing panel A's state while pointed at panel C.
+function _mpSyncControlUi() {
+  const onMain = _mpActive === 0;
+  const st = onMain ? null : _mpPanels[_mpActive - 1].state;
+  const set = (id, on) => {
+    const row = document.getElementById(`layer-${id}`);
+    if (row) row.classList.toggle('active', !!on);
+  };
+  if (onMain) {
+    Object.keys(activeLayers).forEach(k => set(k, activeLayers[k]));
+  } else {
+    Object.keys(activeLayers).forEach(k => set(k, false));
+    set('nexrad', st.product === 'nexrad');
+    set('satellite', st.product.startsWith('goes'));
+    ['tornado', 'tstm', 'flood', 'watch'].forEach(k => set(k, st.alerts));
+  }
+  document.body.classList.toggle('mp-on-comparison', !onMain);
+}
+
+// ── PER-PANEL LAYERS ──────────────────────────────────────────────────────
+function _mpPanelSetProduct(panel, productId) {
+  if (panel.layers.product) {
+    try { panel.map.removeLayer(panel.layers.product); } catch (e) {}
+    panel.layers.product = null;
+  }
+  const layer = _mpMakeProductLayer(productId);
+  panel.state.product = productId;
+  if (layer) { panel.layers.product = layer; layer.addTo(panel.map); }
+  _mpRefreshLabels();
+}
+
+// Alerts are fetched per panel rather than shared, so one panel dropping them
+// cannot pull them out from under another.
+async function _mpPanelSetAlerts(panel, on) {
+  panel.state.alerts = on;
+  _mpRefreshLabels();
+  if (!on) {
+    if (panel.layers.alerts) {
+      try { panel.map.removeLayer(panel.layers.alerts); } catch (e) {}
+      panel.layers.alerts = null;
+    }
+    return;
+  }
+  try {
+    const res = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert',
+      { signal: typeof _abortSignal === 'function' ? _abortSignal(15000) : undefined });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const gj = await res.json();
+    if (!panel.state.alerts) return;           // switched off while loading
+    const colorFor = (ev = '') => {
+      const e = ev.toLowerCase();
+      if (e.includes('tornado')) return '#ff1a00';
+      if (e.includes('thunderstorm')) return '#ffb300';
+      if (e.includes('flood')) return '#1aff8f';
+      return '#00b7ff';
+    };
+    const layer = L.geoJSON(gj, {
+      pane: 'alertsPane',
+      filter: f => !!f.geometry,
+      style: f => ({
+        color: colorFor(f.properties && f.properties.event),
+        weight: 1.6, opacity: 0.95, fillOpacity: 0.12,
+      }),
+      onEachFeature: (f, l) => {
+        const p = f.properties || {};
+        l.bindPopup(`<b>${p.event || 'Alert'}</b><br>${(p.areaDesc || '').slice(0, 160)}`);
+      },
+    });
+    if (panel.layers.alerts) { try { panel.map.removeLayer(panel.layers.alerts); } catch (e) {} }
+    panel.layers.alerts = layer;
+    layer.addTo(panel.map);
+  } catch (e) {
+    panel.state.alerts = false;
+    _mpRefreshLabels();
+    _mpSyncControlUi();
+    if (typeof showToast === 'function') showToast('Could not load alerts for that panel.', 2400);
+  }
+}
+
+// ── CONTROL ROUTING ───────────────────────────────────────────────────────
+// The app's own handlers are wrapped rather than edited: while a comparison
+// panel is selected the click is redirected to it, and otherwise the original
+// runs untouched. That is what keeps panel A behaving exactly as before.
+const _mpOrigToggleLayer = toggleLayer;
+toggleLayer = function (id) {
+  if (!_multiPanelEnabled || _multiPanelMode !== 'split' || _mpActive === 0) {
+    return _mpOrigToggleLayer.apply(this, arguments);
+  }
+  const panel = _mpPanels[_mpActive - 1];
+  if (!panel) return;
+  if (id === 'nexrad') {
+    _mpPanelSetProduct(panel, panel.state.product === 'nexrad' ? 'none' : 'nexrad');
+  } else if (id === 'satellite') {
+    _mpPanelSetProduct(panel, panel.state.product.startsWith('goes') ? 'none' : 'goes_ir');
+  } else if (['tornado', 'tstm', 'flood', 'watch'].includes(id)) {
+    _mpPanelSetAlerts(panel, !panel.state.alerts);
+  } else if (typeof showToast === 'function') {
+    showToast(`That layer only runs on panel A. Select A to use it.`, 2200);
+    return;
+  }
+  _mpSyncControlUi();
+};
+
+// ── ENABLE / TEARDOWN ─────────────────────────────────────────────────────
+function _mpEnableSplit(count) {
+  const wrap = document.getElementById('map-wrap');
+  if (!wrap) return;
+  _mpCount = Math.min(Math.max(count || 2, 2), 4);
+  wrap.classList.add('mp-split');
+
+  _mpPanels = [];
+  for (let i = 1; i < _mpCount; i++) _mpPanels.push(_mpCreatePanel(i));
+
+  // Give the extra panels something to show, so a fresh split is not blank.
+  const seed = ['nexrad', 'goes_ir', 'goes_vis'];
+  _mpPanels.forEach((p, i) => _mpPanelSetProduct(p, seed[i] || 'none'));
+
+  map.on('move zoomend', _mpSyncFromMain);
+  _mpBuildLabels();
+  _mpBuildSplitToolbar();
+  _mpApplyGeometry();
+  _mpActive = 0;
+  _mpRefreshLabels();
+  _mpSyncControlUi();
 
   if (typeof showToast === 'function') {
-    showToast('Split view on. Pick a product for each side.', 2400);
+    showToast('Split view on. Click a panel label to point the controls at it.', 3000);
   }
 }
 
 function _mpBuildSplitToolbar() {
   const wrap = document.getElementById('map-wrap');
+  document.getElementById('mp-toolbar')?.remove();
   const bar = document.createElement('div');
   bar.id = 'mp-toolbar';
+
+  [2, 3, 4].forEach(n => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = n;
+    b.title = `${n} panels`;
+    b.className = 'mp-count' + (n === _mpCount ? ' active' : '');
+    b.addEventListener('click', () => _mpSetCount(n));
+    bar.appendChild(b);
+  });
 
   const layoutBtn = document.createElement('button');
   layoutBtn.type = 'button';
   layoutBtn.id = 'mp-layout-btn';
-  layoutBtn.title = 'Switch between side-by-side and stacked';
+  layoutBtn.title = 'Side-by-side or stacked';
   layoutBtn.textContent = _multiPanelLayout === 'horizontal' ? '⇅' : '⇄';
   layoutBtn.addEventListener('click', _mpToggleLayout);
+  bar.appendChild(layoutBtn);
 
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
   closeBtn.title = 'Close split view';
   closeBtn.textContent = '✕';
   closeBtn.addEventListener('click', _multiPanelDisable);
-
-  bar.appendChild(layoutBtn);
   bar.appendChild(closeBtn);
-  wrap.appendChild(bar);
 
-  // Product picker for the second panel, sitting on the panel itself.
-  const pick = document.createElement('div');
-  pick.id = 'mp-panel-product';
-  pick.appendChild(_mpBuildProductSelect('panel', 'nexrad', id => _mpSetProduct('panel', id)));
-  _mpPanelEl.appendChild(pick);
+  wrap.appendChild(bar);
+}
+
+// Changing the count keeps the panels that survive, so switching 2 to 3 does
+// not throw away what panel B was already showing.
+function _mpSetCount(n) {
+  if (n === _mpCount) return;
+  if (n < _mpCount) {
+    _mpPanels.slice(n - 1).forEach(p => {
+      try { p.map.remove(); } catch (e) {}
+      p.el.remove();
+    });
+    _mpPanels = _mpPanels.slice(0, n - 1);
+    if (_mpActive > n - 1) _mpActive = 0;
+  } else {
+    for (let i = _mpCount; i < n; i++) _mpPanels.push(_mpCreatePanel(i));
+  }
+  _mpCount = n;
+  document.querySelectorAll('#mp-toolbar .mp-count').forEach(b => {
+    b.classList.toggle('active', Number(b.textContent) === n);
+  });
+  _mpBuildLabels();
+  _mpApplyGeometry();
+  _mpSyncControlUi();
 }
 
 function _mpToggleLayout() {
-  const wrap = document.getElementById('map-wrap');
-  if (!wrap) return;
   _multiPanelLayout = _multiPanelLayout === 'horizontal' ? 'stacked' : 'horizontal';
-  wrap.classList.remove('horizontal', 'stacked');
-  wrap.classList.add(_multiPanelLayout);
   const btn = document.getElementById('mp-layout-btn');
   if (btn) btn.textContent = _multiPanelLayout === 'horizontal' ? '⇅' : '⇄';
+  _mpApplyGeometry();
+}
+
+function _mpTeardownSplit() {
+  map.off('move zoomend', _mpSyncFromMain);
+  _mpPanels.forEach(p => { try { p.map.remove(); } catch (e) {} p.el.remove(); });
+  _mpPanels = [];
+  _mpLabelEls.forEach(el => el.remove());
+  _mpLabelEls = [];
+  document.getElementById('mp-toolbar')?.remove();
+  document.getElementById('map-wrap')?.classList.remove('mp-split');
+  document.body.classList.remove('mp-on-comparison');
+
+  // Hand #map its full size back.
+  const mapEl = document.getElementById('map');
+  ['position', 'left', 'top', 'width', 'height'].forEach(k => mapEl.style.removeProperty(k));
+  _mpActive = 0;
+  _mpCount = 2;
+  _mpSyncControlUi();
   map.invalidateSize();
-  _mpPanelMap?.invalidateSize();
-  setTimeout(() => { map.invalidateSize(); _mpPanelMap?.invalidateSize(); }, 60);
+  setTimeout(() => map.invalidateSize(), 60);
 }
 
 // ── PICTURE-IN-PICTURE ────────────────────────────────────────────────────
@@ -21102,16 +21439,21 @@ function _mpApplyProductToMain(productId) {
 let _mpSyncing = false;
 
 function _mpSyncFromMain() {
-  if (_mpSyncing || !_mpPanelMap) return;
+  if (_mpSyncing || !_mpPanels.length) return;
   _mpSyncing = true;
-  _mpPanelMap.setView(map.getCenter(), map.getZoom(), { animate: false });
+  const c = map.getCenter(), z = map.getZoom();
+  _mpPanels.forEach(p => p.map.setView(c, z, { animate: false }));
   _mpSyncing = false;
 }
 
-function _mpSyncFromPanel() {
-  if (_mpSyncing || !_mpPanelMap) return;
+// Panning any comparison panel moves every other view with it, so the panels
+// never drift apart and stop being a comparison.
+function _mpSyncFrom(src) {
+  if (_mpSyncing || !_multiPanelEnabled) return;
   _mpSyncing = true;
-  map.setView(_mpPanelMap.getCenter(), _mpPanelMap.getZoom(), { animate: false });
+  const c = src.getCenter(), z = src.getZoom();
+  if (map !== src) map.setView(c, z, { animate: false });
+  _mpPanels.forEach(p => { if (p.map !== src) p.map.setView(c, z, { animate: false }); });
   _mpSyncing = false;
 }
 
@@ -21125,31 +21467,19 @@ function _mpSyncPipFromMain() {
 
 // ── TEARDOWN ──────────────────────────────────────────────────────────────
 function _multiPanelDisable() {
+  const wasSplit = _multiPanelMode === 'split';
   _multiPanelEnabled = false;
   _multiPanelMode = null;
   document.getElementById('tool-comparison')?.classList.remove('insp-on');
   document.getElementById('mp-mode-menu')?.remove();
 
-  map.off('move zoomend', _mpSyncFromMain);
+  if (wasSplit) _mpTeardownSplit();
+
   map.off('move zoomend', _mpSyncPipFromMain);
-
-  if (_mpPanelMap) {
-    _mpPanelMap.off('move zoomend', _mpSyncFromPanel);
-    try { _mpPanelMap.remove(); } catch (e) {}
-    _mpPanelMap = null;
-  }
   if (_mpPipMap) { try { _mpPipMap.remove(); } catch (e) {} _mpPipMap = null; }
+  _mpPipEl?.remove(); _mpPipEl = null;
+  _mpProductLayers = { pip: null };
 
-  _mpPanelEl?.remove(); _mpPanelEl = null;
-  _mpPipEl?.remove();   _mpPipEl   = null;
-  document.getElementById('mp-toolbar')?.remove();
-
-  const wrap = document.getElementById('map-wrap');
-  wrap?.classList.remove('mp-split', 'horizontal', 'stacked');
-
-  _mpProductLayers = { panel: null, pip: null };
-
-  // #map is full size again.
   map.invalidateSize();
   setTimeout(() => map.invalidateSize(), 60);
 }
@@ -32586,7 +32916,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Multi-panel compare now works: split view and a draggable picture-in-picture window, each panel with its own product. Fixed the panels not opening and the invalid map key.";
+const APP_LATEST_UPDATE = "Split view now goes up to four panels, each with a labelled A/B/C/D tab. Click a panel's label and the radar, satellite and alert controls act on that panel only.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
