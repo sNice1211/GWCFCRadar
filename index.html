@@ -2947,6 +2947,89 @@ body {
 }
 #inspector-readout-rows { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
 #inspector-readout .insp-row { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+
+/* ── Multi-panel comparison mode ── */
+#map-container.multi-panel-mode {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+  gap: 2px;
+}
+#map-container.multi-panel-mode.stacked {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+#map-container.multi-panel-mode #map,
+#map-container.multi-panel-mode #map-panel-2 {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+#map-panel-2 {
+  position: absolute;
+  display: none;
+  width: 50%;
+  height: 100%;
+  top: 0;
+  left: 50%;
+}
+#map-container.multi-panel-mode #map-panel-2 {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  left: 0;
+  top: 0;
+}
+#map-panel-2 #map-panel-2-content {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+#multi-panel-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 70px;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(8,12,16,0.9);
+  border: 1px solid #2a2f36;
+  border-radius: 8px;
+  padding: 8px;
+}
+#multi-panel-toolbar button {
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  background: rgba(8,12,16,0.8);
+  border: 1px solid #2a2f36;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+  font-size: 16px;
+}
+#multi-panel-toolbar button:hover {
+  background: rgba(0,140,186,0.2);
+  color: #fff;
+}
+#multi-panel-toolbar .panel-label {
+  font-size: 11px;
+  color: rgba(255,255,255,0.6);
+  text-align: center;
+  padding: 4px 0;
+  font-family: var(--mono);
+}
+#map-container.multi-panel-mode.stacked #multi-panel-toolbar {
+  top: auto;
+  bottom: 50%;
+  right: 10px;
+  flex-direction: row;
+}
 #inspector-readout .insp-swatch { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3); }
 #inspector-readout .insp-label { opacity: 0.55; font-size: 9px; }
 #inspector-readout .insp-value { font-weight: 700; }
@@ -7816,6 +7899,18 @@ body.clean-mode #clean-hint { opacity: 1; }
       <line x1="12" y1="19" x2="12" y2="23"/>
       <line x1="1" y1="12" x2="5" y2="12"/>
       <line x1="19" y1="12" x2="23" y2="12"/>
+    </svg>
+  </button>
+
+  <!-- Multi-panel comparison -->
+  <button class="tool-btn" id="tool-comparison" onclick="toggleMultiPanel()" title="Multi-panel comparison, view different products side by side">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="3" width="9" height="9"/>
+      <rect x="13" y="3" width="9" height="9"/>
+      <rect x="2" y="14" width="9" height="7"/>
+      <rect x="13" y="14" width="9" height="7"/>
+      <line x1="11" y1="3" x2="11" y2="21"/>
+      <line x1="2" y1="12" x2="20" y2="12"/>
     </svg>
   </button>
 
@@ -20586,6 +20681,156 @@ function _inspRemovePin(idx) {
   else attach();
 })();
 
+// ── MULTI-PANEL COMPARISON ────────────────────────────────────────────────
+let _multiPanelEnabled = false;
+let _multiPanelLayout = 'horizontal'; // 'horizontal' or 'stacked'
+let _mapPanel2 = null;
+let _mapPanel2Container = null;
+
+function toggleMultiPanel() {
+  if (_multiPanelEnabled) _multiPanelDisable();
+  else _multiPanelEnable();
+}
+
+function _multiPanelEnable() {
+  _multiPanelEnabled = true;
+  document.getElementById('tool-comparison')?.classList.add('insp-on');
+
+  const mapContainer = document.getElementById('map-container');
+  mapContainer?.classList.add('multi-panel-mode', _multiPanelLayout);
+
+  // Create panel 2 container
+  _mapPanel2Container = document.createElement('div');
+  _mapPanel2Container.id = 'map-panel-2';
+  const contentDiv = document.createElement('div');
+  contentDiv.id = 'map-panel-2-content';
+  _mapPanel2Container.appendChild(contentDiv);
+  mapContainer?.appendChild(_mapPanel2Container);
+
+  // Create the second Leaflet map
+  _mapPanel2 = L.map('map-panel-2-content', {
+    center: map.getCenter(),
+    zoom: map.getZoom(),
+    layers: map.getLayers(),
+    dragging: true,
+    touchZoom: true,
+    doubleClickZoom: true,
+    scrollWheelZoom: true,
+    boxZoom: true,
+    keyboard: true,
+    tap: true,
+    zoomControl: false
+  });
+
+  // Sync the two maps
+  map.on('move', _multiPanelSyncMaps);
+  map.on('zoomend', _multiPanelSyncMaps);
+  _mapPanel2.on('move', _multiPanelSyncMaps);
+  _mapPanel2.on('zoomend', _multiPanelSyncMaps);
+
+  // Copy tile layer
+  L.tileLayer(
+    'https://api.maptiler.com/maps/satellite-v2/256/{z}/{x}/{y}.jpg?key=4fVp1rKs9y2Nv7H6K2j3m8L9',
+    { attribution: '© MapTiler', maxNativeZoom: 18, maxZoom: 22 }
+  ).addTo(_mapPanel2);
+
+  // Create toolbar
+  _multiPanelCreateToolbar();
+
+  if (typeof showToast === 'function') {
+    showToast('Multi-panel mode enabled - compare different products side by side', 2200);
+  }
+}
+
+function _multiPanelDisable() {
+  _multiPanelEnabled = false;
+  document.getElementById('tool-comparison')?.classList.remove('insp-on');
+
+  const mapContainer = document.getElementById('map-container');
+  mapContainer?.classList.remove('multi-panel-mode', _multiPanelLayout);
+
+  // Clean up toolbar
+  const toolbar = document.getElementById('multi-panel-toolbar');
+  toolbar?.remove();
+
+  // Remove second map
+  if (_mapPanel2) {
+    _mapPanel2.off('move', _multiPanelSyncMaps);
+    _mapPanel2.off('zoomend', _multiPanelSyncMaps);
+    _mapPanel2.remove();
+    _mapPanel2 = null;
+  }
+  if (_mapPanel2Container) {
+    _mapPanel2Container.remove();
+    _mapPanel2Container = null;
+  }
+
+  // Cleanup listener
+  map.off('move', _multiPanelSyncMaps);
+  map.off('zoomend', _multiPanelSyncMaps);
+}
+
+function _multiPanelSyncMaps() {
+  if (!_multiPanelEnabled || !_mapPanel2) return;
+
+  const mainCenter = map.getCenter();
+  const mainZoom = map.getZoom();
+  const panel2Center = _mapPanel2.getCenter();
+  const panel2Zoom = _mapPanel2.getZoom();
+
+  // Only update if changed to avoid infinite loops
+  if (mainCenter.lat !== panel2Center.lat || mainCenter.lng !== panel2Center.lng || mainZoom !== panel2Zoom) {
+    _mapPanel2.setView(mainCenter, mainZoom, { animate: false });
+  }
+}
+
+function _multiPanelCreateToolbar() {
+  let toolbar = document.getElementById('multi-panel-toolbar');
+  if (toolbar) toolbar.remove();
+
+  toolbar = document.createElement('div');
+  toolbar.id = 'multi-panel-toolbar';
+
+  // Close button
+  const closeBtn = document.createElement('button');
+  closeBtn.title = 'Close multi-panel mode';
+  closeBtn.innerHTML = '✕';
+  closeBtn.onclick = _multiPanelDisable;
+
+  // Layout toggle button
+  const layoutBtn = document.createElement('button');
+  layoutBtn.title = 'Toggle layout (horizontal/stacked)';
+  layoutBtn.innerHTML = _multiPanelLayout === 'horizontal' ? '⇄' : '⇅';
+  layoutBtn.onclick = _multiPanelToggleLayout;
+
+  toolbar.appendChild(closeBtn);
+  toolbar.appendChild(layoutBtn);
+
+  const mapContainer = document.getElementById('map-container');
+  mapContainer?.appendChild(toolbar);
+}
+
+function _multiPanelToggleLayout() {
+  _multiPanelLayout = _multiPanelLayout === 'horizontal' ? 'stacked' : 'horizontal';
+  const mapContainer = document.getElementById('map-container');
+
+  mapContainer?.classList.remove('horizontal', 'stacked');
+  mapContainer?.classList.add(_multiPanelLayout);
+
+  // Trigger map resize
+  if (_mapPanel2) {
+    setTimeout(() => _mapPanel2.invalidateSize(), 200);
+  }
+  map.invalidateSize();
+
+  // Update toolbar button
+  const toolbar = document.getElementById('multi-panel-toolbar');
+  const layoutBtn = toolbar?.querySelector('button:nth-child(2)');
+  if (layoutBtn) {
+    layoutBtn.innerHTML = _multiPanelLayout === 'horizontal' ? '⇄' : '⇅';
+  }
+}
+
 function _scRenderCone() {
   // Clear previous cone + decorations
   if (_scPolygon) { map.removeLayer(_scPolygon); _scPolygon = null; }
@@ -32018,7 +32263,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Global models: smaller requests so the service stops rejecting them, and the real reason is shown when one fails. Model frames now free themselves on small devices, which is what was crashing consoles.";
+const APP_LATEST_UPDATE = "Multi-panel comparison mode added to toolbar - view different products side by side or stacked, with independent map controls on each panel.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
