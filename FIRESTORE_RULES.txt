@@ -212,6 +212,46 @@ service cloud.firestore {
         && request.resource.data.at is number;
     }
 
+    // Shared weather-service allowance counter.
+    //
+    // The free weather service counts requests per internet connection per
+    // day, but the browser can only count what it spent itself. So a phone, a
+    // PC and the Pi on one connection each believe they have the whole
+    // allowance, and between them spend several times it without any of them
+    // noticing. That is what empties it and produces "Daily API request limit
+    // exceeded" on every model.
+    //
+    // Keeping the tally here makes it one shared number instead of one per
+    // device. Signed-out visitors have to be able to write it, because they
+    // spend the allowance too and a tally that ignores them is not a tally.
+    //
+    // The document id IS the time window (for example d-2026-08-13, or
+    // h-2026-08-13-14). A new window is a new document, so nothing ever needs
+    // resetting and yesterday's number cannot be edited into today's.
+    //
+    // Two rules do the protecting: the count may only ever go up, and only by
+    // a bounded step per write. So a passer-by cannot zero it to get free
+    // requests, nor slam it to the cap to lock everyone else out.
+    match /omBudget/{window} {
+      allow read: if true;
+
+      allow create: if request.resource.data.keys().hasOnly(['count', 'at'])
+        && request.resource.data.count is number
+        && request.resource.data.count >= 0
+        && request.resource.data.count <= 1000
+        && request.resource.data.at is number;
+
+      allow update: if request.resource.data.keys().hasOnly(['count', 'at'])
+        && request.resource.data.count is number
+        && request.resource.data.count >= resource.data.count
+        && request.resource.data.count <= resource.data.count + 1000
+        && request.resource.data.at is number;
+
+      // Never deleted. A window that can be deleted is a window that can be
+      // reset, which is the same hole as allowing the count to go down.
+      allow delete: if false;
+    }
+
     // Live chat, shared with the Discord channel. Anyone may read, so the
     // conversation is visible without an account. Posting needs a real account,
     // which is what makes a spammer traceable and bannable. The bridge Worker
