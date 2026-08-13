@@ -12554,7 +12554,18 @@ function _buildInterpolatedCanvas(grid, cols, rows, bounds, isAngle, colorFn) {
   // smooth between real sample points, so rendering it at a much finer
   // pixel grid just removes visible blockiness without fetching any more
   // real data or changing what the data says.
-  const MAXDIM = 1600;
+  // 1600px is a 7.7MB bitmap per frame, and a full model run is 21 frames. Held
+  // together that is 160MB of canvas plus about as much again in the PNG data
+  // URLs the overlays keep, which is more than a games console or an older
+  // phone browser has to give and is what made those tabs die outright.
+  //
+  // Memory is reported by some browsers and not others; where it is missing,
+  // core count is a reasonable stand-in for how much machine this is. Desktops
+  // keep the full resolution.
+  const _mem = navigator.deviceMemory || 0;
+  const _cores = navigator.hardwareConcurrency || 0;
+  const _modest = (_mem && _mem <= 4) || (!_mem && _cores && _cores <= 4) || _isIOS;
+  const MAXDIM = _modest ? 900 : 1600;
   let W, H;
   if (lngSpan >= latSpan) { W = MAXDIM; H = Math.max(40, Math.round(MAXDIM * latSpan / lngSpan)); }
   else                    { H = MAXDIM; W = Math.max(40, Math.round(MAXDIM * lngSpan / latSpan)); }
@@ -16237,7 +16248,39 @@ function _sevEnsFrameLayer(f) {
 // Paint the frames nobody has asked for yet during idle time, one per slice, so
 // scrubbing or hitting Play later is instant without costing anything up front.
 // Abandons itself the moment the loaded model/product changes.
+// How many painted frames may be held at once. Every one is a full bitmap plus
+// the PNG data URL its overlay keeps, so keeping all 21 is what put a console
+// browser over its limit. The numbers stay in memory either way, so a frame
+// that has been released simply repaints when it is next shown.
+const _SEV_MAX_PAINTED = (() => {
+  const mem = navigator.deviceMemory || 0, cores = navigator.hardwareConcurrency || 0;
+  if ((mem && mem <= 4) || (!mem && cores && cores <= 4) || _isIOS) return 4;
+  return 12;
+})();
+
+// Frees the painted layers furthest from the frame being viewed, so scrubbing
+// stays smooth near where you are without the whole run resident.
+function _sevEnsTrimPainted(frames, keepAround) {
+  const painted = [];
+  frames.forEach((f, i) => { if (f && f.layer) painted.push(i); });
+  if (painted.length <= _SEV_MAX_PAINTED) return;
+  painted
+    .sort((a, b) => Math.abs(b - keepAround) - Math.abs(a - keepAround))
+    .slice(0, painted.length - _SEV_MAX_PAINTED)
+    .forEach(i => {
+      const f = frames[i];
+      if (!f || !f.layer) return;
+      try { if (typeof map !== 'undefined' && map && map.hasLayer(f.layer)) return; } catch(e) {}
+      f.layer = null;      // the overlay and its data URL become collectable
+    });
+}
+
 function _sevEnsPrepaint(frames, key) {
+  // On a modest device the prepaint is the problem rather than a help: it
+  // builds every frame up front, which is exactly the burst of allocation that
+  // kills the tab. Frames there are painted when first shown instead.
+  if (_SEV_MAX_PAINTED <= 4) return;
+
   const idle = window.requestIdleCallback || (cb => setTimeout(() => cb(), 80));
   const cancel = window.cancelIdleCallback || clearTimeout;
   if (_sevEnsPrepaintHandle != null) { cancel(_sevEnsPrepaintHandle); _sevEnsPrepaintHandle = null; }
@@ -16249,12 +16292,16 @@ function _sevEnsPrepaint(frames, key) {
       const f = frames[i++];
       if (f && !f.layer) { _sevEnsFrameLayer(f); break; } // one frame per slice
     }
+    _sevEnsTrimPainted(frames, _sevFrame);
     if (i < frames.length) _sevEnsPrepaintHandle = idle(step);
   };
   _sevEnsPrepaintHandle = idle(step);
 }
 
 function _sevEnsShowFrame(body, frames) {
+  // Release distant frames before painting this one, so showing a frame can
+  // never be the allocation that tips a small device over.
+  _sevEnsTrimPainted(frames, _sevFrame);
   const f = frames[_sevFrame];
   if (f) {
     _sevOverlayLayer = _sevEnsFrameLayer(f).addTo(map);
@@ -16833,7 +16880,14 @@ async function _sevRenderDeterministic(body) {
     const hasSeries = l => Array.isArray(l?.hourly?.[varName]);
 
     // 198 points / 100 per request = 2 requests, both in flight at once.
-    const locations = await _fetchGridChunkedRaw(pts, buildUrl, 100, { concurrency: 3, retries: 3 });
+    // 25 coordinates a request, not 100. The ensemble path asks for 15 and
+    // works; this asked for 100 and fails, and the API rejects a request
+    // carrying more locations than it allows with a 400 that takes the whole
+    // chunk down, which the coverage check below then reports as a mostly
+    // empty grid. Smaller requests cost no more allowance, since the weight is
+    // per location either way, and a rejected one no longer costs a quarter of
+    // the map.
+    const locations = await _fetchGridChunkedRaw(pts, buildUrl, 25, { concurrency: 3, retries: 3 });
     if (token !== _sevEnsLoadToken) return;
 
     // A chunk that never recovered leaves a whole stripe of the grid empty, and
@@ -16861,7 +16915,12 @@ async function _sevRenderDeterministic(body) {
     // nearest-value fill and the bicubic pass genuinely do smooth away.
     const covered = locations.filter(hasSeries).length;
     if (covered / locations.length < SEV_DET_MIN_COVERAGE) {
-      throw new Error(`only ${Math.round(100 * covered / locations.length)}% of the grid returned`);
+      // Carry the server's own words. "37% of the grid returned" says a load
+      // failed but not why; the reason the API gave says which parameter it
+      // objected to, which is the difference between a fixable report and
+      // another round of guessing.
+      const why = _sevLastFetchError ? ` The service said: ${_sevLastFetchError}` : '';
+      throw new Error(`only ${Math.round(100 * covered / locations.length)}% of the grid returned.${why}`);
     }
 
     // How many hours each array slot actually covers. The request above asks
@@ -17010,7 +17069,12 @@ async function _sevRenderDeterministic(body) {
 // between a real map and a fake one. Only 429/5xx and network faults are
 // retried; a 4xx like "this model has no such variable" is final, so a
 // genuinely unsupported product still fails fast instead of stalling.
+// The reason the last chunk failed, so a load that ends up mostly empty can say
+// what the service actually objected to instead of only how empty it was.
+let _sevLastFetchError = '';
+
 async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize, opts) {
+  _sevLastFetchError = '';
   chunkSize = chunkSize || 20;
   const concurrency = opts?.concurrency || 6;
   const retries = opts?.retries || 0;
@@ -17064,6 +17128,7 @@ async function _fetchGridChunkedRaw(pts, buildUrl, chunkSize, opts) {
       arr.forEach((d, j) => { out[indices[j]] = d; });
     } catch (e) {
       lastErr = e;
+      _sevLastFetchError = String(e && e.message || e).slice(0, 300);
       console.warn('Ensemble chunk fetch failed, treating as no-data for that chunk (scattered, not a solid gap):', e);
     } finally {
       _globalFetchRelease();
@@ -31953,7 +32018,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Models and soundings are back. They now sample the area you are looking at rather than the whole planet, share one cache between visitors, and stop themselves before the free allowance runs out.";
+const APP_LATEST_UPDATE = "Global models: smaller requests so the service stops rejecting them, and the real reason is shown when one fails. Model frames now free themselves on small devices, which is what was crashing consoles.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
