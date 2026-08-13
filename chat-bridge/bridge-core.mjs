@@ -60,7 +60,17 @@ async function fsFetch(env, token, path, init = {}) {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...(init.headers || {}) },
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j?.error?.message || `firestore HTTP ${r.status}`);
+  if (!r.ok) {
+    const err = new Error(j?.error?.message || `firestore HTTP ${r.status}`);
+    // Carry the status and Google's own status name. Callers that want to
+    // treat one failure differently (a missing document is normal on a first
+    // run) should not have to pattern-match English prose to do it: Firestore
+    // words that message "... not found." with a space, so a check for
+    // NOT_FOUND never matched it and the first run always threw.
+    err.status = r.status;
+    err.firestoreStatus = j?.error?.status || '';
+    throw err;
+  }
   return j;
 }
 
@@ -71,7 +81,11 @@ async function readCursor(env, token) {
     const doc = await fsFetch(env, token, '/chatBridge/state');
     return doc?.fields?.lastMessageId?.stringValue || '';
   } catch (e) {
-    if (/404|NOT_FOUND/i.test(e.message)) return '';
+    // No cursor yet means this is the first run, which is not a failure: start
+    // from the beginning. Judged on the status rather than the wording, since
+    // the wording is "not found." with a space and does not match NOT_FOUND.
+    if (e.status === 404 || e.firestoreStatus === 'NOT_FOUND'
+        || /\bnot[_ ]found\b/i.test(e.message || '')) return '';
     throw e;
   }
 }

@@ -31,14 +31,26 @@ jobs:
   relay:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
+      # Not being set up and being broken are different things, and only one of
+      # them is worth a red run. This fires every five minutes, so when the
+      # secrets are absent it was posting roughly 288 failures a day: enough to
+      # bury a real fault and to spend Actions minutes proving the same point
+      # over and over. Missing configuration now ends the run quietly with a
+      # notice saying what to add. A genuine relay failure still exits non-zero
+      # from poll.mjs and still shows up red.
       - name: Relay new Discord messages to the radar
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           CHAT_CHANNEL_ID: ${{ secrets.CHAT_CHANNEL_ID }}
-        run: node chat-bridge/poll.mjs
+        run: |
+          if [ -z "${DISCORD_TOKEN:-}" ] || [ -z "${CHAT_CHANNEL_ID:-}" ]; then
+            echo "::notice title=Discord bridge not configured::Set DISCORD_TOKEN and CHAT_CHANNEL_ID under Settings, Secrets and variables, Actions. Until then the Discord to radar direction stays off. Radar to Discord is unaffected: it posts straight to the webhook."
+            exit 0
+          fi
+          node chat-bridge/poll.mjs
