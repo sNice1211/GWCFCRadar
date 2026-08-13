@@ -16210,8 +16210,11 @@ let _sevEnsPrepaintHandle = null;
 // product over a different area is different data, and returning the previous
 // area's grid for it would draw one place's weather over another.
 function _sevEnsCacheKey() {
-  const b = (typeof _sevDetBounds === 'function' && SEV_DET_SECTIONS[_sevSection])
-    ? _sevDetBounds() : null;
+  // Both the deterministic models and the ensembles sample the box in view, so
+  // both carry it in the key. Without it a grid fetched over one area would be
+  // served for another and drawn as that place's weather.
+  const samplesBox = SEV_DET_SECTIONS[_sevSection] || SEV_ENSEMBLE_SECTIONS[_sevSection];
+  const b = (typeof _sevDetBounds === 'function' && samplesBox) ? _sevDetBounds() : null;
   const box = b ? `|${b[0][0]},${b[0][1]},${b[1][0]},${b[1][1]}` : '';
   return `${_sevSection}|${_sevVar}${box}`;
 }
@@ -16269,6 +16272,20 @@ function _sevEnsShowFrame(body, frames) {
   }
 }
 
+// Rebuilds ensemble frames from a stored entry. The status line is kept with
+// the grids rather than recomputed, so a cached set stays labelled with the
+// forecast hour its numbers actually came from however old it is.
+function _sevEnsFramesFrom(entry, varName, modelLabel) {
+  const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
+  return (entry.grids || []).map((grid, i) => {
+    if (!grid) return null;
+    const label = (entry.frameMeta && entry.frameMeta[i])
+      || `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean`;
+    return { layer: null, grid, scale, cols: SEV_ENS_COLS, rows: SEV_ENS_ROWS,
+             bounds: entry.bounds || WORLD_MAP_BOUNDS, statusText: label };
+  });
+}
+
 async function _sevRenderEnsemble(body) {
   const key = _sevEnsCacheKey();
   if (_sevEnsFramesKey === key && _sevEnsFrames) { _sevEnsShowFrame(body, _sevEnsFrames); return; }
@@ -16279,7 +16296,48 @@ async function _sevRenderEnsemble(body) {
   if (body) body.innerHTML = `<div class="trop-model-err">⟳ Loading ${modelLabel} ensemble mean…</div>`;
   const token = ++_sevEnsLoadToken;
 
-  const pts = _sampleGrid(SEV_ENS_COLS, SEV_ENS_ROWS, WORLD_MAP_BOUNDS);
+  // Sampled over the map in view, exactly as the deterministic models are, and
+  // for the same reason: 18x11 spread across the whole world is a sample every
+  // 21 degrees, which cannot describe a forecast field at any useful zoom.
+  const ensBounds = _sevDetBounds();
+  const pts = _sampleGrid(SEV_ENS_COLS, SEV_ENS_ROWS, ensBounds);
+
+  // The ensemble had no store of any kind, so every reload and every switch
+  // away and back bought the whole grid again. It shares the deterministic
+  // cache: the key already carries section, product and box, and both sample
+  // the same 18x11, so an entry from one can never be read as the other.
+  const ensCached = _sevDetCacheRead(key);
+  if (_sevDetCacheFresh(ensCached) && Array.isArray(ensCached.frameMeta)) {
+    const frames = _sevEnsFramesFrom(ensCached, varName, modelLabel);
+    _sevEnsFrames = frames; _sevEnsFramesKey = key;
+    _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
+    return;
+  }
+  const ensShared = await _sevSharedRead(key);
+  if (token !== _sevEnsLoadToken) return;
+  if (ensShared && Array.isArray(ensShared.frameMeta)) {
+    _sevDetCacheWrite(key, ensShared);
+    const frames = _sevEnsFramesFrom(ensShared, varName, modelLabel);
+    _sevEnsFrames = frames; _sevEnsFramesKey = key;
+    _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
+    return;
+  }
+
+  const ensBudget = _sevBudgetCheck(pts.length);
+  if (!ensBudget.ok) {
+    const stale = _sevDetCacheRead(key) || await _sevSharedReadAny(key);
+    if (token !== _sevEnsLoadToken) return;
+    if (stale && Array.isArray(stale.frameMeta)) {
+      const frames = _sevEnsFramesFrom(stale, varName, modelLabel);
+      _sevEnsFrames = frames; _sevEnsFramesKey = key;
+      _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
+    } else if (body) {
+      body.innerHTML = `<div class="trop-model-err">Model downloads are paused for ${ensBudget.scope} to stay inside the free allowance.</div>`;
+    }
+    return;
+  }
+  _sevBudgetSpend(pts.length);
+
   try {
     const locations = await _fetchGridChunkedRaw(pts, chunk => {
       const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
@@ -16326,10 +16384,19 @@ async function _sevRenderEnsemble(body) {
       });
       if (!grid.some(v => v != null)) { frames.push(null); continue; }
       const { date, flbl } = _sevFcastFrom(ensBaseMs, i, SEV_ENS_STEP_H);
-      frames.push({ layer: null, grid, scale, cols: SEV_ENS_COLS, rows: SEV_ENS_ROWS, statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
+      frames.push({ layer: null, grid, scale, cols: SEV_ENS_COLS, rows: SEV_ENS_ROWS,
+                    bounds: ensBounds,
+                    statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
     }
     if (!frames.some(f => f)) throw new Error('no ensemble members in response');
     if (token !== _sevEnsLoadToken) return;
+
+    // Stored so a reload, or switching away and back, costs nothing.
+    const ensEntry = { at: Date.now(), slotH: ensSlotH, bounds: ensBounds, baseMs: ensBaseMs,
+                       grids: frames.map(f => f ? f.grid : null),
+                       frameMeta: frames.map(f => f ? f.statusText : null) };
+    _sevDetCacheWrite(key, ensEntry);
+    _sevSharedWrite(key, ensEntry);
 
     _sevEnsFrames = frames;
     _sevEnsFramesKey = key;
@@ -16382,8 +16449,77 @@ const SEV_DET_COLS = 18, SEV_DET_ROWS = 11;
 //
 // The box is snapped to a coarse step so nudging the map does not invalidate
 // the cache and refetch. Only a real move to somewhere else does.
-const SEV_DET_SNAP_DEG = 5;
-const SEV_DET_MIN_SPAN = 5;   // never sample a box so small the corners collapse
+// Snapped coarsely on purpose. Every distinct box is a separate paid fetch and
+// a separate cache entry, so a fine snap means neighbours almost never share
+// one. At ten degrees a whole region collapses to a handful of boxes, which is
+// what lets the shared cache actually serve most people rather than each
+// visitor buying their own copy of nearly the same thing.
+const SEV_DET_SNAP_DEG = 10;
+const SEV_DET_MIN_SPAN = 10;  // never sample a box so small the corners collapse
+
+// Panning fires moveend continuously; wait for it to stop before spending.
+const SEV_DET_MOVE_SETTLE_MS = 2500;
+
+// ── Request budget ──────────────────────────────────────────────────────────
+// Open-Meteo weights a call by how many locations it carries, so one product
+// load of 198 points is not one call against the allowance, it is closer to
+// 198. A free allowance of 10,000 a day is therefore something like fifty
+// product loads, and clicking through models and panning around can reach that
+// in minutes. Running out is not graceful: everything stops for the rest of the
+// day, for every visitor behind the same address.
+//
+// So the browser keeps its own count and stops before Open-Meteo does. Being
+// refused here costs a toast and the cached copy; being refused there costs the
+// whole day.
+// Open-Meteo's published free limits are 10,000 a day, 5,000 an hour and 600 a
+// minute. At 198 points a load that is roughly 50 loads a day, 25 an hour and 3
+// a minute, and the per-minute one is the one a person can actually hit, by
+// panning: it is the reason a minute window is counted at all.
+//
+// These sit below each limit with headroom rather than close to it, because the
+// weighting is an estimate and being wrong in this direction costs a pause,
+// while being wrong the other way costs the whole day.
+const SEV_BUDGET_KEY = 'gwcfc_om_budget_v2';
+const SEV_BUDGET_PER_DAY    = 8000;   // ~40 loads, against a 10,000 limit
+const SEV_BUDGET_PER_HOUR   = 3500;   // ~17 loads, against 5,000
+const SEV_BUDGET_PER_MINUTE = 450;    // ~2 loads,  against 600
+
+function _sevBudgetLoad() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SEV_BUDGET_KEY) || '{}');
+    return { day: raw.day || '', dayCount: raw.dayCount || 0,
+             hour: raw.hour || '', hourCount: raw.hourCount || 0,
+             min: raw.min || '', minCount: raw.minCount || 0 };
+  } catch { return { day: '', dayCount: 0, hour: '', hourCount: 0, min: '', minCount: 0 }; }
+}
+
+function _sevBudgetStamps() {
+  const s = new Date().toISOString();
+  return { day: s.slice(0, 10), hour: s.slice(0, 13), min: s.slice(0, 16) };
+}
+
+// Cost is the number of points about to be requested, so the count reflects
+// real weight rather than treating a 198-location request as a single call.
+function _sevBudgetCheck(cost) {
+  const b = _sevBudgetLoad(), s = _sevBudgetStamps();
+  const dayCount  = b.day  === s.day  ? b.dayCount  : 0;
+  const hourCount = b.hour === s.hour ? b.hourCount : 0;
+  const minCount  = b.min  === s.min  ? b.minCount  : 0;
+  if (dayCount  + cost > SEV_BUDGET_PER_DAY)    return { ok: false, scope: 'today' };
+  if (hourCount + cost > SEV_BUDGET_PER_HOUR)   return { ok: false, scope: 'this hour' };
+  if (minCount  + cost > SEV_BUDGET_PER_MINUTE) return { ok: false, scope: 'a moment' };
+  return { ok: true };
+}
+
+function _sevBudgetSpend(cost) {
+  const b = _sevBudgetLoad(), s = _sevBudgetStamps();
+  const next = {
+    day:  s.day,  dayCount:  (b.day  === s.day  ? b.dayCount  : 0) + cost,
+    hour: s.hour, hourCount: (b.hour === s.hour ? b.hourCount : 0) + cost,
+    min:  s.min,  minCount:  (b.min  === s.min  ? b.minCount  : 0) + cost,
+  };
+  try { localStorage.setItem(SEV_BUDGET_KEY, JSON.stringify(next)); } catch(e) {}
+}
 
 function _sevDetBounds() {
   if (typeof map === 'undefined' || !map) return WORLD_MAP_BOUNDS;
@@ -16433,7 +16569,7 @@ const SEV_DET_MIN_COVERAGE = 0.97;
 // changed. v2 discards everything sampled before the forecast-hour fix,
 // which otherwise kept being served and made the fix look like it had not
 // worked. Bump it again whenever what a stored grid means changes.
-const SEV_DET_CACHE_KEY = 'gwcfc_sev_det_cache_v5';
+const SEV_DET_CACHE_KEY = 'gwcfc_sev_det_cache_v6';
 const SEV_DET_CACHE_TTL = 3 * 3600 * 1000;
 const SEV_DET_CACHE_MAX = 10;   // entries; each is ~35KB of JSON
 const _sevDetMem = new Map();   // key -> { at, slotH, grids }
@@ -16584,18 +16720,29 @@ function _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs, bou
 // grid describes the wrong place. Reload when the snapped box actually changes,
 // which a small nudge does not do, so panning around one area costs nothing.
 let _sevDetLastBoxKey = '';
+let _sevDetMoveTimer = null;
 function _sevDetWatchMap() {
   if (typeof map === 'undefined' || !map || _sevDetWatchMap._on) return;
   _sevDetWatchMap._on = true;
   map.on('moveend zoomend', () => {
-    if (!SEV_DET_SECTIONS[_sevSection]) return;      // not a model that samples a box
+    const samplesBox = SEV_DET_SECTIONS[_sevSection] || SEV_ENSEMBLE_SECTIONS[_sevSection];
+    if (!samplesBox) return;                         // not a model that samples a box
     if (!_sevOverlayLayer) return;                   // nothing being shown
-    const b = _sevDetBounds();
-    const boxKey = `${b[0][0]},${b[0][1]},${b[1][0]},${b[1][1]}`;
-    if (boxKey === _sevDetLastBoxKey) return;        // same area, nothing to do
-    _sevDetLastBoxKey = boxKey;
-    const panel = document.getElementById('sev-panel-body');
-    _sevRenderDeterministic(panel);
+    // Settle first. Dragging across the map fires moveend repeatedly, and each
+    // one crossing a box edge would otherwise start its own paid fetch, which
+    // is the fastest way there is to burn a day's allowance in a minute.
+    clearTimeout(_sevDetMoveTimer);
+    _sevDetMoveTimer = setTimeout(() => {
+      const isDet = !!SEV_DET_SECTIONS[_sevSection];
+      const isEns = !!SEV_ENSEMBLE_SECTIONS[_sevSection];
+      if ((!isDet && !isEns) || !_sevOverlayLayer) return;
+      const b = _sevDetBounds();
+      const boxKey = `${b[0][0]},${b[0][1]},${b[1][0]},${b[1][1]}`;
+      if (boxKey === _sevDetLastBoxKey) return;      // same area, nothing to do
+      _sevDetLastBoxKey = boxKey;
+      const panel = document.getElementById('sev-panel-body');
+      isDet ? _sevRenderDeterministic(panel) : _sevRenderEnsemble(panel);
+    }, SEV_DET_MOVE_SETTLE_MS);
   });
 }
 
@@ -16641,6 +16788,27 @@ async function _sevRenderDeterministic(body) {
 
   const detBounds = _sevDetBounds();
   const pts = _sampleGrid(SEV_DET_COLS, SEV_DET_ROWS, detBounds);
+
+  // Nothing cached anywhere, so this is about to cost real allowance. Stop here
+  // rather than at Open-Meteo: refusing a load leaves the previous one on
+  // screen, whereas being cut off there takes every model out for the rest of
+  // the day, for everyone sharing this address.
+  const budget = _sevBudgetCheck(pts.length);
+  if (!budget.ok) {
+    const stale = _sevDetCacheRead(key) || await _sevSharedReadAny(key);
+    if (token !== _sevEnsLoadToken) return;
+    if (stale && Array.isArray(stale.grids)) {
+      const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel, stale.baseMs, stale.frameMs, stale.bounds);
+      _sevEnsFrames = frames; _sevEnsFramesKey = key;
+      _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
+      if (body) body.insertAdjacentHTML('beforeend',
+        `<div class="trop-model-err" style="color:rgba(232,184,0,0.7)">Showing a saved copy. Model downloads are paused for ${budget.scope}.</div>`);
+    } else if (body) {
+      body.innerHTML = `<div class="trop-model-err">Model downloads are paused for ${budget.scope} to stay inside the free allowance. Models already loaded still work.</div>`;
+    }
+    return;
+  }
+  _sevBudgetSpend(pts.length);
   // Kept outside the try so a failure can log the exact URL that was sent -
   // the single most useful thing to have when this breaks somewhere I can't
   // reach the API from.
@@ -17893,14 +18061,44 @@ function _sndIdxUrl(lat, lon) {
          `&forecast_days=2&timezone=UTC`;
 }
 
+// A sounding is one location but 85 variables, and Open-Meteo weights a call by
+// variables as well as locations, so it costs about as much as a whole model
+// grid. Pressing Here repeatedly is therefore expensive, and this is what stops
+// that quietly eating the same allowance the models need.
+const SND_BUDGET_COST = 100;
+const _sndMemo = new Map();          // "lat,lon,model" -> { at, data }
+const SND_MEMO_TTL = 20 * 60 * 1000; // a profile does not change within the hour
+
+function _sndMemoKey(lat, lon) {
+  // Rounded, so nudging the map a fraction re-reads the same profile rather
+  // than buying a new one for what is meteorologically the same place.
+  return `${lat.toFixed(1)},${lon.toFixed(1)},${_sndModel}`;
+}
+
 async function loadSounding() {
   if (_sndLoading) return;
   if (typeof map === 'undefined' || !map) { _sndSetStatus('Map not ready'); return; }
+  const c0 = map.getCenter();
+  const memoKey = _sndMemoKey(c0.lat, c0.lng);
+  const memo = _sndMemo.get(memoKey);
+  if (memo && Date.now() - memo.at < SND_MEMO_TTL) {
+    _sndData = memo.data;
+    _sndSetStatus('');
+    _sndDraw();
+    return;
+  }
+  const sndBudget = _sevBudgetCheck(SND_BUDGET_COST);
+  if (!sndBudget.ok) {
+    _sndSetStatus(`Soundings paused for ${sndBudget.scope} to stay inside the free allowance.`);
+    return;
+  }
+
   _sndLoading = true;
   if (_sndAbort) { try { _sndAbort.abort(); } catch(e) {} }
   _sndAbort = new AbortController();
-  const c = map.getCenter();
+  const c = c0;
   _sndSetStatus('Loading profile…');
+  _sevBudgetSpend(SND_BUDGET_COST);
 
   try {
     const res = await fetch(_sndUrl(c.lat, c.lng), { signal: _sndAbort.signal });
@@ -17949,6 +18147,11 @@ async function loadSounding() {
       idx: {},
       meta: { lat: c.lat, lon: c.lng, time: h.time[idx] }
     };
+    // Remembered before drawing, so pressing Here again at the same place shows
+    // it instantly and spends nothing.
+    _sndMemo.set(memoKey, { at: Date.now(), data: _sndData });
+    if (_sndMemo.size > 12) _sndMemo.delete(_sndMemo.keys().next().value);
+
     _sndDraw();
     _sndSetStatus(`${c.lat.toFixed(2)}, ${c.lng.toFixed(2)} · ${h.time[idx].replace('T',' ')}Z`);
 
@@ -31750,7 +31953,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Open-Meteo models now sample the area you are looking at instead of the whole planet, so the detail is roughly six times finer over the US for the same number of requests.";
+const APP_LATEST_UPDATE = "Models and soundings are back. They now sample the area you are looking at rather than the whole planet, share one cache between visitors, and stop themselves before the free allowance runs out.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
