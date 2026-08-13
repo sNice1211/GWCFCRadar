@@ -94,8 +94,26 @@ print('   first hour     :', (h.get('time') or ['?'])[0])
 echo
 echo "4. What the allowance looks like right now"
 url="https://api.open-meteo.com/v1/forecast?latitude=35.5&longitude=-98.0&hourly=$VAR&forecast_days=1"
-curl -s -A "$UA" -D "$TMP/h.txt" -o /dev/null --max-time 30 "$url"
-grep -iE '^(x-ratelimit|retry-after|ratelimit)' "$TMP/h.txt" | sed 's/^/   /' || echo "   no rate-limit headers published"
+curl -s -A "$UA" -D "$TMP/h.txt" -o "$TMP/h.json" --max-time 30 "$url"
+# Captured first rather than piped: in a pipeline the exit status is sed's, so
+# the "|| echo" fallback never fired and this section printed nothing at all
+# when no headers were present, which is exactly the case worth reporting.
+hdrs=$(grep -iE '^(x-ratelimit|retry-after|ratelimit)' "$TMP/h.txt" || true)
+if [ -n "$hdrs" ]; then
+  printf '%s\n' "$hdrs" | sed 's/^/   /'
+else
+  echo "   no rate-limit headers published"
+fi
+
+# The single most useful line in this whole script: whether the allowance is
+# spent right now. Everything above reports HTTP 429 when it is, which looks
+# like every model being broken rather than one quota being empty.
+if grep -qi 'daily api request limit' "$TMP/h.json" 2>/dev/null; then
+  echo "   DAILY ALLOWANCE IS SPENT. It resets at 00:00 UTC."
+  echo "   Sections 1 and 2 above cannot be answered until then; re-run after the reset."
+else
+  echo "   Allowance has room: a single-point request succeeded."
+fi
 
 echo
 echo "Done. Send all of this back."
