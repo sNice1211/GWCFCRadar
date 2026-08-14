@@ -11891,6 +11891,12 @@ async function _hdEnable() {
   }
   _hdIndex = _hdIndex || await _hdLoadIndex();
   const names = _hdIndex && _hdIndex.models ? Object.keys(_hdIndex.models) : [];
+  if (!names.length && _hdFromPicker && typeof showToast === 'function') {
+    // The panel is hidden when the picker is driving, so a silent failure
+    // there is a failure nobody sees.
+    showToast('Could not read the Pi. It may be starting, or its files may be '
+            + 'served without the header a browser needs.', 4000);
+  }
   if (!names.length) {
     _hdPanel.querySelector('.hd-run').innerHTML =
       `<span class="hd-warn">the Pi did not answer. It may be off, or the address may have changed.</span>`;
@@ -12163,8 +12169,20 @@ _sevSetSection = async function (value) {
 const _hdOrigUpdateProducts = _sevUpdateProducts;
 _sevUpdateProducts = function () {
   const sel = document.getElementById('sev-var-sel');
-  if (!sel || !_hdFromPicker || !_hdOn || !_hdManifest) {
+  if (!sel || !_hdFromPicker || !_hdOn) {
     return _hdOrigUpdateProducts.apply(this, arguments);
+  }
+  // A Pi model with no manifest must not fall through to the fixed list. That
+  // list belongs to the services this replaced and promises products the Pi
+  // never built, so falling back makes every model look identical and hides
+  // the actual problem, which is that the Pi could not be read.
+  if (!_hdManifest) {
+    sel.innerHTML = '';
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = 'could not read the Pi';
+    sel.appendChild(o);
+    return;
   }
   const have = _hdManifest.fields || {};
   const opts = HD_FIELDS

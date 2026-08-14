@@ -33,6 +33,19 @@ prints the address to give the site. Safe to run again if a step fails.
     gwcfc-serve    serves them with the header that makes them readable
     gwcfc-tunnel   gives them a public HTTPS address
 
+## When the site cannot read the Pi
+
+    bash ~/GWCFCRadar/pi/diagnose.sh
+
+Checks the chain in order and names the first thing that is wrong. The usual
+answer is port 8080: if a plain `python3 -m http.server` is still holding it
+from an earlier session, the CORS server could not bind, and a browser will
+refuse to read anything through the tunnel even though the files are sitting
+right there. The fix it prints is:
+
+    pkill -f 'http.server 8080'
+    systemctl --user restart gwcfc-serve
+
 Is the site being told where the Pi is?
 
     ~/wxenv/bin/python ~/GWCFCRadar/pi/publish_url.py --check
