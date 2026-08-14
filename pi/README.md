@@ -8,10 +8,15 @@ that Leaflet drops on the map as a plain image overlay.
 
 ## What it costs, measured on the target Pi
 
-    per forecast hour ....... 0.52 MB, about 1 second
-    per run (41 hours) ...... ~21 MB, ~40 seconds
-    per day (4 runs) ........ ~83 MB
-    on disk, steady state ... ~155 MB
+    download, per forecast hour .. 0.52 MB, about 1 second
+    download, per run (41 hours) . ~21 MB, ~40 seconds
+    download, per day (4 runs) ... ~83 MB
+    on disk, steady state ........ ~6 MB
+
+The disk figure is small because a rendered field is mostly flat colour and PNG
+compresses it hard. Measured on CONUS-sized grids: a smooth field like MSLP is
+2.6 KB, a wavy one like temperature 13.5 KB, and a sparse one like precipitation
+0.4 KB. Random noise would be 125 KB, but weather is not noise.
 
 NOAA does not meter this, so there is no quota to run out of, which was the
 problem with the API the site uses now.
