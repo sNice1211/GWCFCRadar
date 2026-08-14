@@ -21,7 +21,25 @@ compresses it hard. Measured on CONUS-sized grids: a smooth field like MSLP is
 NOAA does not meter this, so there is no quota to run out of, which was the
 problem with the API the site uses now.
 
-## Install
+## Install, in one command
+
+    bash ~/GWCFCRadar/pi/install.sh
+
+That installs what is missing, builds the Python environment, registers three
+services so it survives a reboot and a closed terminal, does a first build, and
+prints the address to give the site. Safe to run again if a step fails.
+
+    gwcfc-models   builds the images, hourly
+    gwcfc-serve    serves them with the header that makes them readable
+    gwcfc-tunnel   gives them a public HTTPS address
+
+Afterwards:
+
+    systemctl --user status gwcfc-models.timer
+    journalctl --user -u gwcfc-models -n 50
+    grep trycloudflare ~/tunnel.log      # the address changes on restart
+
+## Install by hand
 
     sudo apt update
     sudo apt install -y python3-numpy python3-pillow python3-requests libeccodes-tools

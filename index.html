@@ -2947,6 +2947,24 @@ body {
 }
 #inspector-readout-rows { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
 #inspector-readout .insp-row { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+/* ── Sounding ── */
+#snd-panel {
+  position: fixed; right: 12px; bottom: 132px; z-index: 900; display: none;
+  width: min(320px, calc(100vw - 24px));
+  background: rgba(8,12,16,0.96); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+  font-family: var(--sans);
+}
+#snd-panel .snd-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+#snd-panel .snd-title { font-weight: 700; font-size: 13px; color: var(--accent); }
+#snd-panel .snd-where { flex: 1; font-family: var(--mono); font-size: 10px; opacity: .7; color: var(--text); }
+#snd-panel .snd-x { background: none; border: none; color: var(--text); cursor: pointer; font-size: 13px; opacity: .7; }
+#snd-panel .snd-plot { width: 100%; height: 240px; display: block;
+  background: rgba(0,0,0,0.25); border-radius: 6px; }
+#snd-panel .snd-hour { width: 100%; accent-color: var(--accent2); margin-top: 7px; }
+#snd-panel .snd-meta { font-family: var(--mono); font-size: 10px; color: var(--text); margin-top: 2px; }
+@media (max-width: 640px) { #snd-panel { bottom: 108px; right: 8px; } }
+
 /* ── HD Models panel ── */
 #hd-panel {
   position: fixed; left: 12px; bottom: 132px; z-index: 900; display: none;
@@ -11882,6 +11900,215 @@ function _hdDisable() {
   document.getElementById('op-hdmodels')?.classList.remove('active');
   if (_hdPanel) _hdPanel.style.display = 'none';
   if (_hdLayer) { try { map.removeLayer(_hdLayer); } catch (e) {} _hdLayer = null; }
+}
+
+// ── Soundings, read out of the Pi's level images ───────────────────────────
+// The Pi writes one image per variable per pressure level, with the value
+// encoded into the pixel rather than coloured: high byte in red, low byte in
+// green, alpha 0 where there is no data. So a profile is one pixel read from
+// each of those images at the same place, which the browser can do with a
+// canvas and no WebGL.
+//
+// The images are cross-origin, so each needs crossOrigin set before it loads.
+// Without it the canvas is tainted and getImageData throws, which is a
+// confusing way to find out about a header.
+
+let _sndManifest = null;
+let _sndPixel = null;      // a 1x1 scratch canvas, reused for every read
+
+function _sndDecode(px, lo, hi) {
+  // Matches the encoding in pi/gfs_pipeline.py: alpha 0 means no data.
+  if (px[3] === 0) return null;
+  return lo + ((px[0] * 256 + px[1]) / 65535) * (hi - lo);
+}
+
+function _sndLoadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';   // required, or the canvas is tainted
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('could not load ' + url));
+    img.src = url;
+  });
+}
+
+// Where in the image a given latitude and longitude falls. The image is the
+// grid, one pixel per cell, and its first row is north.
+function _sndPixelFor(man, lat, lon) {
+  const [[s, w], [n, e]] = man.bounds;
+  if (lat < s || lat > n || lon < w || lon > e) return null;
+  const [ny, nx] = man.shape;
+  return {
+    x: Math.min(nx - 1, Math.max(0, Math.round((lon - w) / (e - w) * (nx - 1)))),
+    y: Math.min(ny - 1, Math.max(0, Math.round((n - lat) / (n - s) * (ny - 1)))),
+  };
+}
+
+async function _sndProfile(lat, lon, fhr) {
+  if (!_hdBase) throw new Error('no address set for the Pi');
+  if (!_sndManifest) {
+    const idx = _hdIndex || await _hdLoadIndex();
+    if (!idx || !idx.sounding) throw new Error('this Pi has no soundings');
+    _sndManifest = await fetch(`${_hdBase}/models/${idx.sounding.path}`,
+      { cache: 'no-store' }).then(r => r.ok ? r.json() : null);
+    if (!_sndManifest) throw new Error('could not read the sounding index');
+  }
+  const man = _sndManifest;
+  const at = _sndPixelFor(man, lat, lon);
+  if (!at) throw new Error('outside the area the Pi covers');
+  const hour = man.hours.includes(fhr) ? fhr : man.hours[0];
+
+  if (!_sndPixel) {
+    _sndPixel = document.createElement('canvas');
+    _sndPixel.width = 1; _sndPixel.height = 1;
+  }
+  const ctx = _sndPixel.getContext('2d', { willReadFrequently: true });
+
+  const vars = Object.keys(man.vars);
+  const levels = man.levels;
+  const out = levels.map(p => ({ p }));
+
+  // One image per variable per level. Fetched together rather than in
+  // sequence: twelve levels waiting on each other in turn is a visible pause,
+  // and they are a few KB each.
+  await Promise.all(vars.flatMap(v =>
+    levels.map(async (lev, i) => {
+      const url = `${_hdBase}/models/sounding/${man.run}/${v}_${lev}_f${String(hour).padStart(3, '0')}.png`;
+      try {
+        const img = await _sndLoadImage(url);
+        ctx.clearRect(0, 0, 1, 1);
+        ctx.drawImage(img, at.x, at.y, 1, 1, 0, 0, 1, 1);
+        const d = ctx.getImageData(0, 0, 1, 1).data;
+        out[i][v] = _sndDecode(d, man.vars[v].min, man.vars[v].max);
+      } catch (e) {
+        out[i][v] = null;
+      }
+    })
+  ));
+
+  return { hour, run: man.run, lat, lon,
+           levels: out.filter(r => r.t != null) };
+}
+
+// Dew point from temperature and relative humidity. The Pi ships humidity
+// because that is what the model carries; a sounding is read as dew point.
+function _sndDewpoint(tC, rh) {
+  if (tC == null || rh == null || rh <= 0) return null;
+  const a = 17.625, b = 243.04;
+  const g = Math.log(Math.max(rh, 0.1) / 100) + (a * tC) / (b + tC);
+  return (b * g) / (a - g);
+}
+
+// Named _sndPlotProfile rather than _sndDraw because the app already has a
+// _sndDraw for the older sounding panel. Both are function declarations at the
+// same scope, so the later one silently replaced this and the canvas was never
+// touched: no error, no clue, just an empty plot.
+//
+// A plain temperature-against-height plot rather than a true skew-T. The skew
+// is a printing convention from paper charts, and on a phone it costs more in
+// legibility than it returns.
+function _sndPlotProfile(canvas, prof) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  const rows = prof.levels;
+  if (!rows.length) return;
+  const pad = { l: 34, r: 10, t: 10, b: 22 };
+  const temps = rows.flatMap(r => [r.t, _sndDewpoint(r.t, r.rh)]).filter(v => v != null);
+  const tMin = Math.floor(Math.min(...temps) / 10) * 10 - 2;
+  const tMax = Math.ceil(Math.max(...temps) / 10) * 10 + 2;
+  // Pressure is plotted on a log scale, which is what makes the height axis
+  // roughly linear and the shape of the profile readable.
+  const pTop = Math.min(...rows.map(r => r.p)), pBot = Math.max(...rows.map(r => r.p));
+  const X = t => pad.l + (t - tMin) / (tMax - tMin) * (W - pad.l - pad.r);
+  const Y = p => pad.t + (Math.log(p) - Math.log(pTop)) /
+                 (Math.log(pBot) - Math.log(pTop)) * (H - pad.t - pad.b);
+
+  g.strokeStyle = 'rgba(255,255,255,0.12)'; g.fillStyle = 'rgba(255,255,255,0.5)';
+  g.lineWidth = 1; g.font = '9px monospace';
+  [1000, 850, 700, 500, 300, 200, 100].filter(p => p <= pBot && p >= pTop).forEach(p => {
+    g.beginPath(); g.moveTo(pad.l, Y(p)); g.lineTo(W - pad.r, Y(p)); g.stroke();
+    g.fillText(String(p), 4, Y(p) + 3);
+  });
+  for (let t = Math.ceil(tMin / 20) * 20; t <= tMax; t += 20) {
+    g.beginPath(); g.moveTo(X(t), pad.t); g.lineTo(X(t), H - pad.b); g.stroke();
+    g.fillText(`${t}`, X(t) - 6, H - pad.b + 12);
+  }
+  // Freezing is the line people actually look for.
+  if (tMin < 0 && tMax > 0) {
+    g.strokeStyle = 'rgba(120,190,255,0.45)'; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(X(0), pad.t); g.lineTo(X(0), H - pad.b); g.stroke();
+    g.setLineDash([]);
+  }
+
+  const line = (get, color) => {
+    g.strokeStyle = color; g.lineWidth = 2; g.beginPath();
+    let started = false;
+    rows.forEach(r => {
+      const v = get(r);
+      if (v == null) return;
+      const x = X(v), y = Y(r.p);
+      started ? g.lineTo(x, y) : (g.moveTo(x, y), started = true);
+    });
+    g.stroke();
+  };
+  line(r => _sndDewpoint(r.t, r.rh), '#37d67a');   // dew point
+  line(r => r.t, '#ff6b4a');                        // temperature
+}
+// Opened from the map's right-click menu or by calling it directly.
+async function openSounding(lat, lon) {
+  let el = document.getElementById('snd-panel');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'snd-panel';
+    el.innerHTML = `
+      <div class="snd-head">
+        <span class="snd-title">Sounding</span>
+        <span class="snd-where"></span>
+        <button class="snd-x" title="Close">✕</button>
+      </div>
+      <canvas class="snd-plot"></canvas>
+      <div class="snd-foot">
+        <input class="snd-hour" type="range" min="0" max="0" value="0" step="1">
+        <div class="snd-meta"></div>
+      </div>`;
+    document.body.appendChild(el);
+    el.querySelector('.snd-x').onclick = () => { el.style.display = 'none'; };
+    el.querySelector('.snd-hour').oninput = (e) => {
+      const hrs = (_sndManifest && _sndManifest.hours) || [0];
+      _sndRefresh(el, +hrs[Math.min(+e.target.value, hrs.length - 1)]);
+    };
+  }
+  el.style.display = 'block';
+  el.dataset.lat = lat; el.dataset.lon = lon;
+  el.querySelector('.snd-where').textContent =
+    `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
+  el.querySelector('.snd-meta').textContent = 'reading levels…';
+  await _sndRefresh(el, null);
+}
+
+async function _sndRefresh(el, fhr) {
+  const lat = +el.dataset.lat, lon = +el.dataset.lon;
+  try {
+    const prof = await _sndProfile(lat, lon, fhr == null ? 0 : fhr);
+    _sndPlotProfile(el.querySelector('.snd-plot'), prof);
+    const hrs = (_sndManifest && _sndManifest.hours) || [0];
+    const sl = el.querySelector('.snd-hour');
+    sl.max = Math.max(0, hrs.length - 1);
+    sl.value = Math.max(0, hrs.indexOf(prof.hour));
+    const sfc = prof.levels[0] || {};
+    const dp = _sndDewpoint(sfc.t, sfc.rh);
+    el.querySelector('.snd-meta').innerHTML =
+      `<b>+${prof.hour}h</b> · ${prof.levels.length} levels` +
+      (sfc.t != null ? ` · <span style="color:#ff6b4a">${sfc.t.toFixed(1)}°C</span>` : '') +
+      (dp != null ? ` <span style="color:#37d67a">${dp.toFixed(1)}°C dp</span>` : '');
+  } catch (e) {
+    el.querySelector('.snd-meta').textContent = String(e.message || e);
+  }
 }
 
 // Set the Pi's address from the console, since a quick tunnel hands out a new
@@ -32380,7 +32607,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "HD Models now carries GFS, NAM and HRRR straight from the Pi: real model fields at full resolution, including HRRR at 3 km, with no request limits.";
+const APP_LATEST_UPDATE = "Soundings and ensemble spread now come from the Pi too. Click-to-sound reads a real vertical profile, and the whole thing installs on the Pi with one command.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
