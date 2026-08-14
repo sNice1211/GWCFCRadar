@@ -58,23 +58,36 @@ RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 # because those names differ between versions (t2m vs t, msl vs prmsl).
 #
 # convert turns raw GRIB units into what the map should show.
+# Several of these accept more than one spelling. eccodes renames level types
+# between versions (atmosphere became entireAtmosphere, meanSea became
+# meanSeaLevel) and GFS labels precipitation differently depending on how it is
+# accumulated, so pinning one spelling means a field silently vanishes after an
+# upgrade. Matching a small set costs nothing and survives that.
 FIELDS = {
-    "t2m":   {"short": "2t",    "levtype": "heightAboveGround", "level": 2,
+    "t2m":   {"short": ("2t", "t"),  "levtype": ("heightAboveGround",), "level": 2,
               "convert": lambda a: a - 273.15, "range": (-40, 45),  "ramp": "temp"},
-    "d2m":   {"short": "2d",    "levtype": "heightAboveGround", "level": 2,
+    "d2m":   {"short": ("2d", "dpt"), "levtype": ("heightAboveGround",), "level": 2,
               "convert": lambda a: a - 273.15, "range": (-40, 30),  "ramp": "temp"},
-    "mslp":  {"short": "prmsl", "levtype": "meanSea",           "level": 0,
+    "mslp":  {"short": ("prmsl", "msl"),
+              "levtype": ("meanSea", "meanSeaLevel"), "level": 0,
               "convert": lambda a: a / 100.0,  "range": (960, 1050), "ramp": "viridis"},
-    "cape":  {"short": "cape",  "levtype": "surface",           "level": 0,
+    "cape":  {"short": ("cape",),    "levtype": ("surface",), "level": 0,
               "convert": lambda a: a,          "range": (0, 5000),  "ramp": "heat"},
-    "refc":  {"short": "refc",  "levtype": "atmosphere",        "level": 0,
+    "refc":  {"short": ("refc",),
+              "levtype": ("atmosphere", "entireAtmosphere"), "level": 0,
               "convert": lambda a: a,          "range": (-10, 75),  "ramp": "radar"},
-    "apcp":  {"short": "tp",    "levtype": "surface",           "level": 0,
+    "apcp":  {"short": ("tp", "acpcp", "apcp"), "levtype": ("surface",), "level": 0,
               "convert": lambda a: a,          "range": (0, 50),    "ramp": "precip"},
-    "wind":  {"short": "10si",  "levtype": "heightAboveGround", "level": 10,
+    "wind":  {"short": ("10si",),    "levtype": ("heightAboveGround",), "level": 10,
               "convert": lambda a: a * 1.94384, "range": (0, 80),   "ramp": "wind",
               "derive": "windspeed"},
 }
+
+
+def _matches(spec, short, levtype, level):
+    return (short in spec["short"]
+            and levtype in spec["levtype"]
+            and int(level) == int(spec["level"]))
 
 # NOMADS query flags: which variables and which levels to include.
 VAR_FLAGS = ["var_TMP", "var_DPT", "var_PRMSL", "var_CAPE",
@@ -214,6 +227,7 @@ def open_fields(grib_path):
 
     found = {}
     uv = {}
+    seen = []          # every message in the file, for when nothing matches
 
     try:
         fh = open(grib_path, "rb")
@@ -234,12 +248,12 @@ def open_fields(grib_path):
                 short = str(eccodes.codes_get(gid, "shortName"))
                 levt = str(eccodes.codes_get(gid, "typeOfLevel"))
                 lev = int(eccodes.codes_get(gid, "level"))
+                seen.append(f"{short}/{levt}/{lev}")
                 ni = int(eccodes.codes_get(gid, "Ni"))
                 nj = int(eccodes.codes_get(gid, "Nj"))
 
                 want = short in ("10u", "10v") or any(
-                    short == s["short"] and levt == s["levtype"]
-                    and lev == int(s["level"])
+                    _matches(s, short, levt, lev)
                     for s in FIELDS.values() if not s.get("derive"))
                 if not want:
                     continue
@@ -276,9 +290,11 @@ def open_fields(grib_path):
                 for key, spec in FIELDS.items():
                     if spec.get("derive"):
                         continue
-                    if short == spec["short"] and levt == spec["levtype"] \
-                            and lev == int(spec["level"]):
+                    if _matches(spec, short, levt, lev):
                         found[key] = (arr, lats, lons)
+            except Exception as e:
+                # One unreadable message should cost that message, not the run.
+                log(f"    skipping a message: {e}")
             finally:
                 try:
                     eccodes.codes_release(gid)
@@ -291,6 +307,13 @@ def open_fields(grib_path):
         u, lats, lons = uv["10u"]
         v = uv["10v"][0]
         found["wind"] = (np.sqrt(u ** 2 + v ** 2), lats, lons)
+
+    # A file full of messages that matched nothing means the keys in FIELDS
+    # disagree with what this eccodes build calls them. Printing what was
+    # actually there turns that from a silent skip into a one-line fix.
+    if not found and seen:
+        log(f"    {len(seen)} messages, none matched. Present: "
+            + ", ".join(sorted(set(seen))[:24]))
 
     return found
 
