@@ -81,14 +81,21 @@ tunnel keeps one hostname instead of a new random one each restart.
 ## What it writes
 
     ~/wxdata/models/
-      latest.json                  <- points at the newest finished run
-      20260814_12/
+      latest.json                  <- every model that has a finished run
+      gfs/20260814_12/
         manifest.json              <- written last; its presence means "finished"
         t2m_f000.png  t2m_f003.png  ...
-        refc_f000.png ...
+      nam/20260814_12/ ...
+      hrrr/20260814_17/ ...
+
+Models: `gfs` (0.25 deg, to +120h), `nam` (12 km, to +60h), `hrrr` (3 km,
+hourly to +18h). Each is fetched on its own cadence, and `latest.json` lists
+whichever ones currently have a finished run.
+
+    python3 pi/gfs_pipeline.py             # all of them
+    python3 pi/gfs_pipeline.py hrrr        # just one
 
 Fields: `t2m`, `d2m`, `mslp`, `cape`, `refc`, `apcp`, `wind`.
-Hours: 0 to 120 in steps of 3.
 
 `manifest.json` carries the bounds, the hours that succeeded per field, and the
 value range, so the page can build a legend without opening any images.

@@ -2963,6 +2963,12 @@ body {
 #hd-panel .hd-x { background: none; border: none; color: var(--text); cursor: pointer;
   font-size: 13px; opacity: .7; }
 #hd-panel .hd-x:hover { opacity: 1; }
+#hd-panel .hd-models { display: flex; gap: 4px; margin-bottom: 7px; }
+#hd-panel .hd-m { padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 11px;
+  background: rgba(232,184,0,0.10); border: 1px solid rgba(232,184,0,0.35);
+  color: var(--text); font-family: var(--sans); font-weight: 600; }
+#hd-panel .hd-m:hover { background: rgba(232,184,0,0.2); }
+#hd-panel .hd-m.on { background: rgba(232,184,0,0.30); border-color: var(--accent); color: #fff; }
 #hd-panel .hd-fields { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
 #hd-panel .hd-f {
   padding: 4px 9px; border-radius: 5px; cursor: pointer; font-size: 11px;
@@ -11665,6 +11671,8 @@ const HD_FIELDS = [
 let _hdOn = false;
 let _hdBase = null;        // where the Pi is answering
 let _hdManifest = null;
+let _hdModel = null;       // which model is showing
+let _hdIndex = null;       // what the Pi has
 let _hdField = 't2m';
 let _hdHourIdx = 0;
 let _hdLayer = null;
@@ -11697,14 +11705,20 @@ function _hdSetBase(url) {
   _hdBase = String(url).replace(/\/+$/, '');
   _hdCache.clear();
   _hdManifest = null;
+  _hdIndex = null;
+  _hdModel = null;
   if (_hdOn) { _hdDisable(); _hdEnable(); }
 }
 
-async function _hdLoadManifest() {
-  const idx = await fetch(`${_hdBase}/models/latest.json`, { cache: 'no-store' })
+async function _hdLoadIndex() {
+  return fetch(`${_hdBase}/models/latest.json`, { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null).catch(() => null);
-  if (!idx || !idx.path) return null;
-  return fetch(`${_hdBase}/models/${idx.path}`, { cache: 'no-store' })
+}
+
+async function _hdLoadManifest(model) {
+  const entry = _hdIndex && _hdIndex.models && _hdIndex.models[model];
+  if (!entry) return null;
+  return fetch(`${_hdBase}/models/${entry.path}`, { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null).catch(() => null);
 }
 
@@ -11718,15 +11732,23 @@ function _hdShow() {
   const hours = _hdHoursFor(_hdField);
   if (!hours.length) return;
   const fhr = hours[Math.min(_hdHourIdx, hours.length - 1)];
-  const url = `${_hdBase}/models/${_hdManifest.run}/${_hdField}_f${String(fhr).padStart(3, '0')}.png`;
+  const model = _hdManifest.model || _hdModel;
+  const url = `${_hdBase}/models/${model}/${_hdManifest.run}/${_hdField}_f${String(fhr).padStart(3, '0')}.png`;
 
   // Swap rather than stack. Adding without removing leaves the old picture
   // painted underneath with nothing pointing at it, which is both a smear and
   // a leak, and is exactly the bug the ensemble frames had.
   const next = L.imageOverlay(url, _hdManifest.bounds,
     { opacity: 0.72, interactive: false, pane: 'radarPane' });
+  // Swap only once the replacement is actually up, so scrubbing does not
+  // flash the basemap between frames. Both outcomes have to drop the old one:
+  // waiting purely on success means a missing frame leaves the previous image
+  // stranded on the map with nothing pointing at it, and after a few of those
+  // the map is a stack of ghosts.
   const prev = _hdLayer;
-  next.on('load', () => { if (prev && prev !== next) { try { map.removeLayer(prev); } catch (e) {} } });
+  const dropPrev = () => { if (prev && prev !== next) { try { map.removeLayer(prev); } catch (e) {} } };
+  next.on('load', dropPrev);
+  next.on('error', dropPrev);
   next.addTo(map);
   _hdLayer = next;
   _hdCache.set(url, 1);
@@ -11744,6 +11766,14 @@ function _hdRenderPanel() {
              +_hdManifest.run.slice(6, 8), +_hdManifest.run.slice(9, 11))
     + fhr * 3600000) : null;
 
+  const mods = (_hdIndex && _hdIndex.models) || {};
+  _hdPanel.querySelector('.hd-models').innerHTML = Object.keys(mods).map(k =>
+    `<button class="hd-m${k === _hdModel ? ' on' : ''}" data-m="${k}" title="${mods[k].res || ''}">${mods[k].label || k}</button>`
+  ).join('');
+  _hdPanel.querySelectorAll('.hd-m').forEach(b => {
+    b.onclick = () => _hdPickModel(b.dataset.m);
+  });
+
   _hdPanel.querySelector('.hd-fields').innerHTML = HD_FIELDS
     .filter(f => _hdHoursFor(f.id).length)
     .map(f => `<button class="hd-f${f.id === _hdField ? ' on' : ''}" data-f="${f.id}">${f.label}</button>`)
@@ -11758,6 +11788,11 @@ function _hdRenderPanel() {
 
   _hdPanel.querySelector('.hd-when').innerHTML =
     `<b>+${fhr}h</b>${valID(valid)}`;
+  if (_hdManifest) {
+    const rr = _hdManifest.run;
+    _hdPanel.querySelector('.hd-run').textContent =
+      `${_hdManifest.res || ''} · ${rr.slice(4, 6)}/${rr.slice(6, 8)} ${rr.slice(9, 11)}Z`;
+  }
   _hdPanel.querySelector('.hd-range').textContent =
     (meta.min != null) ? `${meta.min} to ${meta.max} ${spec.unit}` : '';
   function valID(d) {
@@ -11775,6 +11810,7 @@ function _hdBuildPanel() {
       <span class="hd-run"></span>
       <button class="hd-x" title="Close">✕</button>
     </div>
+    <div class="hd-models"></div>
     <div class="hd-fields"></div>
     <div class="hd-timeline">
       <input class="hd-slider" type="range" min="0" max="0" value="0" step="1">
@@ -11786,6 +11822,22 @@ function _hdBuildPanel() {
     _hdHourIdx = +e.target.value;
     _hdShow();
   };
+}
+
+// Each model is its own set of runs and its own reach, so switching one loads
+// its manifest rather than assuming the hours line up. HRRR stops at 18 hours
+// where GFS runs to 120, so an hour index valid for one is not for the other.
+async function _hdPickModel(name) {
+  if (name === _hdModel) return;
+  _hdModel = name;
+  _hdManifest = await _hdLoadManifest(name);
+  if (!_hdManifest) { _hdRenderPanel(); return; }
+  if (!_hdHoursFor(_hdField).length) {
+    const first = HD_FIELDS.find(f => _hdHoursFor(f.id).length);
+    if (first) _hdField = first.id;
+  }
+  _hdHourIdx = Math.min(_hdHourIdx, Math.max(0, _hdHoursFor(_hdField).length - 1));
+  _hdShow();
 }
 
 async function _hdEnable() {
@@ -11801,15 +11853,23 @@ async function _hdEnable() {
       `<span class="hd-warn">no address set. Run <code>hdSetPi('https://…')</code> in the console.</span>`;
     return;
   }
-  _hdManifest = _hdManifest || await _hdLoadManifest();
-  if (!_hdManifest) {
+  _hdIndex = _hdIndex || await _hdLoadIndex();
+  const names = _hdIndex && _hdIndex.models ? Object.keys(_hdIndex.models) : [];
+  if (!names.length) {
     _hdPanel.querySelector('.hd-run').innerHTML =
       `<span class="hd-warn">the Pi did not answer. It may be off, or the address may have changed.</span>`;
     return;
   }
+  if (!_hdModel || !_hdIndex.models[_hdModel]) _hdModel = names[0];
+  _hdManifest = _hdManifest || await _hdLoadManifest(_hdModel);
+  if (!_hdManifest) {
+    _hdPanel.querySelector('.hd-run').innerHTML =
+      `<span class="hd-warn">could not read that model's run.</span>`;
+    return;
+  }
   const r = _hdManifest.run;
   _hdPanel.querySelector('.hd-run').textContent =
-    `${r.slice(4, 6)}/${r.slice(6, 8)} ${r.slice(9, 11)}Z run`;
+    `${_hdManifest.res || ''} · ${r.slice(4, 6)}/${r.slice(6, 8)} ${r.slice(9, 11)}Z`;
   if (!_hdHoursFor(_hdField).length) {
     const first = HD_FIELDS.find(f => _hdHoursFor(f.id).length);
     if (first) _hdField = first.id;
@@ -32320,7 +32380,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Model charts now stay put when you move the map. Each chart is pinned to its model run and only refreshes when a new run is published, which also stops it eating the daily request allowance.";
+const APP_LATEST_UPDATE = "HD Models now carries GFS, NAM and HRRR straight from the Pi: real model fields at full resolution, including HRRR at 3 km, with no request limits.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
