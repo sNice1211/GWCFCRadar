@@ -2947,6 +2947,35 @@ body {
 }
 #inspector-readout-rows { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
 #inspector-readout .insp-row { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+/* ── HD Models panel ── */
+#hd-panel {
+  position: fixed; left: 12px; bottom: 132px; z-index: 900; display: none;
+  width: min(330px, calc(100vw - 24px));
+  background: rgba(8,12,16,0.95); border: 1px solid var(--border);
+  border-radius: 10px; padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+  font-family: var(--sans);
+}
+#hd-panel .hd-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+#hd-panel .hd-title { font-weight: 700; font-size: 13px; color: var(--accent); }
+#hd-panel .hd-run { font-size: 10px; color: var(--text); opacity: .75; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#hd-panel .hd-warn { color: var(--accent2); }
+#hd-panel .hd-x { background: none; border: none; color: var(--text); cursor: pointer;
+  font-size: 13px; opacity: .7; }
+#hd-panel .hd-x:hover { opacity: 1; }
+#hd-panel .hd-fields { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
+#hd-panel .hd-f {
+  padding: 4px 9px; border-radius: 5px; cursor: pointer; font-size: 11px;
+  background: rgba(0,140,186,0.10); border: 1px solid rgba(0,140,186,0.35);
+  color: var(--text); font-family: var(--sans);
+}
+#hd-panel .hd-f:hover { background: rgba(0,140,186,0.2); }
+#hd-panel .hd-f.on { background: rgba(0,140,186,0.30); border-color: var(--accent2); color: #fff; font-weight: 600; }
+#hd-panel .hd-slider { width: 100%; accent-color: var(--accent2); }
+#hd-panel .hd-meta { display: flex; justify-content: space-between; gap: 8px;
+  font-size: 10px; color: var(--text); margin-top: 3px; font-family: var(--mono); }
+#hd-panel .hd-dim { opacity: .6; }
+@media (max-width: 640px) { #hd-panel { bottom: 108px; left: 8px; } }
 #inspector-readout .insp-swatch { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.3); }
 #inspector-readout .insp-label { opacity: 0.55; font-size: 9px; }
 #inspector-readout .insp-value { font-weight: 700; }
@@ -11605,6 +11634,214 @@ function toggleLayer(id) {
   if (['tornado','tstm','flood','watch'].includes(id)) loadAlerts(true);
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// HD MODELS - full-resolution forecast fields rendered on the Pi
+// ──────────────────────────────────────────────────────────────────────────
+// The Open-Meteo path samples 198 points and interpolates between them, which
+// is a sketch of a forecast rather than the forecast. It is also metered, and
+// the allowance ran out.
+//
+// These come from GRIB2 decoded on the Pi and rendered there: a real 0.25
+// degree CONUS field, about 39,000 points, arriving as a finished PNG. The
+// browser's whole job is to display a picture, which is why this works on a
+// console with no WebGL and costs almost nothing to draw.
+//
+// Deliberately separate from the existing model panel. That code owns its own
+// caches, frame pool and budget, and threading a second source through it
+// would put the working path at risk for no gain.
+
+const HD_BASE_KEY = 'gwcfc_hd_base';        // override, for testing
+const HD_FIELDS = [
+  { id: 't2m',  label: 'Temperature',    unit: '°C' },
+  { id: 'd2m',  label: 'Dew Point',      unit: '°C' },
+  { id: 'refc', label: 'Reflectivity',   unit: 'dBZ' },
+  { id: 'apcp', label: 'Precipitation',  unit: 'mm' },
+  { id: 'wind', label: 'Wind',           unit: 'kt' },
+  { id: 'cape', label: 'CAPE',           unit: 'J/kg' },
+  { id: 'mslp', label: 'Pressure',       unit: 'hPa' },
+];
+
+let _hdOn = false;
+let _hdBase = null;        // where the Pi is answering
+let _hdManifest = null;
+let _hdField = 't2m';
+let _hdHourIdx = 0;
+let _hdLayer = null;
+let _hdPanel = null;
+// Frames already fetched, so scrubbing back and forth does not re-request. The
+// images are a few KB each, so holding them is cheaper than fetching them.
+let _hdCache = new Map();
+
+// Where the Pi is depends on a tunnel whose address changes when it restarts,
+// so it is looked up rather than written down. localStorage first so a new
+// address can be tried without touching anything else, then the shared
+// document the Pi keeps current.
+async function _hdResolveBase() {
+  try {
+    const local = localStorage.getItem(HD_BASE_KEY);
+    if (local) return local.replace(/\/+$/, '');
+  } catch (e) {}
+  try {
+    if (typeof db !== 'undefined' && db) {
+      const snap = await db.collection('piEndpoint').doc('models').get();
+      const url = snap.exists && snap.data() && snap.data().url;
+      if (url) return String(url).replace(/\/+$/, '');
+    }
+  } catch (e) {}
+  return null;
+}
+
+function _hdSetBase(url) {
+  try { localStorage.setItem(HD_BASE_KEY, String(url).replace(/\/+$/, '')); } catch (e) {}
+  _hdBase = String(url).replace(/\/+$/, '');
+  _hdCache.clear();
+  _hdManifest = null;
+  if (_hdOn) { _hdDisable(); _hdEnable(); }
+}
+
+async function _hdLoadManifest() {
+  const idx = await fetch(`${_hdBase}/models/latest.json`, { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!idx || !idx.path) return null;
+  return fetch(`${_hdBase}/models/${idx.path}`, { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+}
+
+function _hdHoursFor(field) {
+  const f = _hdManifest && _hdManifest.fields && _hdManifest.fields[field];
+  return (f && f.hours) || [];
+}
+
+function _hdShow() {
+  if (!_hdManifest || !_hdBase) return;
+  const hours = _hdHoursFor(_hdField);
+  if (!hours.length) return;
+  const fhr = hours[Math.min(_hdHourIdx, hours.length - 1)];
+  const url = `${_hdBase}/models/${_hdManifest.run}/${_hdField}_f${String(fhr).padStart(3, '0')}.png`;
+
+  // Swap rather than stack. Adding without removing leaves the old picture
+  // painted underneath with nothing pointing at it, which is both a smear and
+  // a leak, and is exactly the bug the ensemble frames had.
+  const next = L.imageOverlay(url, _hdManifest.bounds,
+    { opacity: 0.72, interactive: false, pane: 'radarPane' });
+  const prev = _hdLayer;
+  next.on('load', () => { if (prev && prev !== next) { try { map.removeLayer(prev); } catch (e) {} } });
+  next.addTo(map);
+  _hdLayer = next;
+  _hdCache.set(url, 1);
+  _hdRenderPanel();
+}
+
+function _hdRenderPanel() {
+  if (!_hdPanel) return;
+  const hours = _hdHoursFor(_hdField);
+  const fhr = hours.length ? hours[Math.min(_hdHourIdx, hours.length - 1)] : 0;
+  const spec = HD_FIELDS.find(f => f.id === _hdField) || HD_FIELDS[0];
+  const meta = (_hdManifest && _hdManifest.fields && _hdManifest.fields[_hdField]) || {};
+  const valid = _hdManifest ? new Date(
+    Date.UTC(+_hdManifest.run.slice(0, 4), +_hdManifest.run.slice(4, 6) - 1,
+             +_hdManifest.run.slice(6, 8), +_hdManifest.run.slice(9, 11))
+    + fhr * 3600000) : null;
+
+  _hdPanel.querySelector('.hd-fields').innerHTML = HD_FIELDS
+    .filter(f => _hdHoursFor(f.id).length)
+    .map(f => `<button class="hd-f${f.id === _hdField ? ' on' : ''}" data-f="${f.id}">${f.label}</button>`)
+    .join('');
+  _hdPanel.querySelectorAll('.hd-f').forEach(b => {
+    b.onclick = () => { _hdField = b.dataset.f; _hdHourIdx = Math.min(_hdHourIdx, _hdHoursFor(_hdField).length - 1); _hdShow(); };
+  });
+
+  const sl = _hdPanel.querySelector('.hd-slider');
+  sl.max = Math.max(0, hours.length - 1);
+  sl.value = Math.min(_hdHourIdx, hours.length - 1);
+
+  _hdPanel.querySelector('.hd-when').innerHTML =
+    `<b>+${fhr}h</b>${valID(valid)}`;
+  _hdPanel.querySelector('.hd-range').textContent =
+    (meta.min != null) ? `${meta.min} to ${meta.max} ${spec.unit}` : '';
+  function valID(d) {
+    if (!d) return '';
+    return ` <span class="hd-dim">${d.toLocaleString([], { weekday: 'short', hour: 'numeric' })}</span>`;
+  }
+}
+
+function _hdBuildPanel() {
+  _hdPanel = document.createElement('div');
+  _hdPanel.id = 'hd-panel';
+  _hdPanel.innerHTML = `
+    <div class="hd-head">
+      <span class="hd-title">HD Models</span>
+      <span class="hd-run"></span>
+      <button class="hd-x" title="Close">✕</button>
+    </div>
+    <div class="hd-fields"></div>
+    <div class="hd-timeline">
+      <input class="hd-slider" type="range" min="0" max="0" value="0" step="1">
+      <div class="hd-meta"><span class="hd-when"></span><span class="hd-range"></span></div>
+    </div>`;
+  document.body.appendChild(_hdPanel);
+  _hdPanel.querySelector('.hd-x').onclick = () => toggleOverlayPill('hdmodels');
+  _hdPanel.querySelector('.hd-slider').oninput = (e) => {
+    _hdHourIdx = +e.target.value;
+    _hdShow();
+  };
+}
+
+async function _hdEnable() {
+  _hdOn = true;
+  document.getElementById('op-hdmodels')?.classList.add('active');
+  if (!_hdPanel) _hdBuildPanel();
+  _hdPanel.style.display = 'block';
+  _hdPanel.querySelector('.hd-run').textContent = 'looking for the Pi…';
+
+  _hdBase = _hdBase || await _hdResolveBase();
+  if (!_hdBase) {
+    _hdPanel.querySelector('.hd-run').innerHTML =
+      `<span class="hd-warn">no address set. Run <code>hdSetPi('https://…')</code> in the console.</span>`;
+    return;
+  }
+  _hdManifest = _hdManifest || await _hdLoadManifest();
+  if (!_hdManifest) {
+    _hdPanel.querySelector('.hd-run').innerHTML =
+      `<span class="hd-warn">the Pi did not answer. It may be off, or the address may have changed.</span>`;
+    return;
+  }
+  const r = _hdManifest.run;
+  _hdPanel.querySelector('.hd-run').textContent =
+    `${r.slice(4, 6)}/${r.slice(6, 8)} ${r.slice(9, 11)}Z run`;
+  if (!_hdHoursFor(_hdField).length) {
+    const first = HD_FIELDS.find(f => _hdHoursFor(f.id).length);
+    if (first) _hdField = first.id;
+  }
+  _hdShow();
+}
+
+function _hdDisable() {
+  _hdOn = false;
+  document.getElementById('op-hdmodels')?.classList.remove('active');
+  if (_hdPanel) _hdPanel.style.display = 'none';
+  if (_hdLayer) { try { map.removeLayer(_hdLayer); } catch (e) {} _hdLayer = null; }
+}
+
+// Set the Pi's address from the console, since a quick tunnel hands out a new
+// one every time it restarts.
+function hdSetPi(url) {
+  if (!url) { try { localStorage.removeItem(HD_BASE_KEY); } catch (e) {} _hdBase = null; return 'cleared'; }
+  _hdSetBase(url);
+  return `set to ${_hdBase}`;
+}
+
+// Routed through the existing pill handler so HD Models behaves like every
+// other overlay rather than being a special case.
+const _hdOrigToggleOverlayPill = toggleOverlayPill;
+toggleOverlayPill = function (id) {
+  if (id === 'hdmodels') {
+    _hdOn ? _hdDisable() : _hdEnable();
+    return;
+  }
+  return _hdOrigToggleOverlayPill.apply(this, arguments);
+};
 
 // ══════════════════════════════════════════════════════════════════════════
 // ── POLYGON SPATIAL FILTER ────────────────────────────────────────────────
@@ -33479,6 +33716,9 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-hdmodels" data-ovid="hdmodels" title="HD Models - full-resolution forecast fields rendered on the Pi">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('hdmodels')">HD Models</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning Strikes - real-time strike data">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning Strikes</span><span class="ov-drag" title="Drag to reorder">⠿</span>
