@@ -42,16 +42,50 @@ OUT_DIR = os.path.expanduser("~/wxdata/models")
 BOX = {"toplat": 55.0, "bottomlat": 20.0, "leftlon": 230.0, "rightlon": 300.0}
 BOUNDS_LATLON = [[20.0, -130.0], [55.0, -60.0]]   # what Leaflet wants
 
-# Forecast hours. Three-hourly to five days is the range the app already shows,
-# and it is 41 requests rather than 121 for the same span.
-FHOURS = list(range(0, 121, 3))
+# Every model NOAA publishes through the same filter service, which is what
+# makes adding one a few lines rather than a new program. They differ only in
+# where the files live, how often they run, how far out they go and how long
+# after the hour they appear.
+#
+#   lag    hours after the cycle before the run is on the server
+#   step   spacing of forecast hours to fetch
+#   out    how far out to go
+MODELS = {
+    "gfs": {
+        "label": "GFS", "res": "0.25 deg", "cycle_h": 6, "lag_h": 5,
+        "filter": "filter_gfs_0p25.pl",
+        "dir": "/gfs.{date}/{cyc}/atmos",
+        "file": "gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}",
+        "raw": "gfs/prod/gfs.{date}/{cyc}/atmos/gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}.idx",
+        "step": 3, "out": 120,
+    },
+    "nam": {
+        "label": "NAM", "res": "12 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.awphys{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.awphys{fhr:02d}.tm00.grib2.idx",
+        "step": 3, "out": 60,
+    },
+    "hrrr": {
+        # Hourly and 3 km: the one worth having when something is happening
+        # right now, which is why it is fetched hourly and only 18 hours out.
+        "label": "HRRR", "res": "3 km", "cycle_h": 1, "lag_h": 2,
+        "filter": "filter_hrrr_2d.pl",
+        "dir": "/hrrr.{date}/conus",
+        "file": "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.grib2",
+        "raw": "hrrr/prod/hrrr.{date}/conus/hrrr.t{cyc}z.wrfsfcf{fhr:02d}.grib2.idx",
+        "step": 1, "out": 18,
+    },
+}
+DEFAULT_MODELS = ["gfs", "nam", "hrrr"]
 
 KEEP_RUNS = 4          # about 24 hours of runs
 REQUEST_TIMEOUT = 60
 RETRIES = 3
 
-FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
-RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
+FILTER_BASE = "https://nomads.ncep.noaa.gov/cgi-bin"
+RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
 
 # Fields to render. Matched on the GRIB shortName, level type and level that
 # GRIB itself defines, rather than on a name invented during conversion,
@@ -145,62 +179,70 @@ LUTS = {name: build_lut(name) for name in RAMPS}
 
 # ── NOAA ────────────────────────────────────────────────────────────────────
 
-def cycle_for(now=None):
-    """
-    The most recent run that should actually be published.
+def fhours_for(m):
+    """The forecast hours to fetch for a model, from its step and reach."""
+    return list(range(0, m["out"] + 1, m["step"]))
 
-    GFS runs at 00/06/12/18Z and appears roughly 3.5 to 5 hours later, so the
-    lag is subtracted before rounding. Picking the cycle by the clock alone
-    selects a run that does not exist yet, and then every hourly cron wakes up
-    and waits for it.
+
+def cycle_for(m, now=None):
+    """
+    The most recent run of this model that should actually be published.
+
+    The lag is subtracted before rounding to the cycle. Rounding the clock
+    alone picks a run that does not exist yet, and then every wake-up sits
+    waiting for it. Each model has its own cadence and its own lag: GFS runs
+    four times a day and lands about five hours later, HRRR runs every hour and
+    lands about two.
     """
     now = now or datetime.now(timezone.utc)
-    t = now - timedelta(hours=5)
-    return t.strftime("%Y%m%d"), f"{(t.hour // 6) * 6:02d}"
+    t = now - timedelta(hours=m["lag_h"])
+    cyc = (t.hour // m["cycle_h"]) * m["cycle_h"]
+    return t.strftime("%Y%m%d"), f"{cyc:02d}"
 
 
-def run_is_complete(date_str, cycle):
+def run_is_complete(m, date_str, cyc):
     """
     True when the last forecast hour of this run has published.
 
-    Checked against the real index file on the data path. The filter CGI does
-    not serve .idx at all: asking it for one returns an HTML error with a 200,
-    which reads as success and makes the check useless.
+    Checked against the real index file on the data path. The filter service
+    does not serve .idx at all: asking it for one returns an HTML error with a
+    200, which reads as success and makes the check useless.
     """
-    last = FHOURS[-1]
-    url = (f"{RAW_BASE}/gfs.{date_str}/{cycle}/atmos/"
-           f"gfs.t{cycle}z.pgrb2.0p25.f{last:03d}.idx")
+    last = fhours_for(m)[-1]
+    url = f"{RAW_BASE}/" + m["raw"].format(date=date_str, cyc=cyc, fhr=last)
     try:
-        r = requests.get(url, timeout=30,
-                         headers={"Range": "bytes=0-256"})
+        r = requests.get(url, timeout=30, headers={"Range": "bytes=0-256"})
         # A real index is text listing fields. An error page is HTML.
-        return r.status_code in (200, 206) and ":" in r.text and "<" not in r.text[:40]
+        return (r.status_code in (200, 206)
+                and ":" in r.text and "<" not in r.text[:40])
     except requests.RequestException:
         return False
 
 
-def fetch_hour(date_str, cycle, fhr, path):
+def fetch_hour(m, date_str, cyc, fhr, path):
     """Download one forecast hour, cropped to the box by NOAA before sending."""
     params = {
-        "file": f"gfs.t{cycle}z.pgrb2.0p25.f{fhr:03d}",
-        "dir": f"/gfs.{date_str}/{cycle}/atmos",
+        "file": m["file"].format(cyc=cyc, fhr=fhr),
+        "dir": m["dir"].format(date=date_str, cyc=cyc),
         "subregion": "",
         **{k: "on" for k in VAR_FLAGS},
         **{k: "on" for k in LEV_FLAGS},
         **{k: v for k, v in BOX.items()},
     }
+    url = f"{FILTER_BASE}/{m['filter']}"
     for attempt in range(RETRIES):
         try:
-            r = requests.get(FILTER_URL, params=params, timeout=REQUEST_TIMEOUT)
-            if r.status_code == 200 and len(r.content) > 5000 \
-                    and r.content[:4] == b"GRIB":
+            r = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            if (r.status_code == 200 and len(r.content) > 5000
+                    and r.content[:4] == b"GRIB"):
                 with open(path, "wb") as f:
                     f.write(r.content)
                 return True
-            log(f"    f{fhr:03d} attempt {attempt+1}: HTTP {r.status_code}, "
-                f"{len(r.content)} bytes")
+            if attempt == RETRIES - 1:
+                log(f"    f{fhr:03d}: HTTP {r.status_code}, {len(r.content)} bytes")
         except requests.RequestException as e:
-            log(f"    f{fhr:03d} attempt {attempt+1}: {e}")
+            if attempt == RETRIES - 1:
+                log(f"    f{fhr:03d}: {e}")
         time.sleep(2 ** attempt)
     return False
 
@@ -354,14 +396,15 @@ def render_png(values, lats, spec, out_path):
 
 # ── Housekeeping ────────────────────────────────────────────────────────────
 
-def prune(keep=KEEP_RUNS):
-    if not os.path.isdir(OUT_DIR):
+def prune(model_dir, keep=KEEP_RUNS):
+    """Keep the newest few runs of one model and drop the rest."""
+    if not os.path.isdir(model_dir):
         return
-    runs = sorted(d for d in os.listdir(OUT_DIR)
-                  if os.path.isdir(os.path.join(OUT_DIR, d)) and d[0].isdigit())
-    for old in runs[:-keep] if len(runs) > keep else []:
-        log(f"pruning {old}")
-        shutil.rmtree(os.path.join(OUT_DIR, old), ignore_errors=True)
+    runs = sorted(d for d in os.listdir(model_dir)
+                  if os.path.isdir(os.path.join(model_dir, d)) and d[0].isdigit())
+    for old in (runs[:-keep] if len(runs) > keep else []):
+        log(f"  pruning {os.path.basename(model_dir)}/{old}")
+        shutil.rmtree(os.path.join(model_dir, old), ignore_errors=True)
 
 
 class Lock:
@@ -428,89 +471,136 @@ class Lock:
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-def main():
-    date_str, cycle = cycle_for()
-    run_id = f"{date_str}_{cycle}"
-    run_dir = os.path.join(OUT_DIR, run_id)
-    done_marker = os.path.join(run_dir, "manifest.json")
+def build_model(name, m):
+    """Build one run of one model. Returns its manifest, or None if nothing to do."""
+    date_str, cyc = cycle_for(m)
+    run_id = f"{date_str}_{cyc}"
+    model_dir = os.path.join(OUT_DIR, name)
+    run_dir = os.path.join(model_dir, run_id)
+    done = os.path.join(run_dir, "manifest.json")
 
-    if os.path.exists(done_marker):
-        log(f"{run_id} already built")
-        return 0
+    if os.path.exists(done):
+        try:
+            with open(done) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            pass                      # unreadable: fall through and rebuild
 
-    if not run_is_complete(date_str, cycle):
-        log(f"{run_id} not published yet; will try again next hour")
-        return 0
+    if not run_is_complete(m, date_str, cyc):
+        log(f"{name}: {run_id} not published yet")
+        return _newest_manifest(model_dir)
 
-    log(f"building {run_id}")
+    hours = fhours_for(m)
+    log(f"{name}: building {run_id} ({len(hours)} hours)")
     os.makedirs(run_dir, exist_ok=True)
-    t_start = time.time()
+    t0 = time.time()
 
-    built = {k: [] for k in FIELDS}
+    built = {}
     ranges = {}
-    ok_hours = 0
-
-    for fhr in FHOURS:
+    ok = 0
+    for fhr in hours:
         with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as tf:
             tmp = tf.name
         try:
-            if not fetch_hour(date_str, cycle, fhr, tmp):
-                log(f"  f{fhr:03d} download failed, skipping")
+            if not fetch_hour(m, date_str, cyc, fhr, tmp):
                 continue
             fields = open_fields(tmp)
             if not fields:
-                log(f"  f{fhr:03d} nothing decoded, skipping")
                 continue
             for key, (vals, lats, _lons) in fields.items():
                 spec = FIELDS.get(key)
                 if spec is None:
                     continue
-                name = f"{key}_f{fhr:03d}.png"
-                lo, hi = render_png(vals, lats, spec, os.path.join(run_dir, name))
-                built[key].append(fhr)
+                lo, hi = render_png(vals, lats, spec,
+                                    os.path.join(run_dir, f"{key}_f{fhr:03d}.png"))
+                built.setdefault(key, []).append(fhr)
                 r = ranges.setdefault(key, [lo, hi])
                 r[0], r[1] = min(r[0], lo), max(r[1], hi)
-            ok_hours += 1
-            log(f"  f{fhr:03d} ok ({len(fields)} fields)")
+            ok += 1
         finally:
             try:
                 os.unlink(tmp)
             except OSError:
                 pass
 
-    if ok_hours == 0:
-        log("no forecast hours succeeded; leaving no manifest so this retries")
-        return 1
+    if ok == 0:
+        log(f"{name}: no hours succeeded, leaving no manifest so it retries")
+        return _newest_manifest(model_dir)
 
-    # The manifest is written last and is what marks the run finished. A run
-    # that died halfway has no manifest, so the site keeps serving the previous
-    # one rather than a half-built set of pictures.
     manifest = {
-        "run": run_id,
-        "cycle": f"{date_str}T{cycle}:00Z",
+        "model": name, "label": m["label"], "res": m["res"],
+        "run": run_id, "cycle": f"{date_str}T{cyc}:00Z",
         "built_at": datetime.now(timezone.utc).isoformat(),
         "bounds": BOUNDS_LATLON,
-        "hours": FHOURS,
+        "hours": hours,
         "fields": {k: {"hours": v,
-                       "min": round(ranges.get(k, [0, 0])[0], 2),
-                       "max": round(ranges.get(k, [0, 0])[1], 2),
+                       "min": round(ranges[k][0], 2), "max": round(ranges[k][1], 2),
                        "pattern": f"{k}_f{{fhr:03d}}.png"}
-                   for k, v in built.items() if v},
-        "seconds": round(time.time() - t_start, 1),
+                   for k, v in built.items()},
+        "seconds": round(time.time() - t0, 1),
     }
-    with open(done_marker, "w") as f:
+    # Written last: a run that died halfway leaves no manifest, so the site
+    # keeps serving the previous complete one rather than a half-built set.
+    with open(done, "w") as f:
         json.dump(manifest, f, indent=1)
+    log(f"{name}: {ok}/{len(hours)} hours in {manifest['seconds']}s")
+    prune(model_dir)
+    return manifest
 
-    # A stable pointer, so the site does not have to guess the newest run.
+
+def _newest_manifest(model_dir):
+    """The most recent finished run of a model, if there is one."""
+    if not os.path.isdir(model_dir):
+        return None
+    for run in sorted((d for d in os.listdir(model_dir) if d[0].isdigit()),
+                      reverse=True):
+        p = os.path.join(model_dir, run, "manifest.json")
+        if os.path.exists(p):
+            try:
+                with open(p) as f:
+                    return json.load(f)
+            except (OSError, ValueError):
+                continue
+    return None
+
+
+def main(models=None):
+    names = models or DEFAULT_MODELS
+    index = {"updated": datetime.now(timezone.utc).isoformat(), "models": {}}
+    any_ok = False
+
+    for name in names:
+        m = MODELS.get(name)
+        if not m:
+            log(f"unknown model: {name}")
+            continue
+        try:
+            man = build_model(name, m)
+        except Exception as e:
+            # One model failing must not cost the others.
+            log(f"{name}: failed: {e}")
+            man = _newest_manifest(os.path.join(OUT_DIR, name))
+        if man:
+            any_ok = True
+            index["models"][name] = {
+                "label": man.get("label", name), "res": man.get("res", ""),
+                "run": man["run"], "cycle": man.get("cycle", ""),
+                "path": f"{name}/{man['run']}/manifest.json",
+                "fields": sorted(man.get("fields", {}).keys()),
+            }
+
+    if not any_ok:
+        log("nothing available from any model")
+        return 1
+
     with open(os.path.join(OUT_DIR, "latest.json"), "w") as f:
-        json.dump({"run": run_id, "path": f"{run_id}/manifest.json"}, f)
-
-    log(f"done: {ok_hours}/{len(FHOURS)} hours in {manifest['seconds']}s")
-    prune()
+        json.dump(index, f, indent=1)
+    log("index updated: " + ", ".join(
+        f"{k} {v['run']}" for k, v in index["models"].items()))
     return 0
 
 
 if __name__ == "__main__":
     os.makedirs(OUT_DIR, exist_ok=True)
     with Lock():
-        sys.exit(main())
+        sys.exit(main(sys.argv[1:] or None))
