@@ -11891,6 +11891,12 @@ async function _hdEnable() {
   }
   _hdIndex = _hdIndex || await _hdLoadIndex();
   const names = _hdIndex && _hdIndex.models ? Object.keys(_hdIndex.models) : [];
+  if (!names.length && _hdFromPicker && typeof showToast === 'function') {
+    // The panel is hidden when the picker is driving, so a silent failure
+    // there is a failure nobody sees.
+    showToast('Could not read the Pi. It may be starting, or its files may be '
+            + 'served without the header a browser needs.', 4000);
+  }
   if (!names.length) {
     _hdPanel.querySelector('.hd-run').innerHTML =
       `<span class="hd-warn">the Pi did not answer. It may be off, or the address may have changed.</span>`;
@@ -12148,6 +12154,15 @@ _sevSetSection = async function (value) {
     await _hdPickModel(which);
     _hdRenderPanel();
     _sevUpdateProducts();             // rebuild the product list from the manifest
+    // Everything below the product list has to be rebuilt too. Leaving the run
+    // and the hour grid from the model that was showing before is how you get a
+    // panel that says GFS and a row of buttons belonging to HRRR, and a click
+    // that asks the Pi for an hour it never rendered.
+    _hdHourIdx = 0;
+    _sevFrame = 0;
+    _hdPopulateRun();
+    _hdBuildFrameGrid();
+    _hdShow();
     return;
   }
   if (_hdOn) _hdDisable();          // leaving the Pi, so take its layer off
@@ -12163,8 +12178,20 @@ _sevSetSection = async function (value) {
 const _hdOrigUpdateProducts = _sevUpdateProducts;
 _sevUpdateProducts = function () {
   const sel = document.getElementById('sev-var-sel');
-  if (!sel || !_hdFromPicker || !_hdOn || !_hdManifest) {
+  if (!sel || !_hdFromPicker || !_hdOn) {
     return _hdOrigUpdateProducts.apply(this, arguments);
+  }
+  // A Pi model with no manifest must not fall through to the fixed list. That
+  // list belongs to the services this replaced and promises products the Pi
+  // never built, so falling back makes every model look identical and hides
+  // the actual problem, which is that the Pi could not be read.
+  if (!_hdManifest) {
+    sel.innerHTML = '';
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = 'could not read the Pi';
+    sel.appendChild(o);
+    return;
   }
   const have = _hdManifest.fields || {};
   const opts = HD_FIELDS
@@ -12189,6 +12216,84 @@ _sevUpdateProducts = function () {
   sel.value = _hdField;
 };
 
+// The forecast-hour grid belongs to the model that is showing, and a Pi model's
+// hours are its own: HRRR stops at 18 and steps hourly, GEFS reaches 168 and
+// steps six-hourly, and precipitation has no F+000 because there is nothing
+// accumulated at analysis time. The shared builder assumes one fixed step for
+// the whole section and labels each button `i * step`, which for these is a row
+// of buttons promising hours that were never rendered. Building it straight
+// from the manifest means every button is an hour that exists, so a button can
+// never select a picture that is not there.
+function _hdBuildFrameGrid() {
+  const grid = document.getElementById('sev-frame-grid');
+  if (!grid) return;
+  const hrs = _hdHoursFor(_hdField);
+  const cols = Math.max(1, Math.ceil(Math.sqrt(hrs.length || 1)));
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.innerHTML = '';
+  hrs.forEach((h, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'sev-fhr-btn' + (i === _hdHourIdx ? ' active' : '');
+    btn.textContent = 'F+' + String(h).padStart(3, '0');
+    btn.dataset.frame = i;
+    btn.onclick = () => _sevSetFrame(i);
+    grid.appendChild(btn);
+  });
+  _sevUpdatePlaybar();
+  _sevUpdateFcastHeader();
+}
+
+// The Pi has one run: the finished one it built. The shared run list guesses a
+// cycle from the clock and a publish lag, which for these would offer runs the
+// Pi has not got, so this shows the real one instead.
+function _hdPopulateRun() {
+  const sel = document.getElementById('sev-run-sel');
+  if (!sel) return;
+  const r = _hdManifest && _hdManifest.run;      // "20260814_12"
+  sel.innerHTML = '';
+  const o = document.createElement('option');
+  if (r) {
+    o.value = r.replace('_', '');
+    o.textContent = `Latest · ${MONS[+r.slice(4, 6) - 1]} ${+r.slice(6, 8)} - ${r.slice(9, 11)}z`;
+  } else {
+    o.value = ''; o.textContent = '-';
+  }
+  sel.appendChild(o);
+  _sevRun = o.value;
+}
+
+// How far the scrubber, the arrows and the playbar are allowed to go. They all
+// ask this, so answering it for a Pi model is what stops a drag to the end from
+// landing on a frame that was never built.
+const _hdOrigMaxFrameFor = _sevMaxFrameFor;
+_sevMaxFrameFor = function (section) {
+  if (String(section).startsWith('pi:')) {
+    return Math.max(0, _hdHoursFor(_hdField).length - 1);
+  }
+  return _hdOrigMaxFrameFor.apply(this, arguments);
+};
+
+// The header above the grid says which moment is on screen. It works that out
+// from the run plus `frame * step`, which is only true when the hours are
+// evenly spaced from zero. The Pi's hours are a list, so the hour is read out
+// of the list rather than multiplied.
+const _hdOrigFcastDateTime = _sevFcastDateTime;
+_sevFcastDateTime = function (frame) {
+  if (!(_hdFromPicker && _hdOn && _hdManifest)) {
+    return _hdOrigFcastDateTime.apply(this, arguments);
+  }
+  const hrs = _hdHoursFor(_hdField);
+  const h = hrs.length ? hrs[Math.min(frame, hrs.length - 1)] : 0;
+  const r = _hdManifest.run;
+  const t = new Date(Date.UTC(+r.slice(0, 4), +r.slice(4, 6) - 1,
+                              +r.slice(6, 8), +r.slice(9, 11)) + h * 3600000);
+  return {
+    date: `${DAYS[t.getUTCDay()]} ${MONS[t.getUTCMonth()]} ${t.getUTCDate()} - ` +
+          `${String(t.getUTCHours()).padStart(2, '0')}:00z`,
+    flbl: 'F+' + String(h).padStart(3, '0'),
+  };
+};
+
 // Run Models' own product list and forecast-hour grid drive the Pi layer, so
 // picking a Pi model gives the controls that were already there rather than a
 // second set beside them.
@@ -12204,7 +12309,15 @@ _sevSetVar = function (v) {
     _sevVar = v;
     // The options are the Pi's own field names now, so no translation and no
     // guessing: if it is in the list, the model built it.
-    if (_hdHoursFor(v).length) { _hdField = v; _hdHourIdx = 0; _hdShow(); }
+    if (_hdHoursFor(v).length) {
+      _hdField = v;
+      // Each field carries its own hours, so the grid is rebuilt rather than
+      // reused: precipitation starts at the first accumulation, not at zero.
+      _hdHourIdx = 0;
+      _sevFrame = 0;
+      _hdBuildFrameGrid();
+      _hdShow();
+    }
     return;
   }
   return _hdOrigSetVar.apply(this, arguments);
@@ -12217,11 +12330,16 @@ _sevSetFrame = function (v) {
     document.querySelectorAll('.sev-fhr-btn').forEach(b => {
       b.classList.toggle('active', parseInt(b.dataset.frame, 10) === _sevFrame);
     });
-    // The grid is built for the old models' six-hour step; the Pi's hours are
-    // whatever that model publishes, so the index is clamped rather than
-    // assumed to line up.
+    // The grid is built from this model's own hours, so the button index is the
+    // hour index. Still clamped, because the playbar can be dragged past the
+    // end of a short field.
     const hrs = _hdHoursFor(_hdField);
-    if (hrs.length) { _hdHourIdx = Math.min(_sevFrame, hrs.length - 1); _hdShow(); }
+    if (hrs.length) {
+      _hdHourIdx = Math.max(0, Math.min(_sevFrame, hrs.length - 1));
+      _sevUpdatePlaybar();
+      _sevUpdateFcastHeader();
+      _hdShow();
+    }
     return;
   }
   return _hdOrigSetFrame.apply(this, arguments);
@@ -32327,7 +32445,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The product list now shows only what the chosen model actually built, so nothing offers a chart that would come back empty.";
+const APP_LATEST_UPDATE = "Pi models now bring their own run and forecast hours, so every button on the timeline is a chart that exists, and NAM, HRRR and GEFS build again.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
