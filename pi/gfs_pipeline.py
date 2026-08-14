@@ -9,9 +9,10 @@ that Leaflet drops on the map as a plain image overlay. The browser's entire job
 becomes displaying a picture.
 
 Measured on the target Pi, with NOAA cropping to CONUS before sending:
-    0.52 MB per forecast hour, about 1 second each
+    0.52 MB downloaded per forecast hour, about 1 second each
     ~21 MB and ~40 seconds per run, ~83 MB per day
-    ~155 MB on disk once old runs are being pruced
+    ~6 MB on disk once old runs are being pruned, because a rendered field is
+    mostly flat colour and PNG compresses it hard
 
 Run it from cron every hour. It works out whether there is anything to do and
 exits quickly when there is not.
