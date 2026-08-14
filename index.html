@@ -7498,27 +7498,12 @@ body.clean-mode #clean-hint { opacity: 1; }
               <option value="ndfd">NWS NDFD (US Forecast)</option>
               <option value="hrrr">HRRR (18h)</option>
             </optgroup>
-            <optgroup label="Global Deterministic">
-              <option value="gfs">GFS (NOAA)</option>
-              <option value="gem">GEM (ECCC Canada)</option>
-              <option value="ukmo">UKMO (UK Met Office)</option>
-              <option value="arpege">ARPEGE (Meteo-France)</option>
-              <option value="jma">JMA (Japan)</option>
-              <option value="aifs">ECMWF AIFS (AI Model)</option>
-              <option value="cma">CMA GRAPES (China)</option>
-              <option value="bom">BOM ACCESS-G (Australia)</option>
-            </optgroup>
             <optgroup label="From the Pi (full resolution)">
               <option value="pi:gfs">GFS (Pi, 0.25 deg)</option>
               <option value="pi:nam">NAM (Pi, 12 km)</option>
               <option value="pi:hrrr">HRRR (Pi, 3 km)</option>
               <option value="pi:gefs">GEFS Mean (Pi)</option>
               <option value="pi:gefsspr">GEFS Spread (Pi)</option>
-            </optgroup>
-            <optgroup label="Ensemble Mean">
-              <option value="gfs_ens">GFS Ensemble Mean (NOAA)</option>
-              <option value="icon_ens">ICON Ensemble Mean (DWD)</option>
-              <option value="gem_ens">GEM Ensemble Mean (ECCC)</option>
             </optgroup>
           </select>
           <button id="sev-sounding-btn" onclick="_sevToggleSounding()" title="View sounding at map center" style="margin-left:4px;padding:3px 8px;background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);color:#008CBA;border-radius:4px;cursor:pointer;font-size:10px;font-family:Comfortaa;">Sounding</button>
@@ -11716,14 +11701,18 @@ async function _hdResolveBase() {
     const local = localStorage.getItem(HD_BASE_KEY);
     if (local) return local.replace(/\/+$/, '');
   } catch (e) {}
+  // Read straight from Firestore over HTTPS rather than through the app's SDK
+  // handle. That handle is assigned in a different script block and only once
+  // Firebase has finished starting, so depending on it makes finding the Pi a
+  // question of load order. The document is public by rule, so a plain fetch
+  // needs no SDK, no sign-in and no waiting for anything.
   try {
-    // _fbDb, not db. The app's Firestore handle is _fbDb; every `db` in this
-    // file is a local IndexedDB inside some other function, so `typeof db`
-    // was undefined here and the lookup silently never happened. That is the
-    // whole of "no address set" while the Pi was publishing correctly.
-    if (typeof _fbDb !== 'undefined' && _fbDb) {
-      const snap = await _fbDb.collection('piEndpoint').doc('models').get();
-      const url = snap.exists && snap.data() && snap.data().url;
+    const r = await fetch(
+      'https://firestore.googleapis.com/v1/projects/gwcfc-radar/databases/(default)' +
+      '/documents/piEndpoint/models', { cache: 'no-store' });
+    if (r.ok) {
+      const doc = await r.json();
+      const url = doc && doc.fields && doc.fields.url && doc.fields.url.stringValue;
       if (url) return String(url).replace(/\/+$/, '');
     }
   } catch (e) {}
@@ -15950,7 +15939,12 @@ let _sevPlaying = false, _sevPlayTimer = null;
 // #sev-model-sel offers, so every place that already switches behavior on
 // _sevSection (products, run list, forecast range, rendering) just adds one
 // lookup here instead of three separate special cases.
-const SEV_ENSEMBLE_SECTIONS = { gfs_ens: 'gfs_seamless', icon_ens: 'icon_seamless', gem_ens: 'gem_global' };
+// Emptied: these were the metered forecast API's ensembles. The Pi serves
+// GEFS mean and spread instead, at full resolution and with no allowance to
+// run out of. Left as an empty map rather than deleted because every path
+// that asks 'is this section an ensemble?' reads it, and an empty map answers
+// no for all of them.
+const SEV_ENSEMBLE_SECTIONS = {};
 const SEV_ENS_PRODUCT_LIST = [
   {v:'temperature_2m',l:'2m Temperature'},
   {v:'precipitation',l:'Precipitation'},
@@ -15966,16 +15960,10 @@ const SEV_ENS_PRODUCT_LIST = [
 // the same fetch-a-grid-and-paint-it treatment the ensemble mean already uses.
 // "_seamless" means Open-Meteo automatically splices the agency's high-res
 // regional model into its global one where the regional one has coverage.
-const SEV_DET_SECTIONS = {
-  gfs:    'gfs_seamless',              // NOAA GFS (+ HRRR/NBM over the US)
-  gem:    'gem_seamless',              // Environment Canada GEM global
-  ukmo:   'ukmo_seamless',             // UK Met Office UM
-  arpege: 'meteofrance_arpege_world',  // Meteo-France ARPEGE
-  jma:    'jma_seamless',              // Japan Meteorological Agency GSM/MSM
-  aifs:   'ecmwf_aifs025_single',      // ECMWF AIFS - machine-learning model
-  cma:    'cma_grapes_global',         // China Meteorological Administration
-  bom:    'bom_access_global',         // Australian Bureau of Meteorology
-};
+// Emptied: these were the metered forecast API's eight global models,
+// sampled at 198 points and interpolated between them. The Pi now renders
+// the model field itself. Same reasoning as above for keeping the name.
+const SEV_DET_SECTIONS = {};
 // One product list shared by every deterministic model. Each product is fetched
 // on its own (hourly=<one variable>), so if a given agency doesn't publish one
 // of these, only that product shows the "unavailable" message - the rest of the
@@ -16915,128 +16903,8 @@ function _sevEnsFramesFrom(entry, varName, modelLabel) {
   });
 }
 
-async function _sevRenderEnsemble(body) {
-  const key = _sevEnsCacheKey();
-  if (_sevEnsFramesKey === key && _sevEnsFrames) { _sevEnsShowFrame(body, _sevEnsFrames); return; }
-
-  const model = SEV_ENSEMBLE_SECTIONS[_sevSection];
-  const modelLabel = SEV_MODEL_LABELS[_sevSection] || model;
-  const varName = _sevVar;
-  if (body) body.innerHTML = `<div class="trop-model-err">⟳ Loading ${modelLabel} ensemble mean…</div>`;
-  const token = ++_sevEnsLoadToken;
-
-  // Sampled over the map in view, exactly as the deterministic models are, and
-  // for the same reason: 18x11 spread across the whole world is a sample every
-  // 21 degrees, which cannot describe a forecast field at any useful zoom.
-  const ensBounds = _sevDetBounds();
-  const pts = _sampleGrid(SEV_ENS_COLS, SEV_ENS_ROWS, ensBounds);
-
-  // The ensemble had no store of any kind, so every reload and every switch
-  // away and back bought the whole grid again. It shares the deterministic
-  // cache: the key already carries section, product and box, and both sample
-  // the same 18x11, so an entry from one can never be read as the other.
-  const ensCached = _sevDetCacheRead(key);
-  if (_sevDetCacheFresh(ensCached) && Array.isArray(ensCached.frameMeta)) {
-    const frames = _sevEnsFramesFrom(ensCached, varName, modelLabel);
-    _sevEnsFrames = frames; _sevEnsFramesKey = key;
-    _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
-    return;
-  }
-  const ensShared = await _sevSharedRead(key);
-  if (token !== _sevEnsLoadToken) return;
-  if (ensShared && Array.isArray(ensShared.frameMeta)) {
-    _sevDetCacheWrite(key, ensShared);
-    const frames = _sevEnsFramesFrom(ensShared, varName, modelLabel);
-    _sevEnsFrames = frames; _sevEnsFramesKey = key;
-    _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
-    return;
-  }
-
-  const ensBudget = _sevBudgetCheck(pts.length);
-  if (!ensBudget.ok) {
-    const stale = _sevDetCacheRead(key) || await _sevSharedReadAny(key);
-    if (token !== _sevEnsLoadToken) return;
-    if (stale && Array.isArray(stale.frameMeta)) {
-      const frames = _sevEnsFramesFrom(stale, varName, modelLabel);
-      _sevEnsFrames = frames; _sevEnsFramesKey = key;
-      _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
-    } else if (body) {
-      body.innerHTML = `<div class="trop-model-err">Model downloads are paused for ${ensBudget.scope} to stay inside the free allowance.</div>`;
-    }
-    return;
-  }
-  _sevBudgetSpend(pts.length);
-
-  try {
-    const locations = await _fetchGridChunkedRaw(pts, chunk => {
-      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      return `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${latStr}&longitude=${lngStr}` +
-        `&hourly=${varName}&models=${model}&forecast_days=4` +
-        `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
-    }, 15);
-    if (token !== _sevEnsLoadToken) return;
-
-    // Same anchoring the deterministic models need: the ensemble API also
-    // starts its hourly series at 00:00 UTC of the current day, so reading from
-    // index 0 shows this morning while the label says now.
-    const _ensMs = t => (typeof t === 'number') ? t * 1000
-      : (typeof t === 'string' ? Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(t) ? t : t + 'Z') : NaN);
-    const ensRunMs = (_sevRun && _sevRun.length >= 10)
-      ? Date.UTC(+_sevRun.slice(0,4), +_sevRun.slice(4,6) - 1, +_sevRun.slice(6,8), +_sevRun.slice(8,10))
-      : Date.now();
-    const ensTime = locations.find(l => Array.isArray(l?.hourly?.time) && l.hourly.time.length > 1)?.hourly.time;
-    // Same reasoning as the deterministic path: with no timestamps there is no
-    // way to know which slot is now, and assuming index 0 draws this morning
-    // under a label that says now. Refuse rather than mislabel.
-    if (!ensTime) throw new Error('ensemble response carried no timestamps, cannot align to the forecast hour');
-    let ensSlotH = 1;
-    const d = (_ensMs(ensTime[1]) - _ensMs(ensTime[0])) / 3600000;
-    if (Number.isFinite(d) && d > 0) ensSlotH = Math.max(1, Math.round(d));
-    const ensFound = ensTime.findIndex(t => _ensMs(t) >= ensRunMs - 60000);
-    if (ensFound < 0) throw new Error('ensemble series ends before the current hour');
-    const ensBase = ensFound;
-    const ensBaseMs = _ensMs(ensTime[ensBase]);
-    if (!Number.isFinite(ensBaseMs)) throw new Error('ensemble timestamps could not be read');
-
-    const scale = SEV_ENS_SCALES[varName] || SEV_ENS_SCALES.temperature_2m;
-    const frames = [];
-    for (let i = 0; i <= SEV_ENS_MAX_FRAME; i++) {
-      const hourIdx = ensBase + Math.round(i * SEV_ENS_STEP_H / ensSlotH);
-      const grid = locations.map(loc => {
-        if (!loc || !loc.hourly) return null;
-        const memberKeys = Object.keys(loc.hourly).filter(k => k.startsWith(varName + '_member'));
-        if (!memberKeys.length) return null;
-        let sum = 0, n = 0;
-        memberKeys.forEach(k => { const v = loc.hourly[k]?.[hourIdx]; if (v != null && isFinite(v)) { sum += v; n++; } });
-        return n ? sum / n : null;
-      });
-      if (!grid.some(v => v != null)) { frames.push(null); continue; }
-      const { date, flbl } = _sevFcastFrom(ensBaseMs, i, SEV_ENS_STEP_H);
-      frames.push({ layer: null, grid, scale, cols: SEV_ENS_COLS, rows: SEV_ENS_ROWS,
-                    bounds: ensBounds,
-                    statusText: `${SEV_ENS_VAR_LABELS[varName] || varName} · ${modelLabel} mean · ${flbl} (${date})` });
-    }
-    if (!frames.some(f => f)) throw new Error('no ensemble members in response');
-    if (token !== _sevEnsLoadToken) return;
-
-    // Stored so a reload, or switching away and back, costs nothing.
-    const ensEntry = { at: Date.now(), slotH: ensSlotH, bounds: ensBounds, baseMs: ensBaseMs,
-                       grids: frames.map(f => f ? f.grid : null),
-                       frameMeta: frames.map(f => f ? f.statusText : null) };
-    _sevDetCacheWrite(key, ensEntry);
-    _sevSharedWrite(key, ensEntry);
-
-    _sevEnsFrames = frames;
-    _sevEnsFramesKey = key;
-    _sevEnsShowFrame(body, frames);
-    _sevEnsPrepaint(frames, key);
-  } catch(e) {
-    console.warn('Run Models ensemble layer error:', e);
-    if (token !== _sevEnsLoadToken) return;
-    if (body) body.innerHTML = `<div class="trop-model-err">${modelLabel} ensemble data unavailable right now - try a different model.</div>`;
-  }
-}
+// _sevRenderEnsemble removed: drew the metered API's ensembles. The Pi renders GEFS mean and spread.
+async function _sevRenderEnsemble() { return null; }
 
 // ── RUN MODELS: DETERMINISTIC GLOBAL MODELS (Open-Meteo Forecast API) ───────
 // Structurally identical to the ensemble renderer above - fetch a grid of
@@ -17421,262 +17289,8 @@ function _sevDetWatchMap() {
   }, SEV_RUN_CHECK_MS);
 }
 
-async function _sevRenderDeterministic(body) {
-  _sevDetWatchMap();
-  const key = _sevEnsCacheKey();
-  if (_sevEnsFramesKey === key && _sevEnsFrames) { _sevEnsShowFrame(body, _sevEnsFrames); return; }
-
-  const model = SEV_DET_SECTIONS[_sevSection];
-  const modelLabel = SEV_MODEL_LABELS[_sevSection] || model;
-  const varName = _sevVar;
-  const token = ++_sevEnsLoadToken;
-
-  // Already bought this one. Rebuild the frames and spend nothing.
-  const cached = _sevDetCacheRead(key);
-  if (_sevDetCacheFresh(cached)) {
-    const frames = _sevDetFramesFromGrids(cached.grids, varName, modelLabel, cached.baseMs, cached.frameMs, cached.bounds);
-    _sevEnsFrames = frames; _sevEnsFramesKey = key;
-    _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
-    return;
-  }
-
-  if (body) body.innerHTML = `<div class="trop-model-err">⟳ Loading ${modelLabel}…</div>`;
-
-  // Clicking through the model list used to fire a full paid fetch for every
-  // entry passed on the way to the one actually wanted. Pause first: if another
-  // selection lands in the meantime, this one never spends anything.
-  await new Promise(res => setTimeout(res, 350));
-  if (token !== _sevEnsLoadToken) return;
-
-  // Before spending anything, see whether another visitor already fetched this
-  // and published it. This is the step that makes the models work on a browser
-  // whose own daily allowance is gone.
-  const shared = await _sevSharedRead(key);
-  if (token !== _sevEnsLoadToken) return;
-  if (shared) {
-    _sevDetCacheWrite(key, shared);         // keep a local copy too
-    const frames = _sevDetFramesFromGrids(shared.grids, varName, modelLabel, shared.baseMs, shared.frameMs, shared.bounds);
-    _sevEnsFrames = frames; _sevEnsFramesKey = key;
-    _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
-    return;
-  }
-
-  const detBounds = _sevDetBounds();
-  const pts = _sampleGrid(SEV_DET_COLS, SEV_DET_ROWS, detBounds);
-
-  // Nothing cached anywhere, so this is about to cost real allowance. Stop here
-  // rather than at Open-Meteo: refusing a load leaves the previous one on
-  // screen, whereas being cut off there takes every model out for the rest of
-  // the day, for everyone sharing this address.
-  const budget = _sevBudgetCheck(pts.length);
-  if (!budget.ok) {
-    const stale = _sevDetCacheRead(key) || await _sevSharedReadAny(key);
-    if (token !== _sevEnsLoadToken) return;
-    if (stale && Array.isArray(stale.grids)) {
-      const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel, stale.baseMs, stale.frameMs, stale.bounds);
-      _sevEnsFrames = frames; _sevEnsFramesKey = key;
-      _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
-      if (body) body.insertAdjacentHTML('beforeend',
-        `<div class="trop-model-err" style="color:rgba(232,184,0,0.7)">Showing a saved copy. Model downloads are paused for ${budget.scope}.</div>`);
-    } else if (body) {
-      body.innerHTML = `<div class="trop-model-err">Model downloads are paused for ${budget.scope} to stay inside the free allowance. Models already loaded still work.</div>`;
-    }
-    return;
-  }
-  _sevBudgetSpend(pts.length);
-  // Kept outside the try so a failure can log the exact URL that was sent -
-  // the single most useful thing to have when this breaks somewhere I can't
-  // reach the API from.
-  let sampleUrl = '';
-  try {
-    // Deliberately the same shape as the Wind layer's query, which is known to
-    // work against this API in production: hourly + forecast_days + unit
-    // parameters, nothing else. Open-Meteo answers 400 for a parameter value it
-    // does not recognize, and a 400 fails the whole load, so this asks for
-    // nothing beyond what is already proven. In particular there is no
-    // temporal_resolution here: trimming the response server-side would be
-    // cheaper, but "cheaper" is worthless if the request is rejected.
-    const buildUrl = chunk => {
-      const latStr = chunk.map(p => p.lat.toFixed(3)).join(',');
-      const lngStr = chunk.map(p => p.lng.toFixed(3)).join(',');
-      const url = `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lngStr}` +
-        `&hourly=${varName}&models=${model}&forecast_days=${SEV_DET_DAYS}` +
-        `&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch`;
-      if (!sampleUrl) sampleUrl = url;
-      return url;
-    };
-    const hasSeries = l => Array.isArray(l?.hourly?.[varName]);
-
-    // 198 points / 100 per request = 2 requests, both in flight at once.
-    // 25 coordinates a request, not 100. The ensemble path asks for 15 and
-    // works; this asked for 100 and fails, and the API rejects a request
-    // carrying more locations than it allows with a 400 that takes the whole
-    // chunk down, which the coverage check below then reports as a mostly
-    // empty grid. Smaller requests cost no more allowance, since the weight is
-    // per location either way, and a rejected one no longer costs a quarter of
-    // the map.
-    const locations = await _fetchGridChunkedRaw(pts, buildUrl, 25, { concurrency: 3, retries: 3 });
-    if (token !== _sevEnsLoadToken) return;
-
-    // A chunk that never recovered leaves a whole stripe of the grid empty, and
-    // _fillNullsNearest would smooth that over into visible lumps. Rather than
-    // give up on the whole load, ask again for just the points still missing -
-    // a much smaller request, so it usually succeeds where the big one didn't.
-    const missing = [];
-    locations.forEach((l, i) => { if (!hasSeries(l)) missing.push(i); });
-    if (missing.length && missing.length < pts.length / 2) {
-      // Best effort only: if this pass fails outright it must not become the
-      // load's error, or the coverage check below never runs and the user gets
-      // told the product doesn't exist when the real problem was rate limiting.
-      try {
-        const patch = await _fetchGridChunkedRaw(missing.map(i => pts[i]), buildUrl, 100, { concurrency: 2, retries: 2 });
-        patch.forEach((l, j) => { if (hasSeries(l)) locations[missing[j]] = l; });
-      } catch (e) { console.warn('Gap-fill pass failed, falling back to the coverage check:', e); }
-      if (token !== _sevEnsLoadToken) return;
-    }
-
-    // Checked before painting rather than after, so a load that came back full
-    // of holes reports a problem instead of quietly drawing fiction. The bar is
-    // high on purpose: at 75% coverage the picture is still visibly lumpy, and
-    // a lumpy map that looks authoritative is worse than an honest message.
-    // What is left below this line is scattered single points, which the
-    // nearest-value fill and the bicubic pass genuinely do smooth away.
-    const covered = locations.filter(hasSeries).length;
-    if (covered / locations.length < SEV_DET_MIN_COVERAGE) {
-      // Carry the server's own words. "37% of the grid returned" says a load
-      // failed but not why; the reason the API gave says which parameter it
-      // objected to, which is the difference between a fixable report and
-      // another round of guessing.
-      const why = _sevLastFetchError ? ` The service said: ${_sevLastFetchError}` : '';
-      throw new Error(`only ${Math.round(100 * covered / locations.length)}% of the grid returned.${why}`);
-    }
-
-    // How many hours each array slot actually covers. The request above asks
-    // for plain hourly data, so this is 1 in the normal case - but it is
-    // measured from the returned timestamps rather than assumed, so a model
-    // that publishes a coarser native step still lands on the right forecast
-    // hour instead of silently showing a different one. Handles both the ISO
-    // strings Open-Meteo returns by default and numeric unixtime, and falls
-    // back to hourly if the timestamps are missing or unparseable.
-    const _slotMs = t => (typeof t === 'number') ? t * 1000
-      : (typeof t === 'string' ? Date.parse(/(Z|[+-]\d{2}:?\d{2})$/.test(t) ? t : t + 'Z') : NaN);
-    const refTime = locations.find(l => Array.isArray(l?.hourly?.time) && l.hourly.time.length > 1)?.hourly.time;
-    let slotH = 1;
-    if (refTime) {
-      const d = (_slotMs(refTime[1]) - _slotMs(refTime[0])) / 3600000;
-      if (Number.isFinite(d) && d > 0) slotH = Math.max(1, Math.round(d));
-    }
-
-    // Where F+000 actually is in the series. Open-Meteo starts hourly data at
-    // 00:00 UTC of the current day, NOT at the current hour, so reading from
-    // index 0 was showing the small hours of this morning while labelling it
-    // as now - and every later frame was shifted by the same amount. Find the
-    // first timestamp at or after the run hour and count from there.
-    const runMs = (_sevRun && _sevRun.length >= 10)
-      ? Date.UTC(+_sevRun.slice(0,4), +_sevRun.slice(4,6) - 1, +_sevRun.slice(6,8), +_sevRun.slice(8,10))
-      : Date.now();
-
-    // Without timestamps there is no way to know which slot is "now", and
-    // guessing index 0 means drawing this morning's weather under a label that
-    // says now, which is the exact fault this anchoring exists to prevent.
-    // Refusing is the honest outcome; a wrong map that looks right is not.
-    if (!refTime) throw new Error('response carried no timestamps, cannot align to the forecast hour');
-
-    const found = refTime.findIndex(t => _slotMs(t) >= runMs - 60000);
-    if (found < 0) throw new Error('forecast series ends before the current hour');
-    const baseIdx = found;
-    const baseMs = _slotMs(refTime[baseIdx]);
-    if (!Number.isFinite(baseMs)) throw new Error('forecast timestamps could not be read');
-
-    // The valid time of every frame, taken from the series itself rather than
-    // computed from a step. If the array is not perfectly hourly, or has a gap,
-    // the label still describes the hour actually drawn instead of the hour it
-    // was assumed to be.
-    const frameMs = [];
-
-    const grids = [];
-    for (let i = 0; i <= SEV_DET_MAX_FRAME; i++) {
-      // Frame i is F+(i*6h); convert that to an index in this model's series.
-      // A model with a shorter range simply runs off the end and the frame
-      // comes back empty, rather than silently showing the wrong hour.
-      const hourIdx = baseIdx + Math.round(i * SEV_DET_STEP_H / slotH);
-      const grid = locations.map(loc => {
-        const v = loc?.hourly?.[varName]?.[hourIdx];
-        return (v != null && isFinite(v)) ? Math.round(v * 100) / 100 : null;
-      });
-      const has = grid.some(v => v != null);
-      grids.push(has ? grid : null);
-      // Read the label off the same index the values came from.
-      const t = has ? _slotMs(refTime[hourIdx]) : NaN;
-      frameMs.push(Number.isFinite(t) ? t : null);
-    }
-    // A model that simply doesn't publish this variable comes back all-null
-    // rather than erroring, so treat that the same as a failed fetch.
-    if (!grids.some(g => g)) throw new Error('no values in response');
-    if (token !== _sevEnsLoadToken) return;
-
-    const entry = { at: Date.now(), slotH, grids, baseMs, frameMs, bounds: detBounds };
-    _sevDetCacheWrite(key, entry);
-    _sevSharedWrite(key, entry);   // pay it forward: nobody else has to fetch this
-    const frames = _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs, detBounds);
-    _sevEnsFrames = frames;
-    _sevEnsFramesKey = key;
-    _sevEnsShowFrame(body, frames);
-    _sevEnsPrepaint(frames, key);
-  } catch(e) {
-    console.warn('Run Models deterministic layer error:', e, '\nRequest was:', sampleUrl);
-    if (token !== _sevEnsLoadToken) return;
-    const msg = e && e.message ? String(e.message) : '';
-    const quota = /limit exceeded|daily|minutely|hourly limit|too many requests|HTTP 429/i.test(msg);
-
-    // Out of quota but this product was loaded before: show the stored copy
-    // rather than nothing. Stale real data beats an empty panel, as long as it
-    // says so.
-    if (quota) {
-      // Out of allowance. Any copy at all beats nothing: this browser's own
-      // saved copy first, then an older shared one that the TTL had rejected.
-      let stale = _sevDetCacheRead(key);
-      if (!stale) stale = await _sevSharedReadAny(key);
-      if (token !== _sevEnsLoadToken) return;
-      if (stale && Array.isArray(stale.grids)) {
-        const frames = _sevDetFramesFromGrids(stale.grids, varName, modelLabel, stale.baseMs, stale.frameMs, stale.bounds);
-        const mins = Math.round((Date.now() - (stale.at || 0)) / 60000);
-        const age = mins < 90 ? `${mins}m` : `${Math.round(mins / 60)}h`;
-        frames.forEach(f => { if (f) f.statusText += ` · saved copy, ${age} old`; });
-        _sevEnsFrames = frames; _sevEnsFramesKey = key;
-        _sevEnsShowFrame(body, frames); _sevEnsPrepaint(frames, key);
-        return;
-      }
-      // Two very different situations produce "nothing to show" here, and the
-      // fix for each is different, so say which one it is rather than making
-      // someone guess. Every device on one wifi shares one allowance, so
-      // "try another device" is not the answer people expect it to be.
-      if (body) {
-        body.innerHTML = _sevSharedBlocked === 'rules'
-          ? `<div class="trop-model-err">${modelLabel}: this network's daily allowance with the free weather service is used up, <b>and the shared cache that would have covered it is switched off</b> - the Firestore rules in FIRESTORE_RULES.txt still need publishing. Once they are, one person loading a model covers everyone.</div>`
-          : `<div class="trop-model-err">${modelLabel}: this network's daily allowance with the free weather service is used up, and nobody has loaded this model recently enough to share. Every device on the same wifi shares one allowance, so another device on that wifi will not help - a phone on mobile data will, and loading it once there publishes it for everyone. Otherwise it resets at 00:00 UTC.</div>`;
-      }
-      return;
-    }
-
-    // Say which failure this actually was. Guessing here is what made an
-    // earlier bug so hard to pin down: every cause reported itself as
-    // "unsupported product", so the real reason never reached anyone. When the
-    // service explains itself, show its own words rather than a paraphrase.
-    let out;
-    if (/% of the grid returned/.test(msg)) {
-      out = `Couldn't load all of ${modelLabel} (${msg}) - the data service is rate-limiting. Wait a moment and pick the product again.`;
-    } else {
-      // Open-Meteo puts a human-readable explanation in {"reason": "..."} on a
-      // 4xx; pull it out so a rejected parameter or model id names itself.
-      const reason = (msg.match(/"reason"\s*:\s*"([^"]+)"/) || [])[1];
-      out = reason
-        ? `${modelLabel} could not be loaded: ${_escapeHtml(reason)}`
-        : `${modelLabel} doesn't publish this product right now - try another product or model.`;
-    }
-    if (body) body.innerHTML = `<div class="trop-model-err">${out}</div>`;
-  }
-}
+// _sevRenderDeterministic removed: drew the metered API's global models. The Pi renders these now.
+async function _sevRenderDeterministic() { return null; }
 
 // Splits points into batched requests and returns the per-location response
 // array in the original point order. Same resilience pattern as
@@ -18718,41 +18332,20 @@ function _sndRenderHourly(hourly, startIdx) {
 
 // Builds the pressure-level query. One request covers every level and variable;
 // asking per level would be 16 round trips for the same answer.
-function _sndUrl(lat, lon) {
-  const vars = [];
-  SOUNDING_LEVELS.forEach(p => {
-    vars.push(`temperature_${p}hPa`, `dew_point_${p}hPa`,
-              `wind_speed_${p}hPa`, `wind_direction_${p}hPa`,
-              `geopotential_height_${p}hPa`);
-  });
-  vars.push('temperature_2m', 'dew_point_2m', 'surface_pressure',
-            'wind_speed_10m', 'wind_direction_10m');
-  const modelParam = _sndModel === 'ecmwf' ? '&models=ecmwf' : '';
-  return `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}` +
-         `&longitude=${lon.toFixed(3)}&hourly=${vars.join(',')}` +
-         `&wind_speed_unit=kn&forecast_days=2&timezone=UTC${modelParam}`;
-}
+// _sndUrl removed: built a metered-API sounding request. Soundings come from the Pi.
+function _sndUrl() { return null; }
 
 // Hourly forecast for next 24 hours: precipitation, convective indices, weather
-function _sndHourlyUrl(lat, lon) {
-  const modelParam = _sndModel === 'ecmwf' ? '&models=ecmwf' : '';
-  return `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}` +
-         `&longitude=${lon.toFixed(3)}` +
-         `&hourly=precipitation,precipitation_probability,weather_code,cape,lifted_index` +
-         `&forecast_days=1&timezone=UTC${modelParam}`;
-}
+// _sndHourlyUrl removed: as above.
+function _sndHourlyUrl() { return null; }
 
 // Indices are fetched separately on purpose. Open-Meteo rejects the entire
 // request if a single variable name is not supported for the chosen model, so
 // bundling these with the eighty profile variables meant one unsupported index
 // returned 400 and took the whole sounding down with it. Split, a missing index
 // costs only that number.
-function _sndIdxUrl(lat, lon) {
-  return `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}` +
-         `&longitude=${lon.toFixed(3)}` +
-         `&hourly=cape,lifted_index,convective_inhibition` +
-         `&forecast_days=2&timezone=UTC`;
-}
+// _sndIdxUrl removed: as above.
+function _sndIdxUrl() { return null; }
 
 // A sounding is one location but 85 variables, and Open-Meteo weights a call by
 // variables as well as locations, so it costs about as much as a whole model
@@ -32646,7 +32239,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The Pi models are now choices in the Run Models list, under 'From the Pi'. Fixed the site not finding the Pi's address.";
+const APP_LATEST_UPDATE = "The metered global models and their ensembles are gone. Model charts now come from the Pi at full resolution, with no daily request limit to run out of.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
