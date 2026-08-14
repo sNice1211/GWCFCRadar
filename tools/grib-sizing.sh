@@ -63,7 +63,11 @@ awk -F: -v want="$WANT" '
   END {
     for (i=1; i<=NR; i++) {
       for (j=1; j<=n; j++) {
-        if (index(line[i], W[j])) {
+        # Take each variable once. GFS carries the same field under several
+        # time-aggregations, so a plain substring match pulled TMP:2 m three
+        # times and inflated the download by well over half.
+        if (index(line[i], W[j]) && !taken[W[j]]) {
+          taken[W[j]] = 1
           e = (i<NR) ? start[i+1]-1 : ""
           printf "%s-%s %s\n", start[i], e, W[j]
           break
@@ -89,6 +93,39 @@ t1=$(date +%s.%N)
 cat "$TMP"/part.* > "$TMP/subset.grib2" 2>/dev/null || true
 dl=$(echo "$t1-$t0"|bc)
 printf '   %s fields, %.2f MB total, %.1fs\n' "$i" "$(echo "scale=2;$total/1048576"|bc)" "$dl"
+
+echo
+echo "3b. The same fields, cropped to CONUS by the server"
+# The ranges above pull each field for the whole globe: 1440x721 points, when a
+# CONUS chart needs about 4% of that. NOMADS can crop before sending, which is
+# the difference between a gigabyte a day and a few tens of megabytes. This is
+# what the pipeline should use; the byte-range trick above is the fallback for
+# models that publish no filter endpoint.
+FILT="https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
+Q="file=${FILE}&dir=%2Fgfs.${DATE}%2F${HH}%2Fatmos"
+Q="$Q&var_TMP=on&var_APCP=on&var_UGRD=on&var_VGRD=on&var_PRMSL=on&var_CAPE=on&var_REFC=on&var_DPT=on"
+Q="$Q&lev_2_m_above_ground=on&lev_10_m_above_ground=on&lev_mean_sea_level=on&lev_surface=on&lev_entire_atmosphere=on"
+Q="$Q&subregion=&leftlon=-130&rightlon=-60&toplat=55&bottomlat=20"
+t0=$(date +%s.%N)
+code=$(curl -s -A "$UA" -o "$TMP/conus.grib2" -w '%{http_code}' --max-time 120 "$FILT?$Q")
+t1=$(date +%s.%N)
+csz=$(wc -c < "$TMP/conus.grib2" 2>/dev/null || echo 0)
+if [ "$code" = "200" ] && [ "$csz" -gt 5000 ]; then
+  ct=$(echo "$t1-$t0"|bc)
+  printf '   HTTP 200, %.2f MB, %.1fs\n' "$(echo "scale=2;$csz/1048576"|bc)" "$ct"
+  printf '   vs the global slices above: %.1fx smaller\n' "$(echo "scale=1;$total/($csz+1)"|bc)"
+  echo
+  echo "   Per run and per day on THIS approach:"
+  cper=$(echo "scale=3;$csz/1048576"|bc)
+  printf '     download : %s MB per step, %.1f MB per run, %.1f MB per day\n' \
+    "$cper" "$(echo "scale=1;$cper*40"|bc)" "$(echo "scale=1;$cper*40*4"|bc)"
+  printf '     time     : %.1fs per step, about %.1f min per run\n' \
+    "$ct" "$(echo "scale=2;$ct*40/60"|bc)"
+else
+  echo "   HTTP $code, $csz bytes. Filter endpoint did not answer as expected;"
+  echo "   the byte-range approach above still works, just heavier."
+  head -c 200 "$TMP/conus.grib2" 2>/dev/null | tr -d '\0'; echo
+fi
 
 echo
 echo "4. For contrast, the size of the whole file"
