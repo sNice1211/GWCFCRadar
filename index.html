@@ -15042,7 +15042,7 @@ function _getBubbleActive(id) {
   if (id === 'wind')        return !!windActive;
   if (id === 'temperature') return !!temperatureActive;
   if (id === 'pressure')    return !!pressureActive;
-  if (id === 'models')      return !!_hdOn || _spaghettiModelsPanelIsOpen() || _soundingPanelIsOpen();
+  if (id === 'models')      return _runModelsPanelIsOpen() || !!_hdOn || _spaghettiModelsPanelIsOpen() || _soundingPanelIsOpen();
   return !!activeBubbles[id];
 }
 
@@ -18962,11 +18962,14 @@ function _sndDraw() {
   }
 }
 
-// HD Models replaces Run Models here. Run Models drew a metered forecast API
-// sampled at 198 points and interpolated between them; this draws the model
-// field itself at full resolution off the Pi, with nothing to run out of.
+// HD Models sits alongside what was already here rather than replacing it.
+// Run Models draws a metered forecast API sampled at 198 points and
+// interpolated between them; HD Models draws the model field itself at full
+// resolution off the Pi. Both are useful while the Pi is the newer of the two,
+// and Spaghetti Models never came from that API at all.
 const MODELS_SUB_BUBBLES = [
-  { id: 'hd-models',        icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-up></use></svg>', label: 'HD Models' },
+  { id: 'run-models',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-up></use></svg>', label: 'Run Models' },
+  { id: 'hd-models',        icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label: 'HD Models' },
   { id: 'spaghetti-models', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', label: 'Spaghetti Models' },
 ];
 
@@ -18979,20 +18982,25 @@ function toggleModelsSub() {
   back.onclick = () => { _syncParentBubble('models'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
   MODELS_SUB_BUBBLES.forEach(b => {
-    const isOpen = b.id === 'hd-models' ? !!_hdOn
+    const isOpen = b.id === 'run-models' ? _runModelsPanelIsOpen()
+                 : b.id === 'hd-models'   ? !!_hdOn
                  : _spaghettiModelsPanelIsOpen();
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isOpen ? ' active' : '');
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = async () => {
-      if (b.id === 'hd-models') {
+      if (b.id === 'run-models') {
+        _runModelsPanelIsOpen() ? closeRunModelsPanel() : openRunModelsPanel();
+      } else if (b.id === 'hd-models') {
         _hdOn ? _hdDisable() : await _hdEnable();
       } else {
         _spaghettiModelsPanelIsOpen() ? closeSpaghettiModelsPanel() : openSpaghettiModelsPanel();
       }
-      el.classList.toggle('active', b.id === 'hd-models' ? !!_hdOn
-                                  : _spaghettiModelsPanelIsOpen());
+      el.classList.toggle('active',
+        b.id === 'run-models' ? _runModelsPanelIsOpen()
+        : b.id === 'hd-models' ? !!_hdOn
+        : _spaghettiModelsPanelIsOpen());
       _syncParentBubble('models');
     };
     wrap.appendChild(el);
@@ -32610,7 +32618,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "HD Models now lives in the Models panel where Run Models was. Real model fields from the Pi at full resolution, with nothing to run out of.";
+const APP_LATEST_UPDATE = "Models panel now has HD Models alongside Run Models and Spaghetti Models rather than in place of them.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
