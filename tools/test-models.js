@@ -35,13 +35,22 @@ const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov',
 const els = {};
 function mkEl(id, tag) {
   const e = {
-    id, tagName: tag || 'div', innerHTML: '', textContent: '', value: '',
+    id, tagName: tag || 'div', textContent: '', value: '',
     style: {}, dataset: {}, children: [], classList: { add(){}, remove(){}, toggle(){} },
     appendChild(c) { this.children.push(c); },
     querySelector() { return mkEl('sub'); },
     querySelectorAll() { return []; },
     scrollIntoView() {},
   };
+  // Assigning innerHTML replaces the children, the way a real element does.
+  // A plain property let the stub accumulate them instead, so a list that was
+  // correctly rebuilt from scratch looked like a list that had grown, and the
+  // test reported a bug that was only in the test.
+  let html = '';
+  Object.defineProperty(e, 'innerHTML', {
+    get() { return html; },
+    set(v) { html = String(v); e.children.length = 0; },
+  });
   return e;
 }
 global.document = {
@@ -52,7 +61,9 @@ global.document = {
   body: { appendChild(){} },
 };
 ['sev-var-sel','sev-run-sel','sev-frame-grid','sev-fcast-date','sev-fcast-flbl',
- 'sev-playbar-fill','sev-playbar-thumb','sev-model-sel'].forEach(id => els[id] = mkEl(id));
+ 'sev-playbar-fill','sev-playbar-thumb','sev-model-sel','sev-pi-group'].forEach(id => els[id] = mkEl(id));
+// The <select> reports the options its optgroup holds, the way a real one does.
+els['sev-model-sel'].options = els['sev-pi-group'].children;
 
 global.localStorage = { _d:{}, getItem(k){return this._d[k]??null;}, setItem(k,v){this._d[k]=v;}, removeItem(k){delete this._d[k];} };
 
@@ -90,6 +101,8 @@ let RUN = '20260814_12';
 const INDEX = () => ({ models: {
   gfs:  { label:'GFS', res:'0.25 deg', run: RUN, path:'gfs/'+RUN+'/manifest.json' },
   hrrr: { label:'HRRR', res:'3 km',    run: RUN, path:'hrrr/'+RUN+'/manifest.json' },
+  nbm:  { label:'NBM', res:'2.5 km blend', run: RUN, path:'nbm/'+RUN+'/manifest.json' },
+  rtma: { label:'RTMA (now)', res:'2.5 km analysis', run: RUN, path:'rtma/'+RUN+'/manifest.json' },
 }});
 const MANIFESTS = () => ({
   gfs: { model:'gfs', label:'GFS', res:'0.25 deg', run: RUN, bounds:[[20,-130],[55,-60]],
@@ -99,6 +112,11 @@ const MANIFESTS = () => ({
   hrrr:{ model:'hrrr', label:'HRRR', res:'3 km', run: RUN, bounds:[[20,-130],[55,-60]],
          fields: { t2m:{hours:[0,1,2,3],min:-40,max:45},
                    refc:{hours:[0,1,2,3],min:-10,max:75} } },
+  nbm: { model:'nbm', label:'NBM', res:'2.5 km blend', run: RUN, bounds:[[20,-130],[55,-60]],
+         fields: { t2m:{hours:[0,3,6],min:-40,max:45},
+                   wind:{hours:[0,3,6],min:0,max:80} } },
+  rtma:{ model:'rtma', label:'RTMA (now)', res:'2.5 km analysis', run: RUN, bounds:[[20,-130],[55,-60]],
+         fields: { t2m:{hours:[0],min:-40,max:45} } },
 });
 let fetchLog = [];
 global.fetch = async (url) => {
@@ -111,100 +129,10 @@ global.fetch = async (url) => {
 };
 
 // ── Checks ─────────────────────────────────────────────────────────────────
-const checks = `let pass = 0, fail = 0;
-function ok(name, cond, extra) {
-  if (cond) { pass++; console.log('  ok   ' + name); }
-  else { fail++; console.log('  FAIL ' + name + (extra ? '  <' + extra + '>' : '')); }
-}
 
-(async () => {
-  console.log('\\n1. picking a Pi model');
-  await _sevSetSection('pi:hrrr');
-  ok('base resolved from Firestore', _hdBase === 'https://pi.test', _hdBase);
-  ok('model is the one asked for, not the first listed', _hdModel === 'hrrr', _hdModel);
-  ok('section recorded', _sevSection === 'pi:hrrr', _sevSection);
-  ok('an image went on the map', added.length === 1, added.length);
-  ok('image url points at hrrr and the real run',
-     added[0] && /models\\/hrrr\\/20260814_12\\/t2m_f000\\.png$/.test(added[0].url),
-     added[0] && added[0].url);
-  ok('IEM branch never ran', iemRendered === 0, iemRendered);
-
-  console.log('\\n2. the hour grid is the model\\'s own');
-  ok('max frame follows HRRR t2m (4 hours -> 3)', _sevMaxFrameFor('pi:hrrr') === 3, _sevMaxFrameFor('pi:hrrr'));
-  const h = _sevFcastDateTime(2);
-  ok('header reads the hour out of the list', h.flbl === 'F+002', h.flbl);
-  ok('header valid time is run + that hour', h.date.includes('14:00z'), h.date);
-
-  console.log('\\n3. scrubbing');
-  _sevSetFrame(3);
-  ok('frame 3 drew hour 3', added[added.length-1].url.includes('t2m_f003.png'), added[added.length-1].url);
-  ok('still no IEM render', iemRendered === 0, iemRendered);
-  ok('only one overlay is live once loads fire', (Array.from(added).forEach(l=>l._h.load&&l._h.load()), added.length === 1), added.length);
-
-  console.log('\\n4. the playbar drag path (calls _sevRender directly)');
-  const before = iemRendered;
-  _sevFrame = 2; _sevRender();
-  ok('drag render stayed on the Pi', iemRendered === before, iemRendered);
-  ok('drag render drew hour 2', added[added.length-1].url.includes('t2m_f002.png'), added[added.length-1].url);
-
-  console.log('\\n5. switching product');
-  _sevSetVar('refc');
-  ok('field switched', _hdField === 'refc', _hdField);
-  ok('drew refc', added[added.length-1].url.includes('refc_f000.png'), added[added.length-1].url);
-
-  console.log('\\n6. switching to a model with different hours');
-  await _sevSetSection('pi:gfs');
-  ok('model switched', _hdModel === 'gfs', _hdModel);
-  ok('refc is gone from GFS, so the field fell back', _hdField !== 'refc', _hdField);
-  ok('max frame is now GFS t2m (5 hours -> 4)', _sevMaxFrameFor('pi:gfs') === 4, _sevMaxFrameFor('pi:gfs'));
-  ok('frame reset to 0', _sevFrame === 0, _sevFrame);
-
-  console.log('\\n7. a product whose hours do not start at zero');
-  _sevSetVar('apcp');
-  const u = added[added.length-1].url;
-  ok('precip starts at F+003, not F+000', u.includes('apcp_f003.png'), u);
-  ok('header agrees', _sevFcastDateTime(0).flbl === 'F+003', _sevFcastDateTime(0).flbl);
-
-  console.log('\\n8. leaving the Pi');
-  await _sevSetSection('hrrr');
-  ok('Pi turned off', _hdOn === false, _hdOn);
-  ok('picker flag cleared', _hdFromPicker === false, _hdFromPicker);
-  ok('Pi image removed from the map', added.length === 0, added.length);
-  _sevUpdateProducts();
-  ok('product list is the normal fixed one again',
-     document.getElementById('sev-var-sel').innerHTML === 'FIXED-LIST',
-     document.getElementById('sev-var-sel').innerHTML);
-
-  console.log('\\n9. the pill turning it off mid-Pi');
-  await _sevSetSection('pi:gfs');
-  _hdDisable();
-  ok('picker flag cleared by the pill too', _hdFromPicker === false, _hdFromPicker);
-  const n = iemRendered; _sevRender();
-  ok('render goes back to the normal path', iemRendered === n + 1, iemRendered);
-
-  console.log('\\n10. a new run appearing on the Pi');
-  await _sevSetSection('pi:gfs');
-  const oldUrl = added[added.length-1].url;
-  RUN = '20260814_18';
-  _hdIndexAt = 0;                       // pretend the TTL expired
-  await _hdPickModel('gfs');
-  _hdShow();
-  const newUrl = added[added.length-1].url;
-  ok('picked up the new run', newUrl.includes('20260814_18'), newUrl);
-  ok('and it is a different url than before', newUrl !== oldUrl);
-
-  console.log('\\n11. the Pi being unreachable');
-  const realFetch = global.fetch;
-  global.fetch = async () => ({ ok:false });
-  _hdBase = null; _hdIndex = null; _hdIndexAt = 0; _hdManifest = null; _hdModel = null; _hdOn = false;
-  await _sevSetSection('pi:gfs');
-  _sevUpdateProducts();
-  const sel = document.getElementById('sev-var-sel');
-  ok('no fake product list is offered', sel.innerHTML !== 'FIXED-LIST', sel.innerHTML);
-  global.fetch = realFetch;
-
-  console.log('\\n' + (fail ? \`\${fail} FAILED, \${pass} passed\` : \`all \${pass} passed\`));
-  process.exit(fail ? 1 : 0);
-})();
-`;
-eval(block + "\n" + checks);
+// The checks live next door rather than in here, because they have to run in
+// the same scope as the block that was just lifted out of the page: the whole
+// point is that they see the real variables, not a copy. Concatenating and
+// evaluating the two together is what puts them in that scope.
+const checks = fs.readFileSync(path.join(__dirname, 'model-checks.js'), 'utf8');
+eval(block + '\n' + checks);
