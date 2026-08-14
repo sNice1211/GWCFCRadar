@@ -103,6 +103,7 @@ const INDEX = () => ({ models: {
   hrrr: { label:'HRRR', res:'3 km',    run: RUN, path:'hrrr/'+RUN+'/manifest.json' },
   nbm:  { label:'NBM', res:'2.5 km blend', run: RUN, path:'nbm/'+RUN+'/manifest.json' },
   rtma: { label:'RTMA (now)', res:'2.5 km analysis', run: RUN, path:'rtma/'+RUN+'/manifest.json' },
+  gfstrop: { label:'GFS Tropical', res:'0.25 deg', run: RUN, path:'gfstrop/'+RUN+'/manifest.json' },
 }});
 const MANIFESTS = () => ({
   gfs: { model:'gfs', label:'GFS', res:'0.25 deg', run: RUN, bounds:[[20,-130],[55,-60]],
@@ -117,6 +118,13 @@ const MANIFESTS = () => ({
                    wind:{hours:[0,3,6],min:0,max:80} } },
   rtma:{ model:'rtma', label:'RTMA (now)', res:'2.5 km analysis', run: RUN, bounds:[[20,-130],[55,-60]],
          fields: { t2m:{hours:[0],min:-40,max:45} } },
+  // A tropical model, whose whole point is that it is somewhere else: its
+  // bounds must come from its own manifest, not from the last model shown.
+  gfstrop:{ model:'gfstrop', label:'GFS Tropical', res:'0.25 deg', run: RUN,
+            bounds:[[0,-165],[45,-10]],
+            fields: { pwat:{hours:[0,6,12],min:0,max:80},
+                      shear:{hours:[0,6,12],min:0,max:60},
+                      sst:{hours:[0,6,12],min:16,max:34} } },
 });
 let fetchLog = [];
 global.fetch = async (url) => {
