@@ -33,6 +33,15 @@ prints the address to give the site. Safe to run again if a step fails.
     gwcfc-serve    serves them with the header that makes them readable
     gwcfc-tunnel   gives them a public HTTPS address
 
+Is the site being told where the Pi is?
+
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/publish_url.py --check
+
+That prints the tunnel address, the address the site currently holds, and
+whether they match. If the write is being refused it says which of the two
+usual causes it is: the piEndpoint rules not published, or anonymous sign-in
+switched off for the project.
+
 Afterwards:
 
     systemctl --user status gwcfc-models.timer

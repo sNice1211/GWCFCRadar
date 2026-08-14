@@ -25,6 +25,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 
 PROJECT = "gwcfc-radar"
@@ -56,6 +57,23 @@ def current_url(path=None):
         return found[-1] if found else None
     except OSError:
         return None
+
+
+def _detail(e):
+    """
+    What the server actually said.
+
+    urllib raises HTTPError with the body unread, so an authorisation failure
+    arrives as a bare "HTTP Error 403: Forbidden" with the reason still sitting
+    in the response. Firestore puts something specific there, and it is the
+    difference between "the rules are not published" and "the network is down".
+    """
+    try:
+        body = e.read().decode(errors="ignore")[:400]
+        msg = json.loads(body).get("error", {}).get("message", "")
+        return msg or body
+    except Exception:
+        return str(e)
 
 
 def _post(url, payload):
@@ -104,6 +122,16 @@ def publish_if_changed(force=False):
         pass
     try:
         ok = publish(url, sign_in())
+    except urllib.error.HTTPError as e:
+        detail = _detail(e)
+        log(f"could not publish: HTTP {e.code}: {detail}")
+        if e.code in (401, 403):
+            log("  that is the rules refusing the write. Publish the piEndpoint")
+            log("  block from FIRESTORE_RULES.txt in the Firebase console.")
+        elif e.code == 400 and "CONFIGURATION_NOT_FOUND" in detail:
+            log("  anonymous sign-in is switched off for this project. Turn it")
+            log("  on under Authentication, Sign-in method, Anonymous.")
+        return False
     except Exception as e:
         log(f"could not publish: {e}")
         return False
@@ -117,7 +145,35 @@ def publish_if_changed(force=False):
     return ok
 
 
+def check():
+    """Report where things stand, in words, without changing anything."""
+    url = current_url()
+    print(f"  tunnel address : {url or 'NONE FOUND in ' + TUNNEL_LOG}")
+    if not url:
+        print("    the tunnel may still be starting. systemctl --user status gwcfc-tunnel")
+        return 1
+    try:
+        with urllib.request.urlopen(
+                f"https://firestore.googleapis.com/v1/projects/{PROJECT}"
+                f"/databases/(default)/documents/{DOC}", timeout=30) as r:
+            doc = json.load(r)
+        have = doc.get("fields", {}).get("url", {}).get("stringValue", "")
+        print(f"  site is told   : {have or '(nothing)'}")
+        print("  match          : " + ("yes, the site can find the Pi"
+                                       if have == url else
+                                       "NO, the site is pointed somewhere else"))
+        return 0 if have == url else 1
+    except urllib.error.HTTPError as e:
+        print(f"  could not read it back: HTTP {e.code}: {_detail(e)}")
+        return 1
+    except Exception as e:
+        print(f"  could not read it back: {e}")
+        return 1
+
+
 def main():
+    if "--check" in sys.argv:
+        return check()
     watch = "--watch" in sys.argv
     if not watch:
         return 0 if publish_if_changed(force="--force" in sys.argv) else 1
