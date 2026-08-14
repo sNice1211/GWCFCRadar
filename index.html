@@ -11697,15 +11697,12 @@ let _hdCache = new Map();
 // address can be tried without touching anything else, then the shared
 // document the Pi keeps current.
 async function _hdResolveBase() {
-  try {
-    const local = localStorage.getItem(HD_BASE_KEY);
-    if (local) return local.replace(/\/+$/, '');
-  } catch (e) {}
-  // Read straight from Firestore over HTTPS rather than through the app's SDK
-  // handle. That handle is assigned in a different script block and only once
-  // Firebase has finished starting, so depending on it makes finding the Pi a
-  // question of load order. The document is public by rule, so a plain fetch
-  // needs no SDK, no sign-in and no waiting for anything.
+  // The published address is asked for FIRST, and a saved one is only a
+  // fallback. It was the other way round, which was wrong in the one case that
+  // matters: the tunnel hands out a new address whenever it restarts, the Pi
+  // publishes the new one, and a stale address saved here would shadow it for
+  // good. The site would insist the Pi was unreachable while the Pi was busy
+  // saying exactly where it was.
   try {
     const r = await fetch(
       'https://firestore.googleapis.com/v1/projects/gwcfc-radar/databases/(default)' +
@@ -11713,8 +11710,22 @@ async function _hdResolveBase() {
     if (r.ok) {
       const doc = await r.json();
       const url = doc && doc.fields && doc.fields.url && doc.fields.url.stringValue;
-      if (url) return String(url).replace(/\/+$/, '');
+      if (url) {
+        const clean = String(url).replace(/\/+$/, '');
+        // Drop a saved address that disagrees, so it cannot come back later.
+        try {
+          if (localStorage.getItem(HD_BASE_KEY) &&
+              localStorage.getItem(HD_BASE_KEY) !== clean) {
+            localStorage.removeItem(HD_BASE_KEY);
+          }
+        } catch (e) {}
+        return clean;
+      }
     }
+  } catch (e) {}
+  try {
+    const local = localStorage.getItem(HD_BASE_KEY);
+    if (local) return local.replace(/\/+$/, '');
   } catch (e) {}
   return null;
 }
@@ -11866,7 +11877,10 @@ async function _hdEnable() {
   _hdOn = true;
   document.getElementById('op-hdmodels')?.classList.add('active');
   if (!_hdPanel) _hdBuildPanel();
-  _hdPanel.style.display = 'block';
+  // Hidden when the Run Models picker is driving: that panel already has a
+  // product list and a timeline, and a second set of the same controls in a
+  // floating box is clutter, not a feature.
+  _hdPanel.style.display = _hdFromPicker ? 'none' : 'block';
   _hdPanel.querySelector('.hd-run').textContent = 'looking for the Pi…';
 
   _hdBase = _hdBase || await _hdResolveBase();
@@ -12137,6 +12151,46 @@ _sevSetSection = async function (value) {
   if (_hdOn) _hdDisable();          // leaving the Pi, so take its layer off
   _hdFromPicker = false;
   return _hdOrigSetSection.apply(this, arguments);
+};
+
+// Run Models' own product list and forecast-hour grid drive the Pi layer, so
+// picking a Pi model gives the controls that were already there rather than a
+// second set beside them.
+const HD_VAR_MAP = { t2m:'t2m', dewpoint:'d2m', d2m:'d2m', precip:'apcp', apcp:'apcp',
+                     rain:'apcp', refc:'refc', radar:'refc', wind:'wind', wind10m:'wind',
+                     mslp:'mslp', pressure:'mslp', cape:'cape' };
+
+const _hdOrigSetVar = _sevSetVar;
+_sevSetVar = function (v) {
+  const el = document.getElementById('sev-var-sel');
+  if (el && el.value !== v) el.value = v;
+  if (_hdFromPicker && _hdOn) {
+    _sevVar = v;
+    const want = HD_VAR_MAP[v] || v;
+    if (_hdHoursFor(want).length) { _hdField = want; _hdHourIdx = 0; _hdShow(); }
+    else if (typeof showToast === 'function') {
+      showToast('The Pi does not carry that product for this model.', 2200);
+    }
+    return;
+  }
+  return _hdOrigSetVar.apply(this, arguments);
+};
+
+const _hdOrigSetFrame = _sevSetFrame;
+_sevSetFrame = function (v) {
+  if (_hdFromPicker && _hdOn) {
+    _sevFrame = parseInt(v, 10) || 0;
+    document.querySelectorAll('.sev-fhr-btn').forEach(b => {
+      b.classList.toggle('active', parseInt(b.dataset.frame, 10) === _sevFrame);
+    });
+    // The grid is built for the old models' six-hour step; the Pi's hours are
+    // whatever that model publishes, so the index is clamped rather than
+    // assumed to line up.
+    const hrs = _hdHoursFor(_hdField);
+    if (hrs.length) { _hdHourIdx = Math.min(_sevFrame, hrs.length - 1); _hdShow(); }
+    return;
+  }
+  return _hdOrigSetFrame.apply(this, arguments);
 };
 
 // Set the Pi's address from the console, since a quick tunnel hands out a new
@@ -32239,7 +32293,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The metered global models and their ensembles are gone. Model charts now come from the Pi at full resolution, with no daily request limit to run out of.";
+const APP_LATEST_UPDATE = "Pi models now use the Run Models controls you already had, with no extra menu, and the site follows the Pi when its address changes.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
