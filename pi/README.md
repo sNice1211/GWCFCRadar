@@ -143,10 +143,53 @@ tunnel keeps one hostname instead of a new random one each restart.
       nam/20260814_12/ ...
       hrrr/20260814_17/ ...
 
-Models: `gfs` (0.25 deg, to +120h), `nam` (12 km, to +60h), `hrrr` (3 km,
-hourly to +18h), `gefs` (ensemble mean, to +168h) and `gefsspr` (ensemble
-spread). Each is fetched on its own cadence, and `latest.json` lists whichever
-ones currently have a finished run.
+Models, each on its own cadence, with `latest.json` listing whichever ones
+currently have a finished run:
+
+    gfs      0.25 deg      to +120h   4x a day
+    nam      12 km         to  +60h   4x a day
+    namnest  3 km          to  +60h   4x a day
+    hrrr     3 km          to  +18h   hourly
+    rap      13 km         to  +21h   hourly
+    nbm      2.5 km blend  to +120h   4x a day
+    rtma     2.5 km        now only   hourly
+    gefs     0.5 deg mean  to +168h   4x a day
+    gefsspr  0.5 deg sprd  to +168h   4x a day
+
+Three of those are worth a word. **NAM Nest** is HRRR's resolution with three
+times HRRR's reach: the same 12 km model run again over a smaller box at a grid
+fine enough to resolve a single storm. **NBM** is not a model at all, it is the
+Weather Service's own blend of many models corrected against what actually
+verified, and for a plain question like tomorrow's temperature it beats any
+single model here. **RTMA** is not a forecast: it is one frame of what is
+believed to be happening right now at 2.5 km, built from observations, which is
+the thing to check a forecast against.
+
+The page builds its model list from `latest.json`, so adding a model here is
+enough. Nothing needs editing on the site.
+
+NBM is taken four times a day rather than the hourly it publishes at. It is a
+five day blend and does not meaningfully change in an hour, so fetching 41
+forecast hours of 2.5 km data every hour would be by far the largest thing here
+in exchange for almost nothing.
+
+## Check a model before trusting it
+
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/check_models.py
+
+A model is four strings, and a wrong one fails in a way that looks like the
+model not existing: the request comes back 500 and the run is skipped. This
+finds the current cycle, confirms the file is on the server, reads NOAA's index
+to see which wanted fields are in it, and downloads one forecast hour to
+measure the real cost. It names which of the four strings is wrong, and it does
+it in about a minute rather than after a build. Run it after adding a model,
+and after NOAA reorganises anything.
+
+Take its megabytes-per-day figures seriously before adding more: the fine grids
+are much heavier than the coarse ones, and this runs on a home connection.
+To carry fewer, edit `DEFAULT_MODELS`, or name the ones you want:
+
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/gfs_pipeline.py gfs hrrr rtma
 
 Spread is the useful half of an ensemble: it is how far apart the members are,
 so a high value is the model saying it does not know. A single deterministic
@@ -187,8 +230,15 @@ pictures.
     L.imageOverlay(url, man.bounds, { opacity: 0.75, interactive: false })
      .addTo(map);
 
-One pixel is one grid cell and nothing crops or pads the image, so it lines up
-with `man.bounds` exactly. That is the reason these are written straight from
+One pixel is one grid cell on the coarse models, and nothing crops or pads the
+image, so it lines up with `man.bounds` exactly. The fine ones are thinned to
+1600 px on the long edge first, keeping the first and last cell so the extent
+is unchanged: HRRR at 3 km across this box is about 2300 by 1300 cells, which
+is a picture of three million pixels that the PlayStation 5 browser has to hold
+in memory decoded, and it does not have much to spare. At 1600 px a pixel is
+about 4 km, near enough the model's own resolution to lose nothing visible.
+Thinning takes every Nth cell rather than averaging, because an average of
+reflectivity smears a storm's core into the clear air around it. That is the reason these are written straight from
 the array rather than through a plot: saving a matplotlib figure with
 `bbox_inches='tight'` silently trims it, and the picture then no longer matches
 the bounds it is given.

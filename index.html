@@ -7498,7 +7498,12 @@ body.clean-mode #clean-hint { opacity: 1; }
               <option value="ndfd">NWS NDFD (US Forecast)</option>
               <option value="hrrr">HRRR (18h)</option>
             </optgroup>
-            <optgroup label="From the Pi (full resolution)">
+            <!-- Filled in from whatever the Pi says it has built, by
+                 _hdFillModelPicker(). These are only what to show before it
+                 answers; adding a model on the Pi should not need an edit
+                 here, and a model the Pi is not building should not be
+                 offered. -->
+            <optgroup id="sev-pi-group" label="From the Pi (full resolution)">
               <option value="pi:gfs">GFS (Pi, 0.25 deg)</option>
               <option value="pi:nam">NAM (Pi, 12 km)</option>
               <option value="pi:hrrr">HRRR (Pi, 3 km)</option>
@@ -11755,6 +11760,37 @@ async function _hdLoadIndex() {
   return idx;
 }
 
+// The Pi's entry in the Model dropdown, rebuilt from what it says it has.
+//
+// The list used to be typed into the HTML, which made it wrong in both
+// directions: a model added on the Pi never appeared until someone remembered
+// to edit the page, and a model the Pi had stopped building stayed on offer
+// and drew nothing when picked. The Pi already publishes the list, so this
+// reads it.
+//
+// The current selection is preserved if it survives, so re-reading the index
+// under someone does not move them off the chart they are looking at.
+function _hdFillModelPicker() {
+  const group = document.getElementById('sev-pi-group');
+  const sel = document.getElementById('sev-model-sel');
+  const mods = _hdIndex && _hdIndex.models;
+  if (!group || !mods) return;
+  const names = Object.keys(mods);
+  if (!names.length) return;             // keep the placeholders over an empty list
+  const chosen = sel && sel.value;
+  group.innerHTML = '';
+  names.forEach(k => {
+    const o = document.createElement('option');
+    o.value = 'pi:' + k;
+    const res = mods[k].res ? `, ${mods[k].res}` : '';
+    o.textContent = `${mods[k].label || k} (Pi${res})`;
+    group.appendChild(o);
+  });
+  if (sel && chosen && Array.from(sel.options).some(o => o.value === chosen)) {
+    sel.value = chosen;
+  }
+}
+
 // Re-read the index when it has gone stale, and throw away the manifest that
 // was read against it if the Pi has moved that model on to a newer run. Held
 // forever, the page would keep asking for images from a run that has since
@@ -11770,6 +11806,7 @@ async function _hdFreshIndex() {
                 next.models[_hdModel] && next.models[_hdModel].run;
   _hdIndex = next;
   if (before && after && before !== after) _hdManifest = null;
+  _hdFillModelPicker();
   return _hdIndex;
 }
 
@@ -12203,7 +12240,13 @@ _sevSetSection = async function (value) {
     const which = String(value).slice(3);
     _hdFromPicker = true;
     _sevSection = value;              // so the picker keeps showing this choice
-    if (!_hdOn) await _hdEnable(which);
+    // Also when there is no address yet, not just when this is off. Enabling
+    // is what looks the address up, and it leaves itself on even when the
+    // lookup fails so the panel can say so. That meant one failed lookup, a
+    // blink of the network at the wrong moment, wedged every Pi model until
+    // the page was reloaded: this branch saw "already on", skipped the only
+    // code that resolves an address, and then drew nothing, silently.
+    if (!_hdOn || !_hdBase) await _hdEnable(which);
     await _hdPickModel(which);
     _hdRenderPanel();
     _sevUpdateProducts();             // rebuild the product list from the manifest
@@ -12428,6 +12471,19 @@ toggleOverlayPill = function (id) {
   }
   return _hdOrigToggleOverlayPill.apply(this, arguments);
 };
+
+// Ask the Pi what it has, once, shortly after the page settles. Without this
+// the Model list only becomes correct after a Pi model has already been
+// picked, which is backwards: the list is how you pick one. Delayed rather
+// than immediate so it does not compete with the map's own tiles for the first
+// few seconds, and silent on failure, since the panel says what is wrong if
+// and when someone actually goes looking for a Pi model.
+setTimeout(async function _hdPrimeModelList() {
+  try {
+    _hdBase = _hdBase || await _hdResolveBase();
+    if (_hdBase) await _hdFreshIndex();
+  } catch (e) {}
+}, 2500);
 
 // ══════════════════════════════════════════════════════════════════════════
 // ── POLYGON SPATIAL FILTER ────────────────────────────────────────────────
@@ -32510,7 +32566,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed a batch of model bugs: scrubbing no longer paints HRRR over the Pi chart, old overlays can no longer pile up, and a new model run is picked up without reloading.";
+const APP_LATEST_UPDATE = "Four new models: NAM Nest and RAP, the National Blend of Models, and RTMA for what is happening right now. The model list now builds itself from whatever the Pi has.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

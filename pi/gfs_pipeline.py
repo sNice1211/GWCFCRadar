@@ -120,8 +120,65 @@ MODELS = {
                    "wind": (0, 25), "apcp": (0, 25)},
         "ramp": "spread",
     },
+    "rap": {
+        # Fills the gap HRRR leaves. HRRR is sharper but stops at 18 hours;
+        # RAP is the same idea at 13 km and runs every hour as well, so there
+        # is always something hourly and recent past the end of HRRR.
+        "label": "RAP", "res": "13 km", "cycle_h": 1, "lag_h": 2,
+        "filter": "filter_rap.pl",
+        "dir": "/rap.{date}",
+        "file": "rap.t{cyc}z.awp130pgrbf{fhr:02d}.grib2",
+        "raw": "rap/prod/rap.{date}/rap.t{cyc}z.awp130pgrbf{fhr:02d}.grib2.idx",
+        "step": 1, "out": 21,
+    },
+    "namnest": {
+        # HRRR's resolution, three times HRRR's reach. The 3 km nest inside
+        # NAM: the same 12 km model run again over a smaller box at a grid
+        # fine enough to resolve individual storms, out to 60 hours.
+        "label": "NAM Nest", "res": "3 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam_conusnest.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.conusnest.hiresf{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.conusnest.hiresf{fhr:02d}"
+               ".tm00.grib2.idx",
+        "step": 3, "out": 60,
+    },
+    "nbm": {
+        # Not a model. The National Blend of Models is the Weather Service's
+        # own combination of many models, corrected against what actually
+        # verified, and it is what a great deal of the official forecast is
+        # built from. For "what is the temperature going to be" it beats any
+        # single model here, which is the whole point of carrying it.
+        # NBM publishes every hour, but this takes it four times a day. It is
+        # a five day forecast built by blending and bias-correcting other
+        # models, and it does not meaningfully change in an hour, so fetching
+        # 41 forecast hours of 2.5 km data every hour would be by far the
+        # largest thing here in exchange for almost nothing.
+        "label": "NBM", "res": "2.5 km blend", "cycle_h": 6, "lag_h": 2,
+        "filter": "filter_blend.pl",
+        "dir": "/blend.{date}/{cyc}/core",
+        "file": "blend.t{cyc}z.core.f{fhr:03d}.co.grib2",
+        "raw": "blend/prod/blend.{date}/{cyc}/core/"
+               "blend.t{cyc}z.core.f{fhr:03d}.co.grib2.idx",
+        "step": 3, "out": 120,
+    },
+    "rtma": {
+        # The odd one out: an analysis, not a forecast. One frame, F+000, of
+        # what the Weather Service believes is happening right now at 2.5 km,
+        # built from observations rather than projected forward. Useful as the
+        # thing to check a forecast against.
+        "label": "RTMA (now)", "res": "2.5 km analysis", "cycle_h": 1,
+        "lag_h": 1,
+        "filter": "filter_rtma2p5.pl",
+        "dir": "/rtma2p5.{date}",
+        "file": "rtma2p5.t{cyc}z.2dvaranl_ndfd.grb2",
+        "raw": "rtma/prod/rtma2p5.{date}/rtma2p5.t{cyc}z.2dvaranl_ndfd"
+               ".grb2.idx",
+        "step": 1, "out": 0,
+    },
 }
-DEFAULT_MODELS = ["gfs", "nam", "hrrr", "gefs", "gefsspr"]
+DEFAULT_MODELS = ["gfs", "nam", "namnest", "hrrr", "rap", "nbm", "rtma",
+                  "gefs", "gefsspr"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -150,6 +207,12 @@ SND_VAR_FLAGS = ["var_TMP", "var_RH", "var_UGRD", "var_VGRD"]
 KEEP_RUNS = 4          # about 24 hours of runs
 REQUEST_TIMEOUT = 60
 RETRIES = 3
+
+# The longest edge any overlay image is allowed to have. See render_png: the
+# limit exists for the PlayStation 5 browser, which holds a decoded image in
+# memory and does not have much of it. Coarse models are well under this and
+# are untouched.
+MAX_EDGE_PX = 1600
 
 FILTER_BASE = "https://nomads.ncep.noaa.gov/cgi-bin"
 RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
@@ -181,9 +244,12 @@ FIELDS = {
               "convert": lambda a: a,          "range": (-10, 75),  "ramp": "radar"},
     "apcp":  {"short": ("tp", "acpcp", "apcp"), "levtype": ("surface",), "level": 0,
               "convert": lambda a: a,          "range": (0, 50),    "ramp": "precip"},
-    "wind":  {"short": ("10si",),    "levtype": ("heightAboveGround",), "level": 10,
-              "convert": lambda a: a * 1.94384, "range": (0, 80),   "ramp": "wind",
-              "derive": "windspeed"},
+    # Wind speed is taken directly when the file has it and worked out from the
+    # two components when it does not. NBM and RTMA publish speed itself and no
+    # components at all, so deriving was the only path and they came out with
+    # no wind chart. The components are still the common case.
+    "wind":  {"short": ("10si", "ws"), "levtype": ("heightAboveGround",), "level": 10,
+              "convert": lambda a: a * 1.94384, "range": (0, 80),   "ramp": "wind"},
 }
 
 
@@ -216,7 +282,9 @@ FALLBACK_LEVS = ["lev_2_m_above_ground", "lev_10_m_above_ground",
 # plain names NOAA's index uses rather than as query flags, because the ask is
 # now built by matching these against that index.
 WANT_VARS = {"TMP", "DPT", "PRMSL", "MSLET", "MSLMA",
-             "CAPE", "REFC", "APCP", "UGRD", "VGRD"}
+             "CAPE", "REFC", "APCP", "UGRD", "VGRD",
+             # NBM and RTMA publish wind speed itself and no components.
+             "WIND"}
 # Exact level names, except the last, which is a prefix: models spell the whole
 # column differently. GFS says "entire atmosphere (considered as a single
 # layer)", HRRR just says "entire atmosphere", and guessing wrong is what turns
@@ -513,8 +581,7 @@ def open_fields(grib_path):
                 nj = int(eccodes.codes_get(gid, "Nj"))
 
                 want = short in ("10u", "10v") or any(
-                    _matches(s, short, levt, lev)
-                    for s in FIELDS.values() if not s.get("derive"))
+                    _matches(s, short, levt, lev) for s in FIELDS.values())
                 if not want:
                     continue
 
@@ -548,8 +615,6 @@ def open_fields(grib_path):
                     continue
 
                 for key, spec in FIELDS.items():
-                    if spec.get("derive"):
-                        continue
                     if not _matches(spec, short, levt, lev):
                         continue
                     # A file can hold more than one spelling of the same field:
@@ -577,7 +642,9 @@ def open_fields(grib_path):
     # (values, lats, lons) they expect.
     found = {k: v[:3] for k, v in found.items()}
 
-    if "10u" in uv and "10v" in uv:
+    # Only worked out from the components when the file did not simply carry
+    # the speed. A file that has both is not overridden by the derived one.
+    if "wind" not in found and "10u" in uv and "10v" in uv:
         u, lats, lons = uv["10u"]
         v = uv["10v"][0]
         found["wind"] = (np.sqrt(u ** 2 + v ** 2), lats, lons)
@@ -599,8 +666,33 @@ def render_png(values, lats, spec, out_path):
     Written straight from the array, so one pixel is one grid cell and the
     image lines up exactly with the bounds given to Leaflet. Nothing crops or
     pads it, which is what goes wrong when this is done through a plot.
+
+    A very fine grid is thinned first. HRRR and the NAM nest are 3 km, which
+    across this box is about 2300 by 1300 cells, and the blend is finer still.
+    That is a picture of several million pixels, which the PlayStation 5
+    browser has to hold in memory decoded, and it has little to spare. Taking
+    every second or third cell keeps the long edge under the cap below, and at
+    that size a pixel is still about 4 km, which is the width of a couple of
+    city blocks more than the model's own resolution. Thinning by striding
+    rather than averaging is deliberate: an average of reflectivity smears a
+    storm's core into its surroundings, where taking every Nth cell leaves the
+    values the model actually produced.
     """
     data = spec["convert"](np.asarray(values, dtype=np.float32))
+
+    step = max(1, int(np.ceil(max(data.shape) / float(MAX_EDGE_PX))))
+    if step > 1:
+        # Picked with linspace rather than a plain [::step] slice so the first
+        # and last cell are always kept. A slice drops up to step-1 cells off
+        # the far edge, and since the image is stretched to fixed bounds, that
+        # is not a smaller picture, it is the same picture shifted: every
+        # feature slides a few kilometres north and west of where it happened.
+        pick = lambda n: np.unique(np.linspace(
+            0, n - 1, int(np.ceil(n / float(step)))).round().astype(int))
+        rows, cols = pick(data.shape[0]), pick(data.shape[1])
+        data = data[np.ix_(rows, cols)]
+        if lats is not None and len(lats) > 1:
+            lats = np.asarray(lats)[rows]
 
     # GRIB usually scans north to south. An image's first row is its top, which
     # is also north, so the array only needs flipping when it does not.
