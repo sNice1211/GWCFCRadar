@@ -11687,10 +11687,18 @@ let _hdIndex = null;       // what the Pi has
 let _hdField = 't2m';
 let _hdHourIdx = 0;
 let _hdLayer = null;
+// Every overlay currently on the map, not just the newest. The old one is only
+// taken down when its replacement finishes loading, so between a fast switch
+// and a slow image there can be more than one, and turning the layer off was
+// only ever removing the newest. The rest stayed painted with nothing pointing
+// at them, which is a picture that cannot be got rid of without a reload.
+let _hdLayers = new Set();
 let _hdPanel = null;
-// Frames already fetched, so scrubbing back and forth does not re-request. The
-// images are a few KB each, so holding them is cheaper than fetching them.
-let _hdCache = new Map();
+// When the index was last read. The Pi builds a new run every hour, and the
+// index was being kept for the life of the page, so a tab left open overnight
+// went on showing yesterday's run and never said so. Re-read after this long.
+let _hdIndexAt = 0;
+const HD_INDEX_TTL = 10 * 60 * 1000;
 
 // Where the Pi is depends on a tunnel whose address changes when it restarts,
 // so it is looked up rather than written down. localStorage first so a new
@@ -11733,16 +11741,36 @@ async function _hdResolveBase() {
 function _hdSetBase(url) {
   try { localStorage.setItem(HD_BASE_KEY, String(url).replace(/\/+$/, '')); } catch (e) {}
   _hdBase = String(url).replace(/\/+$/, '');
-  _hdCache.clear();
   _hdManifest = null;
   _hdIndex = null;
+  _hdIndexAt = 0;
   _hdModel = null;
   if (_hdOn) { _hdDisable(); _hdEnable(); }
 }
 
 async function _hdLoadIndex() {
-  return fetch(`${_hdBase}/models/latest.json`, { cache: 'no-store' })
+  const idx = await fetch(`${_hdBase}/models/latest.json`, { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (idx) _hdIndexAt = Date.now();
+  return idx;
+}
+
+// Re-read the index when it has gone stale, and throw away the manifest that
+// was read against it if the Pi has moved that model on to a newer run. Held
+// forever, the page would keep asking for images from a run that has since
+// been pruned off the Pi's disk, which shows up as frames that quietly stop
+// appearing rather than as an error.
+async function _hdFreshIndex() {
+  if (_hdIndex && Date.now() - _hdIndexAt < HD_INDEX_TTL) return _hdIndex;
+  const next = await _hdLoadIndex();
+  if (!next) return _hdIndex;             // keep what works if the Pi blinks
+  const before = _hdIndex && _hdIndex.models && _hdModel &&
+                 _hdIndex.models[_hdModel] && _hdIndex.models[_hdModel].run;
+  const after = next.models && _hdModel &&
+                next.models[_hdModel] && next.models[_hdModel].run;
+  _hdIndex = next;
+  if (before && after && before !== after) _hdManifest = null;
+  return _hdIndex;
 }
 
 async function _hdLoadManifest(model) {
@@ -11776,13 +11804,19 @@ function _hdShow() {
   // stranded on the map with nothing pointing at it, and after a few of those
   // the map is a stack of ghosts.
   const prev = _hdLayer;
-  const dropPrev = () => { if (prev && prev !== next) { try { map.removeLayer(prev); } catch (e) {} } };
+  const dropPrev = () => { if (prev && prev !== next) _hdDrop(prev); };
   next.on('load', dropPrev);
   next.on('error', dropPrev);
   next.addTo(map);
+  _hdLayers.add(next);
   _hdLayer = next;
-  _hdCache.set(url, 1);
   _hdRenderPanel();
+}
+
+function _hdDrop(layer) {
+  if (!layer) return;
+  try { map.removeLayer(layer); } catch (e) {}
+  _hdLayers.delete(layer);
 }
 
 function _hdRenderPanel() {
@@ -11861,7 +11895,11 @@ function _hdBuildPanel() {
 // its manifest rather than assuming the hours line up. HRRR stops at 18 hours
 // where GFS runs to 120, so an hour index valid for one is not for the other.
 async function _hdPickModel(name) {
-  if (name === _hdModel) return;
+  // The index is re-read first rather than trusted: it is what says which run
+  // each model is on, and picking a model is exactly the moment a stale answer
+  // turns into a request for images from a run the Pi has already pruned.
+  await _hdFreshIndex();
+  if (name === _hdModel && _hdManifest) return;
   _hdModel = name;
   _hdManifest = await _hdLoadManifest(name);
   if (!_hdManifest) { _hdRenderPanel(); return; }
@@ -11873,7 +11911,12 @@ async function _hdPickModel(name) {
   _hdShow();
 }
 
-async function _hdEnable() {
+// `want` is the model the caller actually asked for. Without it this always
+// started on whichever model the Pi happened to list first, drew it, and only
+// then got switched to the one that was picked, so choosing NAM flashed GFS on
+// the map on the way there. Worse, if NAM's manifest then failed to load, GFS
+// was left showing under NAM's name.
+async function _hdEnable(want) {
   _hdOn = true;
   document.getElementById('op-hdmodels')?.classList.add('active');
   if (!_hdPanel) _hdBuildPanel();
@@ -11889,7 +11932,7 @@ async function _hdEnable() {
       `<span class="hd-warn">no address set. Run <code>hdSetPi('https://…')</code> in the console.</span>`;
     return;
   }
-  _hdIndex = _hdIndex || await _hdLoadIndex();
+  _hdIndex = await _hdFreshIndex();
   const names = _hdIndex && _hdIndex.models ? Object.keys(_hdIndex.models) : [];
   if (!names.length && _hdFromPicker && typeof showToast === 'function') {
     // The panel is hidden when the picker is driving, so a silent failure
@@ -11902,7 +11945,12 @@ async function _hdEnable() {
       `<span class="hd-warn">the Pi did not answer. It may be off, or the address may have changed.</span>`;
     return;
   }
-  if (!_hdModel || !_hdIndex.models[_hdModel]) _hdModel = names[0];
+  if (want && _hdIndex.models[want]) {
+    if (want !== _hdModel) _hdManifest = null;
+    _hdModel = want;
+  } else if (!_hdModel || !_hdIndex.models[_hdModel]) {
+    _hdModel = names[0];
+  }
   _hdManifest = _hdManifest || await _hdLoadManifest(_hdModel);
   if (!_hdManifest) {
     _hdPanel.querySelector('.hd-run').innerHTML =
@@ -11916,14 +11964,24 @@ async function _hdEnable() {
     const first = HD_FIELDS.find(f => _hdHoursFor(f.id).length);
     if (first) _hdField = first.id;
   }
-  _hdShow();
+  // Only draw when nothing else is going to. When the Run Models picker is
+  // driving, it finishes setting up the run and the hour grid and then renders
+  // itself, so drawing here as well fetched every image twice and briefly put
+  // two overlays on the map on every single model change.
+  if (!_hdFromPicker) _hdShow();
 }
 
 function _hdDisable() {
   _hdOn = false;
+  // Cleared here as well as in the section wrapper, because the pill can turn
+  // this off while the Run Models picker still says a Pi model. Left set, every
+  // wrapper below kept routing to a Pi that was no longer drawing, and the
+  // product list fell through to a fixed list under an unknown section name.
+  _hdFromPicker = false;
   document.getElementById('op-hdmodels')?.classList.remove('active');
   if (_hdPanel) _hdPanel.style.display = 'none';
-  if (_hdLayer) { try { map.removeLayer(_hdLayer); } catch (e) {} _hdLayer = null; }
+  Array.from(_hdLayers).forEach(_hdDrop);
+  _hdLayer = null;
 }
 
 // ── Soundings, read out of the Pi's level images ───────────────────────────
@@ -12143,14 +12201,9 @@ const _hdOrigSetSection = _sevSetSection;
 _sevSetSection = async function (value) {
   if (String(value).startsWith('pi:')) {
     const which = String(value).slice(3);
-    // Take the old overlay down first, or two forecasts sit on the map at once.
-    if (typeof _sevOverlayLayer !== 'undefined' && _sevOverlayLayer) {
-      try { map.removeLayer(_sevOverlayLayer); } catch (e) {}
-      _sevOverlayLayer = null;
-    }
     _hdFromPicker = true;
     _sevSection = value;              // so the picker keeps showing this choice
-    if (!_hdOn) await _hdEnable();
+    if (!_hdOn) await _hdEnable(which);
     await _hdPickModel(which);
     _hdRenderPanel();
     _sevUpdateProducts();             // rebuild the product list from the manifest
@@ -12162,7 +12215,7 @@ _sevSetSection = async function (value) {
     _sevFrame = 0;
     _hdPopulateRun();
     _hdBuildFrameGrid();
-    _hdShow();
+    _sevRender();   // takes down whatever the last model left, then draws
     return;
   }
   if (_hdOn) _hdDisable();          // leaving the Pi, so take its layer off
@@ -12323,26 +12376,38 @@ _sevSetVar = function (v) {
   return _hdOrigSetVar.apply(this, arguments);
 };
 
-const _hdOrigSetFrame = _sevSetFrame;
-_sevSetFrame = function (v) {
+// _sevSetFrame is deliberately NOT wrapped. It marks the active button,
+// scrolls it into view, moves the playbar, updates the header and then calls
+// _sevRender, and every one of those steps is already right for a Pi model now
+// that the grid is built from the manifest. A wrapper here would be a second
+// copy of that sequence, free to drift from the one the buttons in every other
+// mode go through, and the drag path bypasses it anyway.
+
+// Everything that changes the frame eventually calls _sevRender, and some
+// things call it and nothing else: dragging the playbar renders on a timer
+// while the drag is happening and once more on release, without going through
+// _sevSetFrame at all. Unwrapped, that walked off the end of the section
+// dispatch and landed on the IEM branch, so scrubbing a Pi model painted HRRR
+// tiles straight over the Pi's own picture. Wrapping the render rather than
+// each caller means anything added later is covered by default.
+const _hdOrigRender = _sevRender;
+_sevRender = function () {
   if (_hdFromPicker && _hdOn) {
-    _sevFrame = parseInt(v, 10) || 0;
-    document.querySelectorAll('.sev-fhr-btn').forEach(b => {
-      b.classList.toggle('active', parseInt(b.dataset.frame, 10) === _sevFrame);
-    });
-    // The grid is built from this model's own hours, so the button index is the
-    // hour index. Still clamped, because the playbar can be dragged past the
-    // end of a short field.
+    // The same clearing the real render does first. Only the ensemble overlay
+    // was being taken down when a Pi model was picked, so coming from HRRR left
+    // its tiles on the map underneath the Pi's picture, which reads as two
+    // forecasts drawn on top of each other.
+    if (_iemModelLayer) { try { map.removeLayer(_iemModelLayer); } catch (e) {} _iemModelLayer = null; }
+    if (_sevOverlayLayer) { try { map.removeLayer(_sevOverlayLayer); } catch (e) {} _sevOverlayLayer = null; }
+    // Comparison rows are other services and keep working, so they are still
+    // rendered rather than dropped along with the main panel's branch.
+    if (_sevCompareOn) _sevRenderAllSlots();
     const hrs = _hdHoursFor(_hdField);
-    if (hrs.length) {
-      _hdHourIdx = Math.max(0, Math.min(_sevFrame, hrs.length - 1));
-      _sevUpdatePlaybar();
-      _sevUpdateFcastHeader();
-      _hdShow();
-    }
+    if (hrs.length) _hdHourIdx = Math.max(0, Math.min(_sevFrame, hrs.length - 1));
+    _hdShow();
     return;
   }
-  return _hdOrigSetFrame.apply(this, arguments);
+  return _hdOrigRender.apply(this, arguments);
 };
 
 // Set the Pi's address from the console, since a quick tunnel hands out a new
@@ -32445,7 +32510,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Pi models now bring their own run and forecast hours, so every button on the timeline is a chart that exists, and NAM, HRRR and GEFS build again.";
+const APP_LATEST_UPDATE = "Fixed a batch of model bugs: scrubbing no longer paints HRRR over the Pi chart, old overlays can no longer pile up, and a new model run is picked up without reloading.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

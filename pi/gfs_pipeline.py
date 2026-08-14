@@ -550,8 +550,18 @@ def open_fields(grib_path):
                 for key, spec in FIELDS.items():
                     if spec.get("derive"):
                         continue
-                    if _matches(spec, short, levt, lev):
-                        found[key] = (arr, lats, lons)
+                    if not _matches(spec, short, levt, lev):
+                        continue
+                    # A file can hold more than one spelling of the same field:
+                    # NAM carries PRMSL and MSLET at mean sea level, and they
+                    # are not identical. Last one read used to win, which made
+                    # the chart depend on the order messages happen to sit in
+                    # the file. The order in FIELDS is the preference, so an
+                    # earlier spelling is never replaced by a later one.
+                    rank = spec["short"].index(short)
+                    if key in found and found[key][3] <= rank:
+                        continue
+                    found[key] = (arr, lats, lons, rank)
             except Exception as e:
                 # One unreadable message should cost that message, not the run.
                 log(f"    skipping a message: {e}")
@@ -562,6 +572,10 @@ def open_fields(grib_path):
                     pass
     finally:
         fh.close()
+
+    # Drop the preference rank now it has done its job, so callers see the
+    # (values, lats, lons) they expect.
+    found = {k: v[:3] for k, v in found.items()}
 
     if "10u" in uv and "10v" in uv:
         u, lats, lons = uv["10u"]
