@@ -16227,7 +16227,10 @@ function _sevEnsCacheKey() {
   const samplesBox = SEV_DET_SECTIONS[_sevSection] || SEV_ENSEMBLE_SECTIONS[_sevSection];
   const b = (typeof _sevDetBounds === 'function' && samplesBox) ? _sevDetBounds() : null;
   const box = b ? `|${b[0][0]},${b[0][1]},${b[1][0]},${b[1][1]}` : '';
-  return `${_sevSection}|${_sevVar}${box}`;
+  // The run belongs in the key for the same reason the box does. Without it a
+  // chart would be served from cache forever and never pick up a new run; with
+  // it, the cache is exactly as fresh as the model itself and no fresher.
+  return `${_sevSection}|${_sevVar}${box}|${_sevRunKey()}`;
 }
 
 // Turning a frame's grid into its map image costs ~100ms of blocking main
@@ -16520,8 +16523,34 @@ const SEV_DET_COLS = 18, SEV_DET_ROWS = 11;
 const SEV_DET_SNAP_DEG = 10;
 const SEV_DET_MIN_SPAN = 10;  // never sample a box so small the corners collapse
 
-// Panning fires moveend continuously; wait for it to stop before spending.
-const SEV_DET_MOVE_SETTLE_MS = 2500;
+// How often to look for a newly published run. Ten minutes is far finer than
+// the six-hour cadence it is watching, and costs nothing: it compares two
+// strings and only fetches when they differ.
+const SEV_RUN_CHECK_MS = 10 * 60 * 1000;
+
+// ── Which model run the data belongs to ─────────────────────────────────────
+// A model is not a live feed. It is computed a few times a day, and between
+// those runs the forecast does not change at all, so refetching it is buying
+// a copy of something already held. These are the global models, which run
+// every six hours and publish roughly four hours after their nominal time.
+//
+// Everything about a chart is therefore pinned to its run: the same run gives
+// the same answer, and only a new run is a reason to go and ask again.
+const SEV_RUN_HOURS  = 6;
+const SEV_RUN_LAG_MS = 4 * 3600 * 1000;
+function _sevRunKey() {
+  const cycleMs = SEV_RUN_HOURS * 3600 * 1000;
+  return 'r' + Math.floor((Date.now() - SEV_RUN_LAG_MS) / cycleMs);
+}
+
+// The area a chart covers is decided once, when that chart is opened, and then
+// held for as long as the run is current. Previously it was re-derived from
+// whatever the map happened to be showing, so panning moved the sampled box,
+// which changed the cache key, which threw the picture away and bought a new
+// one. That is the tiles resetting as you move around, and it was also the
+// single largest drain on the daily allowance.
+let _sevPinnedBox = null;   // [[south, west], [north, east]]
+let _sevPinnedFor = '';     // the section and run it was pinned for
 
 // ── Request budget ──────────────────────────────────────────────────────────
 // Open-Meteo weights a call by how many locations it carries, so one product
@@ -16586,6 +16615,13 @@ function _sevBudgetSpend(cost) {
 
 function _sevDetBounds() {
   if (typeof map === 'undefined' || !map) return WORLD_MAP_BOUNDS;
+
+  // Already pinned for this chart and this run: hand back the same box. This
+  // is what makes panning free. The box is only ever chosen again when the
+  // model changes or a new run lands, both of which are real reasons to fetch.
+  const pinFor = `${_sevSection}|${_sevRunKey()}`;
+  if (_sevPinnedBox && _sevPinnedFor === pinFor) return _sevPinnedBox;
+
   let b;
   try { b = map.getBounds(); } catch(e) { return WORLD_MAP_BOUNDS; }
   const snapDown = v => Math.floor(v / SEV_DET_SNAP_DEG) * SEV_DET_SNAP_DEG;
@@ -16607,7 +16643,18 @@ function _sevDetBounds() {
   if (east  - west  < SEV_DET_MIN_SPAN) east  = Math.min(WORLD_MAP_BOUNDS[1][1], west  + SEV_DET_MIN_SPAN);
   if (north <= south || east <= west) return WORLD_MAP_BOUNDS;
 
-  return [[south, west], [north, east]];
+  // Pin it. From here until the model changes or a new run publishes, this is
+  // the box, whatever the map does.
+  _sevPinnedBox = [[south, west], [north, east]];
+  _sevPinnedFor = pinFor;
+  return _sevPinnedBox;
+}
+
+// Opening a different chart, or changing product, is an explicit act and may
+// legitimately want the area currently in view. Panning is not, and must not.
+function _sevUnpinBox() {
+  _sevPinnedBox = null;
+  _sevPinnedFor = '';
 }
 const SEV_DET_MAX_FRAME = 20;   // 21 frames: F+000 .. F+120 at a 6h step
 const SEV_DET_STEP_H = 6;
@@ -16782,31 +16829,33 @@ function _sevDetFramesFromGrids(grids, varName, modelLabel, baseMs, frameMs, bou
 // Now that the grid follows the map, moving somewhere else means the loaded
 // grid describes the wrong place. Reload when the snapped box actually changes,
 // which a small nudge does not do, so panning around one area costs nothing.
-let _sevDetLastBoxKey = '';
+let _sevDetLastRunKey = '';
 let _sevDetMoveTimer = null;
 function _sevDetWatchMap() {
   if (typeof map === 'undefined' || !map || _sevDetWatchMap._on) return;
   _sevDetWatchMap._on = true;
-  map.on('moveend zoomend', () => {
-    const samplesBox = SEV_DET_SECTIONS[_sevSection] || SEV_ENSEMBLE_SECTIONS[_sevSection];
-    if (!samplesBox) return;                         // not a model that samples a box
-    if (!_sevOverlayLayer) return;                   // nothing being shown
-    // Settle first. Dragging across the map fires moveend repeatedly, and each
-    // one crossing a box edge would otherwise start its own paid fetch, which
-    // is the fastest way there is to burn a day's allowance in a minute.
-    clearTimeout(_sevDetMoveTimer);
-    _sevDetMoveTimer = setTimeout(() => {
-      const isDet = !!SEV_DET_SECTIONS[_sevSection];
-      const isEns = !!SEV_ENSEMBLE_SECTIONS[_sevSection];
-      if ((!isDet && !isEns) || !_sevOverlayLayer) return;
-      const b = _sevDetBounds();
-      const boxKey = `${b[0][0]},${b[0][1]},${b[1][0]},${b[1][1]}`;
-      if (boxKey === _sevDetLastBoxKey) return;      // same area, nothing to do
-      _sevDetLastBoxKey = boxKey;
-      const panel = document.getElementById('sev-panel-body');
-      isDet ? _sevRenderDeterministic(panel) : _sevRenderEnsemble(panel);
-    }, SEV_DET_MOVE_SETTLE_MS);
-  });
+  // Moving the map deliberately does nothing. A model chart is a picture of one
+  // run over one area, and panning changes neither: the run is the same run and
+  // the forecast over that ground has not changed because the viewport moved.
+  // Refetching on pan was throwing away a valid chart to buy an almost
+  // identical one, which is what made the tiles reset under you and what
+  // emptied the daily allowance.
+  //
+  // What is worth watching for is a new run, which is the one thing that does
+  // make the picture stale. Checked on a plain timer rather than on movement,
+  // because a run publishes on the model's schedule, not on yours.
+  clearInterval(_sevDetMoveTimer);
+  _sevDetMoveTimer = setInterval(() => {
+    const isDet = !!SEV_DET_SECTIONS[_sevSection];
+    const isEns = !!SEV_ENSEMBLE_SECTIONS[_sevSection];
+    if ((!isDet && !isEns) || !_sevOverlayLayer) return;
+    const run = _sevRunKey();
+    if (run === _sevDetLastRunKey) return;           // same run, nothing to do
+    _sevDetLastRunKey = run;
+    _sevUnpinBox();                                  // re-pin against the new run
+    const panel = document.getElementById('sev-panel-body');
+    isDet ? _sevRenderDeterministic(panel) : _sevRenderEnsemble(panel);
+  }, SEV_RUN_CHECK_MS);
 }
 
 async function _sevRenderDeterministic(body) {
@@ -32034,7 +32083,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed model frames stacking on top of each other. The old image is now taken off the map before the new one goes on, so stepping through forecast hours looks clean and no longer piles up memory.";
+const APP_LATEST_UPDATE = "Model charts now stay put when you move the map. Each chart is pinned to its model run and only refreshes when a new run is published, which also stops it eating the daily request allowance.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
