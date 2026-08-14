@@ -383,15 +383,39 @@ class Lock:
             os.write(self.fd, str(os.getpid()).encode())
             return self
         except FileExistsError:
-            # A lock left behind by a crash should not block forever.
-            try:
-                if time.time() - os.path.getmtime(self.path) > 3 * 3600:
+            # The lock records a pid, so ask whether that process is still
+            # alive rather than waiting out a timeout. Closing the terminal on
+            # a run leaves the file behind with nothing holding it, and an hour
+            # of cron refusing to start because of a process that died is a
+            # worse failure than the one the lock is for.
+            if not self._holder_alive():
+                log("clearing a lock left by a run that is no longer running")
+                try:
                     os.unlink(self.path)
-                    return self.__enter__()
-            except OSError:
-                pass
+                except OSError:
+                    pass
+                return self.__enter__()
             log("another run is already going; exiting")
             sys.exit(0)
+
+    def _holder_alive(self):
+        """True only if the pid in the lock file is a process that still exists."""
+        try:
+            with open(self.path) as f:
+                pid = int(f.read().strip() or 0)
+        except (OSError, ValueError):
+            return False              # unreadable or empty: not a live holder
+        if pid <= 0 or pid == os.getpid():
+            return False
+        try:
+            os.kill(pid, 0)           # signal 0 only tests for existence
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True               # exists, owned by someone else
+        except OSError:
+            return False
 
     def __exit__(self, *exc):
         if self.fd is not None:

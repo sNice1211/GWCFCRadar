@@ -117,8 +117,12 @@ the bounds it is given.
 **"not published yet"** is normal. NOAA publishes 3.5 to 5 hours after the
 cycle time and the script waits rather than guessing.
 
-**"another run is already going"** means a lock file is held. A lock left by a
-crash is ignored after three hours.
+**"another run is already going"** means a run really is going. The lock records
+its process id and is checked against it, so a lock left behind by a terminal
+being closed clears itself on the next run rather than blocking for hours. To
+clear one by hand:
+
+    rm -f ~/.gwcfc-models.lock
 
 **A field missing from the manifest** means its GRIB key did not match. Look at
 what is actually in a file with:
