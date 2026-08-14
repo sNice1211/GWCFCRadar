@@ -7508,6 +7508,13 @@ body.clean-mode #clean-hint { opacity: 1; }
               <option value="cma">CMA GRAPES (China)</option>
               <option value="bom">BOM ACCESS-G (Australia)</option>
             </optgroup>
+            <optgroup label="From the Pi (full resolution)">
+              <option value="pi:gfs">GFS (Pi, 0.25 deg)</option>
+              <option value="pi:nam">NAM (Pi, 12 km)</option>
+              <option value="pi:hrrr">HRRR (Pi, 3 km)</option>
+              <option value="pi:gefs">GEFS Mean (Pi)</option>
+              <option value="pi:gefsspr">GEFS Spread (Pi)</option>
+            </optgroup>
             <optgroup label="Ensemble Mean">
               <option value="gfs_ens">GFS Ensemble Mean (NOAA)</option>
               <option value="icon_ens">ICON Ensemble Mean (DWD)</option>
@@ -11689,6 +11696,7 @@ const HD_FIELDS = [
 let _hdOn = false;
 let _hdBase = null;        // where the Pi is answering
 let _hdManifest = null;
+let _hdFromPicker = false; // driven by the Run Models dropdown
 let _hdModel = null;       // which model is showing
 let _hdIndex = null;       // what the Pi has
 let _hdField = 't2m';
@@ -11709,8 +11717,12 @@ async function _hdResolveBase() {
     if (local) return local.replace(/\/+$/, '');
   } catch (e) {}
   try {
-    if (typeof db !== 'undefined' && db) {
-      const snap = await db.collection('piEndpoint').doc('models').get();
+    // _fbDb, not db. The app's Firestore handle is _fbDb; every `db` in this
+    // file is a local IndexedDB inside some other function, so `typeof db`
+    // was undefined here and the lookup silently never happened. That is the
+    // whole of "no address set" while the Pi was publishing correctly.
+    if (typeof _fbDb !== 'undefined' && _fbDb) {
+      const snap = await _fbDb.collection('piEndpoint').doc('models').get();
       const url = snap.exists && snap.data() && snap.data().url;
       if (url) return String(url).replace(/\/+$/, '');
     }
@@ -11785,6 +11797,9 @@ function _hdRenderPanel() {
     + fhr * 3600000) : null;
 
   const mods = (_hdIndex && _hdIndex.models) || {};
+  // Hidden when the Run Models dropdown is choosing the model, so there are
+  // not two pickers disagreeing about which one is showing.
+  _hdPanel.querySelector('.hd-models').style.display = _hdFromPicker ? 'none' : 'flex';
   _hdPanel.querySelector('.hd-models').innerHTML = Object.keys(mods).map(k =>
     `<button class="hd-m${k === _hdModel ? ' on' : ''}" data-m="${k}" title="${mods[k].res || ''}">${mods[k].label || k}</button>`
   ).join('');
@@ -12110,6 +12125,30 @@ async function _sndRefresh(el, fhr) {
     el.querySelector('.snd-meta').textContent = String(e.message || e);
   }
 }
+
+// The Pi models are entries in the Run Models list rather than a panel of
+// their own, because someone looking for a model chart goes to Run Models. A
+// "pi:" value means the picture comes from the Pi; anything else is the path
+// that was already there, untouched.
+const _hdOrigSetSection = _sevSetSection;
+_sevSetSection = async function (value) {
+  if (String(value).startsWith('pi:')) {
+    const which = String(value).slice(3);
+    // Take the old overlay down first, or two forecasts sit on the map at once.
+    if (typeof _sevOverlayLayer !== 'undefined' && _sevOverlayLayer) {
+      try { map.removeLayer(_sevOverlayLayer); } catch (e) {}
+      _sevOverlayLayer = null;
+    }
+    _hdFromPicker = true;
+    if (!_hdOn) await _hdEnable();
+    await _hdPickModel(which);
+    _hdRenderPanel();
+    return;
+  }
+  if (_hdOn) _hdDisable();          // leaving the Pi, so take its layer off
+  _hdFromPicker = false;
+  return _hdOrigSetSection.apply(this, arguments);
+};
 
 // Set the Pi's address from the console, since a quick tunnel hands out a new
 // one every time it restarts.
@@ -18962,14 +19001,8 @@ function _sndDraw() {
   }
 }
 
-// HD Models sits alongside what was already here rather than replacing it.
-// Run Models draws a metered forecast API sampled at 198 points and
-// interpolated between them; HD Models draws the model field itself at full
-// resolution off the Pi. Both are useful while the Pi is the newer of the two,
-// and Spaghetti Models never came from that API at all.
 const MODELS_SUB_BUBBLES = [
   { id: 'run-models',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-up></use></svg>', label: 'Run Models' },
-  { id: 'hd-models',        icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label: 'HD Models' },
   { id: 'spaghetti-models', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', label: 'Spaghetti Models' },
 ];
 
@@ -18983,7 +19016,6 @@ function toggleModelsSub() {
   wrap.appendChild(back);
   MODELS_SUB_BUBBLES.forEach(b => {
     const isOpen = b.id === 'run-models' ? _runModelsPanelIsOpen()
-                 : b.id === 'hd-models'   ? !!_hdOn
                  : _spaghettiModelsPanelIsOpen();
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isOpen ? ' active' : '');
@@ -18992,15 +19024,11 @@ function toggleModelsSub() {
     el.onclick = async () => {
       if (b.id === 'run-models') {
         _runModelsPanelIsOpen() ? closeRunModelsPanel() : openRunModelsPanel();
-      } else if (b.id === 'hd-models') {
-        _hdOn ? _hdDisable() : await _hdEnable();
       } else {
         _spaghettiModelsPanelIsOpen() ? closeSpaghettiModelsPanel() : openSpaghettiModelsPanel();
       }
-      el.classList.toggle('active',
-        b.id === 'run-models' ? _runModelsPanelIsOpen()
-        : b.id === 'hd-models' ? !!_hdOn
-        : _spaghettiModelsPanelIsOpen());
+      el.classList.toggle('active', b.id === 'run-models' ? _runModelsPanelIsOpen()
+                                  : _spaghettiModelsPanelIsOpen());
       _syncParentBubble('models');
     };
     wrap.appendChild(el);
@@ -32618,7 +32646,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Models panel now has HD Models alongside Run Models and Spaghetti Models rather than in place of them.";
+const APP_LATEST_UPDATE = "The Pi models are now choices in the Run Models list, under 'From the Pi'. Fixed the site not finding the Pi's address.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
