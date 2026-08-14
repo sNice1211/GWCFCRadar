@@ -9,9 +9,10 @@ that Leaflet drops on the map as a plain image overlay. The browser's entire job
 becomes displaying a picture.
 
 Measured on the target Pi, with NOAA cropping to CONUS before sending:
-    0.52 MB per forecast hour, about 1 second each
+    0.52 MB downloaded per forecast hour, about 1 second each
     ~21 MB and ~40 seconds per run, ~83 MB per day
-    ~155 MB on disk once old runs are being pruced
+    ~6 MB on disk once old runs are being pruned, because a rendered field is
+    mostly flat colour and PNG compresses it hard
 
 Run it from cron every hour. It works out whether there is anything to do and
 exits quickly when there is not.
@@ -53,7 +54,7 @@ FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 
 # Fields to render. Matched on the GRIB shortName, level type and level that
-# cfgrib preserves, rather than on the variable name it happens to invent,
+# GRIB itself defines, rather than on a name invented during conversion,
 # because those names differ between versions (t2m vs t, msl vs prmsl).
 #
 # convert turns raw GRIB units into what the map should show.
@@ -197,53 +198,100 @@ def open_fields(grib_path):
     """
     Pull the wanted fields out of a GRIB file as plain arrays.
 
-    Matched on the GRIB keys cfgrib carries through (shortName, typeOfLevel,
-    level) rather than on the variable name, which is not stable across
-    versions. Returns {key: (array, lats, lons)}.
+    Read with eccodes directly rather than through cfgrib and xarray. A GRIB
+    file is a flat sequence of self-describing messages, which is exactly the
+    shape this needs: walk them, read the keys, keep the ones wanted. Going via
+    xarray means asking it to assemble those messages into labelled cubes and
+    then taking them apart again, which on a mixed file it cannot always do at
+    all, and which drags a large dependency onto a small board for no gain.
+
+    Matched on shortName, typeOfLevel and level, which are GRIB's own keys and
+    do not drift, rather than on a variable name invented during conversion.
+
+    Returns {key: (2-D array, lats, lons)}.
     """
-    import cfgrib
+    import eccodes
 
     found = {}
+    uv = {}
+
     try:
-        datasets = cfgrib.open_datasets(
-            grib_path, backend_kwargs={"indexpath": ""})
-    except Exception as e:
-        log(f"    decode failed: {e}")
+        fh = open(grib_path, "rb")
+    except OSError as e:
+        log(f"    open failed: {e}")
         return found
 
-    uv = {}
-    for ds in datasets:
-        for name in ds.data_vars:
-            da = ds[name]
-            a = da.attrs
-            short = a.get("GRIB_shortName", "")
-            levt = a.get("GRIB_typeOfLevel", "")
-            lev = a.get("GRIB_level", 0)
-            lats = ds["latitude"].values
-            lons = ds["longitude"].values
+    try:
+        while True:
+            try:
+                gid = eccodes.codes_grib_new_from_file(fh)
+            except Exception as e:
+                log(f"    message read failed: {e}")
+                break
+            if gid is None:
+                break
+            try:
+                short = str(eccodes.codes_get(gid, "shortName"))
+                levt = str(eccodes.codes_get(gid, "typeOfLevel"))
+                lev = int(eccodes.codes_get(gid, "level"))
+                ni = int(eccodes.codes_get(gid, "Ni"))
+                nj = int(eccodes.codes_get(gid, "Nj"))
 
-            # Wind speed is derived, so u and v are held until both are seen.
-            if short in ("10u", "10v") and levt == "heightAboveGround":
-                uv[short] = (da.values, lats, lons)
-                continue
-
-            for key, spec in FIELDS.items():
-                if spec.get("derive"):
+                want = short in ("10u", "10v") or any(
+                    short == s["short"] and levt == s["levtype"]
+                    and lev == int(s["level"])
+                    for s in FIELDS.values() if not s.get("derive"))
+                if not want:
                     continue
-                if short == spec["short"] and levt == spec["levtype"] \
-                        and int(lev) == int(spec["level"]):
-                    found[key] = (da.values, lats, lons)
+
+                # Ask for missing values as NaN so gaps stay gaps rather than
+                # becoming a real number at the edge of the colour scale.
+                try:
+                    eccodes.codes_set(gid, "missingValue", float("nan"))
+                except Exception:
+                    pass
+
+                vals = np.asarray(eccodes.codes_get_values(gid),
+                                  dtype=np.float32)
+                if vals.size != ni * nj:
+                    log(f"    {short}: {vals.size} values for a {ni}x{nj} grid")
+                    continue
+                arr = vals.reshape(nj, ni)
+
+                lat1 = float(eccodes.codes_get(
+                    gid, "latitudeOfFirstGridPointInDegrees"))
+                lat2 = float(eccodes.codes_get(
+                    gid, "latitudeOfLastGridPointInDegrees"))
+                lon1 = float(eccodes.codes_get(
+                    gid, "longitudeOfFirstGridPointInDegrees"))
+                lon2 = float(eccodes.codes_get(
+                    gid, "longitudeOfLastGridPointInDegrees"))
+                lats = np.linspace(lat1, lat2, nj)
+                lons = np.linspace(lon1, lon2, ni)
+
+                if short in ("10u", "10v"):
+                    uv[short] = (arr, lats, lons)
+                    continue
+
+                for key, spec in FIELDS.items():
+                    if spec.get("derive"):
+                        continue
+                    if short == spec["short"] and levt == spec["levtype"] \
+                            and lev == int(spec["level"]):
+                        found[key] = (arr, lats, lons)
+            finally:
+                try:
+                    eccodes.codes_release(gid)
+                except Exception:
+                    pass
+    finally:
+        fh.close()
 
     if "10u" in uv and "10v" in uv:
         u, lats, lons = uv["10u"]
         v = uv["10v"][0]
         found["wind"] = (np.sqrt(u ** 2 + v ** 2), lats, lons)
 
-    for ds in datasets:
-        try:
-            ds.close()
-        except Exception:
-            pass
     return found
 
 

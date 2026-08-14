@@ -8,10 +8,15 @@ that Leaflet drops on the map as a plain image overlay.
 
 ## What it costs, measured on the target Pi
 
-    per forecast hour ....... 0.52 MB, about 1 second
-    per run (41 hours) ...... ~21 MB, ~40 seconds
-    per day (4 runs) ........ ~83 MB
-    on disk, steady state ... ~155 MB
+    download, per forecast hour .. 0.52 MB, about 1 second
+    download, per run (41 hours) . ~21 MB, ~40 seconds
+    download, per day (4 runs) ... ~83 MB
+    on disk, steady state ........ ~6 MB
+
+The disk figure is small because a rendered field is mostly flat colour and PNG
+compresses it hard. Measured on CONUS-sized grids: a smooth field like MSLP is
+2.6 KB, a wavy one like temperature 13.5 KB, and a sparse one like precipitation
+0.4 KB. Random noise would be 125 KB, but weather is not noise.
 
 NOAA does not meter this, so there is no quota to run out of, which was the
 problem with the API the site uses now.
@@ -21,19 +26,23 @@ problem with the API the site uses now.
     sudo apt update
     sudo apt install -y python3-numpy python3-pillow python3-requests libeccodes-tools
 
-cfgrib is not packaged, so it needs pip. Current Raspberry Pi OS refuses plain
-`pip install` into the system Python (PEP 668, the "externally-managed
-environment" error), so use a virtual environment:
+The Python binding for eccodes is not packaged, so it needs pip. Current
+Raspberry Pi OS refuses plain `pip install` into the system Python (PEP 668,
+the "externally-managed environment" error), so use a virtual environment:
 
     python3 -m venv --system-site-packages ~/wxenv
-    ~/wxenv/bin/pip install cfgrib
+    ~/wxenv/bin/pip install eccodes
 
 `--system-site-packages` means numpy, Pillow and requests come from apt, which
 is much faster than pip building them on an ARM board.
 
+If you already made this venv and installed cfgrib into it, there is nothing to
+do: cfgrib depends on eccodes, so it is already there. Nothing here imports
+cfgrib or xarray any more, but leaving them installed does no harm.
+
 Check it worked:
 
-    ~/wxenv/bin/python -c "import cfgrib, numpy, PIL, requests; print('ready')"
+    ~/wxenv/bin/python -c "import eccodes, numpy, PIL, requests; print('ready')"
 
 ## Run it once by hand
 
@@ -116,6 +125,6 @@ what is actually in a file with:
 
     grib_ls -p shortName,typeOfLevel,level /tmp/<the grib file>
 
-and correct `short` / `levtype` / `level` in `FIELDS`. Matching is done on those
-GRIB keys rather than on the variable name cfgrib invents, because those names
-change between versions.
+and correct `short` / `levtype` / `level` in `FIELDS`. Those are GRIB's own keys,
+which is why matching uses them: a name invented during conversion to some other
+format can change between library versions, but `shortName` does not.
