@@ -89,8 +89,27 @@ tunnel keeps one hostname instead of a new random one each restart.
       hrrr/20260814_17/ ...
 
 Models: `gfs` (0.25 deg, to +120h), `nam` (12 km, to +60h), `hrrr` (3 km,
-hourly to +18h). Each is fetched on its own cadence, and `latest.json` lists
-whichever ones currently have a finished run.
+hourly to +18h), `gefs` (ensemble mean, to +168h) and `gefsspr` (ensemble
+spread). Each is fetched on its own cadence, and `latest.json` lists whichever
+ones currently have a finished run.
+
+Spread is the useful half of an ensemble: it is how far apart the members are,
+so a high value is the model saying it does not know. A single deterministic
+chart cannot say that at all. It is drawn pale to dark rather than through a
+rainbow, because the point is the disagreement rather than a value to read off.
+
+Soundings are built too, as a separate product. They are the same source at
+pressure levels instead of surface fields, and they are written differently:
+the value is encoded into the pixel (high byte red, low byte green, alpha 0
+for no data) rather than coloured, because a sounding has to be read back as
+numbers. The browser draws the image to a canvas, reads one pixel per level,
+and has a profile, with no endpoint to ask and nothing to run on the Pi. The
+manifest carries the range each variable was scaled against.
+
+Measured round trip: 0.0018 C worst error against a 0.0021 C quantisation
+step, so nothing meaningful is lost.
+
+    12 levels x 4 variables x 9 forecast hours = 432 images, about 10 MB
 
     python3 pi/gfs_pipeline.py             # all of them
     python3 pi/gfs_pipeline.py hrrr        # just one

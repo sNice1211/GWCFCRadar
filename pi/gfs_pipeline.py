@@ -77,8 +77,59 @@ MODELS = {
         "raw": "hrrr/prod/hrrr.{date}/conus/hrrr.t{cyc}z.wrfsfcf{fhr:02d}.grib2.idx",
         "step": 1, "out": 18,
     },
+    "gefs": {
+        # The ensemble mean: 30-odd runs of the same model averaged, which is
+        # steadier than any single run beyond a couple of days.
+        "label": "GEFS mean", "res": "0.5 deg ens", "cycle_h": 6, "lag_h": 7,
+        "filter": "filter_gefs_atmos_0p50a.pl",
+        "dir": "/gefs.{date}/{cyc}/atmos/pgrb2ap5",
+        "file": "geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}",
+        "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
+               "geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+    },
+    "gefsspr": {
+        # The spread: how far apart those runs are. High spread is the model
+        # telling you it does not know, which a single deterministic chart
+        # cannot say at all, and is the useful half of an ensemble.
+        "label": "GEFS spread", "res": "0.5 deg ens", "cycle_h": 6, "lag_h": 7,
+        "filter": "filter_gefs_atmos_0p50a.pl",
+        "dir": "/gefs.{date}/{cyc}/atmos/pgrb2ap5",
+        "file": "gespr.t{cyc}z.pgrb2a.0p50.f{fhr:03d}",
+        "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
+               "gespr.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        # Spread is a distance, never negative, and small: its own scale.
+        "ranges": {"t2m": (0, 12), "d2m": (0, 12), "mslp": (0, 12),
+                   "wind": (0, 25), "apcp": (0, 25)},
+        "ramp": "spread",
+    },
 }
-DEFAULT_MODELS = ["gfs", "nam", "hrrr"]
+DEFAULT_MODELS = ["gfs", "nam", "hrrr", "gefs", "gefsspr"]
+
+# ── Soundings ───────────────────────────────────────────────────────────────
+# A sounding is a vertical profile, so it needs the same variables at many
+# pressure levels rather than one surface field.
+#
+# These are written differently from the map overlays. An overlay is a picture
+# and only has to look right; a sounding has to be read back as numbers, so the
+# value is encoded into the pixel instead of a colour: high byte in red, low
+# byte in green, giving 65536 steps across the range the manifest records.
+# Alpha marks where there is no data. The browser draws the image to a canvas,
+# reads one pixel column, and has a profile, with no extra endpoint and no
+# server to ask.
+SND_LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100]
+SND_VARS = {
+    "t":  {"short": ("t",),    "convert": lambda a: a - 273.15, "range": (-90, 45)},
+    "rh": {"short": ("r",),    "convert": lambda a: a,          "range": (0, 100)},
+    "u":  {"short": ("u",),    "convert": lambda a: a * 1.94384, "range": (-200, 200)},
+    "v":  {"short": ("v",),    "convert": lambda a: a * 1.94384, "range": (-200, 200)},
+}
+# Every 6 hours to two days. A sounding is read at a moment rather than
+# animated, and 44 fields an hour adds up, so it is sampled more coarsely than
+# the maps.
+SND_HOURS = list(range(0, 49, 6))
+SND_VAR_FLAGS = ["var_TMP", "var_RH", "var_UGRD", "var_VGRD"]
 
 KEEP_RUNS = 4          # about 24 hours of runs
 REQUEST_TIMEOUT = 60
@@ -154,6 +205,11 @@ RAMPS = {
                (0.75,(140,60,200)),(1,(230,60,120))],
     "wind":   [(0,(230,245,255)),(0.3,(90,180,230)),(0.6,(60,200,120)),
                (0.8,(245,200,70)),(1,(220,60,50))],
+    # spread reads as confidence, so it runs pale (models agree) to dark
+    # (they do not) rather than through a rainbow that invites reading a
+    # value where the point is the disagreement.
+    "spread": [(0,(240,248,255)),(0.25,(150,200,235)),(0.5,(120,140,220)),
+               (0.75,(150,80,190)),(1,(120,20,90))],
 }
 
 
@@ -396,6 +452,193 @@ def render_png(values, lats, spec, out_path):
 
 # ── Housekeeping ────────────────────────────────────────────────────────────
 
+def render_data_png(values, lats, lo, hi, out_path):
+    """
+    Write a field as numbers rather than as a picture.
+
+    A sounding has to be read back, so the value goes into the pixel: high byte
+    in red, low byte in green, 65536 steps across [lo, hi]. Alpha is 0 where
+    there is no data. The browser draws this to a canvas, reads one pixel per
+    level, and has a profile without any endpoint to ask.
+
+    Blue is left at zero. It is spare precision if a third byte is ever wanted.
+    """
+    data = np.asarray(values, dtype=np.float32)
+    if lats is not None and len(lats) > 1 and lats[0] < lats[-1]:
+        data = np.flipud(data)
+    span = float(hi - lo) or 1.0
+    norm = (data - lo) / span
+    bad = ~np.isfinite(norm)
+    q = np.clip(np.nan_to_num(norm) * 65535.0, 0, 65535).astype(np.uint32)
+    hib = (q >> 8).astype(np.uint8)
+    lob = (q & 0xFF).astype(np.uint8)
+    zero = np.zeros_like(hib)
+    alpha = np.full(hib.shape, 255, dtype=np.uint8)
+    alpha[bad] = 0
+    Image.fromarray(np.dstack([hib, lob, zero, alpha]), mode="RGBA").save(
+        out_path, optimize=True)
+
+
+def open_levels(grib_path):
+    """
+    Pull pressure-level fields out of a GRIB file.
+
+    Same walk as open_fields, but keyed by (variable, level) since a sounding
+    wants the same variable at every level rather than one field.
+    """
+    import eccodes
+    found = {}
+    try:
+        fh = open(grib_path, "rb")
+    except OSError:
+        return found
+    try:
+        while True:
+            try:
+                gid = eccodes.codes_grib_new_from_file(fh)
+            except Exception:
+                break
+            if gid is None:
+                break
+            try:
+                levt = str(eccodes.codes_get(gid, "typeOfLevel"))
+                if levt != "isobaricInhPa":
+                    continue
+                short = str(eccodes.codes_get(gid, "shortName"))
+                lev = int(eccodes.codes_get(gid, "level"))
+                if lev not in SND_LEVELS:
+                    continue
+                key = next((k for k, v in SND_VARS.items() if short in v["short"]), None)
+                if key is None:
+                    continue
+                ni = int(eccodes.codes_get(gid, "Ni"))
+                nj = int(eccodes.codes_get(gid, "Nj"))
+                try:
+                    eccodes.codes_set(gid, "missingValue", float("nan"))
+                except Exception:
+                    pass
+                vals = np.asarray(eccodes.codes_get_values(gid), dtype=np.float32)
+                if vals.size != ni * nj:
+                    continue
+                lat1 = float(eccodes.codes_get(gid, "latitudeOfFirstGridPointInDegrees"))
+                lat2 = float(eccodes.codes_get(gid, "latitudeOfLastGridPointInDegrees"))
+                found[(key, lev)] = (vals.reshape(nj, ni),
+                                     np.linspace(lat1, lat2, nj))
+            except Exception as e:
+                log(f"    skipping a level message: {e}")
+            finally:
+                try:
+                    eccodes.codes_release(gid)
+                except Exception:
+                    pass
+    finally:
+        fh.close()
+    return found
+
+
+def fetch_sounding_hour(m, date_str, cyc, fhr, path):
+    """One forecast hour of pressure-level data, cropped to the box."""
+    params = {
+        "file": m["file"].format(cyc=cyc, fhr=fhr),
+        "dir": m["dir"].format(date=date_str, cyc=cyc),
+        "subregion": "",
+        **{k: "on" for k in SND_VAR_FLAGS},
+        **{f"lev_{lev}_mb": "on" for lev in SND_LEVELS},
+        **{k: v for k, v in BOX.items()},
+    }
+    url = f"{FILTER_BASE}/{m['filter']}"
+    for attempt in range(RETRIES):
+        try:
+            r = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            if (r.status_code == 200 and len(r.content) > 5000
+                    and r.content[:4] == b"GRIB"):
+                with open(path, "wb") as f:
+                    f.write(r.content)
+                return True
+            if attempt == RETRIES - 1:
+                log(f"    snd f{fhr:03d}: HTTP {r.status_code}, {len(r.content)} bytes")
+        except requests.RequestException as e:
+            if attempt == RETRIES - 1:
+                log(f"    snd f{fhr:03d}: {e}")
+        time.sleep(2 ** attempt)
+    return False
+
+
+def build_soundings(name="gfs"):
+    """Build the pressure-level stack a sounding is read from."""
+    m = MODELS[name]
+    date_str, cyc = cycle_for(m)
+    run_id = f"{date_str}_{cyc}"
+    snd_dir = os.path.join(OUT_DIR, "sounding", run_id)
+    done = os.path.join(snd_dir, "manifest.json")
+
+    if os.path.exists(done):
+        try:
+            with open(done) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            pass
+    if not run_is_complete(m, date_str, cyc):
+        return _newest_manifest(os.path.join(OUT_DIR, "sounding"))
+
+    log(f"sounding: building {run_id} ({len(SND_HOURS)} hours x "
+        f"{len(SND_VARS)} vars x {len(SND_LEVELS)} levels)")
+    os.makedirs(snd_dir, exist_ok=True)
+    t0 = time.time()
+    hours_done = []
+    shape = None
+
+    for fhr in SND_HOURS:
+        with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as tf:
+            tmp = tf.name
+        try:
+            if not fetch_sounding_hour(m, date_str, cyc, fhr, tmp):
+                continue
+            levels = open_levels(tmp)
+            if not levels:
+                continue
+            wrote = 0
+            for (var, lev), (arr, lats) in levels.items():
+                spec = SND_VARS[var]
+                lo, hi = spec["range"]
+                render_data_png(spec["convert"](arr), lats, lo, hi,
+                                os.path.join(snd_dir, f"{var}_{lev}_f{fhr:03d}.png"))
+                shape = shape or [int(arr.shape[0]), int(arr.shape[1])]
+                wrote += 1
+            if wrote:
+                hours_done.append(fhr)
+                log(f"  snd f{fhr:03d} ok ({wrote} level fields)")
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    if not hours_done:
+        log("sounding: no hours succeeded")
+        return _newest_manifest(os.path.join(OUT_DIR, "sounding"))
+
+    manifest = {
+        "kind": "sounding", "model": name, "run": run_id,
+        "cycle": f"{date_str}T{cyc}:00Z",
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "bounds": BOUNDS_LATLON, "shape": shape,
+        "levels": SND_LEVELS, "hours": hours_done,
+        # The client needs these to turn a pixel back into a number.
+        "vars": {k: {"min": v["range"][0], "max": v["range"][1],
+                     "unit": ("C" if k == "t" else "%" if k == "rh" else "kt")}
+                 for k, v in SND_VARS.items()},
+        "encoding": "value = min + ((R*256 + G) / 65535) * (max - min); alpha 0 means no data",
+        "pattern": "{var}_{level}_f{fhr:03d}.png",
+        "seconds": round(time.time() - t0, 1),
+    }
+    with open(done, "w") as f:
+        json.dump(manifest, f, indent=1)
+    log(f"sounding: {len(hours_done)}/{len(SND_HOURS)} hours in {manifest['seconds']}s")
+    prune(os.path.join(OUT_DIR, "sounding"))
+    return manifest
+
+
 def prune(model_dir, keep=KEEP_RUNS):
     """Keep the newest few runs of one model and drop the rest."""
     if not os.path.isdir(model_dir):
@@ -511,6 +754,14 @@ def build_model(name, m):
                 spec = FIELDS.get(key)
                 if spec is None:
                     continue
+                # A model may override the scale. Spread is a distance, so
+                # the deterministic range would put every value at one end.
+                if m.get("ranges", {}).get(key) or m.get("ramp"):
+                    spec = dict(spec)
+                    if m.get("ranges", {}).get(key):
+                        spec["range"] = m["ranges"][key]
+                    if m.get("ramp"):
+                        spec["ramp"] = m["ramp"]
                 lo, hi = render_png(vals, lats, spec,
                                     os.path.join(run_dir, f"{key}_f{fhr:03d}.png"))
                 built.setdefault(key, []).append(fhr)
@@ -570,6 +821,8 @@ def main(models=None):
     any_ok = False
 
     for name in names:
+        if name == "sounding":
+            continue                      # handled below
         m = MODELS.get(name)
         if not m:
             log(f"unknown model: {name}")
@@ -587,6 +840,22 @@ def main(models=None):
                 "run": man["run"], "cycle": man.get("cycle", ""),
                 "path": f"{name}/{man['run']}/manifest.json",
                 "fields": sorted(man.get("fields", {}).keys()),
+            }
+
+    # Soundings are their own product rather than a model: same source, but
+    # pressure levels instead of surface fields, and read back as numbers.
+    if not models or "sounding" in names:
+        try:
+            snd = build_soundings()
+        except Exception as e:
+            log(f"sounding: failed: {e}")
+            snd = _newest_manifest(os.path.join(OUT_DIR, "sounding"))
+        if snd:
+            any_ok = True
+            index["sounding"] = {
+                "run": snd["run"], "cycle": snd.get("cycle", ""),
+                "path": f"sounding/{snd['run']}/manifest.json",
+                "levels": snd.get("levels", []), "hours": snd.get("hours", []),
             }
 
     if not any_ok:
