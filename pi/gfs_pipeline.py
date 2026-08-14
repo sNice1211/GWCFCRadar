@@ -53,6 +53,23 @@ TROPICS_BOX = {"toplat": 45.0, "bottomlat": 0.0,
                "leftlon": 195.0, "rightlon": 350.0}
 TROPICS_BOUNDS = [[0.0, -165.0], [45.0, -10.0]]
 
+# The places the CONUS box leaves out entirely. Each regional model runs over
+# its own small domain, and cropping it to the lower 48 would return nothing.
+ALASKA_BOX = {"toplat": 72.0, "bottomlat": 50.0,
+              "leftlon": 185.0, "rightlon": 232.0}
+ALASKA_BOUNDS = [[50.0, -175.0], [72.0, -128.0]]
+
+HAWAII_BOX = {"toplat": 24.0, "bottomlat": 17.0,
+              "leftlon": 197.0, "rightlon": 207.0}
+HAWAII_BOUNDS = [[17.0, -163.0], [24.0, -153.0]]
+
+# Puerto Rico earns its place twice over: it is a populated domain the CONUS
+# box misses, and it sits in the path of most Atlantic hurricanes, so a 3 km
+# model over it is a tropical product as much as a regional one.
+PRICO_BOX = {"toplat": 22.0, "bottomlat": 15.0,
+             "leftlon": 289.0, "rightlon": 300.0}
+PRICO_BOUNDS = [[15.0, -71.0], [22.0, -60.0]]
+
 # Every model NOAA publishes through the same filter service, which is what
 # makes adding one a few lines rather than a new program. They differ only in
 # where the files live, how often they run, how far out they go and how long
@@ -235,10 +252,107 @@ MODELS = {
         "step": 6, "out": 120,
         "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
     },
+    # ── Two more opinions at 3 km ───────────────────────────────────────────
+    # The High Resolution Window: the same box run by two different models,
+    # ARW and FV3. Their value is precisely that they are not HRRR, so when
+    # all three put a storm in the same place that is worth more than any one
+    # of them saying it twice.
+    "hireswarw": {
+        "label": "HiResW ARW", "res": "5 km", "cycle_h": 12, "lag_h": 4,
+        "filter": "filter_hiresw.pl",
+        "dir": "/hiresw.{date}",
+        "file": "hiresw.t{cyc}z.arw_5km.f{fhr:02d}.conus.grib2",
+        "raw": "hiresw/prod/hiresw.{date}/"
+               "hiresw.t{cyc}z.arw_5km.f{fhr:02d}.conus.grib2.idx",
+        "step": 3, "out": 48,
+    },
+    "hireswfv3": {
+        "label": "HiResW FV3", "res": "5 km", "cycle_h": 12, "lag_h": 4,
+        "filter": "filter_hiresw.pl",
+        "dir": "/hiresw.{date}",
+        "file": "hiresw.t{cyc}z.fv3_5km.f{fhr:02d}.conus.grib2",
+        "raw": "hiresw/prod/hiresw.{date}/"
+               "hiresw.t{cyc}z.fv3_5km.f{fhr:02d}.conus.grib2.idx",
+        "step": 3, "out": 48,
+    },
+
+    # ── The places the main box leaves out ──────────────────────────────────
+    "hrrrak": {
+        "label": "HRRR Alaska", "res": "3 km", "cycle_h": 3, "lag_h": 2,
+        "filter": "filter_hrrr_ak_2d.pl",
+        "dir": "/hrrr.{date}/alaska",
+        "file": "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.ak.grib2",
+        "raw": "hrrr/prod/hrrr.{date}/alaska/"
+               "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.ak.grib2.idx",
+        "step": 3, "out": 48,
+        "box": ALASKA_BOX, "bounds": ALASKA_BOUNDS,
+    },
+    "namak": {
+        "label": "NAM Alaska", "res": "3 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam_alaskanest.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/"
+               "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2.idx",
+        "step": 3, "out": 60,
+        "box": ALASKA_BOX, "bounds": ALASKA_BOUNDS,
+    },
+    "namhi": {
+        "label": "NAM Hawaii", "res": "3 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam_hawaiinest.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/"
+               "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2.idx",
+        "step": 3, "out": 60,
+        "box": HAWAII_BOX, "bounds": HAWAII_BOUNDS,
+    },
+    "nampr": {
+        "label": "NAM Puerto Rico", "res": "3 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam_priconest.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/"
+               "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2.idx",
+        "step": 3, "out": 60,
+        "box": PRICO_BOX, "bounds": PRICO_BOUNDS,
+    },
+
+    # ── Not from NOAA ───────────────────────────────────────────────────────
+    # ECMWF, which is generally the best global model there is, and which has
+    # published a free 0.25 degree forecast since 2024. It is fetched
+    # differently from everything above: there is no service to crop it, so
+    # the whole world arrives and the box is cut out here after decoding. What
+    # makes that affordable is the index file published beside each forecast
+    # hour, which gives a byte range per field, so only the handful of fields
+    # wanted are downloaded rather than the whole 100 MB file.
+    "ecmwf": {
+        "label": "ECMWF", "res": "0.25 deg", "cycle_h": 12, "lag_h": 8,
+        "source": "ecmwf",
+        "step": 6, "out": 144,
+        "crop": True,
+        "box": BOX, "bounds": BOUNDS_LATLON,
+    },
+    "ecmwftrop": {
+        "label": "ECMWF Tropical", "res": "0.25 deg", "cycle_h": 12,
+        "lag_h": 8,
+        "source": "ecmwf",
+        "step": 6, "out": 240,
+        "crop": True,
+        "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
+        "shear": True,
+    },
 }
-DEFAULT_MODELS = ["gfs", "nam", "namnest", "hrrr", "rap", "nbm", "rtma",
-                  "gefs", "gefsspr",
-                  "gfstrop", "gefstrop", "gfswave"]
+
+# Order matters: this is also the order they are built in, and the time budget
+# below stops starting new ones once the hour is nearly gone. So the ones worth
+# having most are first, and the long range ones that nobody minds being an
+# hour stale are last.
+DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
+                  "gfstrop", "gefs", "gefsspr", "gefstrop", "gfswave",
+                  "ecmwf", "ecmwftrop",
+                  "hireswarw", "hireswfv3",
+                  "nampr", "hrrrak", "namak", "namhi"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -273,6 +387,14 @@ RETRIES = 3
 # memory and does not have much of it. Coarse models are well under this and
 # are untouched.
 MAX_EDGE_PX = 1600
+
+# How long a standard build may spend before it stops starting new models.
+# With twenty of them a bad afternoon at NOAA could otherwise run past the
+# hour, and since the next run cannot start while this one holds the lock,
+# one slow build would swallow the following one. Forty minutes leaves the
+# hourly rhythm intact. Models named explicitly on the command line ignore
+# this: asking for one by name means meaning it.
+TIME_BUDGET_S = 40 * 60
 
 FILTER_BASE = "https://nomads.ncep.noaa.gov/cgi-bin"
 RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
@@ -459,6 +581,135 @@ def inventory(m, date_str, cyc, fhr):
     return pairs or None
 
 
+ECMWF_BASE = "https://data.ecmwf.int/forecasts"
+
+# What to take from ECMWF, by its own parameter names. Everything not listed is
+# skipped without downloading it, which is the point: the whole file is around
+# 100 MB and this pulls a few MB of it.
+ECMWF_PARAMS = {"2t", "2d", "msl", "10u", "10v", "tp", "tcwv", "sst"}
+ECMWF_SHEAR_PARAMS = {"u", "v"}
+
+
+def ecmwf_paths(m, date_str, cyc, fhr):
+    """The forecast file and its index, which live beside each other."""
+    stem = (f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/0p25/oper/"
+            f"{date_str}{cyc}0000-{fhr}h-oper-fc.grib2")
+    return stem, stem + ".index"
+
+
+def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
+    """
+    Download one ECMWF forecast hour, a few fields at a time.
+
+    There is no filter service here, so the alternative to this would be
+    pulling roughly 100 MB to keep about two of it. The index beside each file
+    lists every field with a byte offset and a length, so the wanted ones are
+    asked for by range and glued together. GRIB is a sequence of self
+    describing messages, so a handful of messages concatenated is a valid GRIB
+    file and the decoder cannot tell the difference.
+
+    Ranges are merged when they are adjacent or nearly so, because thirty
+    small requests over one connection cost more in round trips than the few
+    wasted bytes between them.
+    """
+    grib_url, idx_url = ecmwf_paths(m, date_str, cyc, fhr)
+    try:
+        r = requests.get(idx_url, timeout=REQUEST_TIMEOUT)
+        if r.status_code != 200:
+            log(f"    f{fhr:03d}: no index, HTTP {r.status_code}")
+            return False
+    except requests.RequestException as e:
+        log(f"    f{fhr:03d}: index failed: {e}")
+        return False
+
+    want = []
+    for line in r.text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        param = rec.get("param")
+        if param in ECMWF_PARAMS and rec.get("levtype") == "sfc":
+            pass
+        elif (m.get("shear") and param in ECMWF_SHEAR_PARAMS
+              and rec.get("levtype") == "pl"
+              and int(rec.get("levelist", 0) or 0) in SHEAR_LEVELS):
+            pass
+        else:
+            continue
+        try:
+            want.append((int(rec["_offset"]), int(rec["_length"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    if not want:
+        log(f"    f{fhr:03d}: index had none of the wanted fields")
+        return False
+
+    want.sort()
+    merged = []
+    for off, ln in want:
+        if merged and off - (merged[-1][0] + merged[-1][1]) <= 65536:
+            start = merged[-1][0]
+            merged[-1] = (start, off + ln - start)
+        else:
+            merged.append((off, ln))
+
+    try:
+        with open(path, "wb") as f:
+            for off, ln in merged:
+                rr = requests.get(
+                    grib_url, timeout=REQUEST_TIMEOUT,
+                    headers={"Range": f"bytes={off}-{off + ln - 1}"})
+                # 206 is the answer to a range request. A 200 means the server
+                # ignored the range and is sending the whole file, which would
+                # quietly turn a few MB into a hundred.
+                if rr.status_code != 206:
+                    log(f"    f{fhr:03d}: range refused, HTTP {rr.status_code}")
+                    return False
+                f.write(rr.content)
+    except requests.RequestException as e:
+        log(f"    f{fhr:03d}: {e}")
+        return False
+
+    got = os.path.getsize(path)
+    if got < 5000:
+        log(f"    f{fhr:03d}: only {got} bytes")
+        return False
+    return True
+
+
+def crop_to_box(arr, lats, lons, box):
+    """
+    Cut a global field down to the box, after the fact.
+
+    NOAA crops before sending and this is not needed there. ECMWF sends the
+    whole world, so the box is applied here instead. Longitudes are compared
+    in the 0 to 360 convention the box is written in, which is also what
+    ECMWF's grid uses, so nothing has to be rotated.
+
+    Returns (arr, lats, lons, bounds) with bounds being the extent actually
+    kept rather than the extent asked for, so the picture and the rectangle it
+    is stretched into are the same thing.
+    """
+    lat_ok = np.where((lats >= box["bottomlat"]) & (lats <= box["toplat"]))[0]
+    lon_ok = np.where((lons >= box["leftlon"]) & (lons <= box["rightlon"]))[0]
+    if lat_ok.size < 2 or lon_ok.size < 2:
+        return None
+    arr = arr[np.ix_(lat_ok, lon_ok)]
+    lats, lons = lats[lat_ok], lons[lon_ok]
+
+    def to180(x):
+        return x - 360.0 if x > 180.0 else x
+
+    bounds = [[float(min(lats[0], lats[-1])), float(to180(lons[0]))],
+              [float(max(lats[0], lats[-1])), float(to180(lons[-1]))]]
+    return arr, lats, lons, bounds
+
+
 def ask_from_inventory(pairs, extra_levels=()):
     """
     Turn what is in the file into the flags that ask for the useful part.
@@ -609,7 +860,10 @@ def run_is_complete(m, date_str, cyc):
     200, which reads as success and makes the check useless.
     """
     last = fhours_for(m)[-1]
-    url = f"{RAW_BASE}/" + m["raw"].format(date=date_str, cyc=cyc, fhr=last)
+    if m.get("source") == "ecmwf":
+        url = ecmwf_paths(m, date_str, cyc, last)[1]
+    else:
+        url = f"{RAW_BASE}/" + m["raw"].format(date=date_str, cyc=cyc, fhr=last)
     try:
         r = requests.get(url, timeout=30, headers={"Range": "bytes=0-256"})
         # A real index is text listing fields. An error page is HTML.
@@ -633,6 +887,9 @@ def fetch_hour(m, date_str, cyc, fhr, path):
     model's declared list, then the four fields every model carries. A chart
     with four fields beats no chart.
     """
+    if m.get("source") == "ecmwf":
+        return fetch_hour_ecmwf(m, date_str, cyc, fhr, path)
+
     attempts = []
     pairs = inventory(m, date_str, cyc, fhr)
     if pairs:
@@ -1175,6 +1432,12 @@ def build_model(name, m):
     built = {}
     ranges = {}
     ok = 0
+    # Filled in by the crop, for sources that send the whole world. The box
+    # asked for and the box that comes back are not identical: a grid has a
+    # spacing, so the edges land on the nearest cell. Recording what was
+    # actually kept is what stops the image being stretched to a rectangle it
+    # does not fill.
+    bounds_seen = None
     for fhr in hours:
         with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as tf:
             tmp = tf.name
@@ -1188,6 +1451,17 @@ def build_model(name, m):
                 spec = FIELDS.get(key)
                 if spec is None:
                     continue
+                # A source with no cropping service sends the whole world, so
+                # the box is applied here instead. The bounds that come back
+                # are the extent actually kept rather than the extent asked
+                # for, which is what keeps the picture and the rectangle it is
+                # stretched into the same shape.
+                if m.get("crop"):
+                    cut = crop_to_box(vals, lats, _lons, m.get("box", BOX))
+                    if cut is None:
+                        continue
+                    vals, lats, _lons, real_bounds = cut
+                    bounds_seen = real_bounds
                 # A model may override the scale. Spread is a distance, so
                 # the deterministic range would put every value at one end.
                 if m.get("ranges", {}).get(key) or m.get("ramp"):
@@ -1216,7 +1490,7 @@ def build_model(name, m):
         "model": name, "label": m["label"], "res": m["res"],
         "run": run_id, "cycle": f"{date_str}T{cyc}:00Z",
         "built_at": datetime.now(timezone.utc).isoformat(),
-        "bounds": m.get("bounds", BOUNDS_LATLON),
+        "bounds": bounds_seen or m.get("bounds", BOUNDS_LATLON),
         "hours": hours,
         "fields": {k: {"hours": v,
                        "min": round(ranges[k][0], 2), "max": round(ranges[k][1], 2),
@@ -1248,10 +1522,24 @@ def _newest_manifest(model_dir):
     return None
 
 
+def _index_entry(name, man):
+    """One model's line in latest.json, which is all the page reads to start."""
+    return {
+        "label": man.get("label", name), "res": man.get("res", ""),
+        "run": man["run"], "cycle": man.get("cycle", ""),
+        "path": f"{name}/{man['run']}/manifest.json",
+        "fields": sorted(man.get("fields", {}).keys()),
+    }
+
+
 def main(models=None):
     names = models or DEFAULT_MODELS
     index = {"updated": datetime.now(timezone.utc).isoformat(), "models": {}}
     any_ok = False
+    started = time.time()
+    # Only when running the standard list. Naming models explicitly means
+    # meaning it, and a hand-run build should finish what it was asked for.
+    budget = TIME_BUDGET_S if not models else None
 
     for name in names:
         if name == "sounding":
@@ -1260,6 +1548,19 @@ def main(models=None):
         if not m:
             log(f"unknown model: {name}")
             continue
+        if budget and time.time() - started > budget:
+            # Out of time rather than out of models. Everything already built
+            # is kept and listed; the rest are picked up next hour, and since
+            # DEFAULT_MODELS is in order of what matters, what gets dropped is
+            # the long range material nobody minds being an hour old.
+            log(f"time budget reached, leaving {name} and the rest for the "
+                f"next run")
+            for later in names[names.index(name):]:
+                man = _newest_manifest(os.path.join(OUT_DIR, later))
+                if man:
+                    any_ok = True
+                    index["models"][later] = _index_entry(later, man)
+            break
         try:
             man = build_model(name, m)
         except Exception as e:
@@ -1268,12 +1569,7 @@ def main(models=None):
             man = _newest_manifest(os.path.join(OUT_DIR, name))
         if man:
             any_ok = True
-            index["models"][name] = {
-                "label": man.get("label", name), "res": man.get("res", ""),
-                "run": man["run"], "cycle": man.get("cycle", ""),
-                "path": f"{name}/{man['run']}/manifest.json",
-                "fields": sorted(man.get("fields", {}).keys()),
-            }
+            index["models"][name] = _index_entry(name, man)
 
     # Soundings are their own product rather than a model: same source, but
     # pressure levels instead of surface fields, and read back as numbers.

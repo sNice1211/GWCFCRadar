@@ -158,6 +158,57 @@ currently have a finished run:
     gfstrop  0.25 deg      to +192h   4x a day   tropical box
     gefstrop 0.5 deg mean  to +240h   4x a day   tropical box
     gfswave  0.16 deg      to +120h   4x a day   tropical box
+    ecmwf    0.25 deg      to +144h   2x a day   not from NOAA
+    ecmwftrop 0.25 deg     to +240h   2x a day   not from NOAA, tropical box
+    hireswarw 5 km         to  +48h   2x a day
+    hireswfv3 5 km         to  +48h   2x a day
+    hrrrak   3 km          to  +48h   8x a day   Alaska
+    namak    3 km          to  +60h   4x a day   Alaska
+    namhi    3 km          to  +60h   4x a day   Hawaii
+    nampr    3 km          to  +60h   4x a day   Puerto Rico
+
+The High Resolution Window pair, ARW and FV3, are worth having precisely
+because they are not HRRR. When all three put a storm in the same place that is
+worth more than any one model saying it twice.
+
+Alaska, Hawaii and Puerto Rico each get their own box, because the main one
+would crop them to nothing. Puerto Rico earns its place twice over: a populated
+domain the CONUS box misses, sitting in the path of most Atlantic hurricanes.
+
+## ECMWF, which does not work like the others
+
+Generally the best global model there is, and free at 0.25 degrees since 2024.
+It is fetched differently: there is no service to crop it, so the whole world
+arrives and the box is cut out here after decoding.
+
+What makes that affordable is the index file published beside each forecast
+hour, giving a byte offset and length per field. Only the wanted fields are
+requested, by range, and glued together. GRIB is a sequence of self describing
+messages, so a handful of them concatenated is a valid GRIB file and the
+decoder cannot tell. Measured on the index structure: about 0.2 percent of the
+file for the fields this draws.
+
+Adjacent ranges are merged, because several small requests over one connection
+cost more in round trips than the few wasted bytes between them, but only when
+they are genuinely close: merging across a large gap would download the gap.
+
+A range request must come back 206. A 200 means the server ignored the range
+and is sending the whole file, which would quietly turn a few megabytes into a
+hundred, so that is treated as a failure rather than a slow success.
+
+## The build has a time budget
+
+    TIME_BUDGET_S = 40 * 60
+
+With twenty models a bad afternoon at NOAA could otherwise run past the hour,
+and the next run cannot start while this one holds the lock, so one slow build
+would swallow the following one. After forty minutes no new model is started;
+whatever is already built is kept and listed, and the rest are picked up next
+time.
+
+`DEFAULT_MODELS` is in order of what matters, so what gets dropped is the long
+range material nobody minds being an hour old. Models named on the command line
+ignore the budget: asking for one by name means meaning it.
 
 Three of those are worth a word. **NAM Nest** is HRRR's resolution with three
 times HRRR's reach: the same 12 km model run again over a smaller box at a grid
