@@ -12143,14 +12143,50 @@ _sevSetSection = async function (value) {
       _sevOverlayLayer = null;
     }
     _hdFromPicker = true;
+    _sevSection = value;              // so the picker keeps showing this choice
     if (!_hdOn) await _hdEnable();
     await _hdPickModel(which);
     _hdRenderPanel();
+    _sevUpdateProducts();             // rebuild the product list from the manifest
     return;
   }
   if (_hdOn) _hdDisable();          // leaving the Pi, so take its layer off
   _hdFromPicker = false;
   return _hdOrigSetSection.apply(this, arguments);
+};
+
+// The product list for a Pi model is built from that model's manifest, so it
+// offers exactly what was rendered and nothing else. The fixed lists belong to
+// the services they were written for: NAM carries no reflectivity in the set we
+// fetch, GEFS at half a degree carries neither CAPE nor dewpoint, and offering
+// them anyway means a product that selects and then draws nothing.
+const _hdOrigUpdateProducts = _sevUpdateProducts;
+_sevUpdateProducts = function () {
+  const sel = document.getElementById('sev-var-sel');
+  if (!sel || !_hdFromPicker || !_hdOn || !_hdManifest) {
+    return _hdOrigUpdateProducts.apply(this, arguments);
+  }
+  const have = _hdManifest.fields || {};
+  const opts = HD_FIELDS
+    .filter(f => (have[f.id] && (have[f.id].hours || []).length))
+    .map(f => ({ v: f.id, l: f.label }));
+  sel.innerHTML = '';
+  if (!opts.length) {
+    const o = document.createElement('option');
+    o.value = ''; o.textContent = 'nothing built for this model yet';
+    sel.appendChild(o);
+    return;
+  }
+  opts.forEach(p => {
+    const o = document.createElement('option');
+    o.value = p.v; o.textContent = p.l;
+    sel.appendChild(o);
+  });
+  // Keep the current product if this model has it, otherwise take the first
+  // one it does have rather than leaving a selection that draws nothing.
+  if (!opts.some(p => p.v === _hdField)) _hdField = opts[0].v;
+  _sevVar = _hdField;
+  sel.value = _hdField;
 };
 
 // Run Models' own product list and forecast-hour grid drive the Pi layer, so
@@ -12166,11 +12202,9 @@ _sevSetVar = function (v) {
   if (el && el.value !== v) el.value = v;
   if (_hdFromPicker && _hdOn) {
     _sevVar = v;
-    const want = HD_VAR_MAP[v] || v;
-    if (_hdHoursFor(want).length) { _hdField = want; _hdHourIdx = 0; _hdShow(); }
-    else if (typeof showToast === 'function') {
-      showToast('The Pi does not carry that product for this model.', 2200);
-    }
+    // The options are the Pi's own field names now, so no translation and no
+    // guessing: if it is in the list, the model built it.
+    if (_hdHoursFor(v).length) { _hdField = v; _hdHourIdx = 0; _hdShow(); }
     return;
   }
   return _hdOrigSetVar.apply(this, arguments);
@@ -32293,7 +32327,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Pi models now use the Run Models controls you already had, with no extra menu, and the site follows the Pi when its address changes.";
+const APP_LATEST_UPDATE = "The product list now shows only what the chosen model actually built, so nothing offers a chart that would come back empty.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
