@@ -16304,7 +16304,23 @@ function _sevEnsShowFrame(body, frames) {
   _sevEnsTrimPainted(frames, _sevFrame);
   const f = frames[_sevFrame];
   if (f) {
-    _sevOverlayLayer = _sevEnsFrameLayer(f).addTo(map);
+    // Take the outgoing frame off the map before the incoming one goes on.
+    // Without this the assignment below simply overwrote the reference: the
+    // previous overlay stayed painted with nothing left pointing at it, so
+    // every frame change stacked another image on the pile and none of them
+    // could ever be removed. That is the smeared look when stepping through
+    // forecast hours, and it is a memory leak as well as a visual one, since
+    // _sevEnsTrimPainted deliberately skips any layer still on the map and so
+    // could never release them either.
+    //
+    // Compared by identity because frames cache their own layer: when the
+    // incoming frame is the one already showing, removing it after adding it
+    // would leave the map blank.
+    const next = _sevEnsFrameLayer(f);
+    if (_sevOverlayLayer && _sevOverlayLayer !== next) {
+      try { map.removeLayer(_sevOverlayLayer); } catch (e) {}
+    }
+    _sevOverlayLayer = next.addTo(map);
     // cols/rows travel with the frame because the deterministic models below
     // reuse this same cache at a finer grid than the ensemble's.
     // bounds travel too: the deterministic grid is sampled over the visible
@@ -32018,7 +32034,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The multi-panel compare tool has been removed. Everything else is back exactly as it was before it was added.";
+const APP_LATEST_UPDATE = "Fixed model frames stacking on top of each other. The old image is now taken off the map before the new one goes on, so stepping through forecast hours looks clean and no longer piles up memory.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
