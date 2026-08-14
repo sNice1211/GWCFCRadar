@@ -62,7 +62,22 @@ Check it worked:
 
     ~/wxenv/bin/python -c "import eccodes, numpy, PIL, requests; print('ready')"
 
-## Run it once by hand
+## Building by hand
+
+Start it through systemd rather than running the script directly:
+
+    systemctl --user start gwcfc-models
+    journalctl --user -u gwcfc-models -f
+
+Run from a terminal the build belongs to that terminal, so closing the window
+kills a ten minute job. As a service it belongs to the machine. The second
+command is only a view of it: Ctrl+C stops watching, not building.
+
+A build that is interrupted leaves no manifest for the run it was working on,
+so nothing half-finished is ever served and the next hourly run simply picks it
+up again.
+
+## Run the script directly
 
     ~/wxenv/bin/python ~/GWCFCRadar/pi/gfs_pipeline.py
 
