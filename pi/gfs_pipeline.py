@@ -207,6 +207,34 @@ FALLBACK_LEVS = ["lev_2_m_above_ground", "lev_10_m_above_ground",
                  "lev_mean_sea_level"]
 
 
+def write_json(path, obj):
+    """
+    Write a file that is either the old one or the new one, never half of both.
+
+    Opening a path for writing truncates it immediately, so a run interrupted
+    between the truncate and the write leaves an empty file behind. For the
+    manifest and the index that is worse than useless: the manifest is what
+    marks a run finished, so an empty one claims a run is ready and then fails
+    to say anything about it.
+
+    Writing beside it and renaming avoids that. A rename within a directory is
+    atomic, so a reader sees one file or the other.
+    """
+    tmp = f"{path}.tmp{os.getpid()}"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(obj, f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def log(msg):
     print(f"{datetime.now(timezone.utc):%H:%M:%S} {msg}", flush=True)
 
@@ -677,8 +705,7 @@ def build_soundings(name="gfs"):
         "pattern": "{var}_{level}_f{fhr:03d}.png",
         "seconds": round(time.time() - t0, 1),
     }
-    with open(done, "w") as f:
-        json.dump(manifest, f, indent=1)
+    write_json(done, manifest)
     log(f"sounding: {len(hours_done)}/{len(SND_HOURS)} hours in {manifest['seconds']}s")
     prune(os.path.join(OUT_DIR, "sounding"))
     return manifest
@@ -770,9 +797,12 @@ def build_model(name, m):
     if os.path.exists(done):
         try:
             with open(done) as f:
-                return json.load(f)
+                man = json.load(f)
+            if man.get("fields"):
+                return man
+            log(f"{name}: {run_id} manifest is empty, rebuilding")
         except (OSError, ValueError):
-            pass                      # unreadable: fall through and rebuild
+            log(f"{name}: {run_id} manifest is unreadable, rebuilding")
 
     if not run_is_complete(m, date_str, cyc):
         log(f"{name}: {run_id} not published yet")
@@ -837,8 +867,7 @@ def build_model(name, m):
     }
     # Written last: a run that died halfway leaves no manifest, so the site
     # keeps serving the previous complete one rather than a half-built set.
-    with open(done, "w") as f:
-        json.dump(manifest, f, indent=1)
+    write_json(done, manifest)
     log(f"{name}: {ok}/{len(hours)} hours in {manifest['seconds']}s")
     prune(model_dir)
     return manifest
@@ -907,8 +936,7 @@ def main(models=None):
         log("nothing available from any model")
         return 1
 
-    with open(os.path.join(OUT_DIR, "latest.json"), "w") as f:
-        json.dump(index, f, indent=1)
+    write_json(os.path.join(OUT_DIR, "latest.json"), index)
     log("index updated: " + ", ".join(
         f"{k} {v['run']}" for k, v in index["models"].items()))
     return 0
