@@ -252,6 +252,33 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Where the Pi says it can be reached.
+    //
+    // The Pi is behind a tunnel that hands out a new address every restart, and
+    // the site is a static page with no way to guess it. Without this the
+    // address has to be pasted into the browser console after every reboot,
+    // which is a chore, easy to forget, and leaves the map quietly broken until
+    // somebody notices. So the Pi writes its own address here and the page
+    // reads it.
+    //
+    // Anyone may read it: it is a public address for public forecast files.
+    // Writing needs a signed-in client, which the Pi does anonymously, exactly
+    // as the chat bridge does. The value is fenced to an https address of
+    // sensible length so the field cannot be used as free storage, and only
+    // these two keys may exist.
+    match /piEndpoint/{which} {
+      allow read: if true;
+
+      allow create, update: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['url', 'at'])
+        && request.resource.data.url is string
+        && request.resource.data.url.size() < 200
+        && request.resource.data.url.matches('https://.*')
+        && request.resource.data.at is number;
+
+      allow delete: if isOwner();
+    }
+
     // Live chat, shared with the Discord channel. Anyone may read, so the
     // conversation is visible without an account. Posting needs a real account,
     // which is what makes a spammer traceable and bannable. The bridge Worker

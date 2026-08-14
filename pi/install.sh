@@ -3,12 +3,13 @@
 #
 #     bash ~/GWCFCRadar/pi/install.sh
 #
-# Installs what is missing, builds the Python environment, and registers three
+# Installs what is missing, builds the Python environment, and registers four
 # services so this survives a reboot and a closed terminal:
 #
 #   gwcfc-models   builds the model images, hourly
 #   gwcfc-serve    serves them with the header that makes them readable
 #   gwcfc-tunnel   gives them a public HTTPS address
+#   gwcfc-publish  tells the site that address, so nobody has to paste it
 #
 # Safe to run again. Everything it does is idempotent, so if a step failed the
 # first time, fix the cause and run it again rather than unpicking anything.
@@ -153,6 +154,23 @@ StandardError=append:$HOME/tunnel.log
 [Install]
 WantedBy=default.target
 EOF
+cat > "$UNITS/gwcfc-publish.service" <<EOF
+[Unit]
+Description=Tell the site where the Pi is
+After=gwcfc-tunnel.service
+Wants=gwcfc-tunnel.service
+
+[Service]
+# --watch because the tunnel takes a while to come up and can be restarted
+# underneath us. Checking once and giving up is how the site ends up pointed
+# at an address that no longer answers.
+ExecStart=$VENV/bin/python $REPO/pi/publish_url.py --watch
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target
+EOF
 ok "units written to $UNITS"
 
 # Without lingering, user services stop when the last session closes, which is
@@ -165,13 +183,17 @@ systemctl --user enable --now gwcfc-serve.service  >/dev/null 2>&1
 systemctl --user restart    gwcfc-tunnel.service   >/dev/null 2>&1 || \
   systemctl --user enable --now gwcfc-tunnel.service >/dev/null 2>&1
 systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
-ok "serve, tunnel and hourly build are running"
+systemctl --user restart    gwcfc-publish.service  >/dev/null 2>&1 || \
+  systemctl --user enable --now gwcfc-publish.service >/dev/null 2>&1
+ok "serve, tunnel, publish and hourly build are running"
 
 # ── 5. the address ──────────────────────────────────────────────────────────
 say "Public address"
 URL=""
 for _ in $(seq 1 20); do
-  URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$HOME/tunnel.log" 2>/dev/null | head -1 || true)
+  # tail, not head: the log is appended to across restarts, so the last
+  # address is the live one and every earlier one is dead.
+  URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$HOME/tunnel.log" 2>/dev/null | tail -1 || true)
   [ -n "$URL" ] && break
   sleep 2
 done
@@ -186,10 +208,9 @@ if [ -n "$URL" ]; then
   echo "  Your Pi is at:"
   echo "      $URL"
   echo
-  echo "  On the site, open the browser console and run:"
-  echo "      hdSetPi('$URL')"
   echo
-  echo "  Then turn on HD Models in the overlay list."
+  echo "  The Pi publishes that address itself, so the site will find it."
+  echo "  Just turn on HD Models in the overlay list."
 else
   warn "no tunnel address yet. Try: grep trycloudflare ~/tunnel.log"
 fi
