@@ -15042,7 +15042,7 @@ function _getBubbleActive(id) {
   if (id === 'wind')        return !!windActive;
   if (id === 'temperature') return !!temperatureActive;
   if (id === 'pressure')    return !!pressureActive;
-  if (id === 'models')      return _runModelsPanelIsOpen() || _spaghettiModelsPanelIsOpen() || _soundingPanelIsOpen();
+  if (id === 'models')      return !!_hdOn || _spaghettiModelsPanelIsOpen() || _soundingPanelIsOpen();
   return !!activeBubbles[id];
 }
 
@@ -18962,8 +18962,11 @@ function _sndDraw() {
   }
 }
 
+// HD Models replaces Run Models here. Run Models drew a metered forecast API
+// sampled at 198 points and interpolated between them; this draws the model
+// field itself at full resolution off the Pi, with nothing to run out of.
 const MODELS_SUB_BUBBLES = [
-  { id: 'run-models',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-up></use></svg>', label: 'Run Models' },
+  { id: 'hd-models',        icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-up></use></svg>', label: 'HD Models' },
   { id: 'spaghetti-models', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', label: 'Spaghetti Models' },
 ];
 
@@ -18976,19 +18979,19 @@ function toggleModelsSub() {
   back.onclick = () => { _syncParentBubble('models'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
   MODELS_SUB_BUBBLES.forEach(b => {
-    const isOpen = b.id === 'run-models'  ? _runModelsPanelIsOpen()
+    const isOpen = b.id === 'hd-models' ? !!_hdOn
                  : _spaghettiModelsPanelIsOpen();
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (isOpen ? ' active' : '');
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
-    el.onclick = () => {
-      if (b.id === 'run-models') {
-        _runModelsPanelIsOpen() ? closeRunModelsPanel() : openRunModelsPanel();
+    el.onclick = async () => {
+      if (b.id === 'hd-models') {
+        _hdOn ? _hdDisable() : await _hdEnable();
       } else {
         _spaghettiModelsPanelIsOpen() ? closeSpaghettiModelsPanel() : openSpaghettiModelsPanel();
       }
-      el.classList.toggle('active', b.id === 'run-models' ? _runModelsPanelIsOpen()
+      el.classList.toggle('active', b.id === 'hd-models' ? !!_hdOn
                                   : _spaghettiModelsPanelIsOpen());
       _syncParentBubble('models');
     };
@@ -32607,7 +32610,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Soundings and ensemble spread now come from the Pi too. Click-to-sound reads a real vertical profile, and the whole thing installs on the Pi with one command.";
+const APP_LATEST_UPDATE = "HD Models now lives in the Models panel where Run Models was. Real model fields from the Pi at full resolution, with nothing to run out of.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -34003,9 +34006,6 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
-    </div>
-    <div class="ov-pill" id="op-hdmodels" data-ovid="hdmodels" title="HD Models - full-resolution forecast fields rendered on the Pi">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('hdmodels')">HD Models</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning Strikes - real-time strike data">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning Strikes</span><span class="ov-drag" title="Drag to reorder">⠿</span>

@@ -66,6 +66,9 @@ MODELS = {
         "file": "nam.t{cyc}z.awphys{fhr:02d}.tm00.grib2",
         "raw": "nam/prod/nam.{date}/nam.t{cyc}z.awphys{fhr:02d}.tm00.grib2.idx",
         "step": 3, "out": 60,
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface",
+                 "lev_entire_atmosphere_%5C%28considered_as_a_single_layer%5C%29"],
     },
     "hrrr": {
         # Hourly and 3 km: the one worth having when something is happening
@@ -76,6 +79,9 @@ MODELS = {
         "file": "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.grib2",
         "raw": "hrrr/prod/hrrr.{date}/conus/hrrr.t{cyc}z.wrfsfcf{fhr:02d}.grib2.idx",
         "step": 1, "out": 18,
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface",
+                 "lev_entire_atmosphere"],
     },
     "gefs": {
         # The ensemble mean: 30-odd runs of the same model averaged, which is
@@ -87,6 +93,9 @@ MODELS = {
         "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
                "geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
         "step": 6, "out": 168,
+        "vars": ["var_TMP", "var_UGRD", "var_VGRD", "var_PRMSL", "var_APCP"],
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface"],
     },
     "gefsspr": {
         # The spread: how far apart those runs are. High spread is the model
@@ -99,6 +108,9 @@ MODELS = {
         "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
                "gespr.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
         "step": 6, "out": 168,
+        "vars": ["var_TMP", "var_UGRD", "var_VGRD", "var_PRMSL", "var_APCP"],
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface"],
         # Spread is a distance, never negative, and small: its own scale.
         "ranges": {"t2m": (0, 12), "d2m": (0, 12), "mslp": (0, 12),
                    "wind": (0, 25), "apcp": (0, 25)},
@@ -174,11 +186,25 @@ def _matches(spec, short, levtype, level):
             and levtype in spec["levtype"]
             and int(level) == int(spec["level"]))
 
-# NOMADS query flags: which variables and which levels to include.
+# NOMADS query flags: which variables and which levels to ask for.
+#
+# These cannot be one list. The filter service returns HTTP 500, not an empty
+# file, when asked for something a particular model does not contain, so one
+# wrong flag loses the whole request. GEFS at half a degree carries no dewpoint,
+# no CAPE and no reflectivity, and the level a model calls "entire atmosphere"
+# is spelled differently between them.
+#
+# So each model states what it has, and if the full ask still fails there is a
+# minimal set below that every one of them carries. Better a chart with four
+# fields than no chart at all.
 VAR_FLAGS = ["var_TMP", "var_DPT", "var_PRMSL", "var_CAPE",
              "var_REFC", "var_APCP", "var_UGRD", "var_VGRD"]
 LEV_FLAGS = ["lev_2_m_above_ground", "lev_10_m_above_ground",
              "lev_mean_sea_level", "lev_surface", "lev_entire_atmosphere"]
+
+FALLBACK_VARS = ["var_TMP", "var_UGRD", "var_VGRD", "var_PRMSL"]
+FALLBACK_LEVS = ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level"]
 
 
 def log(msg):
@@ -276,30 +302,49 @@ def run_is_complete(m, date_str, cyc):
 
 
 def fetch_hour(m, date_str, cyc, fhr, path):
-    """Download one forecast hour, cropped to the box by NOAA before sending."""
-    params = {
-        "file": m["file"].format(cyc=cyc, fhr=fhr),
-        "dir": m["dir"].format(date=date_str, cyc=cyc),
-        "subregion": "",
-        **{k: "on" for k in VAR_FLAGS},
-        **{k: "on" for k in LEV_FLAGS},
-        **{k: v for k, v in BOX.items()},
-    }
+    """
+    Download one forecast hour, cropped to the box by NOAA before sending.
+
+    Tried twice with different asks. The filter service answers 500, not an
+    empty file, when a model does not contain something requested, so a single
+    unavailable variable loses the whole hour. If the model's own inventory
+    still fails, the second attempt asks only for what every model carries:
+    four fields beat none.
+    """
+    attempts = [
+        (m.get("vars", VAR_FLAGS), m.get("levs", LEV_FLAGS), "full"),
+        (FALLBACK_VARS, FALLBACK_LEVS, "reduced"),
+    ]
     url = f"{FILTER_BASE}/{m['filter']}"
-    for attempt in range(RETRIES):
-        try:
-            r = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-            if (r.status_code == 200 and len(r.content) > 5000
-                    and r.content[:4] == b"GRIB"):
-                with open(path, "wb") as f:
-                    f.write(r.content)
-                return True
-            if attempt == RETRIES - 1:
-                log(f"    f{fhr:03d}: HTTP {r.status_code}, {len(r.content)} bytes")
-        except requests.RequestException as e:
-            if attempt == RETRIES - 1:
-                log(f"    f{fhr:03d}: {e}")
-        time.sleep(2 ** attempt)
+    last = ""
+    for vars_, levs_, what in attempts:
+        params = {
+            "file": m["file"].format(cyc=cyc, fhr=fhr),
+            "dir": m["dir"].format(date=date_str, cyc=cyc),
+            "subregion": "",
+            **{k: "on" for k in vars_},
+            **{k: "on" for k in levs_},
+            **{k: v for k, v in BOX.items()},
+        }
+        for attempt in range(RETRIES):
+            try:
+                r = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                if (r.status_code == 200 and len(r.content) > 5000
+                        and r.content[:4] == b"GRIB"):
+                    with open(path, "wb") as f:
+                        f.write(r.content)
+                    if what == "reduced":
+                        log(f"    f{fhr:03d}: full ask refused, took the reduced set")
+                    return True
+                last = f"HTTP {r.status_code}, {len(r.content)} bytes"
+                # A refusal is about what was asked for, not about timing, so
+                # asking the same thing again just wastes the wait.
+                if r.status_code in (400, 404, 500):
+                    break
+            except requests.RequestException as e:
+                last = str(e)
+            time.sleep(2 ** attempt)
+    log(f"    f{fhr:03d}: {last}")
     return False
 
 
