@@ -263,6 +263,65 @@ five day blend and does not meaningfully change in an hour, so fetching 41
 forecast hours of 2.5 km data every hour would be by far the largest thing here
 in exchange for almost nothing.
 
+## How a model is fetched, and why it matters
+
+Two ways, chosen per model.
+
+**By filter** is the original: NOAA's service takes a list of variables and a
+list of levels, crops to the box and sends the result. Cropping is the whole
+win for a global model, so GFS, GEFS and the wave model still use it.
+
+The catch is that the service takes those two lists as a **cross product**.
+Asking HRRR for 11 variables at 5 levels returns up to 55 messages to draw 7
+fields. Measured: 26 MB per forecast hour, just under 12 GB a day, about two
+thirds of it thrown away on arrival.
+
+**By range** names the messages instead. The index beside each file gives a
+byte offset per message, so the wanted ones are asked for by range and glued
+together, since GRIB is a sequence of self describing messages and a handful
+concatenated is a valid file. No cross product, and no filter service at all,
+which matters because that service is a separate program per model with names
+that are not guessable: three models were failing on a 404 from it while their
+data sat on the file server perfectly reachable.
+
+Regional models use it, because their own domain is already about the size of
+the box and cropping was buying them almost nothing.
+
+    measured, per forecast hour
+    HRRR by filter .......... 26.2 MB
+    HRRR by range, 9 fields .. 10.8 MB
+    HRRR by range, 6 fields ... 7.2 MB
+
+A model may also name the fields it carries. HRRR does, because hourly at 3 km
+makes it the largest line on the bill by a factor of three, and nobody opens
+HRRR to read a dewpoint. It carries reflectivity, temperature, wind, gust,
+precipitation and CAPE, and leaves the rest to coarse models that cost almost
+nothing.
+
+Whole system: about 5.6 GB a day, down from 17.2.
+
+## Grids that are not latitude and longitude
+
+HRRR, RAP, NAM and every nest are on a Lambert Conformal grid. The rows are
+not lines of latitude and the columns are not lines of longitude, they are
+straight lines on a cone wrapped around the earth.
+
+Reading only the first and last corner and assuming even spacing between them,
+which is what this used to do, puts the picture in roughly the right part of
+the world and wrong everywhere inside it. On a test grid the top row came out
+at 25 N when it was really 55 N.
+
+So for those the real coordinate of every point is read and the values are
+dropped into whichever cell of a plain latitude and longitude mesh they land
+in, averaging where several land in one and leaving a gap where none do. Worst
+placement error on the test grid afterwards: 0.09 degrees, about 10 km, which
+is three pixels at the size these are drawn.
+
+The bounds written into the manifest now come from the data in every case
+rather than from the box that was asked for. A grid has a spacing, the edges
+land on the nearest cell, and stretching a picture into a rectangle it does
+not fill is how everything in it ends up displaced.
+
 ## Check a model before trusting it
 
     ~/wxenv/bin/python ~/GWCFCRadar/pi/check_models.py
@@ -274,6 +333,11 @@ to see which wanted fields are in it, and downloads one forecast hour to
 measure the real cost. It names which of the four strings is wrong, and it does
 it in about a minute rather than after a build. Run it after adding a model,
 and after NOAA reorganises anything.
+
+When a path fails it now prints the HTTP status, since a 404 is a wrong
+address and a 403 is being refused and those need opposite fixes, and then
+asks the server what that directory really contains. A 404 on its own is still
+a guess.
 
 Take its megabytes-per-day figures seriously before adding more: the fine grids
 are much heavier than the coarse ones, and this runs on a home connection.

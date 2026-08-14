@@ -88,6 +88,7 @@ MODELS = {
         "step": 3, "out": 120,
     },
     "nam": {
+        "fetch": "range",
         "label": "NAM", "res": "12 km", "cycle_h": 6, "lag_h": 4,
         "filter": "filter_nam.pl",
         "dir": "/nam.{date}",
@@ -103,8 +104,14 @@ MODELS = {
                  r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
     },
     "hrrr": {
+        "fetch": "range",
         # Hourly and 3 km: the one worth having when something is happening
         # right now, which is why it is fetched hourly and only 18 hours out.
+        # That also makes it the largest line on the bandwidth bill by a factor
+        # of three, so it carries what people actually open HRRR for and leaves
+        # dewpoint, pressure and column moisture to the coarse models, which
+        # cost almost nothing and are just as good at those.
+        "fields": {"refc", "t2m", "wind", "gust", "apcp", "cape"},
         "label": "HRRR", "res": "3 km", "cycle_h": 1, "lag_h": 2,
         "filter": "filter_hrrr_2d.pl",
         "dir": "/hrrr.{date}/conus",
@@ -149,6 +156,7 @@ MODELS = {
         "ramp": "spread",
     },
     "rap": {
+        "fetch": "range",
         # Fills the gap HRRR leaves. HRRR is sharper but stops at 18 hours;
         # RAP is the same idea at 13 km and runs every hour as well, so there
         # is always something hourly and recent past the end of HRRR.
@@ -160,6 +168,7 @@ MODELS = {
         "step": 1, "out": 21,
     },
     "namnest": {
+        "fetch": "range",
         # HRRR's resolution, three times HRRR's reach. The 3 km nest inside
         # NAM: the same 12 km model run again over a smaller box at a grid
         # fine enough to resolve individual storms, out to 60 hours.
@@ -188,7 +197,8 @@ MODELS = {
         "file": "blend.t{cyc}z.core.f{fhr:03d}.co.grib2",
         "raw": "blend/prod/blend.{date}/{cyc}/core/"
                "blend.t{cyc}z.core.f{fhr:03d}.co.grib2.idx",
-        "step": 3, "out": 120,
+        "fetch": "range",
+        "first": 3, "step": 3, "out": 120,
     },
     "rtma": {
         # The odd one out: an analysis, not a forecast. One frame, F+000, of
@@ -200,8 +210,13 @@ MODELS = {
         "filter": "filter_rtma2p5.pl",
         "dir": "/rtma2p5.{date}",
         "file": "rtma2p5.t{cyc}z.2dvaranl_ndfd.grb2",
-        "raw": "rtma/prod/rtma2p5.{date}/rtma2p5.t{cyc}z.2dvaranl_ndfd"
-               ".grb2.idx",
+        "raw": [
+            "rtma/prod/rtma2p5.{date}/rtma2p5.t{cyc}z.2dvaranl_ndfd.grb2.idx",
+            "rtma/prod/rtma2p5.{date}/rtma2p5.t{cyc}z.2dvaranl_ndfd.grb2_wexp.idx",
+            "rtma/prod/rtma2p5.{date}/rtma2p5.t{cyc}z.varanl.grb2.idx",
+            "urma/prod/urma2p5.{date}/urma2p5.t{cyc}z.2dvaranl_ndfd.grb2.idx",
+        ],
+        "fetch": "range",
         "step": 1, "out": 0,
     },
     # ── Tropical ────────────────────────────────────────────────────────────
@@ -258,6 +273,7 @@ MODELS = {
     # all three put a storm in the same place that is worth more than any one
     # of them saying it twice.
     "hireswarw": {
+        "fetch": "range",
         "label": "HiResW ARW", "res": "5 km", "cycle_h": 12, "lag_h": 4,
         "filter": "filter_hiresw.pl",
         "dir": "/hiresw.{date}",
@@ -267,6 +283,7 @@ MODELS = {
         "step": 3, "out": 48,
     },
     "hireswfv3": {
+        "fetch": "range",
         "label": "HiResW FV3", "res": "5 km", "cycle_h": 12, "lag_h": 4,
         "filter": "filter_hiresw.pl",
         "dir": "/hiresw.{date}",
@@ -278,6 +295,7 @@ MODELS = {
 
     # ── The places the main box leaves out ──────────────────────────────────
     "hrrrak": {
+        "fetch": "range",
         "label": "HRRR Alaska", "res": "3 km", "cycle_h": 3, "lag_h": 2,
         "filter": "filter_hrrr_ak_2d.pl",
         "dir": "/hrrr.{date}/alaska",
@@ -288,6 +306,7 @@ MODELS = {
         "box": ALASKA_BOX, "bounds": ALASKA_BOUNDS,
     },
     "namak": {
+        "fetch": "range",
         "label": "NAM Alaska", "res": "3 km", "cycle_h": 6, "lag_h": 4,
         "filter": "filter_nam_alaskanest.pl",
         "dir": "/nam.{date}",
@@ -298,6 +317,7 @@ MODELS = {
         "box": ALASKA_BOX, "bounds": ALASKA_BOUNDS,
     },
     "namhi": {
+        "fetch": "range",
         "label": "NAM Hawaii", "res": "3 km", "cycle_h": 6, "lag_h": 4,
         "filter": "filter_nam_hawaiinest.pl",
         "dir": "/nam.{date}",
@@ -308,6 +328,7 @@ MODELS = {
         "box": HAWAII_BOX, "bounds": HAWAII_BOUNDS,
     },
     "nampr": {
+        "fetch": "range",
         "label": "NAM Puerto Rico", "res": "3 km", "cycle_h": 6, "lag_h": 4,
         "filter": "filter_nam_priconest.pl",
         "dir": "/nam.{date}",
@@ -395,6 +416,12 @@ MAX_EDGE_PX = 1600
 # hourly rhythm intact. Models named explicitly on the command line ignore
 # this: asking for one by name means meaning it.
 TIME_BUDGET_S = 40 * 60
+
+# Some servers refuse the default python-requests user agent outright, and a
+# 403 from that is indistinguishable from a wrong address. Saying who we are
+# costs nothing and removes a whole class of confusing failure.
+HTTP = requests.Session()
+HTTP.headers.update({"User-Agent": "GWCFCRadar/1.0 (Raspberry Pi; weather map tiles)"})
 
 FILTER_BASE = "https://nomads.ncep.noaa.gov/cgi-bin"
 RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
@@ -567,7 +594,7 @@ def inventory(m, date_str, cyc, fhr):
     """
     url = f"{RAW_BASE}/" + m["raw"].format(date=date_str, cyc=cyc, fhr=fhr)
     try:
-        r = requests.get(url, timeout=30)
+        r = HTTP.get(url, timeout=30)
         if r.status_code != 200 or "<" in r.text[:40]:
             return None
     except requests.RequestException:
@@ -579,6 +606,184 @@ def inventory(m, date_str, cyc, fhr):
         if len(f) > 5:
             pairs.add((f[3], f[4]))
     return pairs or None
+
+
+# Exactly which message in a GRIB file feeds each field, as the variable and
+# level names NOAA's index uses. Spellings are in preference order and the
+# first one present wins, which is how one entry covers models that disagree
+# about what to call the same thing. A trailing star matches a prefix, since
+# "entire atmosphere" is sometimes followed by "(considered as a single
+# layer)" and sometimes not.
+#
+# This exists because the filter service takes variables and levels as two
+# separate lists and returns every combination of them. Asking HRRR for 11
+# variables at 5 levels returns up to 55 messages to draw 7 fields, which
+# measured at 26 MB per forecast hour and just under 12 GB a day. Naming the
+# messages instead means fetching 7.
+FIELD_SOURCES = {
+    "t2m":   [("TMP", "2 m above ground")],
+    "d2m":   [("DPT", "2 m above ground")],
+    "mslp":  [("PRMSL", "mean sea level"), ("MSLET", "mean sea level"),
+              ("MSLMA", "mean sea level")],
+    "cape":  [("CAPE", "surface")],
+    "refc":  [("REFC", "entire atmosphere*")],
+    "apcp":  [("APCP", "surface")],
+    "gust":  [("GUST", "surface")],
+    "pwat":  [("PWAT", "entire atmosphere*")],
+    "sst":   [("WTMP", "surface")],
+    "swh":   [("HTSGW", "surface")],
+    "perpw": [("PERPW", "surface")],
+}
+# Wind is its own case: taken as a speed where the model publishes one, and
+# from both components where it does not. Fetching all three, which the cross
+# product did, is paying for the same field twice.
+WIND_SPEED = ("WIND", "10 m above ground")
+WIND_PARTS = [("UGRD", "10 m above ground"), ("VGRD", "10 m above ground")]
+
+
+def _lev_matches(pattern, level):
+    if pattern.endswith("*"):
+        return level.startswith(pattern[:-1])
+    return level == pattern
+
+
+def parse_idx(text):
+    """
+    NOAA's index for one GRIB file, as a list of messages with byte ranges.
+
+    A line is `number:startbyte:date:variable:level:forecast:`. Only the start
+    is given, so a message ends where the next one begins, and the last one
+    runs to the end of the file.
+    """
+    rows = []
+    for line in text.splitlines():
+        f = line.split(":")
+        if len(f) > 5:
+            try:
+                rows.append({"start": int(f[1]), "var": f[3], "lev": f[4]})
+            except ValueError:
+                pass
+    for i, r in enumerate(rows):
+        r["end"] = rows[i + 1]["start"] - 1 if i + 1 < len(rows) else None
+    return rows
+
+
+def select_from_idx(rows, want_shear=False, only=None):
+    """
+    The messages worth downloading, as byte ranges, and what they are.
+
+    "only" narrows the list for models where the rest is not worth the
+    bandwidth. HRRR is the case that forces it: hourly, 3 km, and the largest
+    single line on the bill by a factor of three. Nobody opens HRRR to read a
+    dewpoint or a pressure pattern, they open it for reflectivity and wind in
+    the next few hours, so it carries those and lets the coarse models carry
+    the rest.
+    """
+    wanted = set()
+    names = []
+
+    for key, options in FIELD_SOURCES.items():
+        if only and key not in only:
+            continue
+        for var, levpat in options:
+            hit = next((r for r in rows
+                        if r["var"] == var and _lev_matches(levpat, r["lev"])),
+                       None)
+            if hit:
+                wanted.add((hit["var"], hit["lev"]))
+                names.append(f"{key}<-{var}")
+                break            # the first spelling that exists, and no more
+
+    if not only or "wind" in only:
+        speed = next((r for r in rows
+                      if (r["var"], r["lev"]) == WIND_SPEED), None)
+        if speed:
+            wanted.add(WIND_SPEED)
+            names.append("wind<-WIND")
+        else:
+            parts = [r for r in rows if (r["var"], r["lev"]) in WIND_PARTS]
+            if len(parts) >= 2:
+                wanted.update((r["var"], r["lev"]) for r in parts)
+                names.append("wind<-UGRD/VGRD")
+
+    if want_shear:
+        levels = {f"{mb} mb" for mb in SHEAR_LEVELS}
+        got = [r for r in rows
+               if r["var"] in ("UGRD", "VGRD") and r["lev"] in levels]
+        if len(got) >= 4:
+            wanted.update((r["var"], r["lev"]) for r in got)
+            names.append("shear<-UGRD/VGRD aloft")
+
+    keep = [r for r in rows if (r["var"], r["lev"]) in wanted]
+    keep.sort(key=lambda r: r["start"])
+    return keep, names
+
+
+def merge_ranges(spans, gap=65536):
+    """
+    Join byte ranges that are close together.
+
+    Several small requests over one connection cost more in round trips than
+    the few unwanted bytes between them, but only while the gap is small:
+    merging across a large one downloads the large one.
+    """
+    out = []
+    for start, end in spans:
+        if out and out[-1][1] is not None and start - out[-1][1] <= gap:
+            out[-1] = (out[-1][0], end)
+        else:
+            out.append((start, end))
+    return out
+
+
+def fetch_hour_range(m, date_str, cyc, fhr, path):
+    """
+    Download one forecast hour by naming the messages, not the combinations.
+
+    The index beside the file gives a byte offset per message, so the wanted
+    ones are asked for by range and glued together. GRIB is a sequence of self
+    describing messages, so a handful concatenated is a valid file.
+
+    Nothing here goes through the filter service, which is the other half of
+    why this exists: that service is a separate CGI per model, its names are
+    not guessable, and three models were failing on a 404 from it while their
+    data sat on the file server perfectly reachable.
+    """
+    found_idx = find_index(m, date_str, cyc, fhr, timeout=REQUEST_TIMEOUT)
+    if not found_idx:
+        log(f"    f{fhr:03d}: no index")
+        return False
+    idx_url, idx_text = found_idx
+    grib_url = idx_url[:-4] if idx_url.endswith(".idx") else idx_url
+
+    rows = parse_idx(idx_text)
+    keep, _names = select_from_idx(rows, m.get("shear"), m.get("fields"))
+    if not keep:
+        log(f"    f{fhr:03d}: index had none of the wanted fields")
+        return False
+
+    spans = merge_ranges([(k["start"], k["end"]) for k in keep])
+    try:
+        with open(path, "wb") as f:
+            for start, end in spans:
+                rng = f"bytes={start}-" + ("" if end is None else str(end))
+                rr = HTTP.get(grib_url, timeout=REQUEST_TIMEOUT,
+                                  headers={"Range": rng})
+                # 206 is the answer to a range request. A 200 means the server
+                # ignored it and is sending the whole file, which for these is
+                # a hundred megabytes rather than a handful.
+                if rr.status_code != 206:
+                    log(f"    f{fhr:03d}: range refused, HTTP {rr.status_code}")
+                    return False
+                f.write(rr.content)
+    except requests.RequestException as e:
+        log(f"    f{fhr:03d}: {e}")
+        return False
+
+    if os.path.getsize(path) < 5000:
+        log(f"    f{fhr:03d}: only {os.path.getsize(path)} bytes")
+        return False
+    return True
 
 
 ECMWF_BASE = "https://data.ecmwf.int/forecasts"
@@ -614,7 +819,7 @@ def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
     """
     grib_url, idx_url = ecmwf_paths(m, date_str, cyc, fhr)
     try:
-        r = requests.get(idx_url, timeout=REQUEST_TIMEOUT)
+        r = HTTP.get(idx_url, timeout=REQUEST_TIMEOUT)
         if r.status_code != 200:
             log(f"    f{fhr:03d}: no index, HTTP {r.status_code}")
             return False
@@ -661,7 +866,7 @@ def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
     try:
         with open(path, "wb") as f:
             for off, ln in merged:
-                rr = requests.get(
+                rr = HTTP.get(
                     grib_url, timeout=REQUEST_TIMEOUT,
                     headers={"Range": f"bytes={off}-{off + ln - 1}"})
                 # 206 is the answer to a range request. A 200 means the server
@@ -680,6 +885,84 @@ def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
         log(f"    f{fhr:03d}: only {got} bytes")
         return False
     return True
+
+
+def regrid_to_latlon(vals, plats, plons, box, max_edge=MAX_EDGE_PX):
+    """
+    Put a model's own grid onto a plain latitude and longitude mesh.
+
+    HRRR, RAP, NAM and every nest are on a Lambert Conformal grid: the rows
+    are not lines of latitude and the columns are not lines of longitude, they
+    are straight lines on a cone wrapped around the earth. Treating that as if
+    it were evenly spaced in latitude and longitude, which is what reading only
+    the first and last corner amounts to, puts the picture in roughly the right
+    part of the world and wrong everywhere within it, by tens of kilometres at
+    the edges. A storm drawn there is not where it is.
+
+    So the real coordinate of every point is read and the values are dropped
+    into whichever cell of a regular mesh they land in. Averaging where several
+    land in one cell, and leaving a gap where none do.
+
+    Binning with bincount rather than a loop or add.at because this runs on a
+    Pi over a few million points per field, and bincount is the one that is
+    actually C underneath.
+    """
+    plons = np.where(plons < 0.0, plons + 360.0, plons)
+    sel = ((plats >= box["bottomlat"]) & (plats <= box["toplat"]) &
+           (plons >= box["leftlon"]) & (plons <= box["rightlon"]))
+    n = int(sel.sum())
+    if n < 100:
+        return None
+    la, lo, v = plats[sel], plons[sel], np.asarray(vals, np.float32)[sel]
+
+    lat0, lat1 = float(la.min()), float(la.max())
+    lon0, lon1 = float(lo.min()), float(lo.max())
+    span_lat, span_lon = lat1 - lat0, lon1 - lon0
+    if span_lat <= 0 or span_lon <= 0:
+        return None
+
+    # Roughly one output cell per input point, keeping the aspect ratio, then
+    # capped. Asking for more cells than there are points only spreads the same
+    # data over more gaps.
+    scale = np.sqrt(n / (span_lat * span_lon))
+    nrow = int(min(max_edge, max(32, round(span_lat * scale))))
+    ncol = int(min(max_edge, max(32, round(span_lon * scale))))
+
+    # Row 0 is the top of the image, which is north.
+    row = np.clip(((lat1 - la) / span_lat * (nrow - 1)).astype(np.int32),
+                  0, nrow - 1)
+    col = np.clip(((lo - lon0) / span_lon * (ncol - 1)).astype(np.int32),
+                  0, ncol - 1)
+    flat = row * ncol + col
+
+    good = np.isfinite(v)
+    total = np.bincount(flat[good], weights=v[good].astype(np.float64),
+                        minlength=nrow * ncol)
+    count = np.bincount(flat[good], minlength=nrow * ncol)
+    out = np.full(nrow * ncol, np.nan, np.float32)
+    hit = count > 0
+    out[hit] = (total[hit] / count[hit]).astype(np.float32)
+
+    return (out.reshape(nrow, ncol),
+            np.linspace(lat1, lat0, nrow),
+            np.linspace(lon0, lon1, ncol))
+
+
+def bounds_from(lats, lons):
+    """
+    The rectangle a finished image actually covers.
+
+    Taken from the data rather than from the box that was asked for, because
+    a grid has a spacing and the edges land on the nearest cell. Stretching a
+    picture into a rectangle it does not fill is how everything in it ends up
+    a few kilometres from where it belongs.
+    """
+    def to180(x):
+        x = float(x)
+        return x - 360.0 if x > 180.0 else x
+
+    return [[float(min(lats[0], lats[-1])), to180(min(lons[0], lons[-1]))],
+            [float(max(lats[0], lats[-1])), to180(max(lons[0], lons[-1]))]]
 
 
 def crop_to_box(arr, lats, lons, box):
@@ -831,8 +1114,40 @@ LUTS = {name: build_lut(name) for name in RAMPS}
 # ── NOAA ────────────────────────────────────────────────────────────────────
 
 def fhours_for(m):
-    """The forecast hours to fetch for a model, from its step and reach."""
-    return list(range(0, m["out"] + 1, m["step"]))
+    """
+    The forecast hours to fetch for a model, from its step and reach.
+
+    "first" exists because not every model has an hour zero. The National
+    Blend has nothing at f000, because a blend of forecasts has nothing to say
+    about a time that has already happened, and asking for it got a 404 that
+    read as the whole model being missing.
+    """
+    return list(range(m.get("first", 0), m["out"] + 1, m["step"]))
+
+
+def raw_candidates(m):
+    """
+    The index paths to try, in order.
+
+    A list rather than a string because a few products are published under
+    more than one name and the right one is not guessable from here. The first
+    that answers is used, and check_models.py reports which.
+    """
+    raw = m["raw"]
+    return raw if isinstance(raw, (list, tuple)) else [raw]
+
+
+def find_index(m, date_str, cyc, fhr, timeout=30):
+    """The first index path that answers, with its text. (url, text) or None."""
+    for tmpl in raw_candidates(m):
+        url = f"{RAW_BASE}/" + tmpl.format(date=date_str, cyc=cyc, fhr=fhr)
+        try:
+            r = HTTP.get(url, timeout=timeout)
+        except requests.RequestException:
+            continue
+        if r.status_code == 200 and ":" in r.text and "<" not in r.text[:40]:
+            return url, r.text
+    return None
 
 
 def cycle_for(m, now=None):
@@ -862,15 +1177,12 @@ def run_is_complete(m, date_str, cyc):
     last = fhours_for(m)[-1]
     if m.get("source") == "ecmwf":
         url = ecmwf_paths(m, date_str, cyc, last)[1]
-    else:
-        url = f"{RAW_BASE}/" + m["raw"].format(date=date_str, cyc=cyc, fhr=last)
-    try:
-        r = requests.get(url, timeout=30, headers={"Range": "bytes=0-256"})
-        # A real index is text listing fields. An error page is HTML.
-        return (r.status_code in (200, 206)
-                and ":" in r.text and "<" not in r.text[:40])
-    except requests.RequestException:
-        return False
+        try:
+            r = HTTP.get(url, timeout=30, headers={"Range": "bytes=0-256"})
+            return r.status_code in (200, 206) and "{" in r.text
+        except requests.RequestException:
+            return False
+    return find_index(m, date_str, cyc, last) is not None
 
 
 def fetch_hour(m, date_str, cyc, fhr, path):
@@ -889,6 +1201,8 @@ def fetch_hour(m, date_str, cyc, fhr, path):
     """
     if m.get("source") == "ecmwf":
         return fetch_hour_ecmwf(m, date_str, cyc, fhr, path)
+    if m.get("fetch") == "range":
+        return fetch_hour_range(m, date_str, cyc, fhr, path)
 
     attempts = []
     pairs = inventory(m, date_str, cyc, fhr)
@@ -914,7 +1228,7 @@ def fetch_hour(m, date_str, cyc, fhr, path):
         }
         for attempt in range(RETRIES):
             try:
-                r = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                r = HTTP.get(url, params=params, timeout=REQUEST_TIMEOUT)
                 if (r.status_code == 200 and len(r.content) > 5000
                         and r.content[:4] == b"GRIB"):
                     with open(path, "wb") as f:
@@ -936,7 +1250,7 @@ def fetch_hour(m, date_str, cyc, fhr, path):
 
 # ── Decode and render ───────────────────────────────────────────────────────
 
-def open_fields(grib_path):
+def open_fields(grib_path, regrid_box=None):
     """
     Pull the wanted fields out of a GRIB file as plain arrays.
 
@@ -956,6 +1270,7 @@ def open_fields(grib_path):
 
     found = {}
     uv = {}
+    coords = {}        # real point coordinates, per grid, read at most once
     seen = []          # every message in the file, for when nothing matches
 
     try:
@@ -1000,16 +1315,40 @@ def open_fields(grib_path):
                     continue
                 arr = vals.reshape(nj, ni)
 
-                lat1 = float(eccodes.codes_get(
-                    gid, "latitudeOfFirstGridPointInDegrees"))
-                lat2 = float(eccodes.codes_get(
-                    gid, "latitudeOfLastGridPointInDegrees"))
-                lon1 = float(eccodes.codes_get(
-                    gid, "longitudeOfFirstGridPointInDegrees"))
-                lon2 = float(eccodes.codes_get(
-                    gid, "longitudeOfLastGridPointInDegrees"))
-                lats = np.linspace(lat1, lat2, nj)
-                lons = np.linspace(lon1, lon2, ni)
+                # Only a grid that really is evenly spaced in latitude and
+                # longitude can be described by its two corners. Everything
+                # else has to be asked where each point is.
+                gtype = str(eccodes.codes_get(gid, "gridType"))
+                if gtype == "regular_ll":
+                    lat1 = float(eccodes.codes_get(
+                        gid, "latitudeOfFirstGridPointInDegrees"))
+                    lat2 = float(eccodes.codes_get(
+                        gid, "latitudeOfLastGridPointInDegrees"))
+                    lon1 = float(eccodes.codes_get(
+                        gid, "longitudeOfFirstGridPointInDegrees"))
+                    lon2 = float(eccodes.codes_get(
+                        gid, "longitudeOfLastGridPointInDegrees"))
+                    lats = np.linspace(lat1, lat2, nj)
+                    lons = np.linspace(lon1, lon2, ni)
+                elif regrid_box is not None:
+                    # Read once per file: every message in it shares a grid,
+                    # and pulling several million coordinates per message
+                    # would cost more than the decode.
+                    sig = (gtype, ni, nj)
+                    if sig not in coords:
+                        coords[sig] = (
+                            np.asarray(eccodes.codes_get_array(
+                                gid, "latitudes"), dtype=np.float32),
+                            np.asarray(eccodes.codes_get_array(
+                                gid, "longitudes"), dtype=np.float32))
+                    plats, plons = coords[sig]
+                    got = regrid_to_latlon(vals, plats, plons, regrid_box)
+                    if got is None:
+                        continue
+                    arr, lats, lons = got
+                else:
+                    log(f"    {short}: {gtype} grid and nowhere to put it")
+                    continue
 
                 if short in ("10u", "10v"):
                     uv[short] = (arr, lats, lons)
@@ -1238,7 +1577,7 @@ def fetch_sounding_hour(m, date_str, cyc, fhr, path):
     url = f"{FILTER_BASE}/{m['filter']}"
     for attempt in range(RETRIES):
         try:
-            r = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            r = HTTP.get(url, params=params, timeout=REQUEST_TIMEOUT)
             if (r.status_code == 200 and len(r.content) > 5000
                     and r.content[:4] == b"GRIB"):
                 with open(path, "wb") as f:
@@ -1444,7 +1783,9 @@ def build_model(name, m):
         try:
             if not fetch_hour(m, date_str, cyc, fhr, tmp):
                 continue
-            fields = open_fields(tmp)
+            # A model on its own projection is put onto a plain lat/lon mesh
+            # here, which crops it at the same time.
+            fields = open_fields(tmp, m.get("box", BOX))
             if not fields:
                 continue
             for key, (vals, lats, _lons) in fields.items():
@@ -1460,8 +1801,12 @@ def build_model(name, m):
                     cut = crop_to_box(vals, lats, _lons, m.get("box", BOX))
                     if cut is None:
                         continue
-                    vals, lats, _lons, real_bounds = cut
-                    bounds_seen = real_bounds
+                    vals, lats, _lons, _b = cut
+                # Always taken from the data, for every model. The box asked
+                # for and the grid that comes back are never quite the same
+                # thing, and the difference is what puts a picture a few
+                # kilometres from where it belongs.
+                bounds_seen = bounds_from(lats, _lons)
                 # A model may override the scale. Spread is a distance, so
                 # the deterministic range would put every value at one end.
                 if m.get("ranges", {}).get(key) or m.get("ramp"):
