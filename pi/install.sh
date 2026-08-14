@@ -199,8 +199,26 @@ for _ in $(seq 1 20); do
 done
 
 # ── 6. first build ──────────────────────────────────────────────────────────
-say "First build (a few minutes; later runs are quicker and automatic)"
-"$VENV/bin/python" "$REPO/pi/gfs_pipeline.py" || warn "the build reported a problem; see above"
+# Started through systemd rather than run here. Run from the script it belongs
+# to the terminal, so closing the window or a stray Ctrl+C kills a build that
+# takes ten minutes. As a service it belongs to the machine and survives both,
+# and the log below is only a view of it: stopping the view does not stop the
+# build.
+say "First build"
+systemctl --user start --no-block gwcfc-models.service
+echo "   started in the background. Following the log; Ctrl+C stops watching,"
+echo "   not building."
+echo
+timeout 900 journalctl --user -u gwcfc-models -f --no-pager -n 0 &
+FOLLOW=$!
+# Wait for it to finish rather than for a fixed time, so a fast run is not
+# padded and a slow one is not cut off.
+for _ in $(seq 1 180); do
+  sleep 5
+  systemctl --user is-active --quiet gwcfc-models.service || break
+done
+kill "$FOLLOW" 2>/dev/null || true
+wait "$FOLLOW" 2>/dev/null || true
 
 echo
 echo "=============================================================="
