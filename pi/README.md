@@ -155,6 +155,9 @@ currently have a finished run:
     rtma     2.5 km        now only   hourly
     gefs     0.5 deg mean  to +168h   4x a day
     gefsspr  0.5 deg sprd  to +168h   4x a day
+    gfstrop  0.25 deg      to +192h   4x a day   tropical box
+    gefstrop 0.5 deg mean  to +240h   4x a day   tropical box
+    gfswave  0.16 deg      to +120h   4x a day   tropical box
 
 Three of those are worth a word. **NAM Nest** is HRRR's resolution with three
 times HRRR's reach: the same 12 km model run again over a smaller box at a grid
@@ -167,6 +170,42 @@ the thing to check a forecast against.
 
 The page builds its model list from `latest.json`, so adding a model here is
 enough. Nothing needs editing on the site.
+
+## The tropical ones are cropped somewhere else
+
+The main box stops at 20 north, which is north of almost everywhere Atlantic
+storms form. The main development region runs roughly 10 to 20 north between
+Africa and the Caribbean, so a chart cropped to the United States shows a
+hurricane only once it is nearly ashore. The tropical box reaches from the
+equator to 45 north and from the central Pacific to west Africa, holding both
+basins the Hurricane Center forecasts, the Gulf, the Caribbean, and the wave
+that is going to be next week's storm.
+
+A tropical chart is also not a CONUS chart moved south. Different questions get
+asked, so different fields are built:
+
+    pwat    all the water vapour in the column, as the depth of rain it would
+            make. A storm moving into dry air weakens whatever else is in its
+            favour, so this is the first thing to look at.
+    shear   how much the wind changes between 850 and 200 mb. About 20 knots is
+            enough to tear a storm apart. No model publishes this, so it is
+            worked out from the four component fields.
+    sst     sea temperature. A hurricane runs on warm water and needs about
+            26 C to keep going, so the scale is narrow and centred there
+            instead of running from freezing.
+    gust    the number that takes the roof off, as opposed to the sustained
+            wind the storm is named for.
+    swh     wave height, and `perpw` wave period. Swell reaches a coast days
+            ahead of the storm that made it, while the sky is still clear.
+
+Shear is the length of the difference between the two wind vectors, not the
+difference between the two speeds. Those are not the same thing, and the
+distinction is the point: 40 knots at both levels blowing in opposite
+directions is 80 knots of shear and shreds a storm, where subtracting the
+speeds would call it zero and say the storm was fine.
+
+The shear levels are fetched only by models that build the field. Asking every
+model for 200 and 850 mb would be paying for data nothing draws.
 
 NBM is taken four times a day rather than the hourly it publishes at. It is a
 five day blend and does not meaningfully change in an hour, so fetching 41
@@ -212,7 +251,10 @@ step, so nothing meaningful is lost.
     python3 pi/gfs_pipeline.py             # all of them
     python3 pi/gfs_pipeline.py hrrr        # just one
 
-Fields: `t2m`, `d2m`, `mslp`, `cape`, `refc`, `apcp`, `wind`.
+Fields: `t2m`, `d2m`, `mslp`, `cape`, `refc`, `apcp`, `wind`, `gust`, and on
+the tropical models `pwat`, `shear`, `sst`, `swh`, `perpw`. A model only builds
+the ones its source actually contains, and only those appear in the manifest,
+so the page offers exactly what exists.
 
 `manifest.json` carries the bounds, the hours that succeeded per field, and the
 value range, so the page can build a legend without opening any images.

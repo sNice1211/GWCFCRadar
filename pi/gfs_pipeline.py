@@ -42,6 +42,17 @@ OUT_DIR = os.path.expanduser("~/wxdata/models")
 BOX = {"toplat": 55.0, "bottomlat": 20.0, "leftlon": 230.0, "rightlon": 300.0}
 BOUNDS_LATLON = [[20.0, -130.0], [55.0, -60.0]]   # what Leaflet wants
 
+# The tropics are somewhere else. The box above stops at 20 north, which is
+# north of almost everywhere Atlantic storms form: the main development region
+# runs roughly 10 to 20 north between Africa and the Caribbean, and a chart
+# cropped to the United States shows a hurricane only once it is nearly ashore.
+# This one reaches from the equator to 45 north and from the central Pacific to
+# west Africa, so it holds both basins the Hurricane Center forecasts, the Gulf
+# and the Caribbean, and the wave that is going to become next week's storm.
+TROPICS_BOX = {"toplat": 45.0, "bottomlat": 0.0,
+               "leftlon": 195.0, "rightlon": 350.0}
+TROPICS_BOUNDS = [[0.0, -165.0], [45.0, -10.0]]
+
 # Every model NOAA publishes through the same filter service, which is what
 # makes adding one a few lines rather than a new program. They differ only in
 # where the files live, how often they run, how far out they go and how long
@@ -176,9 +187,58 @@ MODELS = {
                ".grb2.idx",
         "step": 1, "out": 0,
     },
+    # ── Tropical ────────────────────────────────────────────────────────────
+    # The same GFS file, cropped somewhere else and asked different questions.
+    # A tropical chart is not a CONUS chart moved south: what matters is
+    # moisture, shear and sea temperature rather than the two metre
+    # temperature, and it matters a week out rather than tomorrow, so this
+    # steps six-hourly and runs to eight days where the CONUS one stops at
+    # five.
+    "gfstrop": {
+        "label": "GFS Tropical", "res": "0.25 deg", "cycle_h": 6, "lag_h": 5,
+        "filter": "filter_gfs_0p25.pl",
+        "dir": "/gfs.{date}/{cyc}/atmos",
+        "file": "gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}",
+        "raw": "gfs/prod/gfs.{date}/{cyc}/atmos/"
+               "gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}.idx",
+        "step": 6, "out": 192,
+        "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
+        "shear": True,
+    },
+    "gefstrop": {
+        # The ensemble mean over the tropics, out to ten days. This is the one
+        # to look at for a storm that has not formed yet: at that range a
+        # single run is guessing, and the average of thirty is the honest
+        # version of the same forecast.
+        "label": "GEFS Tropical", "res": "0.5 deg ens", "cycle_h": 6,
+        "lag_h": 7,
+        "filter": "filter_gefs_atmos_0p50a.pl",
+        "dir": "/gefs.{date}/{cyc}/atmos/pgrb2ap5",
+        "file": "geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}",
+        "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
+               "geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
+        "step": 6, "out": 240,
+        "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
+        "shear": True,
+    },
+    "gfswave": {
+        # Waves, which reach a coast days before the storm that made them.
+        # Long period swell running ahead of a hurricane is what closes
+        # beaches and floods low ground while the sky is still clear, and it
+        # is the part of a tropical forecast that is easiest to miss.
+        "label": "Waves", "res": "0.16 deg", "cycle_h": 6, "lag_h": 5,
+        "filter": "filter_gfswave.pl",
+        "dir": "/gfs.{date}/{cyc}/wave/gridded",
+        "file": "gfswave.t{cyc}z.global.0p16.f{fhr:03d}.grib2",
+        "raw": "gfs/prod/gfs.{date}/{cyc}/wave/gridded/"
+               "gfswave.t{cyc}z.global.0p16.f{fhr:03d}.grib2.idx",
+        "step": 6, "out": 120,
+        "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
+    },
 }
 DEFAULT_MODELS = ["gfs", "nam", "namnest", "hrrr", "rap", "nbm", "rtma",
-                  "gefs", "gefsspr"]
+                  "gefs", "gefsspr",
+                  "gfstrop", "gefstrop", "gfswave"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -250,7 +310,56 @@ FIELDS = {
     # no wind chart. The components are still the common case.
     "wind":  {"short": ("10si", "ws"), "levtype": ("heightAboveGround",), "level": 10,
               "convert": lambda a: a * 1.94384, "range": (0, 80),   "ramp": "wind"},
+
+    # ── Tropical ────────────────────────────────────────────────────────────
+    # Precipitable water: all the water vapour in the column, as the depth of
+    # rain it would make if it all fell. The first thing to look at for a
+    # tropical system, because a storm moving into dry air weakens whatever
+    # else is in its favour. The 50 mm line is roughly where the tropics
+    # begin, and the scale is set so that line lands in the middle.
+    "pwat":  {"short": ("pwat", "tcwv"),
+              "levtype": ("atmosphereSingleLayer", "entireAtmosphere",
+                          "atmosphere", "unknown"), "level": 0,
+              "convert": lambda a: a,           "range": (0, 80),
+              "ramp": "moisture"},
+    # Sea surface temperature. A hurricane runs on warm water and needs about
+    # 26 C to keep going, so the range is narrow and centred on that: a scale
+    # from freezing would put every number worth reading in one band.
+    "sst":   {"short": ("wtmp", "sst"), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a - 273.15,  "range": (16, 34), "ramp": "sst"},
+    # Wind gust at the surface, which is what actually breaks things. Sustained
+    # wind is the number a storm is named for, the gust is the number that
+    # takes the roof off.
+    "gust":  {"short": ("gust", "i10fg", "fg10"), "levtype": ("surface",),
+              "level": 0,
+              "convert": lambda a: a * 1.94384, "range": (0, 120), "ramp": "wind"},
+    # Deep layer wind shear: how much the wind changes between 850 and 200 mb.
+    # Worked out from the four component fields rather than read, because no
+    # model publishes it. It is the other half of the question PWAT asks: a
+    # storm needs moisture and it needs the wind to be roughly the same all
+    # the way up, and about 20 knots of shear is enough to tear one apart.
+    "shear": {"short": (), "levtype": (), "level": 0,
+              "convert": lambda a: a * 1.94384, "range": (0, 60),
+              "ramp": "shear", "derive": "shear"},
+
+    # ── Waves ───────────────────────────────────────────────────────────────
+    # Significant wave height, which is the average of the highest third, so
+    # the biggest waves in a sea are noticeably larger than this number. Swell
+    # from a hurricane reaches a coast days before the storm does, and is what
+    # closes beaches and floods low ground well ahead of landfall.
+    "swh":   {"short": ("swh", "htsgw"), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a,           "range": (0, 12),
+              "ramp": "viridis"},
+    # Wave period. Long period swell is the signature of a distant storm: wind
+    # waves from local weather are short and choppy, a 15 second swell has
+    # travelled a long way to get here.
+    "perpw": {"short": ("perpw", "pp1d"), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a,           "range": (0, 20), "ramp": "heat"},
 }
+
+# The two pressure levels the shear field is worked out from. Fetched only by
+# models that ask for shear, since for everything else they are dead weight.
+SHEAR_LEVELS = (200, 850)
 
 
 def _matches(spec, short, levtype, level):
@@ -284,7 +393,11 @@ FALLBACK_LEVS = ["lev_2_m_above_ground", "lev_10_m_above_ground",
 WANT_VARS = {"TMP", "DPT", "PRMSL", "MSLET", "MSLMA",
              "CAPE", "REFC", "APCP", "UGRD", "VGRD",
              # NBM and RTMA publish wind speed itself and no components.
-             "WIND"}
+             "WIND",
+             # Tropical: column moisture, sea temperature, gusts.
+             "PWAT", "WTMP", "GUST",
+             # Waves.
+             "HTSGW", "PERPW"}
 # Exact level names, except the last, which is a prefix: models spell the whole
 # column differently. GFS says "entire atmosphere (considered as a single
 # layer)", HRRR just says "entire atmosphere", and guessing wrong is what turns
@@ -292,6 +405,8 @@ WANT_VARS = {"TMP", "DPT", "PRMSL", "MSLET", "MSLMA",
 WANT_LEVELS = ["2 m above ground", "10 m above ground",
                "mean sea level", "surface"]
 WANT_LEVEL_PREFIX = "entire atmosphere"
+# Asked for only by models that build the shear field.
+SHEAR_LEVEL_NAMES = [f"{mb} mb" for mb in SHEAR_LEVELS]
 
 
 def lev_flag(level):
@@ -344,13 +459,23 @@ def inventory(m, date_str, cyc, fhr):
     return pairs or None
 
 
-def ask_from_inventory(pairs):
-    """Turn what is in the file into the flags that ask for the useful part."""
+def ask_from_inventory(pairs, extra_levels=()):
+    """
+    Turn what is in the file into the flags that ask for the useful part.
+
+    extra_levels are pressure levels a model wants on top of the surface set,
+    and only the wind components are taken from them. Asking for everything at
+    850 mb would pull temperature and humidity too, which nothing here draws,
+    on a box big enough that the waste is real.
+    """
     vars_, levs_ = set(), set()
     for var, level in pairs:
         if var not in WANT_VARS:
             continue
         if level in WANT_LEVELS or level.startswith(WANT_LEVEL_PREFIX):
+            vars_.add("var_" + var)
+            levs_.add(lev_flag(level))
+        elif level in extra_levels and var in ("UGRD", "VGRD"):
             vars_.add("var_" + var)
             levs_.add(lev_flag(level))
     return sorted(vars_), sorted(levs_)
@@ -413,6 +538,22 @@ RAMPS = {
     # value where the point is the disagreement.
     "spread": [(0,(240,248,255)),(0.25,(150,200,235)),(0.5,(120,140,220)),
                (0.75,(150,80,190)),(1,(120,20,90))],
+    # Moisture, for precipitable water. Runs dry brown through green to blue
+    # and purple, which is the convention on tropical charts and reads the
+    # right way round: the dry air that kills a storm looks like desert, and
+    # the deep moisture that feeds one looks like ocean.
+    "moisture":[(0,(120,90,50)),(0.3,(200,190,130)),(0.5,(90,190,120)),
+                (0.7,(40,140,210)),(0.87,(90,60,200)),(1,(230,90,200))],
+    # Shear, inverted on purpose. Low shear is what lets a hurricane grow, so
+    # the dangerous end of this scale is the low end, and it is the low end
+    # that is coloured. High shear fades out: it is the absence of a problem.
+    "shear":  [(0,(200,30,60)),(0.18,(240,140,40)),(0.35,(240,225,120)),
+               (0.55,(120,200,150)),(0.8,(70,120,180)),(1,(30,40,80))],
+    # Sea surface temperature, with the 26 C line that matters. Hurricanes
+    # need about 26 C to keep going, so the ramp is built to change character
+    # there rather than to be pretty across its whole width.
+    "sst":    [(0,(20,20,90)),(0.35,(30,110,190)),(0.55,(60,180,170)),
+               (0.62,(250,250,180)),(0.75,(245,160,60)),(1,(170,20,30))],
 }
 
 
@@ -495,7 +636,8 @@ def fetch_hour(m, date_str, cyc, fhr, path):
     attempts = []
     pairs = inventory(m, date_str, cyc, fhr)
     if pairs:
-        v, l = ask_from_inventory(pairs)
+        v, l = ask_from_inventory(
+            pairs, SHEAR_LEVEL_NAMES if m.get("shear") else ())
         if v and l:
             attempts.append((v, l, "indexed"))
     attempts.append((m.get("vars", VAR_FLAGS), m.get("levs", LEV_FLAGS), "declared"))
@@ -509,7 +651,9 @@ def fetch_hour(m, date_str, cyc, fhr, path):
             "subregion": "",
             **{k: "on" for k in vars_},
             **{k: "on" for k in levs_},
-            **{k: v for k, v in BOX.items()},
+            # Each model states the box it wants, so a tropical model is
+            # cropped to the tropics rather than to the United States.
+            **{k: v for k, v in m.get("box", BOX).items()},
         }
         for attempt in range(RETRIES):
             try:
@@ -614,6 +758,14 @@ def open_fields(grib_path):
                     uv[short] = (arr, lats, lons)
                     continue
 
+                # Wind components at the two shear levels, kept aside the same
+                # way. Nothing draws the wind at 200 mb on its own; it is only
+                # here to be differenced against 850.
+                if short in ("u", "v") and levt == "isobaricInhPa" \
+                        and lev in SHEAR_LEVELS:
+                    uv[f"{short}{lev}"] = (arr, lats, lons)
+                    continue
+
                 for key, spec in FIELDS.items():
                     if not _matches(spec, short, levt, lev):
                         continue
@@ -648,6 +800,18 @@ def open_fields(grib_path):
         u, lats, lons = uv["10u"]
         v = uv["10v"][0]
         found["wind"] = (np.sqrt(u ** 2 + v ** 2), lats, lons)
+
+    # Shear is the length of the difference between the two wind vectors, not
+    # the difference of their two speeds. Those are not the same thing and the
+    # distinction is the whole point: a 40 knot wind at both levels blowing in
+    # opposite directions is 80 knots of shear and shreds a storm, while the
+    # difference of the speeds would call it zero and say the storm was fine.
+    hi, lo = SHEAR_LEVELS
+    if all(f"{c}{p}" in uv for c in ("u", "v") for p in (hi, lo)):
+        du = uv[f"u{hi}"][0] - uv[f"u{lo}"][0]
+        dv = uv[f"v{hi}"][0] - uv[f"v{lo}"][0]
+        found["shear"] = (np.sqrt(du ** 2 + dv ** 2), uv[f"u{hi}"][1],
+                          uv[f"u{hi}"][2])
 
     # A file full of messages that matched nothing means the keys in FIELDS
     # disagree with what this eccodes build calls them. Printing what was
@@ -1052,7 +1216,7 @@ def build_model(name, m):
         "model": name, "label": m["label"], "res": m["res"],
         "run": run_id, "cycle": f"{date_str}T{cyc}:00Z",
         "built_at": datetime.now(timezone.utc).isoformat(),
-        "bounds": BOUNDS_LATLON,
+        "bounds": m.get("bounds", BOUNDS_LATLON),
         "hours": hours,
         "fields": {k: {"hours": v,
                        "min": round(ranges[k][0], 2), "max": round(ranges[k][1], 2),

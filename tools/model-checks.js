@@ -103,7 +103,7 @@ function ok(name, cond, extra) {
   await _hdFreshIndex();
   const group = document.getElementById('sev-pi-group');
   const vals = group.children.map(o => o.value);
-  ok('every model the Pi has is offered', vals.length === 4, vals.join(','));
+  ok('every model the Pi has is offered', vals.length === 5, vals.join(','));
   ok('models added on the Pi appeared with no edit to the page',
      vals.includes('pi:nbm') && vals.includes('pi:rtma'), vals.join(','));
   ok('labels carry the resolution',
@@ -124,6 +124,31 @@ function ok(name, cond, extra) {
   const nbmOpts = document.getElementById('sev-var-sel').children.map(o => o.value);
   ok('NBM offers wind and not reflectivity',
      nbmOpts.includes('wind') && !nbmOpts.includes('refc'), nbmOpts.join(','));
+
+
+  console.log('\n15. a tropical model, which lives somewhere else');
+  await _sevSetSection('pi:gfstrop');
+  ok('it drew', added[added.length-1].url.includes('/gfstrop/'), added[added.length-1].url);
+  ok('bounds came from its own manifest, not the last model shown',
+     JSON.stringify(added[added.length-1].bounds) === JSON.stringify([[0,-165],[45,-10]]),
+     JSON.stringify(added[added.length-1].bounds));
+  _sevUpdateProducts();
+  const tOpts = document.getElementById('sev-var-sel').children.map(o => o.value);
+  ok('tropical products are offered',
+     tOpts.includes('pwat') && tOpts.includes('shear') && tOpts.includes('sst'),
+     tOpts.join(','));
+  ok('and CONUS-only products are not',
+     !tOpts.includes('refc') && !tOpts.includes('t2m'), tOpts.join(','));
+  ok('the field fell to one this model has', _hdField === 'pwat', _hdField);
+  _sevSetVar('shear');
+  ok('switching to shear drew shear',
+     added[added.length-1].url.includes('shear_f000.png'), added[added.length-1].url);
+
+  console.log('\n16. going back to a CONUS model restores its bounds');
+  await _sevSetSection('pi:hrrr');
+  ok('bounds are CONUS again',
+     JSON.stringify(added[added.length-1].bounds) === JSON.stringify([[20,-130],[55,-60]]),
+     JSON.stringify(added[added.length-1].bounds));
 
   console.log('\n' + (fail ? `${fail} FAILED, ${pass} passed` : `all ${pass} passed`));
   process.exit(fail ? 1 : 0);
