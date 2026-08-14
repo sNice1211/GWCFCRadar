@@ -66,9 +66,13 @@ MODELS = {
         "file": "nam.t{cyc}z.awphys{fhr:02d}.tm00.grib2",
         "raw": "nam/prod/nam.{date}/nam.t{cyc}z.awphys{fhr:02d}.tm00.grib2.idx",
         "step": 3, "out": 60,
+        # Backslashes are real characters here, not an escape for this file:
+        # the service reads a level name as a regular expression, so brackets
+        # have to be escaped for it. They must NOT be percent-encoded in
+        # advance either, since the request encoder does that itself.
         "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
                  "lev_mean_sea_level", "lev_surface",
-                 "lev_entire_atmosphere_%5C%28considered_as_a_single_layer%5C%29"],
+                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
     },
     "hrrr": {
         # Hourly and 3 km: the one worth having when something is happening
@@ -165,7 +169,9 @@ FIELDS = {
               "convert": lambda a: a - 273.15, "range": (-40, 45),  "ramp": "temp"},
     "d2m":   {"short": ("2d", "dpt"), "levtype": ("heightAboveGround",), "level": 2,
               "convert": lambda a: a - 273.15, "range": (-40, 30),  "ramp": "temp"},
-    "mslp":  {"short": ("prmsl", "msl"),
+    # HRRR carries MSLMA rather than PRMSL, and NAM carries MSLET. Same field
+    # as far as a map is concerned, three different names.
+    "mslp":  {"short": ("prmsl", "msl", "mslma", "mslet"),
               "levtype": ("meanSea", "meanSeaLevel"), "level": 0,
               "convert": lambda a: a / 100.0,  "range": (960, 1050), "ramp": "viridis"},
     "cape":  {"short": ("cape",),    "levtype": ("surface",), "level": 0,
@@ -205,6 +211,81 @@ LEV_FLAGS = ["lev_2_m_above_ground", "lev_10_m_above_ground",
 FALLBACK_VARS = ["var_TMP", "var_UGRD", "var_VGRD", "var_PRMSL"]
 FALLBACK_LEVS = ["lev_2_m_above_ground", "lev_10_m_above_ground",
                  "lev_mean_sea_level"]
+
+# What to ask for, before knowing what a given file contains. Written as the
+# plain names NOAA's index uses rather than as query flags, because the ask is
+# now built by matching these against that index.
+WANT_VARS = {"TMP", "DPT", "PRMSL", "MSLET", "MSLMA",
+             "CAPE", "REFC", "APCP", "UGRD", "VGRD"}
+# Exact level names, except the last, which is a prefix: models spell the whole
+# column differently. GFS says "entire atmosphere (considered as a single
+# layer)", HRRR just says "entire atmosphere", and guessing wrong is what turns
+# a whole forecast hour into an error.
+WANT_LEVELS = ["2 m above ground", "10 m above ground",
+               "mean sea level", "surface"]
+WANT_LEVEL_PREFIX = "entire atmosphere"
+
+
+def lev_flag(level):
+    """
+    The query flag NOMADS gives a level.
+
+    Not a label: the filter service treats it as a regular expression, so the
+    brackets in "entire atmosphere (considered as a single layer)" have to be
+    escaped or they read as a group and match nothing.
+
+    The backslashes go in as real characters. They were written here already
+    percent-encoded once, which meant the encoder encoded the percent signs and
+    the level arrived as literal "%5C%28" text. Nothing is called that, so the
+    service refused the whole request, and NAM produced no charts at all.
+    """
+    out = level.replace(" ", "_")
+    for ch in "()":
+        out = out.replace(ch, "\\" + ch)
+    return "lev_" + out
+
+
+def inventory(m, date_str, cyc, fhr):
+    """
+    What this file actually holds, read from NOAA's own index beside it.
+
+    The filter service answers 500, not an empty file, when asked for something
+    a model does not carry, so one hopeful flag loses the whole hour. Guessing
+    per model was the previous approach and it does not survive contact: HRRR
+    calls its pressure field MSLMA where GFS calls it PRMSL, GEFS at half a
+    degree has no dewpoint, CAPE or reflectivity, and the level names differ
+    again. The index says exactly what is in there, costs a few KB, and turns
+    the ask from a guess into a fact.
+
+    Returns {(variable, level)} or None when the index cannot be read, in which
+    case the caller falls back to asking blind.
+    """
+    url = f"{RAW_BASE}/" + m["raw"].format(date=date_str, cyc=cyc, fhr=fhr)
+    try:
+        r = requests.get(url, timeout=30)
+        if r.status_code != 200 or "<" in r.text[:40]:
+            return None
+    except requests.RequestException:
+        return None
+    pairs = set()
+    for line in r.text.splitlines():
+        # 1:0:d=2026081412:PRMSL:mean sea level:anl:
+        f = line.split(":")
+        if len(f) > 5:
+            pairs.add((f[3], f[4]))
+    return pairs or None
+
+
+def ask_from_inventory(pairs):
+    """Turn what is in the file into the flags that ask for the useful part."""
+    vars_, levs_ = set(), set()
+    for var, level in pairs:
+        if var not in WANT_VARS:
+            continue
+        if level in WANT_LEVELS or level.startswith(WANT_LEVEL_PREFIX):
+            vars_.add("var_" + var)
+            levs_.add(lev_flag(level))
+    return sorted(vars_), sorted(levs_)
 
 
 def write_json(path, obj):
@@ -333,16 +414,24 @@ def fetch_hour(m, date_str, cyc, fhr, path):
     """
     Download one forecast hour, cropped to the box by NOAA before sending.
 
-    Tried twice with different asks. The filter service answers 500, not an
-    empty file, when a model does not contain something requested, so a single
-    unavailable variable loses the whole hour. If the model's own inventory
-    still fails, the second attempt asks only for what every model carries:
-    four fields beat none.
+    The ask is built from NOAA's index for this exact file, so it names only
+    fields that are in there. That is what makes a model work rather than
+    return 500: the service refuses the entire request over one field it does
+    not have, and every model spells its fields and levels a little
+    differently.
+
+    Two fallbacks behind that, for when the index cannot be read at all: the
+    model's declared list, then the four fields every model carries. A chart
+    with four fields beats no chart.
     """
-    attempts = [
-        (m.get("vars", VAR_FLAGS), m.get("levs", LEV_FLAGS), "full"),
-        (FALLBACK_VARS, FALLBACK_LEVS, "reduced"),
-    ]
+    attempts = []
+    pairs = inventory(m, date_str, cyc, fhr)
+    if pairs:
+        v, l = ask_from_inventory(pairs)
+        if v and l:
+            attempts.append((v, l, "indexed"))
+    attempts.append((m.get("vars", VAR_FLAGS), m.get("levs", LEV_FLAGS), "declared"))
+    attempts.append((FALLBACK_VARS, FALLBACK_LEVS, "reduced"))
     url = f"{FILTER_BASE}/{m['filter']}"
     last = ""
     for vars_, levs_, what in attempts:
@@ -361,8 +450,8 @@ def fetch_hour(m, date_str, cyc, fhr, path):
                         and r.content[:4] == b"GRIB"):
                     with open(path, "wb") as f:
                         f.write(r.content)
-                    if what == "reduced":
-                        log(f"    f{fhr:03d}: full ask refused, took the reduced set")
+                    if what != "indexed":
+                        log(f"    f{fhr:03d}: index unusable, took the {what} set")
                     return True
                 last = f"HTTP {r.status_code}, {len(r.content)} bytes"
                 # A refusal is about what was asked for, not about timing, so
