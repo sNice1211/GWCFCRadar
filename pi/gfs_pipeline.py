@@ -53,7 +53,7 @@ FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
 
 # Fields to render. Matched on the GRIB shortName, level type and level that
-# cfgrib preserves, rather than on the variable name it happens to invent,
+# GRIB itself defines, rather than on a name invented during conversion,
 # because those names differ between versions (t2m vs t, msl vs prmsl).
 #
 # convert turns raw GRIB units into what the map should show.
