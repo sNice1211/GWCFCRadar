@@ -77,7 +77,40 @@ else
   bad "no address in ~/tunnel.log"
 fi
 
-hdr "6. End to end, the way the browser does it"
+hdr "6. Is what the site gets the same as what is on disk?"
+# The question that matters when the Pi has rebuilt but the site disagrees.
+# The file being right proves nothing on its own: the tunnel, and whatever is
+# in front of it, are entitled to hand back what they saw last.
+LOCAL="$DATA/models/latest.json"
+if [ -n "$URL" ] && [ -s "$LOCAL" ]; then
+  A=$(md5sum < "$LOCAL" | cut -d" " -f1)
+  B=$(curl -s --max-time 25 "$URL/models/latest.json?t=$(date +%s)" | md5sum | cut -d" " -f1)
+  C=$(curl -s --max-time 25 "$URL/models/latest.json" | md5sum | cut -d" " -f1)
+  if [ "$A" = "$B" ]; then
+    good "the tunnel serves the file that is on disk"
+    [ "$A" = "$C" ] || bad "but only with a cache buster: something in between is holding an old copy"
+  else
+    bad "the tunnel is serving something else than the file on disk"
+    note "on disk : $(python3 -c "
+import json,sys
+d=json.load(open('$LOCAL'))
+print(', '.join(sorted((d.get('models') or {}).keys())))
+" 2>/dev/null)"
+    note "over the tunnel: $(curl -s --max-time 25 "$URL/models/latest.json?t=$(date +%s)" | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: print('not JSON'); raise SystemExit
+print(', '.join(sorted((d.get('models') or {}).keys())))
+" 2>/dev/null)"
+    note "FIX:  systemctl --user restart gwcfc-serve gwcfc-tunnel"
+  fi
+  note "updated: $(python3 -c "
+import json
+print(json.load(open('$LOCAL')).get('updated','?'))
+" 2>/dev/null)"
+fi
+
+hdr "7. End to end, the way the browser does it"
 if [ -n "$URL" ]; then
   OUT=$(curl -s -D - -o /tmp/_d.json --max-time 25 -H "Origin: https://ralphhtml.github.io" "$URL/models/latest.json" 2>/dev/null)
   printf '        %s\n' "$(printf '%s' "$OUT" | head -1)"
