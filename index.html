@@ -11770,7 +11770,14 @@ function _hdSetBase(url) {
 }
 
 async function _hdLoadIndex() {
-  const idx = await fetch(`${_hdBase}/models/latest.json`, { cache: 'no-store' })
+  // The query parameter, not just no-store. no-store is a promise the browser
+  // keeps and nothing else does: the Pi answers through a tunnel, and anything
+  // caching in between is entitled to hand back what it saw last. A URL that
+  // has never been requested before cannot be served from any cache anywhere,
+  // which is the only version of this that is actually reliable.
+  const bust = `?t=${Date.now()}`;
+  const idx = await fetch(`${_hdBase}/models/latest.json${bust}`,
+                          { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null).catch(() => null);
   if (idx) _hdIndexAt = Date.now();
   return idx;
@@ -11867,6 +11874,8 @@ async function _hdLoadManifest(model, region) {
   const entry = key && _hdRegionEntry(model, key);
   if (!entry) return null;
   _hdRegion = key;
+  // A manifest lives under its run, so a given path never changes and caching
+  // it is right. The run in the path is the cache buster.
   return fetch(`${_hdBase}/models/${entry.path}`, { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null).catch(() => null);
 }
@@ -11999,8 +12008,19 @@ function _hdRenderPanel() {
     `<b>+${fhr}h</b>${valID(valid)}`;
   if (_hdManifest) {
     const rr = _hdManifest.run;
+    // The index's own timestamp, so "is the site seeing a fresh list" is a
+    // thing you can read rather than a thing you have to guess at. This went
+    // wrong once and took a while to pin down precisely because nothing on
+    // screen said how old the list was.
+    let age = '';
+    const upd = _hdIndex && _hdIndex.updated && Date.parse(_hdIndex.updated);
+    if (upd) {
+      const mins = Math.round((Date.now() - upd) / 60000);
+      age = mins < 90 ? ` · list ${mins}m old`
+                      : ` · list ${Math.round(mins / 60)}h old`;
+    }
     _hdPanel.querySelector('.hd-run').textContent =
-      `${_hdManifest.res || ''} · ${rr.slice(4, 6)}/${rr.slice(6, 8)} ${rr.slice(9, 11)}Z`;
+      `${_hdManifest.res || ''} · ${rr.slice(4, 6)}/${rr.slice(6, 8)} ${rr.slice(9, 11)}Z${age}`;
   }
   _hdPanel.querySelector('.hd-range').textContent =
     (meta.min != null) ? `${meta.min} to ${meta.max} ${spec.unit}` : '';
@@ -32675,7 +32695,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "ECMWF works, so all twenty model and region combinations are reachable. The page also copes with a Pi that has not rebuilt yet.";
+const APP_LATEST_UPDATE = "The model list can no longer be served to you stale: it is fetched with a cache buster, and the panel says how old the list is.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

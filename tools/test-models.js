@@ -151,7 +151,9 @@ let fetchLog = [];
 global.fetch = async (url) => {
   fetchLog.push(url);
   if (url.includes('firestore')) return { ok:true, json: async () => ({ fields:{ url:{ stringValue:'https://pi.test' } } }) };
-  if (url.endsWith('latest.json'))
+  // The page cache-busts this with a query parameter, so match the path
+  // rather than the whole string.
+  if (url.split('?')[0].endsWith('latest.json'))
     return { ok:true, json: async () => (useOldIndex ? OLD_INDEX() : INDEX()) };
   const old = url.match(/models\/gfstrop\/[\d_]+\/manifest\.json/);
   if (old) return { ok:true, json: async () => MANIFESTS()['gfs/tropics'] };
