@@ -1935,6 +1935,16 @@ def main(models=None):
     # meaning it, and a hand-run build should finish what it was asked for.
     budget = TIME_BUDGET_S if not models else None
 
+    # Flattened to model and region, then ordered so anything that has never
+    # produced a picture goes first.
+    #
+    # Without that the tail of the list starves. The hourly models come first
+    # by design, they rebuild every hour, and they are the expensive ones, so
+    # they would take the budget every single time and a model at the end of
+    # the list would never get built at all. Which is exactly what it looks
+    # like from the outside: a site showing the first six models and never the
+    # other seven, no matter how long you leave it.
+    jobs = []
     for name in names:
         if name == "sounding":
             continue                      # handled below
@@ -1942,37 +1952,47 @@ def main(models=None):
         if not m:
             log(f"unknown model: {name}")
             continue
+        for region in regions_of(m):
+            never = _newest_manifest(os.path.join(OUT_DIR, name, region)) is None
+            jobs.append((0 if never else 1, name, region, m))
+    jobs.sort(key=lambda j: j[0])
+    fresh = sum(1 for j in jobs if j[0] == 0)
+    if fresh:
+        log(f"{fresh} of {len(jobs)} have never been built, doing those first")
+
+    for n, (_new, name, region, m) in enumerate(jobs):
         if budget and time.time() - started > budget:
             # Out of time rather than out of models. Everything already built
-            # is kept and listed; the rest are picked up next hour, and since
-            # DEFAULT_MODELS is in order of what matters, what gets dropped is
-            # the long range material nobody minds being an hour old.
-            log(f"time budget reached, leaving {name} and the rest for the "
-                f"next run")
-            for later in names[names.index(name):]:
-                lm = MODELS.get(later)
-                if not lm:
-                    continue
-                for reg in regions_of(lm):
-                    man = _newest_manifest(os.path.join(OUT_DIR, later, reg))
-                    if man:
-                        any_ok = True
-                        index["models"].setdefault(later, _model_head(
-                            later, lm))["regions"][reg] = _index_entry(
-                                later, reg, man)
+            # is kept and listed, and the rest are picked up next run, which
+            # will put them first because they are the ones with nothing.
+            left = ", ".join(f"{a}/{b}" for _p, a, b, _m in jobs[n:][:6])
+            log(f"time budget reached with {len(jobs) - n} left: {left}"
+                + (" ..." if len(jobs) - n > 6 else ""))
+            for _p, later, reg, _lm in jobs[n:]:
+                man = _newest_manifest(os.path.join(OUT_DIR, later, reg))
+                if man:
+                    any_ok = True
+                    index["models"].setdefault(later, _model_head(
+                        later, MODELS[later]))["regions"][reg] = _index_entry(
+                            later, reg, man)
             break
 
-        for region in regions_of(m):
-            try:
-                man = build_model(name, m, region)
-            except Exception as e:
-                # One model failing must not cost the others.
-                log(f"{name}/{region}: failed: {e}")
-                man = _newest_manifest(os.path.join(OUT_DIR, name, region))
-            if man:
-                any_ok = True
-                index["models"].setdefault(name, _model_head(name, m))[
-                    "regions"][region] = _index_entry(name, region, man)
+        try:
+            man = build_model(name, m, region)
+        except Exception as e:
+            # One model failing must not cost the others.
+            log(f"{name}/{region}: failed: {e}")
+            man = _newest_manifest(os.path.join(OUT_DIR, name, region))
+        if man:
+            any_ok = True
+            index["models"].setdefault(name, _model_head(name, m))[
+                "regions"][region] = _index_entry(name, region, man)
+        # Written as it goes rather than only at the end, so a model that has
+        # just finished shows up on the site within the minute instead of
+        # waiting for every other model to finish first.
+        if any_ok:
+            write_json(os.path.join(OUT_DIR, "latest.json"),
+                       {**index, "updated": datetime.now(timezone.utc).isoformat()})
 
     # Soundings are their own product rather than a model: same source, but
     # pressure levels instead of surface fields, and read back as numbers.
