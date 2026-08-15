@@ -218,9 +218,20 @@ would swallow the following one. After forty minutes no new model is started;
 whatever is already built is kept and listed, and the rest are picked up next
 time.
 
-`DEFAULT_MODELS` is in order of what matters, so what gets dropped is the long
-range material nobody minds being an hour old. Models named on the command line
+Anything that has never produced a picture is built first, whatever its place
+in the list. Without that the tail starves: the hourly models come first by
+design, they rebuild every hour, and they are the expensive ones, so they would
+take the budget every single time and a model at the end would never get built
+at all. From the outside that looks like a site showing the first six models
+and never the other seven, no matter how long you leave it.
+
+After that, `DEFAULT_MODELS` order decides, so what gets dropped is long range
+material nobody minds being an hour old. Models named on the command line
 ignore the budget: asking for one by name means meaning it.
+
+`latest.json` is rewritten after each model rather than once at the end, so a
+model that has just finished appears on the site within the minute instead of
+waiting for every other model to finish.
 
 Three of those are worth a word. **NAM Nest** is HRRR's resolution with three
 times HRRR's reach: the same 12 km model run again over a smaller box at a grid
