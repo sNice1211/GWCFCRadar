@@ -11822,7 +11822,8 @@ async function _hdFreshIndex() {
   // registered as new and the page went on showing the old one.
   const runOf = (idx) => {
     const e = idx && idx.models && _hdModel && idx.models[_hdModel];
-    const regions = (e && e.regions) || {};
+    if (!e) return null;
+    const regions = e.regions || (e.path ? { conus: e } : {});
     const key = regions[_hdRegion] ? _hdRegion : Object.keys(regions)[0];
     return key ? regions[key].run : null;
   };
@@ -11840,19 +11841,33 @@ async function _hdFreshIndex() {
 // name.
 function _hdRegionsOf(model) {
   const e = _hdIndex && _hdIndex.models && _hdIndex.models[model];
-  return (e && e.regions) ? Object.keys(e.regions) : [];
+  if (!e) return [];
+  if (e.regions) return Object.keys(e.regions);
+  // An index written before regions existed lists the path on the model
+  // itself. Read as a single region rather than as no regions at all, so a Pi
+  // that has not rebuilt yet still draws instead of offering a list of models
+  // that all fail to open.
+  return e.path ? ['conus'] : [];
+}
+
+// The same shape, whichever way the index was written.
+function _hdRegionEntry(model, region) {
+  const e = _hdIndex && _hdIndex.models && _hdIndex.models[model];
+  if (!e) return null;
+  if (e.regions) return e.regions[region] || null;
+  return (region === 'conus' && e.path) ? e : null;
 }
 
 async function _hdLoadManifest(model, region) {
-  const e = _hdIndex && _hdIndex.models && _hdIndex.models[model];
-  const regions = (e && e.regions) || {};
+  const have = _hdRegionsOf(model);
   // Fall back to whichever region this model does have rather than nothing:
   // asking for the tropics from a model that only covers Alaska should show
   // Alaska, not an error.
-  const key = regions[region] ? region : Object.keys(regions)[0];
-  if (!key) return null;
+  const key = have.includes(region) ? region : have[0];
+  const entry = key && _hdRegionEntry(model, key);
+  if (!entry) return null;
   _hdRegion = key;
-  return fetch(`${_hdBase}/models/${regions[key].path}`, { cache: 'no-store' })
+  return fetch(`${_hdBase}/models/${entry.path}`, { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null).catch(() => null);
 }
 
@@ -11909,7 +11924,15 @@ function _hdShow() {
   const model = _hdManifest.model || _hdModel;
   // The region is part of the path, because the same model over two places is
   // two sets of pictures sitting side by side on the Pi.
-  const url = `${_hdBase}/models/${model}/${_hdRegion}/${_hdManifest.run}`
+  // The region is part of the path, because the same model over two places is
+  // two sets of pictures sitting side by side on the Pi. An index written
+  // before regions existed has no region directory, so the path it gives is
+  // followed instead of one being invented around it.
+  const entry = _hdRegionEntry(_hdModel, _hdRegion);
+  const dir = (entry && entry.path)
+    ? entry.path.replace(/\/manifest\.json$/, '')
+    : `${model}/${_hdRegion}/${_hdManifest.run}`;
+  const url = `${_hdBase}/models/${dir}`
             + `/${_hdField}_f${String(fhr).padStart(3, '0')}.png`;
 
   // Swap rather than stack. Adding without removing leaves the old picture
@@ -32652,7 +32675,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "ECMWF is working, so all twenty model and region combinations now build. The best global model there is, on the map.";
+const APP_LATEST_UPDATE = "ECMWF works, so all twenty model and region combinations are reachable. The page also copes with a Pi that has not rebuilt yet.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

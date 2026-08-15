@@ -139,11 +139,22 @@ const MANIFESTS = () => ({
             bounds:[[15,-71],[22,-60]],
             fields: { refc:{hours:[0,3],min:-10,max:75} } },
 });
+// An index written before regions existed, which is what a Pi that has not
+// rebuilt yet is still serving.
+const OLD_INDEX = () => ({ models: {
+  gfstrop: { label:'GFS Tropical', res:'0.25 deg', run: RUN,
+             path:'gfstrop/'+RUN+'/manifest.json' },
+}});
+let useOldIndex = false;
+
 let fetchLog = [];
 global.fetch = async (url) => {
   fetchLog.push(url);
   if (url.includes('firestore')) return { ok:true, json: async () => ({ fields:{ url:{ stringValue:'https://pi.test' } } }) };
-  if (url.endsWith('latest.json')) return { ok:true, json: async () => INDEX() };
+  if (url.endsWith('latest.json'))
+    return { ok:true, json: async () => (useOldIndex ? OLD_INDEX() : INDEX()) };
+  const old = url.match(/models\/gfstrop\/[\d_]+\/manifest\.json/);
+  if (old) return { ok:true, json: async () => MANIFESTS()['gfs/tropics'] };
   const m = url.match(/models\/(\w+)\/(\w+)\/[\d_]+\/manifest\.json/);
   if (m) { const man = MANIFESTS()[m[1] + '/' + m[2]];
            return man ? { ok:true, json: async()=>man } : { ok:false }; }
