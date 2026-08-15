@@ -133,6 +133,24 @@ mixed content. The files need a public HTTPS address.
 For anything permanent, run both as services so they survive a reboot and the
 tunnel keeps one hostname instead of a new random one each restart.
 
+## A tunnel address that stops changing
+
+    bash ~/GWCFCRadar/pi/tunnel-permanent.sh pi.yourdomain.com
+
+A quick tunnel is anonymous, which is why it is free and why it hands out a
+new random hostname every restart. A named tunnel belongs to a Cloudflare
+account and keeps its hostname for good. Also free, but it needs a domain on
+that account, because the hostname has to be a name Cloudflare may answer for.
+
+What to have first: a Cloudflare account, and a domain pointed at it. If you
+own one already, move its nameservers in the Cloudflare dashboard. If not, the
+cheapest are a few pounds a year and Cloudflare sells them at cost.
+
+The script logs in, creates the tunnel, points the hostname at it, writes a
+config that exposes port 8080 and refuses everything else, replaces the
+gwcfc-tunnel service, and tells the site the address once. After that the
+address survives reboots and power cuts, and nothing has to be republished.
+
 ## What it writes
 
     ~/wxdata/models/
@@ -159,6 +177,34 @@ cadence, with `latest.json` listing whichever have a finished run:
     ecmwf     0.25 deg       to +144h   2x a day   CONUS, Tropics
     hireswarw 5 km           to  +48h   2x a day   CONUS
     hireswfv3 5 km           to  +48h   2x a day   CONUS
+    hireswarw2 5 km          to  +48h   2x a day   CONUS
+    href      3 km ens       to  +48h   4x a day   CONUS
+    rrfs      3 km           to  +18h   hourly     CONUS
+    hrrrsub   3 km 15-min    to   +6h   hourly     CONUS
+    ecmwfaifs 0.25 deg AI    to +144h   2x a day   CONUS, Tropics
+    ecmwfens  0.25 deg ens   to +240h   2x a day   CONUS, Tropics
+
+HREF is the convection allowing ensemble: HRRR, NAM Nest and the window models
+run together and averaged. For "will a storm actually happen here" it beats any
+single one of them, which is the blend's argument applied to tomorrow rather
+than to next week.
+
+ECMWF AIFS is their machine learned model, running beside the physical one and
+on several measures beating it. Same files and same index, one word different
+in the address.
+
+## Not carried, and why
+
+    GSL RRFS-MPAS     a research server, not NOMADS
+    NSSL HT, NSSL RN  a research server, not NOMADS
+    AI GFS, AI GEFS   no public GRIB feed
+    HGEFS, REFS       no public GRIB feed
+    HWRF, HMON        retired in 2023, HAFS replaced them
+    HAFS-A, HAFS-B    on NOMADS, but the files are named after each active
+                      storm, so carrying them means reading the live storm
+                      list first and building only what is out there
+    ICON, GEM         real and free, but from DWD and Environment Canada,
+                      which are separate servers with their own layouts
 
 ## A model and a region, not two models
 
