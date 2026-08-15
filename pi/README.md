@@ -221,6 +221,62 @@ the season, `03e` the third eastern Pacific one. The page writes those out.
 When the tropics are quiet HAFS simply has no regions, builds nothing, and does
 not appear. That is the correct behaviour rather than an error.
 
+    hwrf      storm grid     to  +72h   4x a day   one per active storm
+    hmon      storm grid     to  +72h   4x a day   one per active storm
+
+## Radar, from the raw data
+
+    ~/wxenv/bin/pip install metpy
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/radar_pipeline.py --check
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/radar_pipeline.py
+
+The site shows radar as tiles somebody else rendered, which is fine until you
+want a product they do not offer, a colour scale of your own, or a frame from
+four minutes ago rather than whenever their cache turned over.
+
+Level 2 is what the radar itself produces: every gate of every sweep, about
+6 MB a volume and a new one every four to six minutes. Level 3 is what the
+Weather Service makes from it, one product on a coarser grid, about 30 KB.
+Both are free on public S3 buckets with no account and no key.
+
+Only the lowest sweep is decoded. A volume holds a dozen elevations and a map
+shows one, and the 0.5 degree scan is what radar means to almost everyone
+looking at one.
+
+A sweep is polar, a map is not, so each gate's position is worked out from its
+azimuth and range with the beam tilt taken off the ground distance. The result
+goes through the same regridder the models use: a radar sweep and a Lambert
+model grid have nothing in common meteorologically and exactly one thing in
+common here, which is that neither is rows of latitude and columns of
+longitude.
+
+    GWCFC_RADAR_SITES="KTLX KFWS KLOT"    which radars
+    GWCFC_RADAR_FRAMES=6                  how many past volumes per run
+
+Twelve frames per site are kept, which is about an hour of animation. Five
+sites at two products is roughly 30 MB on disk.
+
+Velocity gets its own colour ramp, and it is the one that has to be symmetric:
+the number means towards the radar on one side of zero and away on the other,
+and the thing worth seeing is the two sitting next to each other, which is
+rotation. Green towards, red away, nothing at all at the middle, because a
+colour at zero fills the map with air that is not moving.
+
+## Finding out what else NOAA publishes
+
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/scan_sources.py --new
+
+Every model here started as four strings written from memory, and several were
+wrong in ways that look identical to the model not existing. The file server
+has a plain directory listing, so this walks it: every model family NOAA
+publishes, the newest dated directory inside, and a sample filename with the
+forecast hour picked out ready to paste into MODELS.
+
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/scan_sources.py hur
+
+That one answers what HWRF and HMON are really called, which is the part of
+those two most likely to be wrong.
+
 ## Not carried, and why
 
     GSL RRFS-MPAS     a research server, not NOMADS
