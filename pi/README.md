@@ -143,29 +143,41 @@ tunnel keeps one hostname instead of a new random one each restart.
       nam/20260814_12/ ...
       hrrr/20260814_17/ ...
 
-Models, each on its own cadence, with `latest.json` listing whichever ones
-currently have a finished run:
+Thirteen models over twenty model and region combinations, each on its own
+cadence, with `latest.json` listing whichever have a finished run:
 
-    gfs      0.25 deg      to +120h   4x a day
-    nam      12 km         to  +60h   4x a day
-    namnest  3 km          to  +60h   4x a day
-    hrrr     3 km          to  +18h   hourly
-    rap      13 km         to  +21h   hourly
-    nbm      2.5 km blend  to +120h   4x a day
-    rtma     2.5 km        now only   hourly
-    gefs     0.5 deg mean  to +168h   4x a day
-    gefsspr  0.5 deg sprd  to +168h   4x a day
-    gfstrop  0.25 deg      to +192h   4x a day   tropical box
-    gefstrop 0.5 deg mean  to +240h   4x a day   tropical box
-    gfswave  0.16 deg      to +120h   4x a day   tropical box
-    ecmwf    0.25 deg      to +144h   2x a day   not from NOAA
-    ecmwftrop 0.25 deg     to +240h   2x a day   not from NOAA, tropical box
-    hireswarw 5 km         to  +48h   2x a day
-    hireswfv3 5 km         to  +48h   2x a day
-    hrrrak   3 km          to  +48h   8x a day   Alaska
-    namak    3 km          to  +60h   4x a day   Alaska
-    namhi    3 km          to  +60h   4x a day   Hawaii
-    nampr    3 km          to  +60h   4x a day   Puerto Rico
+    hrrr      3 km           to  +18h   hourly     CONUS, Alaska
+    rtma      2.5 km         now only   hourly     CONUS
+    rap       13 km          to  +21h   hourly     CONUS
+    gfs       0.25 deg       to +120h   4x a day   CONUS, Tropics
+    nam       12 km          to  +60h   4x a day   CONUS
+    namnest   3 km           to  +60h   4x a day   CONUS, Alaska, Hawaii, PR
+    nbm       2.5 km blend   to +120h   4x a day   CONUS
+    gefs      0.5 deg mean   to +168h   4x a day   CONUS, Tropics
+    gefsspr   0.5 deg spread to +168h   4x a day   CONUS
+    gfswave   0.16 deg       to +120h   4x a day   Tropics
+    ecmwf     0.25 deg       to +144h   2x a day   CONUS, Tropics
+    hireswarw 5 km           to  +48h   2x a day   CONUS
+    hireswfv3 5 km           to  +48h   2x a day   CONUS
+
+## A model and a region, not two models
+
+GFS over the tropics is not a different model from GFS. It is the same
+forecast cut somewhere else, and having it in the list as "GFS Tropical" said
+otherwise. So a model now declares the regions it is built for, and the page
+offers the region beside the model rather than buried in its name.
+
+    REGIONS = conus, tropics, alaska, hawaii, prico
+
+A region contributes its box, and may override anything else the model says.
+That covers both kinds of case at once: the tropical crop of GFS is the same
+file with a longer reach and the shear field, while HRRR Alaska and the three
+NAM nests are genuinely different files, so their region replaces the address
+as well as the box. NOAA publishes the NAM nest as one model run over four
+domains, and it is now carried that way rather than as four models.
+
+Output is `models/<model>/<region>/<run>/`, and `latest.json` groups the
+regions under the model.
 
 The High Resolution Window pair, ARW and FV3, are worth having precisely
 because they are not HRRR. When all three put a storm in the same place that is

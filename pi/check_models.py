@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from gfs_pipeline import (BOX, DEFAULT_MODELS, ECMWF_PARAMS,
+from gfs_pipeline import (BOX, ECMWF_BASE, DEFAULT_MODELS, REGIONS, regions_of, region_spec, ECMWF_PARAMS,
                           ECMWF_SHEAR_PARAMS, FILTER_BASE, HTTP, MODELS,
                           RAW_BASE, SHEAR_LEVELS, SHEAR_LEVEL_NAMES,
                           WANT_VARS, ask_from_inventory, cycle_for,
@@ -114,7 +114,19 @@ def check_ecmwf(name, m):
             break
     else:
         print(f"  {RED}no index found{OFF} for the last few cycles")
-        print(f"  {DIM}tried {idx_url}{OFF}")
+        print(f"  {DIM}HTTP {r.status_code}  {idx_url}{OFF}")
+        # A 404 and a 403 need opposite fixes, and neither says what the right
+        # address is. ECMWF serves a listing, so ask it.
+        for probe in (idx_url.rsplit("/", 1)[0] + "/",
+                      f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/0p25/",
+                      f"{ECMWF_BASE}/{date_str}/",
+                      f"{ECMWF_BASE}/"):
+            got = listing(probe)
+            if got:
+                print(f"  {DIM}{probe} contains:{OFF}")
+                for n in got[:14]:
+                    print(f"  {DIM}    {n}{OFF}")
+                break
         return False
 
     print(f"  {GREEN}index found{OFF}  {date_str} {cyc}z"
@@ -176,10 +188,11 @@ def check_ecmwf(name, m):
     return True
 
 
-def check(name):
-    m = MODELS[name]
+def check(name, region="conus"):
+    m = region_spec(MODELS[name], region)
     kind = m.get("source") or m.get("fetch") or "filter"
-    print(f"\n{BOLD}{name}{OFF}  {m['label']}, {m['res']}  {DIM}[{kind}]{OFF}")
+    tag = f"{name}/{region}" if region != "conus" else name
+    print(f"\n{BOLD}{tag}{OFF}  {m['label']}, {m['res']}  {DIM}[{kind}]{OFF}")
     if m.get("source") == "ecmwf":
         return check_ecmwf(name, m)
 
@@ -326,14 +339,16 @@ def _report_cost(m, mb, hours):
 
 def main():
     names = [a for a in sys.argv[1:] if a in MODELS] or DEFAULT_MODELS
-    bad = [n for n in names if not check(n)]
+    jobs = [(n, r) for n in names for r in regions_of(MODELS[n])]
+    bad = [f"{n}/{r}" for n, r in jobs if not check(n, r)]
     print()
     if bad:
         print(f"{RED}not working: {', '.join(bad)}{OFF}")
         print("Send this output back. Each failure line says which of the "
               "model's four addresses is the wrong one.")
     else:
-        print(f"{GREEN}all {len(names)} models reachable{OFF}")
+        print(f"{GREEN}all {len(jobs)} model and region combinations "
+              f"reachable{OFF}")
     return 1 if bad else 0
 
 

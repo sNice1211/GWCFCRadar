@@ -7511,6 +7511,10 @@ body.clean-mode #clean-hint { opacity: 1; }
               <option value="pi:gefsspr">GEFS Spread (Pi)</option>
             </optgroup>
           </select>
+          <!-- Only shown when the chosen model has more than one region.
+               Filled in by _hdFillRegionPicker(). -->
+          <select id="sev-region-sel" onchange="_hdSetRegion(this.value)"
+                  style="display:none;margin-left:4px;"></select>
           <button id="sev-sounding-btn" onclick="_sevToggleSounding()" title="View sounding at map center" style="margin-left:4px;padding:3px 8px;background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);color:#008CBA;border-radius:4px;cursor:pointer;font-size:10px;font-family:Comfortaa;">Sounding</button>
         </div>
         <div class="sev-dd-wrap">
@@ -11699,6 +11703,7 @@ let _hdBase = null;        // where the Pi is answering
 let _hdManifest = null;
 let _hdFromPicker = false; // driven by the Run Models dropdown
 let _hdModel = null;       // which model is showing
+let _hdRegion = null;      // and over which part of the world
 let _hdIndex = null;       // what the Pi has
 let _hdField = 't2m';
 let _hdHourIdx = 0;
@@ -11811,21 +11816,84 @@ async function _hdFreshIndex() {
   if (_hdIndex && Date.now() - _hdIndexAt < HD_INDEX_TTL) return _hdIndex;
   const next = await _hdLoadIndex();
   if (!next) return _hdIndex;             // keep what works if the Pi blinks
-  const before = _hdIndex && _hdIndex.models && _hdModel &&
-                 _hdIndex.models[_hdModel] && _hdIndex.models[_hdModel].run;
-  const after = next.models && _hdModel &&
-                next.models[_hdModel] && next.models[_hdModel].run;
+  // The run now lives under the region, since a model can be on a different
+  // run in each place it is built. Reading it from the model itself found
+  // undefined on both sides, which compares equal, so a new run never
+  // registered as new and the page went on showing the old one.
+  const runOf = (idx) => {
+    const e = idx && idx.models && _hdModel && idx.models[_hdModel];
+    const regions = (e && e.regions) || {};
+    const key = regions[_hdRegion] ? _hdRegion : Object.keys(regions)[0];
+    return key ? regions[key].run : null;
+  };
+  const before = runOf(_hdIndex);
+  const after = runOf(next);
   _hdIndex = next;
   if (before && after && before !== after) _hdManifest = null;
   _hdFillModelPicker();
   return _hdIndex;
 }
 
-async function _hdLoadManifest(model) {
-  const entry = _hdIndex && _hdIndex.models && _hdIndex.models[model];
-  if (!entry) return null;
-  return fetch(`${_hdBase}/models/${entry.path}`, { cache: 'no-store' })
+// A model and a region together are one set of pictures. GFS over the tropics
+// is not a different model from GFS, it is the same forecast cut somewhere
+// else, so the region is chosen beside the model rather than hidden inside its
+// name.
+function _hdRegionsOf(model) {
+  const e = _hdIndex && _hdIndex.models && _hdIndex.models[model];
+  return (e && e.regions) ? Object.keys(e.regions) : [];
+}
+
+async function _hdLoadManifest(model, region) {
+  const e = _hdIndex && _hdIndex.models && _hdIndex.models[model];
+  const regions = (e && e.regions) || {};
+  // Fall back to whichever region this model does have rather than nothing:
+  // asking for the tropics from a model that only covers Alaska should show
+  // Alaska, not an error.
+  const key = regions[region] ? region : Object.keys(regions)[0];
+  if (!key) return null;
+  _hdRegion = key;
+  return fetch(`${_hdBase}/models/${regions[key].path}`, { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null).catch(() => null);
+}
+
+const HD_REGION_LABELS = {
+  conus: 'CONUS', tropics: 'Tropics', alaska: 'Alaska',
+  hawaii: 'Hawaii', prico: 'Puerto Rico',
+};
+
+function _hdFillRegionPicker() {
+  const sel = document.getElementById('sev-region-sel');
+  if (!sel) return;
+  const regions = _hdRegionsOf(_hdModel);
+  // Hidden rather than shown with one entry: a control with no choice in it
+  // is just something else to read.
+  sel.style.display = (_hdFromPicker && _hdOn && regions.length > 1)
+    ? '' : 'none';
+  sel.innerHTML = '';
+  regions.forEach(r => {
+    const o = document.createElement('option');
+    o.value = r;
+    o.textContent = HD_REGION_LABELS[r] || r;
+    sel.appendChild(o);
+  });
+  if (_hdRegion) sel.value = _hdRegion;
+}
+
+async function _hdSetRegion(region) {
+  if (!_hdModel || region === _hdRegion) return;
+  _hdManifest = await _hdLoadManifest(_hdModel, region);
+  if (!_hdManifest) return;
+  if (!_hdHoursFor(_hdField).length) {
+    const first = HD_FIELDS.find(f => _hdHoursFor(f.id).length);
+    if (first) _hdField = first.id;
+  }
+  _hdHourIdx = 0;
+  _sevFrame = 0;
+  _sevUpdateProducts();
+  _hdPopulateRun();
+  _hdBuildFrameGrid();
+  _hdFillRegionPicker();
+  _sevRender();
 }
 
 function _hdHoursFor(field) {
@@ -11839,7 +11907,10 @@ function _hdShow() {
   if (!hours.length) return;
   const fhr = hours[Math.min(_hdHourIdx, hours.length - 1)];
   const model = _hdManifest.model || _hdModel;
-  const url = `${_hdBase}/models/${model}/${_hdManifest.run}/${_hdField}_f${String(fhr).padStart(3, '0')}.png`;
+  // The region is part of the path, because the same model over two places is
+  // two sets of pictures sitting side by side on the Pi.
+  const url = `${_hdBase}/models/${model}/${_hdRegion}/${_hdManifest.run}`
+            + `/${_hdField}_f${String(fhr).padStart(3, '0')}.png`;
 
   // Swap rather than stack. Adding without removing leaves the old picture
   // painted underneath with nothing pointing at it, which is both a smear and
@@ -11942,20 +12013,21 @@ function _hdBuildPanel() {
 // Each model is its own set of runs and its own reach, so switching one loads
 // its manifest rather than assuming the hours line up. HRRR stops at 18 hours
 // where GFS runs to 120, so an hour index valid for one is not for the other.
-async function _hdPickModel(name) {
+async function _hdPickModel(name, region) {
   // The index is re-read first rather than trusted: it is what says which run
   // each model is on, and picking a model is exactly the moment a stale answer
   // turns into a request for images from a run the Pi has already pruned.
   await _hdFreshIndex();
-  if (name === _hdModel && _hdManifest) return;
+  if (name === _hdModel && _hdManifest && !region) return;
   _hdModel = name;
-  _hdManifest = await _hdLoadManifest(name);
+  _hdManifest = await _hdLoadManifest(name, region || _hdRegion);
   if (!_hdManifest) { _hdRenderPanel(); return; }
   if (!_hdHoursFor(_hdField).length) {
     const first = HD_FIELDS.find(f => _hdHoursFor(f.id).length);
     if (first) _hdField = first.id;
   }
   _hdHourIdx = Math.min(_hdHourIdx, Math.max(0, _hdHoursFor(_hdField).length - 1));
+  _hdFillRegionPicker();
   _hdShow();
 }
 
@@ -11999,7 +12071,7 @@ async function _hdEnable(want) {
   } else if (!_hdModel || !_hdIndex.models[_hdModel]) {
     _hdModel = names[0];
   }
-  _hdManifest = _hdManifest || await _hdLoadManifest(_hdModel);
+  _hdManifest = _hdManifest || await _hdLoadManifest(_hdModel, _hdRegion);
   if (!_hdManifest) {
     _hdPanel.querySelector('.hd-run').innerHTML =
       `<span class="hd-warn">could not read that model's run.</span>`;
@@ -12028,6 +12100,8 @@ function _hdDisable() {
   _hdFromPicker = false;
   document.getElementById('op-hdmodels')?.classList.remove('active');
   if (_hdPanel) _hdPanel.style.display = 'none';
+  const rsel = document.getElementById('sev-region-sel');
+  if (rsel) rsel.style.display = 'none';
   Array.from(_hdLayers).forEach(_hdDrop);
   _hdLayer = null;
 }
@@ -12269,6 +12343,7 @@ _sevSetSection = async function (value) {
     _sevFrame = 0;
     _hdPopulateRun();
     _hdBuildFrameGrid();
+    _hdFillRegionPicker();
     _sevRender();   // takes down whatever the last model left, then draws
     return;
   }
@@ -32577,7 +32652,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed the high resolution models: they were being drawn on the wrong grid, so everything in them sat tens of kilometres from where it really was.";
+const APP_LATEST_UPDATE = "One model, many regions: GFS Tropical is now just GFS with the region set to Tropics, and there is a region picker beside the model.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
