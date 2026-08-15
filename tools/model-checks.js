@@ -174,6 +174,25 @@ function ok(name, cond, extra) {
      JSON.stringify(added[added.length-1].bounds) === JSON.stringify([[15,-71],[22,-60]]),
      JSON.stringify(added[added.length-1].bounds));
 
+
+  console.log('\n19. an index from before regions existed');
+  // Exactly the state a Pi that has not rebuilt yet is in. It must still draw
+  // rather than offering a list of models that all fail to open.
+  useOldIndex = true;
+  _hdBase = null; _hdIndex = null; _hdIndexAt = 0;
+  _hdManifest = null; _hdModel = null; _hdRegion = null; _hdOn = false;
+  await _sevSetSection('pi:gfstrop');
+  ok('the old-shaped entry is read as one region',
+     _hdRegionsOf('gfstrop').join(',') === 'conus', _hdRegionsOf('gfstrop').join(','));
+  ok('it still drew', added.length > 0 && added[added.length-1].url.includes('gfstrop/'),
+     added.length ? added[added.length-1].url : 'nothing');
+  ok('and followed the old path, without inventing a region directory',
+     !added[added.length-1].url.includes('/conus/'), added[added.length-1].url);
+  ok('the region picker stays hidden for it',
+     document.getElementById('sev-region-sel').style.display === 'none',
+     document.getElementById('sev-region-sel').style.display);
+  useOldIndex = false;
+
   console.log('\n' + (fail ? `${fail} FAILED, ${pass} passed` : `all ${pass} passed`));
   process.exit(fail ? 1 : 0);
 })();
