@@ -365,6 +365,76 @@ MODELS = {
         "regions": {"conus": {},
                     "tropics": {"out": 240, "shear": True}},
     },
+
+    # ── More of the same, from your list ────────────────────────────────────
+    "href": {
+        # The convection allowing ensemble: HRRR, NAM Nest and the window
+        # models run together and averaged. For "will a storm actually happen
+        # here" it is worth more than any single one of them, which is the
+        # same argument as the blend but for the next day rather than the next
+        # five.
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "HREF mean", "res": "3 km ens", "cycle_h": 6, "lag_h": 4,
+        "dir": "/href.{date}/ensprod",
+        "file": "href.t{cyc}z.conus.mean.f{fhr:02d}.grib2",
+        "raw": "href/prod/href.{date}/ensprod/"
+               "href.t{cyc}z.conus.mean.f{fhr:02d}.grib2.idx",
+        "step": 3, "first": 1, "out": 48,
+    },
+    "hireswarw2": {
+        # The second ARW member. A different starting guess of the same model,
+        # which is exactly what makes it worth having beside the first.
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "HiResW ARW 2", "res": "5 km", "cycle_h": 12, "lag_h": 4,
+        "dir": "/hiresw.{date}",
+        "file": "hiresw.t{cyc}z.arw_5km.f{fhr:02d}.conusmem2.grib2",
+        "raw": "hiresw/prod/hiresw.{date}/"
+               "hiresw.t{cyc}z.arw_5km.f{fhr:02d}.conusmem2.grib2.idx",
+        "step": 3, "out": 48,
+    },
+    "rrfs": {
+        # The model meant to replace HRRR and RAP with one thing. Still being
+        # brought up, so the name it is published under has moved more than
+        # once, and all the spellings seen so far are tried.
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "RRFS", "res": "3 km", "cycle_h": 1, "lag_h": 2,
+        "raw": [
+            "rrfs/prod/rrfs.{date}/{cyc}/"
+            "rrfs.t{cyc}z.prslev.f{fhr:03d}.conus_3km.grib2.idx",
+            "rrfs_a/prod/rrfs_a.{date}/{cyc}/"
+            "rrfs.t{cyc}z.prslev.f{fhr:03d}.conus_3km.grib2.idx",
+            "rrfs_a/prod/rrfs_a.{date}{cyc}/"
+            "rrfs_a.t{cyc}z.prslev.f{fhr:03d}.grib2.idx",
+        ],
+        "step": 3, "out": 18,
+    },
+    "hrrrsub": {
+        # HRRR again at fifteen minute steps rather than hourly. Only useful
+        # inside the next few hours, which is why it stops at six.
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "HRRR Sub-Hourly", "res": "3 km", "cycle_h": 1, "lag_h": 2,
+        "raw": "hrrr/prod/hrrr.{date}/conus/"
+               "hrrr.t{cyc}z.wrfsubhf{fhr:02d}.grib2.idx",
+        "step": 1, "first": 1, "out": 6,
+    },
+    "ecmwfaifs": {
+        # ECMWF's machine learned model, running beside their physical one and
+        # on several measures beating it. Same files, same index, one word
+        # different in the path.
+        "label": "ECMWF AIFS", "res": "0.25 deg AI", "cycle_h": 12, "lag_h": 8,
+        "source": "ecmwf", "ecmwf_model": "aifs-single",
+        "step": 6, "out": 144, "crop": True,
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+    "ecmwfens": {
+        # The ensemble mean, from the enfo stream. Published as type "em"
+        # rather than "fc", which is the only real difference in the address.
+        "label": "ECMWF ENS mean", "res": "0.25 deg ens", "cycle_h": 12,
+        "lag_h": 9,
+        "source": "ecmwf", "ecmwf_stream": "enfo", "ecmwf_type": "em",
+        "step": 6, "out": 240, "crop": True,
+        "regions": {"conus": {}, "tropics": {"shear": True}},
+    },
 }
 
 # Order matters: this is also the order they are built in, and the time budget
@@ -372,8 +442,10 @@ MODELS = {
 # having most are first, and the long range ones that nobody minds being an
 # hour stale are last.
 DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
-                  "gefs", "gefsspr", "gfswave", "ecmwf",
-                  "hireswarw", "hireswfv3"]
+                  "href", "gefs", "gefsspr", "gfswave",
+                  "ecmwf", "ecmwfaifs", "ecmwfens",
+                  "hireswarw", "hireswarw2", "hireswfv3",
+                  "rrfs", "hrrrsub"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -436,6 +508,10 @@ MB_PER_HOUR = {
     "hrrr": 5.4, "rtma": 17.3, "rap": 0.7, "gfs": 0.6, "nam": 1.8,
     "namnest": 10.4, "nbm": 11.1, "gefs": 0.07, "gefsspr": 0.05,
     "gfswave": 1.6, "ecmwf": 4.3, "hireswarw": 6.0, "hireswfv3": 6.7,
+    # Not yet measured, so estimated from a comparable model and corrected the
+    # first time check_models.py runs against them.
+    "href": 10.4, "hireswarw2": 6.0, "rrfs": 5.4, "hrrrsub": 5.4,
+    "ecmwfaifs": 4.3, "ecmwfens": 4.3,
 }
 
 # Some servers refuse the default python-requests user agent outright, and a
@@ -840,9 +916,11 @@ def ecmwf_paths(m, date_str, cyc, fhr):
     published as `scda`, a shorter cut-off run, so a model wanting those has to
     say so rather than assume this name.
     """
+    model = m.get("ecmwf_model", "ifs")
     stream = m.get("ecmwf_stream", "oper")
-    base = (f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/0p25/{stream}/"
-            f"{date_str}{cyc}0000-{fhr}h-{stream}-fc")
+    kind = m.get("ecmwf_type", "fc")
+    base = (f"{ECMWF_BASE}/{date_str}/{cyc}z/{model}/0p25/{stream}/"
+            f"{date_str}{cyc}0000-{fhr}h-{stream}-{kind}")
     grib = base + ".grib2"
     return grib, [base + ".index", grib + ".index"]
 

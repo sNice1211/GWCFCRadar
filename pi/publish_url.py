@@ -174,6 +174,30 @@ def check():
 def main():
     if "--check" in sys.argv:
         return check()
+    # A named tunnel never changes, so its address is given once rather than
+    # read out of a log that only a quick tunnel writes.
+    if "--set" in sys.argv:
+        i = sys.argv.index("--set")
+        if i + 1 >= len(sys.argv):
+            log("--set needs the address, e.g. --set https://pi.example.com")
+            return 1
+        url = sys.argv[i + 1].rstrip("/")
+        try:
+            ok = publish(url, sign_in())
+        except urllib.error.HTTPError as e:
+            log(f"could not publish: HTTP {e.code}: {_detail(e)}")
+            return 1
+        except Exception as e:
+            log(f"could not publish: {e}")
+            return 1
+        if ok:
+            try:
+                with open(STATE, "w") as f:
+                    f.write(url)
+            except OSError:
+                pass
+            log(f"published {url}")
+        return 0 if ok else 1
     watch = "--watch" in sys.argv
     if not watch:
         return 0 if publish_if_changed(force="--force" in sys.argv) else 1
