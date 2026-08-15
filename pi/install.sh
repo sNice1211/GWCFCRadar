@@ -177,15 +177,71 @@ ok "units written to $UNITS"
 # exactly what happens when the terminal is shut.
 sudo loginctl enable-linger "$USER" >/dev/null 2>&1 || warn "could not enable lingering; services may stop when you log out"
 
+# Radar and cyclones are their own services on their own clocks. Radar is the
+# fast one: a new volume lands every four to six minutes and an hourly check
+# would show weather that has already moved. Cyclones run twice a day because
+# that is how often DeepMind publish. Both have their own lock, so a slow one
+# never holds up the models.
+cat > "$UNITS/gwcfc-radar.service" <<EOF
+[Unit]
+Description=Decode NEXRAD Level 2 into map overlays
+
+[Service]
+Type=oneshot
+ExecStart=$VENV/bin/python $REPO/pi/radar_pipeline.py
+TimeoutStartSec=900
+Nice=10
+EOF
+
+cat > "$UNITS/gwcfc-radar.timer" <<'EOF'
+[Unit]
+Description=Radar every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
+cat > "$UNITS/gwcfc-cyclones.service" <<EOF
+[Unit]
+Description=Fetch DeepMind cyclone tracks and genesis fields
+
+[Service]
+Type=oneshot
+ExecStart=$VENV/bin/python $REPO/pi/cyclones_pipeline.py
+TimeoutStartSec=1800
+Nice=10
+EOF
+
+cat > "$UNITS/gwcfc-cyclones.timer" <<'EOF'
+[Unit]
+Description=Cyclones twice a day, a little after each run publishes
+
+[Timer]
+# They run at 00 and 12 and publish a few hours later. Checking every three
+# hours picks a run up soon after it lands without asking pointlessly, and the
+# pipeline exits at once when the newest run is already built.
+OnCalendar=*-*-* 03,06,09,15,18,21:23
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 systemctl --user daemon-reload
 : > "$HOME/tunnel.log"
 systemctl --user enable --now gwcfc-serve.service  >/dev/null 2>&1
 systemctl --user restart    gwcfc-tunnel.service   >/dev/null 2>&1 || \
   systemctl --user enable --now gwcfc-tunnel.service >/dev/null 2>&1
 systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
+systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
+systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
 systemctl --user restart    gwcfc-publish.service  >/dev/null 2>&1 || \
   systemctl --user enable --now gwcfc-publish.service >/dev/null 2>&1
-ok "serve, tunnel, publish and hourly build are running"
+ok "serve, tunnel, publish, models, radar and cyclones are running"
 
 # ── 5. the address ──────────────────────────────────────────────────────────
 say "Public address"
