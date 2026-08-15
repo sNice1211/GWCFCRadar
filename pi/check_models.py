@@ -251,7 +251,10 @@ def check(name, region="conus"):
 
 def _check_range(m, rows, idx_url, hours):
     """Naming exact messages, which is what the regional models now do."""
-    keep, names = select_from_idx(rows, m.get("shear"))
+    # The same narrowing the build applies. Without it this measured a
+    # download the build would never make: HRRR reported nine messages where
+    # it takes six, so the megabytes printed were half again too high.
+    keep, names = select_from_idx(rows, m.get("shear"), m.get("fields"))
     if not keep:
         print(f"  {RED}none of the fields we want are in it{OFF}")
         print(f"  {DIM}it has: "

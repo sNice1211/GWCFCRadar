@@ -116,6 +116,14 @@ def region_spec(m, key):
 #   lag    hours after the cycle before the run is on the server
 #   step   spacing of forecast hours to fetch
 #   out    how far out to go
+# What a high resolution model carries. These are the ones people open for a
+# storm in the next few hours, and at 3 km over a large box every extra field
+# is real money: the fine models are most of the bandwidth bill between them.
+# Dewpoint, pressure and column moisture are left to the coarse models, which
+# cost almost nothing and are just as good at a field that varies smoothly.
+FINE_FIELDS = {"refc", "t2m", "wind", "gust", "apcp", "cape"}
+
+
 MODELS = {
     "gfs": {
         "label": "GFS", "res": "0.25 deg", "cycle_h": 6, "lag_h": 5,
@@ -150,11 +158,7 @@ MODELS = {
         "fetch": "range",
         # Hourly and 3 km: the one worth having when something is happening
         # right now, which is why it is fetched hourly and only 18 hours out.
-        # That also makes it the largest line on the bandwidth bill by a factor
-        # of three, so it carries what people actually open HRRR for and leaves
-        # dewpoint, pressure and column moisture to the coarse models, which
-        # cost almost nothing and are just as good at those.
-        "fields": {"refc", "t2m", "wind", "gust", "apcp", "cape"},
+        "fields": FINE_FIELDS,
         "label": "HRRR", "res": "3 km", "cycle_h": 1, "lag_h": 2,
         "filter": "filter_hrrr_2d.pl",
         "dir": "/hrrr.{date}/conus",
@@ -225,6 +229,7 @@ MODELS = {
         "step": 1, "out": 21,
     },
     "namnest": {
+        "fields": FINE_FIELDS,
         "fetch": "range",
         # HRRR's resolution, three times HRRR's reach. The 3 km nest inside
         # NAM: the same 12 km model run again over a smaller box at a grid
@@ -320,6 +325,7 @@ MODELS = {
     # all three put a storm in the same place that is worth more than any one
     # of them saying it twice.
     "hireswarw": {
+        "fields": FINE_FIELDS,
         "fetch": "range",
         "label": "HiResW ARW", "res": "5 km", "cycle_h": 12, "lag_h": 4,
         "filter": "filter_hiresw.pl",
@@ -330,6 +336,7 @@ MODELS = {
         "step": 3, "out": 48,
     },
     "hireswfv3": {
+        "fields": FINE_FIELDS,
         "fetch": "range",
         "label": "HiResW FV3", "res": "5 km", "cycle_h": 12, "lag_h": 4,
         "filter": "filter_hiresw.pl",
@@ -401,6 +408,7 @@ RETRIES = 3
 # memory and does not have much of it. Coarse models are well under this and
 # are untouched.
 MAX_EDGE_PX = 1600
+
 
 # How long a standard build may spend before it stops starting new models.
 # With twenty of them a bad afternoon at NOAA could otherwise run past the

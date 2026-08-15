@@ -310,7 +310,9 @@ HRRR to read a dewpoint. It carries reflectivity, temperature, wind, gust,
 precipitation and CAPE, and leaves the rest to coarse models that cost almost
 nothing.
 
-Whole system: about 5.6 GB a day, down from 17.2.
+Measured on the Pi across all twenty combinations: about 8.9 GB a day, down
+from 17.2. The fine models are most of what is left, which is why they are the
+ones that name their fields.
 
 ## Grids that are not latitude and longitude
 
