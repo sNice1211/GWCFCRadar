@@ -70,6 +70,44 @@ PRICO_BOX = {"toplat": 22.0, "bottomlat": 15.0,
              "leftlon": 289.0, "rightlon": 300.0}
 PRICO_BOUNDS = [[15.0, -71.0], [22.0, -60.0]]
 
+# Where a model can be drawn. A model and a region together make one set of
+# pictures; the model says what the forecast is, the region says which part of
+# the world it was cut to.
+#
+# This exists because the same model over two places was two entries in the
+# list, and reading "GFS" and "GFS Tropical" as different models is wrong: it
+# is one model, cropped twice. Now GFS is one entry with two regions, and the
+# page offers the region beside the model rather than hiding it in the name.
+REGIONS = {
+    "conus":   {"label": "CONUS",       "box": BOX,
+                "bounds": BOUNDS_LATLON},
+    "tropics": {"label": "Tropics",     "box": TROPICS_BOX,
+                "bounds": TROPICS_BOUNDS},
+    "alaska":  {"label": "Alaska",      "box": ALASKA_BOX,
+                "bounds": ALASKA_BOUNDS},
+    "hawaii":  {"label": "Hawaii",      "box": HAWAII_BOX,
+                "bounds": HAWAII_BOUNDS},
+    "prico":   {"label": "Puerto Rico", "box": PRICO_BOX,
+                "bounds": PRICO_BOUNDS},
+}
+
+
+def region_spec(m, key):
+    """
+    One model over one region, as a single flat definition.
+
+    The region contributes its box, and anything else it names wins over the
+    model: a regional nest is a different file from the parent, and the
+    tropical crop of a global model wants a longer reach and the shear field
+    that only makes sense there.
+    """
+    spec = dict(m)
+    spec.pop("regions", None)
+    spec.update(REGIONS[key])
+    spec.update((m.get("regions") or {}).get(key) or {})
+    return spec
+
+
 # Every model NOAA publishes through the same filter service, which is what
 # makes adding one a few lines rather than a new program. They differ only in
 # where the files live, how often they run, how far out they go and how long
@@ -86,6 +124,11 @@ MODELS = {
         "file": "gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}",
         "raw": "gfs/prod/gfs.{date}/{cyc}/atmos/gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}.idx",
         "step": 3, "out": 120,
+        # The tropical crop is not another model, it is this one cut somewhere
+        # else and asked different questions: further out, six-hourly, and with
+        # the shear field that only means anything over warm water.
+        "regions": {"conus": {},
+                    "tropics": {"step": 6, "out": 192, "shear": True}},
     },
     "nam": {
         "fetch": "range",
@@ -118,6 +161,18 @@ MODELS = {
         "file": "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.grib2",
         "raw": "hrrr/prod/hrrr.{date}/conus/hrrr.t{cyc}z.wrfsfcf{fhr:02d}.grib2.idx",
         "step": 1, "out": 18,
+        # Alaska is its own file on its own cadence, not a different crop of
+        # the same one, so the region replaces the address as well as the box.
+        "regions": {
+            "conus": {},
+            "alaska": {
+                "dir": "/hrrr.{date}/alaska",
+                "file": "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.ak.grib2",
+                "raw": "hrrr/prod/hrrr.{date}/alaska/"
+                       "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.ak.grib2.idx",
+                "cycle_h": 3, "step": 3, "out": 48,
+            },
+        },
         "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
                  "lev_mean_sea_level", "lev_surface",
                  "lev_entire_atmosphere"],
@@ -135,6 +190,8 @@ MODELS = {
         "vars": ["var_TMP", "var_UGRD", "var_VGRD", "var_PRMSL", "var_APCP"],
         "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
                  "lev_mean_sea_level", "lev_surface"],
+        "regions": {"conus": {},
+                    "tropics": {"out": 240, "shear": True}},
     },
     "gefsspr": {
         # The spread: how far apart those runs are. High spread is the model
@@ -179,6 +236,23 @@ MODELS = {
         "raw": "nam/prod/nam.{date}/nam.t{cyc}z.conusnest.hiresf{fhr:02d}"
                ".tm00.grib2.idx",
         "step": 3, "out": 60,
+        # Four domains of the same nest, which is how NOAA publishes them: one
+        # model run four times over four boxes, not four models.
+        "regions": {
+            "conus": {},
+            "alaska": {
+                "file": "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2",
+                "raw": "nam/prod/nam.{date}/"
+                       "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2.idx"},
+            "hawaii": {
+                "file": "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2",
+                "raw": "nam/prod/nam.{date}/"
+                       "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2.idx"},
+            "prico": {
+                "file": "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2",
+                "raw": "nam/prod/nam.{date}/"
+                       "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2.idx"},
+        },
     },
     "nbm": {
         # Not a model. The National Blend of Models is the Weather Service's
@@ -226,33 +300,6 @@ MODELS = {
     # temperature, and it matters a week out rather than tomorrow, so this
     # steps six-hourly and runs to eight days where the CONUS one stops at
     # five.
-    "gfstrop": {
-        "label": "GFS Tropical", "res": "0.25 deg", "cycle_h": 6, "lag_h": 5,
-        "filter": "filter_gfs_0p25.pl",
-        "dir": "/gfs.{date}/{cyc}/atmos",
-        "file": "gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}",
-        "raw": "gfs/prod/gfs.{date}/{cyc}/atmos/"
-               "gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}.idx",
-        "step": 6, "out": 192,
-        "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
-        "shear": True,
-    },
-    "gefstrop": {
-        # The ensemble mean over the tropics, out to ten days. This is the one
-        # to look at for a storm that has not formed yet: at that range a
-        # single run is guessing, and the average of thirty is the honest
-        # version of the same forecast.
-        "label": "GEFS Tropical", "res": "0.5 deg ens", "cycle_h": 6,
-        "lag_h": 7,
-        "filter": "filter_gefs_atmos_0p50a.pl",
-        "dir": "/gefs.{date}/{cyc}/atmos/pgrb2ap5",
-        "file": "geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}",
-        "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
-               "geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
-        "step": 6, "out": 240,
-        "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
-        "shear": True,
-    },
     "gfswave": {
         # Waves, which reach a coast days before the storm that made them.
         # Long period swell running ahead of a hurricane is what closes
@@ -265,7 +312,7 @@ MODELS = {
         "raw": "gfs/prod/gfs.{date}/{cyc}/wave/gridded/"
                "gfswave.t{cyc}z.global.0p16.f{fhr:03d}.grib2.idx",
         "step": 6, "out": 120,
-        "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
+        "regions": {"tropics": {}},
     },
     # ── Two more opinions at 3 km ───────────────────────────────────────────
     # The High Resolution Window: the same box run by two different models,
@@ -294,50 +341,6 @@ MODELS = {
     },
 
     # ── The places the main box leaves out ──────────────────────────────────
-    "hrrrak": {
-        "fetch": "range",
-        "label": "HRRR Alaska", "res": "3 km", "cycle_h": 3, "lag_h": 2,
-        "filter": "filter_hrrr_ak_2d.pl",
-        "dir": "/hrrr.{date}/alaska",
-        "file": "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.ak.grib2",
-        "raw": "hrrr/prod/hrrr.{date}/alaska/"
-               "hrrr.t{cyc}z.wrfsfcf{fhr:02d}.ak.grib2.idx",
-        "step": 3, "out": 48,
-        "box": ALASKA_BOX, "bounds": ALASKA_BOUNDS,
-    },
-    "namak": {
-        "fetch": "range",
-        "label": "NAM Alaska", "res": "3 km", "cycle_h": 6, "lag_h": 4,
-        "filter": "filter_nam_alaskanest.pl",
-        "dir": "/nam.{date}",
-        "file": "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2",
-        "raw": "nam/prod/nam.{date}/"
-               "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2.idx",
-        "step": 3, "out": 60,
-        "box": ALASKA_BOX, "bounds": ALASKA_BOUNDS,
-    },
-    "namhi": {
-        "fetch": "range",
-        "label": "NAM Hawaii", "res": "3 km", "cycle_h": 6, "lag_h": 4,
-        "filter": "filter_nam_hawaiinest.pl",
-        "dir": "/nam.{date}",
-        "file": "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2",
-        "raw": "nam/prod/nam.{date}/"
-               "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2.idx",
-        "step": 3, "out": 60,
-        "box": HAWAII_BOX, "bounds": HAWAII_BOUNDS,
-    },
-    "nampr": {
-        "fetch": "range",
-        "label": "NAM Puerto Rico", "res": "3 km", "cycle_h": 6, "lag_h": 4,
-        "filter": "filter_nam_priconest.pl",
-        "dir": "/nam.{date}",
-        "file": "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2",
-        "raw": "nam/prod/nam.{date}/"
-               "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2.idx",
-        "step": 3, "out": 60,
-        "box": PRICO_BOX, "bounds": PRICO_BOUNDS,
-    },
 
     # ── Not from NOAA ───────────────────────────────────────────────────────
     # ECMWF, which is generally the best global model there is, and which has
@@ -352,16 +355,8 @@ MODELS = {
         "source": "ecmwf",
         "step": 6, "out": 144,
         "crop": True,
-        "box": BOX, "bounds": BOUNDS_LATLON,
-    },
-    "ecmwftrop": {
-        "label": "ECMWF Tropical", "res": "0.25 deg", "cycle_h": 12,
-        "lag_h": 8,
-        "source": "ecmwf",
-        "step": 6, "out": 240,
-        "crop": True,
-        "box": TROPICS_BOX, "bounds": TROPICS_BOUNDS,
-        "shear": True,
+        "regions": {"conus": {},
+                    "tropics": {"out": 240, "shear": True}},
     },
 }
 
@@ -370,10 +365,8 @@ MODELS = {
 # having most are first, and the long range ones that nobody minds being an
 # hour stale are last.
 DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
-                  "gfstrop", "gefs", "gefsspr", "gefstrop", "gfswave",
-                  "ecmwf", "ecmwftrop",
-                  "hireswarw", "hireswfv3",
-                  "nampr", "hrrrak", "namak", "namhi"]
+                  "gefs", "gefsspr", "gfswave", "ecmwf",
+                  "hireswarw", "hireswfv3"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -679,8 +672,18 @@ def select_from_idx(rows, want_shear=False, only=None):
     the next few hours, so it carries those and lets the coarse models carry
     the rest.
     """
-    wanted = set()
+    # The exact messages, not the pairs they matched. Matching pairs again at
+    # the end takes every message that shares a name and level, and the blend
+    # publishes a dozen APCP at surface for different accumulation windows and
+    # percentiles. That is how six fields turned into 23 messages and 42 MB a
+    # forecast hour.
+    chosen = []
     names = []
+
+    def take(row, label):
+        if not any(r is row for r in chosen):
+            chosen.append(row)
+            names.append(label)
 
     for key, options in FIELD_SOURCES.items():
         if only and key not in only:
@@ -690,32 +693,32 @@ def select_from_idx(rows, want_shear=False, only=None):
                         if r["var"] == var and _lev_matches(levpat, r["lev"])),
                        None)
             if hit:
-                wanted.add((hit["var"], hit["lev"]))
-                names.append(f"{key}<-{var}")
+                take(hit, f"{key}<-{var}")
                 break            # the first spelling that exists, and no more
 
     if not only or "wind" in only:
         speed = next((r for r in rows
                       if (r["var"], r["lev"]) == WIND_SPEED), None)
         if speed:
-            wanted.add(WIND_SPEED)
-            names.append("wind<-WIND")
+            take(speed, "wind<-WIND")
         else:
-            parts = [r for r in rows if (r["var"], r["lev"]) in WIND_PARTS]
-            if len(parts) >= 2:
-                wanted.update((r["var"], r["lev"]) for r in parts)
-                names.append("wind<-UGRD/VGRD")
+            # One of each component, not every message that shares the name.
+            for want in WIND_PARTS:
+                one = next((r for r in rows
+                            if (r["var"], r["lev"]) == want), None)
+                if one:
+                    take(one, f"wind<-{want[0]}")
 
     if want_shear:
         levels = {f"{mb} mb" for mb in SHEAR_LEVELS}
-        got = [r for r in rows
-               if r["var"] in ("UGRD", "VGRD") and r["lev"] in levels]
-        if len(got) >= 4:
-            wanted.update((r["var"], r["lev"]) for r in got)
-            names.append("shear<-UGRD/VGRD aloft")
+        for var in ("UGRD", "VGRD"):
+            for lev in sorted(levels):
+                one = next((r for r in rows
+                            if r["var"] == var and r["lev"] == lev), None)
+                if one:
+                    take(one, f"shear<-{var} {lev}")
 
-    keep = [r for r in rows if (r["var"], r["lev"]) in wanted]
-    keep.sort(key=lambda r: r["start"])
+    keep = sorted(chosen, key=lambda r: r["start"])
     return keep, names
 
 
@@ -1741,11 +1744,21 @@ class Lock:
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
-def build_model(name, m):
-    """Build one run of one model. Returns its manifest, or None if nothing to do."""
+def regions_of(m):
+    """The regions a model is built for, defaulting to the main box."""
+    return list((m.get("regions") or {"conus": {}}).keys())
+
+
+def build_model(name, m, region="conus"):
+    """
+    Build one run of one model over one region.
+
+    Returns its manifest, or None if there is nothing to do.
+    """
+    m = region_spec(m, region)
     date_str, cyc = cycle_for(m)
     run_id = f"{date_str}_{cyc}"
-    model_dir = os.path.join(OUT_DIR, name)
+    model_dir = os.path.join(OUT_DIR, name, region)
     run_dir = os.path.join(model_dir, run_id)
     done = os.path.join(run_dir, "manifest.json")
 
@@ -1867,13 +1880,20 @@ def _newest_manifest(model_dir):
     return None
 
 
-def _index_entry(name, man):
+def _model_head(name, m):
+    """A model's entry in the index, before any of its regions are filled in."""
+    return {"label": m.get("label", name), "res": m.get("res", ""),
+            "regions": {}}
+
+
+def _index_entry(name, region, man):
     """One model's line in latest.json, which is all the page reads to start."""
     return {
         "label": man.get("label", name), "res": man.get("res", ""),
         "run": man["run"], "cycle": man.get("cycle", ""),
-        "path": f"{name}/{man['run']}/manifest.json",
+        "path": f"{name}/{region}/{man['run']}/manifest.json",
         "fields": sorted(man.get("fields", {}).keys()),
+        "bounds": man.get("bounds"),
     }
 
 
@@ -1901,20 +1921,29 @@ def main(models=None):
             log(f"time budget reached, leaving {name} and the rest for the "
                 f"next run")
             for later in names[names.index(name):]:
-                man = _newest_manifest(os.path.join(OUT_DIR, later))
-                if man:
-                    any_ok = True
-                    index["models"][later] = _index_entry(later, man)
+                lm = MODELS.get(later)
+                if not lm:
+                    continue
+                for reg in regions_of(lm):
+                    man = _newest_manifest(os.path.join(OUT_DIR, later, reg))
+                    if man:
+                        any_ok = True
+                        index["models"].setdefault(later, _model_head(
+                            later, lm))["regions"][reg] = _index_entry(
+                                later, reg, man)
             break
-        try:
-            man = build_model(name, m)
-        except Exception as e:
-            # One model failing must not cost the others.
-            log(f"{name}: failed: {e}")
-            man = _newest_manifest(os.path.join(OUT_DIR, name))
-        if man:
-            any_ok = True
-            index["models"][name] = _index_entry(name, man)
+
+        for region in regions_of(m):
+            try:
+                man = build_model(name, m, region)
+            except Exception as e:
+                # One model failing must not cost the others.
+                log(f"{name}/{region}: failed: {e}")
+                man = _newest_manifest(os.path.join(OUT_DIR, name, region))
+            if man:
+                any_ok = True
+                index["models"].setdefault(name, _model_head(name, m))[
+                    "regions"][region] = _index_entry(name, region, man)
 
     # Soundings are their own product rather than a model: same source, but
     # pressure levels instead of surface fields, and read back as numbers.
@@ -1938,7 +1967,7 @@ def main(models=None):
 
     write_json(os.path.join(OUT_DIR, "latest.json"), index)
     log("index updated: " + ", ".join(
-        f"{k} {v['run']}" for k, v in index["models"].items()))
+        f"{k}[{'/'.join(v['regions'])}]" for k, v in index["models"].items()))
     return 0
 
 

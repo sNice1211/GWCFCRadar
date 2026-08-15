@@ -11,8 +11,8 @@ function ok(name, cond, extra) {
   ok('model is the one asked for, not the first listed', _hdModel === 'hrrr', _hdModel);
   ok('section recorded', _sevSection === 'pi:hrrr', _sevSection);
   ok('an image went on the map', added.length === 1, added.length);
-  ok('image url points at hrrr and the real run',
-     added[0] && /models\/hrrr\/20260814_12\/t2m_f000\.png$/.test(added[0].url),
+  ok('image url carries model, region and the real run',
+     added[0] && /models\/hrrr\/conus\/20260814_12\/t2m_f000\.png$/.test(added[0].url),
      added[0] && added[0].url);
   ok('IEM branch never ran', iemRendered === 0, iemRendered);
 
@@ -104,6 +104,7 @@ function ok(name, cond, extra) {
   const group = document.getElementById('sev-pi-group');
   const vals = group.children.map(o => o.value);
   ok('every model the Pi has is offered', vals.length === 5, vals.join(','));
+  ok('regions are not listed as models', !vals.some(v => v.includes('trop')), vals.join(','));
   ok('models added on the Pi appeared with no edit to the page',
      vals.includes('pi:nbm') && vals.includes('pi:rtma'), vals.join(','));
   ok('labels carry the resolution',
@@ -126,9 +127,16 @@ function ok(name, cond, extra) {
      nbmOpts.includes('wind') && !nbmOpts.includes('refc'), nbmOpts.join(','));
 
 
-  console.log('\n15. a tropical model, which lives somewhere else');
-  await _sevSetSection('pi:gfstrop');
-  ok('it drew', added[added.length-1].url.includes('/gfstrop/'), added[added.length-1].url);
+  console.log('\n15. the same model over another region');
+  await _sevSetSection('pi:gfs');
+  ok('region picker offers both', _hdRegionsOf('gfs').join(',') === 'conus,tropics',
+     _hdRegionsOf('gfs').join(','));
+  const rsel = document.getElementById('sev-region-sel');
+  ok('and is shown, because there is a choice to make', rsel.style.display === '',
+     rsel.style.display);
+  await _hdSetRegion('tropics');
+  ok('it drew the tropical crop of the same model',
+     added[added.length-1].url.includes('/gfs/tropics/'), added[added.length-1].url);
   ok('bounds came from its own manifest, not the last model shown',
      JSON.stringify(added[added.length-1].bounds) === JSON.stringify([[0,-165],[45,-10]]),
      JSON.stringify(added[added.length-1].bounds));
@@ -144,10 +152,26 @@ function ok(name, cond, extra) {
   ok('switching to shear drew shear',
      added[added.length-1].url.includes('shear_f000.png'), added[added.length-1].url);
 
-  console.log('\n16. going back to a CONUS model restores its bounds');
-  await _sevSetSection('pi:hrrr');
+  console.log('\n16. back to CONUS on the same model');
+  await _hdSetRegion('conus');
   ok('bounds are CONUS again',
      JSON.stringify(added[added.length-1].bounds) === JSON.stringify([[20,-130],[55,-60]]),
+     JSON.stringify(added[added.length-1].bounds));
+  ok('and the products changed back with it',
+     _hdHoursFor('mslp').length > 0, _hdField);
+
+  console.log('\n17. a model with one region hides the picker');
+  await _sevSetSection('pi:hrrr');
+  ok('picker hidden', document.getElementById('sev-region-sel').style.display === 'none',
+     document.getElementById('sev-region-sel').style.display);
+
+  console.log('\n18. a nest published over four boxes is one model');
+  await _sevSetSection('pi:namnest');
+  await _hdSetRegion('prico');
+  ok('Puerto Rico drew', added[added.length-1].url.includes('/namnest/prico/'),
+     added[added.length-1].url);
+  ok('with its own bounds',
+     JSON.stringify(added[added.length-1].bounds) === JSON.stringify([[15,-71],[22,-60]]),
      JSON.stringify(added[added.length-1].bounds));
 
   console.log('\n' + (fail ? `${fail} FAILED, ${pass} passed` : `all ${pass} passed`));

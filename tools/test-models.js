@@ -61,7 +61,8 @@ global.document = {
   body: { appendChild(){} },
 };
 ['sev-var-sel','sev-run-sel','sev-frame-grid','sev-fcast-date','sev-fcast-flbl',
- 'sev-playbar-fill','sev-playbar-thumb','sev-model-sel','sev-pi-group'].forEach(id => els[id] = mkEl(id));
+ 'sev-playbar-fill','sev-playbar-thumb','sev-model-sel','sev-pi-group',
+ 'sev-region-sel'].forEach(id => els[id] = mkEl(id));
 // The <select> reports the options its optgroup holds, the way a real one does.
 els['sev-model-sel'].options = els['sev-pi-group'].children;
 
@@ -98,41 +99,54 @@ function closeSoundingPanel(){} function openSoundingPanel(){}
 
 // ── the fake Pi ─────────────────────────────────────────────────────────────
 let RUN = '20260814_12';
+const reg = (m, r) => ({ run: RUN, path: `${m}/${r}/${RUN}/manifest.json` });
 const INDEX = () => ({ models: {
-  gfs:  { label:'GFS', res:'0.25 deg', run: RUN, path:'gfs/'+RUN+'/manifest.json' },
-  hrrr: { label:'HRRR', res:'3 km',    run: RUN, path:'hrrr/'+RUN+'/manifest.json' },
-  nbm:  { label:'NBM', res:'2.5 km blend', run: RUN, path:'nbm/'+RUN+'/manifest.json' },
-  rtma: { label:'RTMA (now)', res:'2.5 km analysis', run: RUN, path:'rtma/'+RUN+'/manifest.json' },
-  gfstrop: { label:'GFS Tropical', res:'0.25 deg', run: RUN, path:'gfstrop/'+RUN+'/manifest.json' },
+  // GFS is one model over two regions now, not two models.
+  gfs:  { label:'GFS', res:'0.25 deg',
+          regions: { conus: reg('gfs','conus'), tropics: reg('gfs','tropics') } },
+  hrrr: { label:'HRRR', res:'3 km', regions: { conus: reg('hrrr','conus') } },
+  nbm:  { label:'NBM', res:'2.5 km blend', regions: { conus: reg('nbm','conus') } },
+  rtma: { label:'RTMA (now)', res:'2.5 km analysis',
+          regions: { conus: reg('rtma','conus') } },
+  namnest: { label:'NAM Nest', res:'3 km',
+             regions: { conus: reg('namnest','conus'),
+                        prico: reg('namnest','prico') } },
 }});
 const MANIFESTS = () => ({
-  gfs: { model:'gfs', label:'GFS', res:'0.25 deg', run: RUN, bounds:[[20,-130],[55,-60]],
+  'gfs/conus': { model:'gfs', label:'GFS', res:'0.25 deg', run: RUN, bounds:[[20,-130],[55,-60]],
          fields: { t2m:{hours:[0,3,6,9,12],min:-40,max:45},
                    apcp:{hours:[3,6,9,12],min:0,max:50},
                    mslp:{hours:[0,3,6,9,12],min:960,max:1050} } },
-  hrrr:{ model:'hrrr', label:'HRRR', res:'3 km', run: RUN, bounds:[[20,-130],[55,-60]],
+  'hrrr/conus':{ model:'hrrr', label:'HRRR', res:'3 km', run: RUN, bounds:[[20,-130],[55,-60]],
          fields: { t2m:{hours:[0,1,2,3],min:-40,max:45},
                    refc:{hours:[0,1,2,3],min:-10,max:75} } },
-  nbm: { model:'nbm', label:'NBM', res:'2.5 km blend', run: RUN, bounds:[[20,-130],[55,-60]],
+  'nbm/conus': { model:'nbm', label:'NBM', res:'2.5 km blend', run: RUN, bounds:[[20,-130],[55,-60]],
          fields: { t2m:{hours:[0,3,6],min:-40,max:45},
                    wind:{hours:[0,3,6],min:0,max:80} } },
-  rtma:{ model:'rtma', label:'RTMA (now)', res:'2.5 km analysis', run: RUN, bounds:[[20,-130],[55,-60]],
+  'rtma/conus':{ model:'rtma', label:'RTMA (now)', res:'2.5 km analysis', run: RUN, bounds:[[20,-130],[55,-60]],
          fields: { t2m:{hours:[0],min:-40,max:45} } },
   // A tropical model, whose whole point is that it is somewhere else: its
   // bounds must come from its own manifest, not from the last model shown.
-  gfstrop:{ model:'gfstrop', label:'GFS Tropical', res:'0.25 deg', run: RUN,
+  'gfs/tropics':{ model:'gfs', label:'GFS', res:'0.25 deg', run: RUN,
             bounds:[[0,-165],[45,-10]],
             fields: { pwat:{hours:[0,6,12],min:0,max:80},
                       shear:{hours:[0,6,12],min:0,max:60},
                       sst:{hours:[0,6,12],min:16,max:34} } },
+  'namnest/conus': { model:'namnest', label:'NAM Nest', res:'3 km', run: RUN,
+            bounds:[[20,-130],[55,-60]],
+            fields: { refc:{hours:[0,3],min:-10,max:75} } },
+  'namnest/prico': { model:'namnest', label:'NAM Nest', res:'3 km', run: RUN,
+            bounds:[[15,-71],[22,-60]],
+            fields: { refc:{hours:[0,3],min:-10,max:75} } },
 });
 let fetchLog = [];
 global.fetch = async (url) => {
   fetchLog.push(url);
   if (url.includes('firestore')) return { ok:true, json: async () => ({ fields:{ url:{ stringValue:'https://pi.test' } } }) };
   if (url.endsWith('latest.json')) return { ok:true, json: async () => INDEX() };
-  const m = url.match(/models\/(\w+)\/[\d_]+\/manifest\.json/);
-  if (m) { const man = MANIFESTS()[m[1]]; return man ? { ok:true, json: async()=>man } : { ok:false }; }
+  const m = url.match(/models\/(\w+)\/(\w+)\/[\d_]+\/manifest\.json/);
+  if (m) { const man = MANIFESTS()[m[1] + '/' + m[2]];
+           return man ? { ok:true, json: async()=>man } : { ok:false }; }
   return { ok:false };
 };
 
