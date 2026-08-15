@@ -291,7 +291,16 @@ fi
 echo
   echo "  Built so far:"
   "$VENV/bin/python" - <<'PYEOF' 2>/dev/null || echo "      nothing yet, the first build is still running"
-import json, os
+import json, os, sys
+# The total comes from the model table rather than a number typed here, which
+# went stale the moment more models were added and reported 19 of 20 when
+# there were 39.
+sys.path.insert(0, os.path.expanduser("~/GWCFCRadar/pi"))
+try:
+    from gfs_pipeline import DEFAULT_MODELS, MODELS, regions_of
+    total = sum(len(regions_of(MODELS[k])) for k in DEFAULT_MODELS)
+except Exception:
+    total = 0
 p = os.path.expanduser("~/wxdata/models/latest.json")
 try:
     d = json.load(open(p))
@@ -302,7 +311,7 @@ for k, v in sorted((d.get("models") or {}).items()):
     regs = ", ".join(sorted(v.get("regions") or {"conus": {}}))
     n += len(v.get("regions") or {1: 1})
     print(f"      {k:10} {regs}")
-print(f"      {n} of 20 model and region combinations")
+print(f"      {n} of {total or n} model and region combinations")
 PYEOF
 echo
 echo "  Useful later:"

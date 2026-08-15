@@ -131,7 +131,13 @@ def parse_tracks(raw):
     separate unlabelled tangle.
     """
     text = raw.decode("utf-8", errors="ignore")
-    rows = list(csv.reader(io.StringIO(text)))
+    # The file opens with a licence and staleness notice as comment lines, so
+    # the first row is a sentence rather than a header. Skipping anything
+    # starting with a hash finds the real one, and blank lines go with it
+    # because a stray one before the header reads as an empty column list.
+    lines = [ln for ln in text.splitlines()
+             if ln.strip() and not ln.lstrip().startswith("#")]
+    rows = list(csv.reader(lines))
     if len(rows) < 2:
         return {}, []
     header, body = rows[0], rows[1:]
