@@ -799,10 +799,39 @@ ECMWF_SHEAR_PARAMS = {"u", "v"}
 
 
 def ecmwf_paths(m, date_str, cyc, fhr):
-    """The forecast file and its index, which live beside each other."""
-    stem = (f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/0p25/oper/"
-            f"{date_str}{cyc}0000-{fhr}h-oper-fc.grib2")
-    return stem, stem + ".index"
+    """
+    The forecast file and the index beside it.
+
+    The index name is returned as a list because there are two conventions in
+    the wild and picking the wrong one looks exactly like the model not being
+    published: ECMWF names it by replacing the extension, giving
+    `...-fc.index`, where NOAA appends to the whole filename. Both are tried
+    and the first that answers wins, the same as the RTMA paths.
+
+    The stream is `oper` for the 00 and 12 cycles. The 06 and 18 cycles are
+    published as `scda`, a shorter cut-off run, so a model wanting those has to
+    say so rather than assume this name.
+    """
+    stream = m.get("ecmwf_stream", "oper")
+    base = (f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/0p25/{stream}/"
+            f"{date_str}{cyc}0000-{fhr}h-{stream}-fc")
+    grib = base + ".grib2"
+    return grib, [base + ".index", grib + ".index"]
+
+
+def ecmwf_index(m, date_str, cyc, fhr, timeout=REQUEST_TIMEOUT):
+    """The first index that answers, with its text and status codes tried."""
+    codes = []
+    for url in ecmwf_paths(m, date_str, cyc, fhr)[1]:
+        try:
+            r = HTTP.get(url, timeout=timeout)
+        except requests.RequestException as e:
+            codes.append((url, str(e)))
+            continue
+        codes.append((url, r.status_code))
+        if r.status_code == 200 and "{" in r.text[:200]:
+            return url, r.text, codes
+    return None, None, codes
 
 
 def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
@@ -820,18 +849,15 @@ def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
     small requests over one connection cost more in round trips than the few
     wasted bytes between them.
     """
-    grib_url, idx_url = ecmwf_paths(m, date_str, cyc, fhr)
-    try:
-        r = HTTP.get(idx_url, timeout=REQUEST_TIMEOUT)
-        if r.status_code != 200:
-            log(f"    f{fhr:03d}: no index, HTTP {r.status_code}")
-            return False
-    except requests.RequestException as e:
-        log(f"    f{fhr:03d}: index failed: {e}")
+    grib_url = ecmwf_paths(m, date_str, cyc, fhr)[0]
+    _url, text, codes = ecmwf_index(m, date_str, cyc, fhr)
+    if not text:
+        log(f"    f{fhr:03d}: no index ("
+            + ", ".join(f"{c}" for _u, c in codes) + ")")
         return False
 
     want = []
-    for line in r.text.splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -1179,12 +1205,7 @@ def run_is_complete(m, date_str, cyc):
     """
     last = fhours_for(m)[-1]
     if m.get("source") == "ecmwf":
-        url = ecmwf_paths(m, date_str, cyc, last)[1]
-        try:
-            r = HTTP.get(url, timeout=30, headers={"Range": "bytes=0-256"})
-            return r.status_code in (200, 206) and "{" in r.text
-        except requests.RequestException:
-            return False
+        return ecmwf_index(m, date_str, cyc, last, timeout=30)[1] is not None
     return find_index(m, date_str, cyc, last) is not None
 
 

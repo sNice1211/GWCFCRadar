@@ -30,7 +30,7 @@ from gfs_pipeline import (BOX, ECMWF_BASE, DEFAULT_MODELS, REGIONS, regions_of, 
                           ECMWF_SHEAR_PARAMS, FILTER_BASE, HTTP, MODELS,
                           RAW_BASE, SHEAR_LEVELS, SHEAR_LEVEL_NAMES,
                           WANT_VARS, ask_from_inventory, cycle_for,
-                          ecmwf_paths, fhours_for, merge_ranges, parse_idx,
+                          ecmwf_index, ecmwf_paths, fhours_for, merge_ranges, parse_idx,
                           raw_candidates, select_from_idx)
 
 requests = HTTP          # one session, one user agent, everywhere
@@ -101,24 +101,26 @@ def check_ecmwf(name, m):
     header, which would quietly turn a few megabytes into a hundred.
     """
     hours = fhours_for(m)
+    text = None
+    tried = []
     for back in range(0, 4):
         when = datetime.now(timezone.utc) - timedelta(hours=back * m["cycle_h"])
         date_str, cyc = cycle_for(m, when)
-        _, idx_url = ecmwf_paths(m, date_str, cyc, hours[0])
-        try:
-            r = requests.get(idx_url, timeout=60)
-        except requests.RequestException as e:
-            print(f"  {RED}network{OFF} {e}")
-            return False
-        if r.status_code == 200:
+        _url, text, codes = ecmwf_index(m, date_str, cyc, hours[0], timeout=60)
+        tried += codes
+        if text:
             break
-    else:
+
+    if not text:
         print(f"  {RED}no index found{OFF} for the last few cycles")
-        print(f"  {DIM}HTTP {r.status_code}  {idx_url}{OFF}")
-        # A 404 and a 403 need opposite fixes, and neither says what the right
-        # address is. ECMWF serves a listing, so ask it.
-        for probe in (idx_url.rsplit("/", 1)[0] + "/",
+        # The status is the whole point. A 404 means the address is wrong, a
+        # 403 means we are being refused, and nothing in this environment can
+        # tell them apart without asking.
+        for url, code in tried[:6]:
+            print(f"  {DIM}HTTP {code}  {url}{OFF}")
+        for probe in (tried[0][0].rsplit("/", 1)[0] + "/",
                       f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/0p25/",
+                      f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/",
                       f"{ECMWF_BASE}/{date_str}/",
                       f"{ECMWF_BASE}/"):
             got = listing(probe)
@@ -127,13 +129,16 @@ def check_ecmwf(name, m):
                 for n in got[:14]:
                     print(f"  {DIM}    {n}{OFF}")
                 break
+        else:
+            print(f"  {DIM}nothing under {ECMWF_BASE} answers at all, which "
+                  f"points at the network rather than the address{OFF}")
         return False
 
     print(f"  {GREEN}index found{OFF}  {date_str} {cyc}z"
           + (f"  {DIM}({back} cycle(s) back){OFF}" if back else ""))
 
     recs = []
-    for line in r.text.splitlines():
+    for line in text.splitlines():
         line = line.strip()
         if line:
             try:
