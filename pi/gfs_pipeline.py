@@ -18,6 +18,7 @@ Run it from cron every hour. It works out whether there is anything to do and
 exits quickly when there is not.
 """
 
+import bz2
 import json
 import os
 import shutil
@@ -103,6 +104,12 @@ def region_spec(m, key):
     """
     spec = dict(m)
     spec.pop("regions", None)
+    if m.get("per_storm"):
+        # A storm is not a place. There is no box to apply: the model already
+        # publishes a small grid that follows the storm, and the bounds come
+        # from the data the way they do for everything else.
+        spec["storm"] = key
+        return spec
     spec.update(REGIONS[key])
     spec.update((m.get("regions") or {}).get(key) or {})
     return spec
@@ -435,6 +442,49 @@ MODELS = {
         "step": 6, "out": 240, "crop": True,
         "regions": {"conus": {}, "tropics": {"shear": True}},
     },
+
+    # ── Not from NOAA and not from ECMWF ────────────────────────────────────
+    "gem": {
+        # Environment Canada's global model. Published on a plain latitude and
+        # longitude grid, which most global models are not, so it needs no
+        # regridding. One file per field per hour and no index, so each field
+        # is its own request.
+        "label": "GEM Global", "res": "0.24 deg", "cycle_h": 12, "lag_h": 5,
+        "source": "gem", "crop": True,
+        "step": 6, "out": 168,
+        "regions": {"conus": {}, "tropics": {"out": 240}},
+    },
+    "icon": {
+        # DWD's global model, and a genuinely good one. Awkward in two ways:
+        # every file is bz2 compressed, and the grid is icosahedral, which is
+        # to say triangles on a sphere rather than rows and columns. The
+        # regridder already handles a grid that is not rows and columns, since
+        # HRRR is not either, so this falls out of that.
+        "label": "ICON Global", "res": "0.125 deg", "cycle_h": 12, "lag_h": 5,
+        "source": "icon", "crop": True,
+        "step": 6, "out": 120,
+        "regions": {"conus": {}, "tropics": {}},
+    },
+    "hafs": {
+        # The hurricane model. Unlike everything else here it is not published
+        # on a fixed domain: there is one run per active storm, on a grid that
+        # follows that storm, and when nothing is out there it does not run at
+        # all. So its regions are worked out at build time from the Hurricane
+        # Center's own list of what is active, and the bounds come from the
+        # data, which they already did for every model.
+        "fetch": "range", "per_storm": True,
+        "label": "HAFS-A", "res": "storm following", "cycle_h": 6, "lag_h": 5,
+        "raw": "hafs/prod/hfsa.{date}/{cyc}/"
+               "{storm}.{date}{cyc}.hfsa.parent.atm.f{fhr:03d}.grb2.idx",
+        "step": 3, "out": 72,
+    },
+    "hafsb": {
+        "fetch": "range", "per_storm": True,
+        "label": "HAFS-B", "res": "storm following", "cycle_h": 6, "lag_h": 5,
+        "raw": "hafs/prod/hfsb.{date}/{cyc}/"
+               "{storm}.{date}{cyc}.hfsb.parent.atm.f{fhr:03d}.grb2.idx",
+        "step": 3, "out": 72,
+    },
 }
 
 # Order matters: this is also the order they are built in, and the time budget
@@ -445,7 +495,8 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "href", "gefs", "gefsspr", "gfswave",
                   "ecmwf", "ecmwfaifs", "ecmwfens",
                   "hireswarw", "hireswarw2", "hireswfv3",
-                  "rrfs", "hrrrsub"]
+                  "rrfs", "hrrrsub",
+                  "gem", "icon", "hafs", "hafsb"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -512,6 +563,11 @@ MB_PER_HOUR = {
     # first time check_models.py runs against them.
     "href": 10.4, "hireswarw2": 6.0, "rrfs": 5.4, "hrrrsub": 5.4,
     "ecmwfaifs": 4.3, "ecmwfens": 4.3,
+    # Whole global fields with no cropping and no index, so these are the
+    # expensive ones per hour even though the models are not large.
+    "gem": 11.0, "icon": 21.0,
+    # Storm domains are small.
+    "hafs": 2.0, "hafsb": 2.0,
 }
 
 # Some servers refuse the default python-requests user agent outright, and a
@@ -893,6 +949,92 @@ def fetch_hour_range(m, date_str, cyc, fhr, path):
     return True
 
 
+# ── Sources that are not NOAA and not ECMWF ────────────────────────────────
+# Both of these publish one file per field per forecast hour rather than one
+# file holding everything, so there is no index to range-request against and
+# nothing to crop server side. The whole field arrives and the box is cut out
+# after decoding, the same as ECMWF.
+GEM_BASE = "https://dd.weather.gc.ca/model_gem_global/25km/grib2/lat_lon"
+ICON_BASE = "https://opendata.dwd.de/weather/nwp/icon/grib"
+
+# Environment Canada names a file after the variable, the level type and the
+# level, so the wanted fields are listed the way that server spells them.
+GEM_FIELDS = [
+    ("TMP", "TGL", "2"), ("DEPR", "TGL", "2"), ("PRMSL", "MSL", "0"),
+    ("UGRD", "TGL", "10"), ("VGRD", "TGL", "10"), ("APCP", "SFC", "0"),
+    ("PWAT", "EATM", "0"),
+]
+
+# DWD names theirs after the variable alone, in lower case, one directory each.
+ICON_FIELDS = ["t_2m", "td_2m", "pmsl", "u_10m", "v_10m", "tot_prec", "tqv"]
+
+
+def gem_urls(m, date_str, cyc, fhr):
+    return [f"{GEM_BASE}/{cyc}/{fhr:03d}/"
+            f"CMC_glb_{var}_{lvt}_{lvl}_latlon.24x.24_"
+            f"{date_str}{cyc}_P{fhr:03d}.grib2"
+            for var, lvt, lvl in GEM_FIELDS]
+
+
+def icon_urls(m, date_str, cyc, fhr):
+    return [f"{ICON_BASE}/{cyc}/{f}/"
+            f"icon_global_icosahedral_single-level_{date_str}{cyc}_"
+            f"{fhr:03d}_{f.upper()}.grib2.bz2"
+            for f in ICON_FIELDS]
+
+
+URL_SOURCES = {"gem": gem_urls, "icon": icon_urls}
+
+
+def fetch_hour_files(m, date_str, cyc, fhr, path):
+    """
+    Download one forecast hour that arrives as a file per field.
+
+    Everything NOAA publishes puts a whole run's worth of fields in one file
+    with an index beside it, which is what makes a byte range possible. These
+    two do the opposite: one file per field per hour, no index. So each wanted
+    field is a separate request, and they are glued together into one GRIB,
+    which is valid because GRIB is a sequence of self describing messages.
+
+    A field that is missing is skipped rather than failing the hour. These
+    servers do not publish every field at every step, and losing precipitation
+    at hour zero should not cost the temperature.
+    """
+    urls = URL_SOURCES[m["source"]](m, date_str, cyc, fhr)
+    got = 0
+    try:
+        with open(path, "wb") as f:
+            for url in urls:
+                try:
+                    r = HTTP.get(url, timeout=REQUEST_TIMEOUT)
+                except requests.RequestException:
+                    continue
+                if r.status_code != 200 or len(r.content) < 500:
+                    continue
+                data = r.content
+                if url.endswith(".bz2"):
+                    # DWD compresses every file. bz2 on a few megabytes is
+                    # well under the time the download itself took.
+                    try:
+                        data = bz2.decompress(data)
+                    except Exception:
+                        continue
+                if data[:4] != b"GRIB":
+                    continue
+                f.write(data)
+                got += 1
+    except OSError as e:
+        log(f"    f{fhr:03d}: {e}")
+        return False
+
+    if got == 0:
+        log(f"    f{fhr:03d}: none of {len(urls)} files were there")
+        return False
+    if got < len(urls):
+        log(f"    f{fhr:03d}: {got} of {len(urls)} fields")
+    return True
+
+
 ECMWF_BASE = "https://data.ecmwf.int/forecasts"
 
 # What to take from ECMWF, by its own parameter names. Everything not listed is
@@ -1269,7 +1411,12 @@ def raw_candidates(m):
     that answers is used, and check_models.py reports which.
     """
     raw = m["raw"]
-    return raw if isinstance(raw, (list, tuple)) else [raw]
+    raw = raw if isinstance(raw, (list, tuple)) else [raw]
+    # A storm following model has one more thing in its filename than a date
+    # and an hour, and format leaves an unknown field alone only if it is
+    # given, so it is filled in here rather than at every call site.
+    storm = m.get("storm")
+    return [r.replace("{storm}", storm) if storm else r for r in raw]
 
 
 def find_index(m, date_str, cyc, fhr, timeout=30):
@@ -1312,6 +1459,15 @@ def run_is_complete(m, date_str, cyc):
     last = fhours_for(m)[-1]
     if m.get("source") == "ecmwf":
         return ecmwf_index(m, date_str, cyc, last, timeout=30)[1] is not None
+    if m.get("source") in URL_SOURCES:
+        # No index to ask, so the last hour's first file standing in for the
+        # run being finished is the best available signal.
+        try:
+            r = HTTP.get(URL_SOURCES[m["source"]](m, date_str, cyc, last)[0],
+                         timeout=30, headers={"Range": "bytes=0-32"})
+            return r.status_code in (200, 206)
+        except requests.RequestException:
+            return False
     return find_index(m, date_str, cyc, last) is not None
 
 
@@ -1331,6 +1487,8 @@ def fetch_hour(m, date_str, cyc, fhr, path):
     """
     if m.get("source") == "ecmwf":
         return fetch_hour_ecmwf(m, date_str, cyc, fhr, path)
+    if m.get("source") in URL_SOURCES:
+        return fetch_hour_files(m, date_str, cyc, fhr, path)
     if m.get("fetch") == "range":
         return fetch_hour_range(m, date_str, cyc, fhr, path)
 
@@ -1871,8 +2029,50 @@ class Lock:
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
+NHC_STORMS = "https://www.nhc.noaa.gov/CurrentStorms.json"
+_storms_cache = {"at": 0, "ids": []}
+
+
+def active_storms():
+    """
+    The storms the Hurricane Center currently lists, as HAFS names them.
+
+    HAFS publishes one run per storm, named for it: 05l is the fifth Atlantic
+    storm of the season, 03e the third eastern Pacific one. Nothing in a fixed
+    list can know that, so it is asked.
+
+    Cached for the length of a build, because every HAFS model would otherwise
+    ask again for an answer that cannot have changed in the meantime.
+    """
+    if time.time() - _storms_cache["at"] < 900:
+        return _storms_cache["ids"]
+    ids = []
+    try:
+        r = HTTP.get(NHC_STORMS, timeout=30)
+        if r.status_code == 200:
+            for st in (r.json().get("activeStorms") or []):
+                # "al052026" is basin, number, year. HAFS wants "05l": the
+                # number, then one letter for the basin.
+                sid = str(st.get("id") or "").lower()
+                if len(sid) >= 8 and sid[:2] in ("al", "ep", "cp", "wp"):
+                    ids.append(f"{sid[2:4]}{sid[0]}")
+    except Exception as e:
+        log(f"could not read the storm list: {e}")
+    _storms_cache.update(at=time.time(), ids=ids)
+    if ids:
+        log(f"active storms: {', '.join(ids)}")
+    return ids
+
+
 def regions_of(m):
-    """The regions a model is built for, defaulting to the main box."""
+    """
+    The regions a model is built for, defaulting to the main box.
+
+    A storm following model has no fixed regions: what exists depends on what
+    is out there today, so its regions are the storms rather than places.
+    """
+    if m.get("per_storm"):
+        return active_storms()
     return list((m.get("regions") or {"conus": {}}).keys())
 
 
