@@ -13,7 +13,7 @@ import {
   Client, GatewayIntentBits, Partials, Events,
   REST, Routes, SlashCommandBuilder,
 } from 'discord.js';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { getLinkCode, claimLinkCode, getSyncHistory, appendSyncHistory,
          addChatMessage } from './firestore.mjs';
 
@@ -449,6 +449,9 @@ async function screenshotMap(opt) {
   // Everything else is passed through verbatim under the name the page already
   // uses, so a parameter added to the page needs only a command option here,
   // not a translation step in between.
+  // The command says "satellite" because that is what a person asking for one
+  // would say; the page's parameter is satproduct. Translated in one place.
+  if (opt.satellite) q.set('satproduct', String(opt.satellite));
   for (const k of ['basemap','layers','overlays','product','satproduct',
                    'model','modelvar','waves','air','temperature','pressure','wind']) {
     if (opt[k]) q.set(k, String(opt[k]));
@@ -531,6 +534,143 @@ async function saveHistory(discordId, question, answer) {
 }
 
 // ── Discord ───────────────────────────────────────────────────────────────
+// ── /map, built from what the site actually offers ─────────────────────────
+// The lists come from bot/map-options.json, which tools/extract-map-options.js
+// reads out of index.html. Typed by hand they had already drifted: the command
+// offered six radar products where the page shows five, and eight satellite
+// bands where the page has sixteen.
+//
+// The generator takes only what a visitor can really click. The dual polarity
+// radar products sit in the page commented out, so they are absent here too:
+// a command that offered them would promise a picture nobody can see. That is
+// the rule this file follows everywhere, and it is why nothing below is a
+// literal list.
+const MAP_OPTIONS = JSON.parse(
+  readFileSync(new URL('./map-options.json', import.meta.url), 'utf8'));
+
+// Discord allows 25 fixed choices on an option. Anything longer, and anything
+// that takes several values at once, is completed as it is typed instead.
+const CHOICE_LIMIT = 25;
+
+function choicesFor(list) {
+  return list.slice(0, CHOICE_LIMIT).map(p => ({
+    name: (p.name || p.value).slice(0, 100), value: p.value,
+  }));
+}
+
+// One command option per product family, named after the family, exactly as
+// the page's own URL parameters are. A family added to the site appears here
+// on the next run of the generator with no edit to this file.
+const FAMILY_OPTIONS = [
+  ['product',    'radar',       'Radar product. Switches radar on by itself'],
+  ['satellite',  'satellite',   'GOES band. Switches satellite on by itself'],
+  ['wind',       'wind',        'Wind product'],
+  ['temperature','temperature', 'Temperature product'],
+  ['waves',      'waves',       'Wave product'],
+  ['air',        'air',         'Air quality product'],
+  ['pressure',   'pressure',    'Pressure product'],
+];
+
+function mapCommand() {
+  const c = new SlashCommandBuilder()
+    .setName('map')
+    .setDescription('Post a picture of the radar map')
+    .addStringOption(o => o.setName('place')
+      .setDescription('Where to look')
+      .addChoices(...choicesFor(
+        Object.keys(PLACES).map(k => ({ value: k, name: k })))))
+    // Several at once, so completed as typed rather than picked from a list.
+    .addStringOption(o => o.setName('layers')
+      .setDescription(`Comma separated. ${MAP_OPTIONS.layers.length} available`)
+      .setAutocomplete(true))
+    .addStringOption(o => o.setName('overlays')
+      .setDescription(`Comma separated. ${MAP_OPTIONS.overlays.length} available`)
+      .setAutocomplete(true))
+    .addStringOption(o => o.setName('basemap')
+      .setDescription('Basemap style')
+      .addChoices(...choicesFor(
+        MAP_OPTIONS.basemaps.map(b => ({ value: b, name: b })))));
+
+  for (const [opt, family, desc] of FAMILY_OPTIONS) {
+    const list = MAP_OPTIONS.families[family] || MAP_OPTIONS[family] || [];
+    if (!list.length) continue;
+    c.addStringOption(o => {
+      o.setName(opt).setDescription(desc);
+      // Past 25 it has to be typed, which is why this is not a flat rule.
+      if (list.length <= CHOICE_LIMIT) o.addChoices(...choicesFor(list));
+      else o.setAutocomplete(true);
+      return o;
+    });
+  }
+
+  return c
+    .addNumberOption(o => o.setName('lat')
+      .setDescription('Latitude, overrides place'))
+    .addNumberOption(o => o.setName('lon')
+      .setDescription('Longitude, overrides place'))
+    .addIntegerOption(o => o.setName('zoom')
+      .setDescription('Zoom, 3 to 12').setMinValue(3).setMaxValue(12));
+}
+
+// What each autocompleting option is completing against.
+const AUTOCOMPLETE_SOURCE = {
+  layers:   () => MAP_OPTIONS.layers.map(v => ({ value: v, name: v })),
+  overlays: () => MAP_OPTIONS.overlays,
+  ...Object.fromEntries(FAMILY_OPTIONS.map(([opt, fam]) =>
+    [opt, () => MAP_OPTIONS.families[fam] || MAP_OPTIONS[fam] || []])),
+};
+
+// Completes the value being typed, not the whole string: these take a comma
+// separated list, so what is being finished is whatever follows the last comma
+// and everything before it has to be handed back untouched.
+function completeList(optName, typed) {
+  const list = (AUTOCOMPLETE_SOURCE[optName] || (() => []))();
+  const multi = optName === 'layers' || optName === 'overlays';
+  const cut = multi ? typed.lastIndexOf(',') : -1;
+  const head = cut >= 0 ? typed.slice(0, cut + 1) : '';
+  const tail = (cut >= 0 ? typed.slice(cut + 1) : typed).trim().toLowerCase();
+  const already = new Set(head.split(',').map(x => x.trim()).filter(Boolean));
+
+  return list
+    .filter(p => !already.has(p.value))
+    .filter(p => !tail
+      || p.value.toLowerCase().includes(tail)
+      || (p.name || '').toLowerCase().includes(tail))
+    .slice(0, CHOICE_LIMIT)
+    .map(p => ({
+      name: `${p.name || p.value}`.slice(0, 100),
+      // Discord rejects a value over 100 characters, and a long list of
+      // overlays reaches that, so the completion is dropped rather than the
+      // whole box being refused.
+      value: (head + p.value).slice(0, 100),
+    }));
+}
+
+// Anything the site does not offer is refused here rather than quietly
+// producing a picture without it. Silently ignoring a name is how someone ends
+// up believing a layer is switched on when it never was.
+function validateMapOptions(opt) {
+  const bad = [];
+  const check = (name, wanted, list) => {
+    if (!wanted) return;
+    for (const v of String(wanted).split(',').map(x => x.trim()).filter(Boolean)) {
+      if (!list.includes(v)) bad.push(`${name}: ${v}`);
+    }
+  };
+  check('layer', opt.layers, MAP_OPTIONS.layers);
+  check('overlay', opt.overlays, MAP_OPTIONS.overlays.map(o => o.value));
+  check('basemap', opt.basemap, MAP_OPTIONS.basemaps);
+  if (opt.place && !(String(opt.place).toLowerCase() in PLACES)) {
+    bad.push(`place: ${opt.place}`);
+  }
+  for (const [name, family] of FAMILY_OPTIONS) {
+    const list = (MAP_OPTIONS.families[family] || MAP_OPTIONS[family] || [])
+      .map(p => p.value);
+    check(name, opt[name], list);
+  }
+  return bad;
+}
+
 const commands = [
   new SlashCommandBuilder()
     .setName('ask')
@@ -548,62 +688,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('unlink')
     .setDescription('Disconnect this Discord account from GWCFC Radar'),
-  new SlashCommandBuilder()
-    .setName('map')
-    .setDescription('Post a picture of the radar map')
-    .addStringOption(o => o.setName('place')
-      .setDescription('Where to look')
-      .addChoices(...Object.keys(PLACES).map(k => ({ name: k, value: k }))))
-    .addStringOption(o => o.setName('layers')
-      .setDescription('Comma separated, e.g. nexrad,tornado,lightning'))
-    .addStringOption(o => o.setName('overlays')
-      .setDescription('Comma separated, e.g. alerts,spc-outlook,wind-particles'))
-    .addStringOption(o => o.setName('basemap')
-      .setDescription('Basemap style')
-      .addChoices(
-        { name: 'satellite', value: 'satellite' },
-        { name: 'dark',      value: 'dark' },
-        { name: 'light',     value: 'light' },
-        { name: 'topo',      value: 'topo' },
-      ))
-    // Only what the radar sub-bubbles actually offer. The dual-pol products are
-    // commented out of that row, so offering them would promise a picture the
-    // app cannot draw.
-    .addStringOption(o => o.setName('product')
-      .setDescription('Radar product. Switches radar on by itself')
-      .addChoices(
-        { name: 'reflectivity',       value: 'ref' },
-        { name: 'velocity',           value: 'vel' },
-        { name: 'MRMS 1km',           value: 'mrms' },
-        { name: 'hydrometeor class',  value: 'hc' },
-        { name: 'storm accumulation', value: 'accum' },
-        { name: 'one hour accum',     value: 'boha' },
-      ))
-    .addStringOption(o => o.setName('satellite')
-      .setDescription('GOES band. Switches satellite on by itself')
-      .addChoices(
-        { name: 'clean IR (ch13)',        value: 'ch13' },
-        { name: 'red visible (ch02)',     value: 'ch02' },
-        { name: 'mid water vapor (ch09)', value: 'ch09' },
-        { name: 'upper water vapor (ch08)', value: 'ch08' },
-        { name: 'shortwave IR (ch07)',    value: 'ch07' },
-        { name: 'cloud top temp (ch11)',  value: 'ch11' },
-        { name: 'fire temp (ch12)',       value: 'ch12' },
-        { name: 'snow and ice (ch05)',    value: 'ch05' },
-      ))
-    .addStringOption(o => o.setName('wind')
-      .setDescription('Wind product, e.g. wind-surface'))
-    .addStringOption(o => o.setName('temperature')
-      .setDescription('Temperature product, e.g. air-temp or dew-point'))
-    .addStringOption(o => o.setName('waves')
-      .setDescription('Wave product, e.g. wave-height, wave-period, swell-height'))
-    .addStringOption(o => o.setName('air')
-      .setDescription('Air quality product, e.g. us-aqi, pm2_5, ozone'))
-    .addStringOption(o => o.setName('pressure')
-      .setDescription('Pressure product, e.g. sea-level'))
-    .addNumberOption(o => o.setName('lat').setDescription('Latitude, overrides place'))
-    .addNumberOption(o => o.setName('lon').setDescription('Longitude, overrides place'))
-    .addIntegerOption(o => o.setName('zoom').setDescription('Zoom, 3 to 12')),
+  mapCommand(),
 ].map(c => c.toJSON());
 
 async function registerCommands() {
@@ -635,6 +720,18 @@ client.once(Events.ClientReady, c => {
 });
 
 client.on(Events.InteractionCreate, async (i) => {
+  // Completion runs on every keystroke and Discord gives it three seconds, so
+  // it answers from the list in memory and never touches the network.
+  if (i.isAutocomplete()) {
+    try {
+      const focused = i.options.getFocused(true);
+      await i.respond(completeList(focused.name, String(focused.value || '')));
+    } catch (e) {
+      // A failed completion must not look like a failed command.
+      console.warn('autocomplete:', e.message);
+    }
+    return;
+  }
   if (!i.isChatInputCommand()) return;
   try {
     if (i.commandName === 'alerts') {
@@ -646,6 +743,21 @@ client.on(Events.InteractionCreate, async (i) => {
       return;
     }
     if (i.commandName === 'map') {
+      const asked = Object.fromEntries(
+        ['place','basemap','layers','overlays','product','satellite',
+         'wind','temperature','waves','air','pressure']
+          .map(k => [k, i.options.getString(k)]));
+      // Refused rather than quietly dropped: silently ignoring a name is how
+      // someone ends up believing a layer is on when it never was.
+      const bad = validateMapOptions(asked);
+      if (bad.length) {
+        await i.reply({
+          content: `The site does not have ${bad.join(', ')}. `
+                 + 'Start typing and it will offer what does exist.',
+          ephemeral: true,
+        });
+        return;
+      }
       // Launching a browser and waiting for tiles runs well past Discord's
       // three second reply window.
       await i.deferReply();
@@ -658,9 +770,7 @@ client.on(Events.InteractionCreate, async (i) => {
         layers:   i.options.getString('layers'),
         overlays: i.options.getString('overlays'),
         product:  i.options.getString('product'),
-        // The command calls it satellite because that is what a person asking
-        // for one would say; the page calls it satproduct.
-        satproduct:  i.options.getString('satellite'),
+        satellite:   i.options.getString('satellite'),
         wind:        i.options.getString('wind'),
         temperature: i.options.getString('temperature'),
         waves:       i.options.getString('waves'),

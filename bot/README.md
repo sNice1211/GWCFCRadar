@@ -1,7 +1,7 @@
 # Asturio Discord Bot
 
 Runs Asturio AI in Discord from your laptop. It uses the **same Cloudflare Worker
-the website uses**, so there's no Gemini API key on your machine — the only
+the website uses**, so there's no Gemini API key on your machine, the only
 secret you need is a Discord bot token.
 
 Before answering, it pulls live **NWS alerts** and **SPC storm reports** (the same
@@ -26,8 +26,8 @@ If it's older or missing, get it from https://nodejs.org (take the LTS build).
 
 1. Go to https://discord.com/developers/applications → **New Application**
 2. Name it *Asturio*, hit Create
-3. **General Information** → copy the **Application ID** — that's your `DISCORD_CLIENT_ID`
-4. **Bot** (left sidebar) → **Reset Token** → copy it — that's your `DISCORD_TOKEN`
+3. **General Information** → copy the **Application ID**, that's your `DISCORD_CLIENT_ID`
+4. **Bot** (left sidebar) → **Reset Token** → copy it, that's your `DISCORD_TOKEN`
    - This is shown **once**. If you lose it, reset again.
 5. Still on **Bot**, scroll to **Privileged Gateway Intents** and turn on
    **MESSAGE CONTENT INTENT**. Without it, @mentioning the bot won't work
@@ -49,7 +49,7 @@ cp .env.example .env
 
 Open `.env` and paste in your token and application ID.
 
-Also set `DISCORD_GUILD_ID` to your server's ID — with it, slash commands appear
+Also set `DISCORD_GUILD_ID` to your server's ID, with it, slash commands appear
 **instantly**; without it, Discord can take up to an hour to publish them.
 To get it: Discord Settings → Advanced → **Developer Mode** on, then right-click
 your server icon → **Copy Server ID**.
@@ -70,7 +70,7 @@ Registered /ask and /alerts to guild 123...
 Asturio online as Asturio#1234
 ```
 
-Leave the terminal open — the bot is only online while it's running.
+Leave the terminal open, the bot is only online while it's running.
 `Ctrl+C` stops it.
 
 ---
@@ -84,7 +84,7 @@ Leave the terminal open — the bot is only online while it's running.
 | `@Asturio <question>` | Same as `/ask`, just by mention |
 
 Answers take a few seconds because it fetches live data first, so the bot defers
-the reply — that's the "thinking" state, not a hang.
+the reply, that's the "thinking" state, not a hang.
 
 ---
 
@@ -95,7 +95,7 @@ You haven't created `.env`, or it's not in the `bot/` folder. Step 4.
 
 **`Could not log in: No Description`**
 Discord's unhelpful way of saying the token is wrong. Reset it in the portal and
-paste the new one — resetting invalidates the old token immediately.
+paste the new one, resetting invalidates the old token immediately.
 
 **Slash commands don't show up**
 Either you registered globally (up to an hour) or the bot was invited without the
@@ -107,7 +107,7 @@ with both scopes if needed.
 
 **`NWS alerts unavailable`**
 api.weather.gov is down or rate-limiting. The bot still answers, just without that
-context — it's deliberately non-fatal.
+context, it's deliberately non-fatal.
 
 ---
 
@@ -121,5 +121,37 @@ npx pm2 logs asturio      # watch output
 npx pm2 stop asturio      # stop it
 ```
 
-For genuine 24/7 uptime it wants a machine that's always on — a small VPS, or a
+For genuine 24/7 uptime it wants a machine that's always on, a small VPS, or a
 Raspberry Pi. The same files work anywhere Node runs.
+
+## /map only offers what the site has
+
+    node tools/extract-map-options.js
+
+Reads `index.html` and writes `bot/map-options.json`: every layer, overlay,
+basemap, satellite band and product family the site really offers. The command
+is built from that file, so the two cannot drift apart. Typed by hand they
+already had: the command offered six radar products where the page shows five,
+and eight satellite bands where the page has sixteen.
+
+The generator keeps only what a visitor can actually click. The dual polarity
+radar products sit in the page commented out, so they are absent here too. A
+command that offered them would promise a picture nobody can see.
+
+Run it after adding a layer, an overlay or a product to the site, then restart
+the bot so the command re-registers.
+
+    node bot/test-map-command.mjs
+
+Builds the real command and checks it against Discord's own limits, which are
+otherwise discovered at startup when registration fails and the bot is already
+down. Also checks it against the site: every family reached an option, nothing
+hidden is on the menu, and no completion is a value Discord would refuse.
+
+Lists too long for Discord's 25 fixed choices, and anything taking several
+values at once, complete as you type instead. Completion finishes the value
+after the last comma and hands back everything before it untouched.
+
+Anything the site does not have is refused with a note saying so, rather than
+quietly producing a picture without it. Silently ignoring a name is how someone
+ends up believing a layer is on when it never was.
