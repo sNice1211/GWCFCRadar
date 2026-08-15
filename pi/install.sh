@@ -233,7 +233,21 @@ else
   warn "no tunnel address yet. Try: grep trycloudflare ~/tunnel.log"
 fi
 echo
-echo "  Built so far: $(du -sh "$DATA/models" 2>/dev/null | cut -f1 || echo 0)"
+  echo "  Built so far:"
+  "$VENV/bin/python" - <<'PYEOF' 2>/dev/null || echo "      nothing yet, the first build is still running"
+import json, os
+p = os.path.expanduser("~/wxdata/models/latest.json")
+try:
+    d = json.load(open(p))
+except Exception:
+    raise SystemExit("      nothing yet, the first build is still running")
+n = 0
+for k, v in sorted((d.get("models") or {}).items()):
+    regs = ", ".join(sorted(v.get("regions") or {"conus": {}}))
+    n += len(v.get("regions") or {1: 1})
+    print(f"      {k:10} {regs}")
+print(f"      {n} of 20 model and region combinations")
+PYEOF
 echo
 echo "  Useful later:"
 echo "      systemctl --user status gwcfc-models.timer"

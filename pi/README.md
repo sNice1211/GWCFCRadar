@@ -219,7 +219,11 @@ whatever is already built is kept and listed, and the rest are picked up next
 time.
 
 Anything that has never produced a picture is built first, whatever its place
-in the list. Without that the tail starves: the hourly models come first by
+in the list, and is allowed three hours rather than forty minutes. The budget
+exists to protect the hourly rhythm, and a first build has no rhythm to
+protect: nothing is on the map yet, and stopping after forty minutes leaves
+most of the list missing until several more hours have gone by. Only the hourly
+refreshing of models that already have a picture is held to the shorter figure. Without that the tail starves: the hourly models come first by
 design, they rebuild every hour, and they are the expensive ones, so they would
 take the budget every single time and a model at the end would never get built
 at all. From the outside that looks like a site showing the first six models

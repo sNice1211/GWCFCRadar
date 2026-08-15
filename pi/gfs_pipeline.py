@@ -418,6 +418,14 @@ MAX_EDGE_PX = 1600
 # this: asking for one by name means meaning it.
 TIME_BUDGET_S = 40 * 60
 
+# The budget above exists to protect the hourly rhythm. A first build has no
+# rhythm to protect: nothing is on the map yet, and stopping after forty
+# minutes leaves most of the list missing until several more hours have gone
+# by. So a model that has never produced a picture is allowed to finish, up to
+# this much longer limit, and only the hourly refreshing of models that already
+# have one is held to the shorter figure.
+CATCHUP_BUDGET_S = 3 * 3600
+
 # Some servers refuse the default python-requests user agent outright, and a
 # 403 from that is indistinguishable from a wrong address. Saying who we are
 # costs nothing and removes a whole class of confusing failure.
@@ -1961,12 +1969,18 @@ def main(models=None):
         log(f"{fresh} of {len(jobs)} have never been built, doing those first")
 
     for n, (_new, name, region, m) in enumerate(jobs):
-        if budget and time.time() - started > budget:
+        # A never-built model gets the long budget, a refresh gets the short
+        # one. Otherwise the first pass never reaches the end of the list: the
+        # hourly models are the expensive ones, they go first, and forty
+        # minutes is gone before the rest have had a turn.
+        limit = CATCHUP_BUDGET_S if _new == 0 else budget
+        if limit and time.time() - started > limit:
             # Out of time rather than out of models. Everything already built
             # is kept and listed, and the rest are picked up next run, which
             # will put them first because they are the ones with nothing.
             left = ", ".join(f"{a}/{b}" for _p, a, b, _m in jobs[n:][:6])
-            log(f"time budget reached with {len(jobs) - n} left: {left}"
+            mins = int((time.time() - started) / 60)
+            log(f"stopping after {mins} min with {len(jobs) - n} left: {left}"
                 + (" ..." if len(jobs) - n > 6 else ""))
             for _p, later, reg, _lm in jobs[n:]:
                 man = _newest_manifest(os.path.join(OUT_DIR, later, reg))
@@ -1987,6 +2001,9 @@ def main(models=None):
             any_ok = True
             index["models"].setdefault(name, _model_head(name, m))[
                 "regions"][region] = _index_entry(name, region, man)
+        done = sum(len(v["regions"]) for v in index["models"].values())
+        log(f"  [{done}/{len(jobs)}] {name}/{region}"
+            + ("" if man else "  nothing yet"))
         # Written as it goes rather than only at the end, so a model that has
         # just finished shows up on the site within the minute instead of
         # waiting for every other model to finish first.
