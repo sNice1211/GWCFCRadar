@@ -515,6 +515,139 @@ MODELS = {
         ],
         "step": 3, "out": 72,
     },
+    # ── The rest of the list, where it is free and fits ─────────────────────
+    "rrfssub": {
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "RRFS Sub-Hourly", "res": "3 km", "cycle_h": 1, "lag_h": 2,
+        "raw": ["rrfs/prod/rrfs.{date}/{cyc}/"
+                "rrfs.t{cyc}z.prslev.f{fhr:03d}.subh.conus_3km.grib2.idx",
+                "rrfs_a/prod/rrfs_a.{date}/{cyc}/"
+                "rrfs.t{cyc}z.subh.f{fhr:03d}.conus_3km.grib2.idx"],
+        "first": 1, "step": 1, "out": 6,
+    },
+    "rrfsfire": {
+        # The fire weather nest, run over wherever the fire weather is, which
+        # is why its domain moves and its bounds come from the data.
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "RRFS FireWx", "res": "3 km", "cycle_h": 6, "lag_h": 3,
+        "raw": ["rrfs/prod/rrfs.{date}/{cyc}/"
+                "rrfs.t{cyc}z.prslev.f{fhr:03d}.firewx.grib2.idx",
+                "rrfs_a/prod/rrfs_a.{date}/{cyc}/"
+                "rrfs.t{cyc}z.firewx.f{fhr:03d}.grib2.idx"],
+        "step": 3, "out": 36,
+    },
+    "gefswave": {
+        "label": "GEFS Wave", "res": "0.25 deg ens", "cycle_h": 6, "lag_h": 7,
+        "filter": "filter_gefs_wave.pl",
+        "dir": "/gefs.{date}/{cyc}/wave/gridded",
+        "file": "gefs.wave.t{cyc}z.mean.global.0p25.f{fhr:03d}.grib2",
+        "raw": "gens/prod/gefs.{date}/{cyc}/wave/gridded/"
+               "gefs.wave.t{cyc}z.mean.global.0p25.f{fhr:03d}.grib2.idx",
+        "step": 6, "out": 120,
+        "regions": {"tropics": {}},
+    },
+    "ecmwfwave": {
+        # ECMWF's wave model, which is the same files one stream over.
+        "label": "ECMWF Wave", "res": "0.25 deg", "cycle_h": 12, "lag_h": 8,
+        "source": "ecmwf", "ecmwf_stream": "wave", "ecmwf_type": "wf",
+        "step": 6, "out": 144, "crop": True,
+        "regions": {"tropics": {}},
+    },
+    "aqm": {
+        # Air quality: the ozone and fine particulate the health advisories
+        # are written against, on the same 5 km grid the AirNow map uses.
+        "fetch": "range",
+        "fields": {"ozone", "pm25"},
+        "label": "AQM Air Quality", "res": "5 km", "cycle_h": 6, "lag_h": 3,
+        "raw": ["aqm/prod/cs.{date}/"
+                "aqm.t{cyc}z.ave_1hr_o3.227.grib2.idx",
+                "aqm/prod/aqm.{date}/{cyc}/"
+                "aqm.t{cyc}z.ave_1hr_o3.227.grib2.idx"],
+        "step": 1, "out": 0,
+    },
+    "etss": {
+        # Extratropical storm surge: water above the normal tide, which is the
+        # number that floods a coast. The wind is what a storm is named for,
+        # this is what does most of the damage.
+        "fetch": "range", "fields": {"surge"},
+        "label": "ETSS Storm Surge", "res": "surge", "cycle_h": 6, "lag_h": 3,
+        "raw": ["etss/prod/etss.{date}/"
+                "etss.t{cyc}z.stormsurge.con.grib2.idx",
+                "estofs/prod/estofs.{date}/"
+                "estofs.atl.t{cyc}z.fields.cwl.grib2.idx"],
+        "step": 1, "out": 0,
+    },
+    "hrdps": {
+        "label": "HRDPS", "res": "2.5 km", "cycle_h": 6, "lag_h": 4,
+        "source": "hrdps", "crop": True,
+        "step": 3, "out": 48,
+    },
+    "rdps": {
+        "label": "RDPS", "res": "10 km", "cycle_h": 6, "lag_h": 4,
+        "source": "rdps", "crop": True,
+        "step": 3, "out": 84,
+    },
+    "iconeu": {
+        "label": "ICON EU", "res": "0.0625 deg", "cycle_h": 6, "lag_h": 4,
+        "source": "iconeu", "crop": True,
+        "step": 3, "out": 78,
+        # Europe only, so the box is Europe rather than the United States.
+        "box": {"toplat": 70.0, "bottomlat": 34.0,
+                "leftlon": 348.0, "rightlon": 400.0},
+        "bounds": [[34.0, -12.0], [70.0, 40.0]],
+        "regions": {"conus": {}},
+    },
+    "icond2": {
+        "label": "ICON D2", "res": "2.2 km", "cycle_h": 3, "lag_h": 3,
+        "source": "icond2", "crop": True,
+        "step": 1, "out": 27,
+        "box": {"toplat": 56.0, "bottomlat": 44.0,
+                "leftlon": 358.0, "rightlon": 378.0},
+        "bounds": [[44.0, -2.0], [56.0, 18.0]],
+        "regions": {"conus": {}},
+    },
+    "hireswnssl": {
+        # The NSSL member of the window, which is the third opinion at that
+        # resolution after the two ARW runs and FV3.
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "HiResW NSSL", "res": "5 km", "cycle_h": 12, "lag_h": 4,
+        "raw": ["hiresw/prod/hiresw.{date}/"
+                "hiresw.t{cyc}z.nssl_5km.f{fhr:02d}.conus.grib2.idx",
+                "hiresw/prod/hiresw.{date}/"
+                "hiresw.t{cyc}z.arw_5km.f{fhr:02d}.conusnssl.grib2.idx"],
+        "step": 3, "out": 48,
+    },
+    "cmce": {
+        # The Canadian ensemble, carried on NOAA's server as half of NAEFS.
+        # Worth having beside GEFS for the same reason two deterministic
+        # models are worth more than one: when two ensembles from different
+        # centres agree, that is a stronger statement than either alone.
+        "label": "CMCE mean", "res": "0.5 deg ens", "cycle_h": 12, "lag_h": 8,
+        "filter": "filter_cmcens.pl",
+        "dir": "/cmce.{date}/{cyc}/pgrb2ap5",
+        "file": "cmc_geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}",
+        "raw": "naefs/prod/cmce.{date}/{cyc}/pgrb2ap5/"
+               "cmc_geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
+        "step": 6, "out": 240,
+        "regions": {"conus": {}, "tropics": {"shear": True}},
+    },
+    "iconeps": {
+        # DWD's ensemble mean, on the same server and in the same shape as
+        # their deterministic one.
+        "label": "ICON EPS mean", "res": "0.25 deg ens", "cycle_h": 12,
+        "lag_h": 6,
+        "source": "iconeps", "crop": True,
+        "step": 6, "out": 120,
+        "regions": {"conus": {}, "tropics": {}},
+    },
+    "ecmwfaifsens": {
+        "label": "ECMWF AIFS ENS", "res": "0.25 deg AI ens", "cycle_h": 12,
+        "lag_h": 9,
+        "source": "ecmwf", "ecmwf_model": "aifs-ens",
+        "ecmwf_stream": "enfo", "ecmwf_type": "em",
+        "step": 6, "out": 240, "crop": True,
+        "regions": {"conus": {}, "tropics": {"shear": True}},
+    },
 }
 
 # Order matters: this is also the order they are built in, and the time budget
@@ -526,7 +659,10 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "ecmwf", "ecmwfaifs", "ecmwfens",
                   "hireswarw", "hireswarw2", "hireswfv3",
                   "rrfs", "hrrrsub",
-                  "gem", "icon", "hafs", "hafsb", "hwrf", "hmon"]
+                  "gem", "icon", "hafs", "hafsb", "hwrf", "hmon",
+                  "rrfssub", "rrfsfire", "gefswave", "ecmwfwave", "aqm",
+                  "etss", "hrdps", "rdps", "iconeu", "icond2",
+                  "hireswnssl", "cmce", "iconeps", "ecmwfaifsens"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -598,6 +734,10 @@ MB_PER_HOUR = {
     "gem": 11.0, "icon": 21.0,
     # Storm domains are small.
     "hafs": 2.0, "hafsb": 2.0, "hwrf": 2.0, "hmon": 2.0,
+    "rrfssub": 5.4, "rrfsfire": 2.0, "gefswave": 1.6, "ecmwfwave": 4.0,
+    "aqm": 3.0, "etss": 1.0, "hrdps": 14.0, "rdps": 6.0,
+    "iconeu": 6.0, "icond2": 4.0,
+    "hireswnssl": 6.0, "cmce": 0.1, "iconeps": 21.0, "ecmwfaifsens": 4.3,
 }
 
 # Some servers refuse the default python-requests user agent outright, and a
@@ -687,6 +827,28 @@ FIELDS = {
     # travelled a long way to get here.
     "perpw": {"short": ("perpw", "pp1d"), "levtype": ("surface",), "level": 0,
               "convert": lambda a: a,           "range": (0, 20), "ramp": "heat"},
+
+    # ── Air quality ─────────────────────────────────────────────────────────
+    # Ozone and fine particulate, the two the health advisories are written
+    # against. Scaled to where the advisories change rather than to the range
+    # the data happens to span, so the colour changing means something.
+    "ozone": {"short": ("ozcon", "o3mr", "massden"), "levtype": ("surface",),
+              "level": 0,
+              "convert": lambda a: a,           "range": (0, 120),
+              "ramp": "heat"},
+    "pm25":  {"short": ("pmtf", "pmtc", "pm2p5"), "levtype": ("surface",),
+              "level": 0,
+              "convert": lambda a: a,           "range": (0, 150),
+              "ramp": "heat"},
+
+    # ── Storm surge ─────────────────────────────────────────────────────────
+    # Water above the normal tide, which is what actually floods a coast. A
+    # hurricane's wind is the number it is named for and this is the number
+    # that does most of the killing.
+    "surge": {"short": ("etsrg", "surge", "htsgw"), "levtype": ("surface",),
+              "level": 0,
+              "convert": lambda a: a,           "range": (0, 4),
+              "ramp": "precip"},
 }
 
 # The two pressure levels the shear field is worked out from. Fetched only by
@@ -729,7 +891,9 @@ WANT_VARS = {"TMP", "DPT", "PRMSL", "MSLET", "MSLMA",
              # Tropical: column moisture, sea temperature, gusts.
              "PWAT", "WTMP", "GUST",
              # Waves.
-             "HTSGW", "PERPW"}
+             "HTSGW", "PERPW",
+             # Air quality and storm surge.
+             "OZCON", "PMTF", "PMTC", "ETSRG"}
 # Exact level names, except the last, which is a prefix: models spell the whole
 # column differently. GFS says "entire atmosphere (considered as a single
 # layer)", HRRR just says "entire atmosphere", and guessing wrong is what turns
@@ -816,6 +980,9 @@ FIELD_SOURCES = {
     "sst":   [("WTMP", "surface")],
     "swh":   [("HTSGW", "surface")],
     "perpw": [("PERPW", "surface")],
+    "ozone": [("OZCON", "surface")],
+    "pm25":  [("PMTF", "surface"), ("PMTC", "surface")],
+    "surge": [("ETSRG", "surface")],
 }
 # Wind is its own case: taken as a speed where the model publishes one, and
 # from both components where it does not. Fetching all three, which the cross
@@ -1013,7 +1180,46 @@ def icon_urls(m, date_str, cyc, fhr):
             for f in ICON_FIELDS]
 
 
-URL_SOURCES = {"gem": gem_urls, "icon": icon_urls}
+# Environment Canada's regional models. Same server and the same one file per
+# field, but a different grid name in every filename, and both are on a polar
+# stereographic grid rather than latitude and longitude, so both go through the
+# regridder.
+CA_REGIONAL = {
+    "hrdps": ("model_hrdps/continental/grib2", "hrdps_continental", "ps2.5km"),
+    "rdps":  ("model_gem_regional/10km/grib2", "reg", "ps10km"),
+}
+
+
+def ca_urls(m, date_str, cyc, fhr):
+    path, tag, grid = CA_REGIONAL[m["source"]]
+    return [f"https://dd.weather.gc.ca/{path}/{cyc}/{fhr:03d}/"
+            f"CMC_{tag}_{var}_{lvt}_{lvl}_{grid}_{date_str}{cyc}_P{fhr:03d}"
+            f"-00.grib2"
+            for var, lvt, lvl in GEM_FIELDS]
+
+
+# DWD publishes Europe and Germany on plain latitude and longitude grids,
+# unlike the global one, so those two need no regridding at all.
+ICON_REGIONAL = {
+    "iconeu": ("icon-eu", "icon-eu_europe_regular-lat-lon"),
+    "icond2": ("icon-d2", "icon-d2_germany_regular-lat-lon"),
+    # The ensemble mean is global and icosahedral like the deterministic run,
+    # so it goes through the regridder rather than straight onto the map.
+    "iconeps": ("icon-eps", "icon-eps_global_icosahedral"),
+}
+
+
+def icon_regional_urls(m, date_str, cyc, fhr):
+    path, tag = ICON_REGIONAL[m["source"]]
+    return [f"https://opendata.dwd.de/weather/nwp/{path}/grib/{cyc}/{f}/"
+            f"{tag}_single-level_{date_str}{cyc}_{fhr:03d}_{f.upper()}.grib2.bz2"
+            for f in ICON_FIELDS]
+
+
+URL_SOURCES = {"gem": gem_urls, "icon": icon_urls,
+               "hrdps": ca_urls, "rdps": ca_urls,
+               "iconeu": icon_regional_urls, "icond2": icon_regional_urls,
+               "iconeps": icon_regional_urls}
 
 
 def fetch_hour_files(m, date_str, cyc, fhr, path):

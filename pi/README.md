@@ -277,13 +277,74 @@ forecast hour picked out ready to paste into MODELS.
 That one answers what HWRF and HMON are really called, which is the part of
 those two most likely to be wrong.
 
+    rrfssub   3 km 15-min    to   +6h   hourly     CONUS
+    rrfsfire  3 km fire nest to  +36h   4x a day   moves with the fire
+    gefswave  0.25 deg ens   to +120h   4x a day   Tropics
+    ecmwfwave 0.25 deg       to +144h   2x a day   Tropics
+    aqm       5 km           now only   4x a day   CONUS, air quality
+    etss      surge grid     now only   4x a day   CONUS, storm surge
+    hrdps     2.5 km         to  +48h   4x a day   CONUS
+    rdps      10 km          to  +84h   4x a day   CONUS
+    iconeu    0.0625 deg     to  +78h   4x a day   Europe
+    icond2    2.2 km         to  +27h   8x a day   Germany
+
+Air quality and storm surge brought three products with them. Ozone and fine
+particulate are scaled to where the health advisories change rather than to the
+range the data happens to span, so the colour changing means something. Surge
+is water above the normal tide, which is the number that floods a coast: a
+storm's wind is what it gets named for and this is what does most of the
+damage.
+
+    hireswnssl 5 km         to  +48h   2x a day   CONUS
+    cmce      0.5 deg ens    to +240h   2x a day   CONUS, Tropics
+    iconeps   0.25 deg ens   to +120h   2x a day   CONUS, Tropics
+    ecmwfaifsens 0.25 deg AI to +240h   2x a day   CONUS, Tropics
+
+CMCE is the Canadian ensemble, carried on NOAA's own server as half of NAEFS.
+Worth having beside GEFS for the same reason two deterministic models beat one:
+when two ensembles from different centres agree, that is a stronger statement
+than either makes alone.
+
 ## Not carried, and why
 
-    GSL RRFS-MPAS     a research server, not NOMADS
-    NSSL HT, NSSL RN  a research server, not NOMADS
-    AI GFS, AI GEFS   no public GRIB feed
-    HGEFS, REFS       no public GRIB feed
-    HWRF, HMON        retired in 2023, HAFS replaced them
+    HRRRCast          a research server, not NOMADS
+    NSSL MPAS-HTPO    a research server, not NOMADS
+    NSSL MPAS-RN      the same, and down for everyone
+    AI GFS, AI ICON   no public GRIB feed
+    Hybrid GFS        no public GRIB feed
+    REFS, NAVGEM      no public GRIB feed
+    GSL MPAS-RRFSA    a research server, not NOMADS
+    NSSL MPAS-RN3     a research server, not NOMADS
+    UKMET, MOGREPS-G  the Met Office publishes these as NetCDF on AWS
+                      rather than as GRIB, so they are a different reader
+    SREF              on NOMADS, but every forecast hour is in one file,
+                      which the per-hour design here cannot address
+
+Free, but a different kind of work:
+
+    RTOFS, GLO12      NetCDF rather than GRIB
+    IOPS, DKSS        NetCDF rather than GRIB
+    CFS, CanSIPS      seasonal: monthly means, not forecast hours
+    SEAS5, SubC       the same, and behind a Copernicus account
+    HYSPLIT-Dust      trajectories rather than a grid
+    GEPS, REPS        Canadian ensembles, published as probabilities
+    GDWPS, GEWPS      Canadian waves, addable the same way as HRDPS
+    RDWPS, REWPS      the same
+    GLWU              Great Lakes waves, on NOMADS, addable
+
+Free only with an account and a key:
+
+    AROME, ARPEGE     Meteo-France portal key
+    MF-WAM, MF-WW3    the same key
+    CAMS x3           Copernicus ADS key
+    HARMONIE          differs per country, DMI and KNMI are not the same feed
+    SILAM, IS4FIRES   national research feeds
+    uEMEP, LOTOS      the same
+    WRF-Chem, CHIMERE the same
+
+The keyed ones are all possible. They need somewhere to keep a secret, which
+nothing here has needed so far, and that is a decision rather than a line of
+code.
 
 ## A model and a region, not two models
 
