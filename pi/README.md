@@ -233,9 +233,19 @@ After that, `DEFAULT_MODELS` order decides, so what gets dropped is long range
 material nobody minds being an hour old. Models named on the command line
 ignore the budget: asking for one by name means meaning it.
 
-`latest.json` is rewritten after each model rather than once at the end, so a
-model that has just finished appears on the site within the minute instead of
-waiting for every other model to finish.
+Among the never-built ones the cheap go first, using the megabytes per forecast
+hour that check_models.py measured. A cold start otherwise spends twenty
+minutes on the single most expensive model before anything at all reaches the
+site, which looks like nothing is happening. Cheapest first puts nine of the
+twenty on the map for seven percent of the bytes and lets the big ones fill in
+behind.
+
+`latest.json` is written before anything is built and again after every model,
+never only at the end. The site reads that file and nothing else, so while it
+is absent there is no map at all: after a reset the whole thing is missing
+until the first model finishes. It is also filled in from whatever is on disk
+rather than only from what this run reached, so a model never disappears from
+the site between runs.
 
 Three of those are worth a word. **NAM Nest** is HRRR's resolution with three
 times HRRR's reach: the same 12 km model run again over a smaller box at a grid

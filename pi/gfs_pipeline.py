@@ -426,6 +426,18 @@ TIME_BUDGET_S = 40 * 60
 # have one is held to the shorter figure.
 CATCHUP_BUDGET_S = 3 * 3600
 
+# Roughly what one forecast hour of each costs, in megabytes, measured on the
+# target Pi by check_models.py. Only ever compared against each other, to
+# decide what to build first on a cold start, so being out of date makes the
+# order slightly wrong rather than anything worse. Re-measure with:
+#
+#     ~/wxenv/bin/python pi/check_models.py
+MB_PER_HOUR = {
+    "hrrr": 5.4, "rtma": 17.3, "rap": 0.7, "gfs": 0.6, "nam": 1.8,
+    "namnest": 10.4, "nbm": 11.1, "gefs": 0.07, "gefsspr": 0.05,
+    "gfswave": 1.6, "ecmwf": 4.3, "hireswarw": 6.0, "hireswfv3": 6.7,
+}
+
 # Some servers refuse the default python-requests user agent outright, and a
 # 403 from that is indistinguishable from a wrong address. Saying who we are
 # costs nothing and removes a whole class of confusing failure.
@@ -1934,6 +1946,28 @@ def _index_entry(name, region, man):
     }
 
 
+def _publish(index, names, any_ok=True):
+    """
+    Write latest.json, filling in anything on disk that this run has not
+    reached yet, so the file is always the full picture of what exists rather
+    than only what today's run has got to.
+    """
+    for name in names:
+        m = MODELS.get(name)
+        if not m:
+            continue
+        for reg in regions_of(m):
+            if reg in (index["models"].get(name, {}).get("regions") or {}):
+                continue
+            man = _newest_manifest(os.path.join(OUT_DIR, name, reg))
+            if man:
+                index["models"].setdefault(name, _model_head(name, m))[
+                    "regions"][reg] = _index_entry(name, reg, man)
+    index["updated"] = datetime.now(timezone.utc).isoformat()
+    write_json(os.path.join(OUT_DIR, "latest.json"), index)
+    return bool(index["models"])
+
+
 def main(models=None):
     names = models or DEFAULT_MODELS
     index = {"updated": datetime.now(timezone.utc).isoformat(), "models": {}}
@@ -1942,6 +1976,13 @@ def main(models=None):
     # Only when running the standard list. Naming models explicitly means
     # meaning it, and a hand-run build should finish what it was asked for.
     budget = TIME_BUDGET_S if not models else None
+
+    # Written before anything is built, from whatever is already on disk. The
+    # site reads this file and nothing else, so while it is absent there is no
+    # map at all: after a reset the whole thing is missing until the first
+    # model finishes, which for a large one is twenty minutes of a site that
+    # looks broken rather than busy.
+    _publish(index, names, any_ok=False)
 
     # Flattened to model and region, then ordered so anything that has never
     # produced a picture goes first.
@@ -1962,8 +2003,19 @@ def main(models=None):
             continue
         for region in regions_of(m):
             never = _newest_manifest(os.path.join(OUT_DIR, name, region)) is None
-            jobs.append((0 if never else 1, name, region, m))
-    jobs.sort(key=lambda j: j[0])
+            sp = region_spec(m, region)
+            # Roughly what this will cost: how many hours, times how big a
+            # grid. Only ever compared against other models, so the units do
+            # not matter, only the ordering.
+            cost = len(fhours_for(sp)) * MB_PER_HOUR.get(name, 5.0)
+            jobs.append((0 if never else 1, cost, name, region, m))
+    # Never built first, and among those the cheap ones first. A cold start
+    # otherwise spends twenty minutes on the single most expensive model
+    # before anything at all reaches the site, which looks like nothing is
+    # happening. Cheapest first puts most of the list on the map in the first
+    # few minutes and lets the big ones fill in behind.
+    jobs.sort(key=lambda j: (j[0], j[1]))
+    jobs = [(p, n, r, m) for p, _c, n, r, m in jobs]
     fresh = sum(1 for j in jobs if j[0] == 0)
     if fresh:
         log(f"{fresh} of {len(jobs)} have never been built, doing those first")
@@ -2007,9 +2059,9 @@ def main(models=None):
         # Written as it goes rather than only at the end, so a model that has
         # just finished shows up on the site within the minute instead of
         # waiting for every other model to finish first.
-        if any_ok:
-            write_json(os.path.join(OUT_DIR, "latest.json"),
-                       {**index, "updated": datetime.now(timezone.utc).isoformat()})
+        # Published after every model rather than at the end, so one that has
+        # just finished is on the site within the minute.
+        any_ok = _publish(index, names) or any_ok
 
     # Soundings are their own product rather than a model: same source, but
     # pressure levels instead of surface fields, and read back as numbers.
