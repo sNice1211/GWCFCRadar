@@ -485,6 +485,36 @@ MODELS = {
                "{storm}.{date}{cyc}.hfsb.parent.atm.f{fhr:03d}.grb2.idx",
         "step": 3, "out": 72,
     },
+    "hwrf": {
+        # Still running alongside HAFS on your reference site, so carried
+        # rather than assumed retired. Storm following, like HAFS, and the
+        # exact filename is the part worth checking: scan_sources.py hur will
+        # print what is really there.
+        "fetch": "range", "per_storm": True,
+        "label": "HWRF", "res": "storm following", "cycle_h": 6, "lag_h": 5,
+        "raw": [
+            "hur/prod/hwrf.{date}{cyc}/"
+            "{storm}.{date}{cyc}.hwrfprs.storm.0p015.f{fhr:03d}.grb2.idx",
+            "hur/prod/hwrf.{date}{cyc}/"
+            "{storm}.{date}{cyc}.hwrfprs.core.0p02.f{fhr:03d}.grb2.idx",
+            "hur/prod/hwrf.{date}{cyc}/"
+            "{storm}.{date}{cyc}.hwrfprs.synoptic.0p125.f{fhr:03d}.grb2.idx",
+        ],
+        "step": 3, "out": 72,
+    },
+    "hmon": {
+        "fetch": "range", "per_storm": True,
+        "label": "HMON", "res": "storm following", "cycle_h": 6, "lag_h": 5,
+        "raw": [
+            "hur/prod/hmon.{date}{cyc}/"
+            "{storm}.{date}{cyc}.hmon.trk.grbf{fhr:02d}.grb2.idx",
+            "hur/prod/hmon.{date}{cyc}/"
+            "{storm}.{date}{cyc}.hmonprs.grb2f{fhr:02d}.idx",
+            "hur/prod/hmon.{date}{cyc}/"
+            "{storm}.{date}{cyc}.hmon.grb2f{fhr:02d}.idx",
+        ],
+        "step": 3, "out": 72,
+    },
 }
 
 # Order matters: this is also the order they are built in, and the time budget
@@ -496,7 +526,7 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "ecmwf", "ecmwfaifs", "ecmwfens",
                   "hireswarw", "hireswarw2", "hireswfv3",
                   "rrfs", "hrrrsub",
-                  "gem", "icon", "hafs", "hafsb"]
+                  "gem", "icon", "hafs", "hafsb", "hwrf", "hmon"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -567,7 +597,7 @@ MB_PER_HOUR = {
     # expensive ones per hour even though the models are not large.
     "gem": 11.0, "icon": 21.0,
     # Storm domains are small.
-    "hafs": 2.0, "hafsb": 2.0,
+    "hafs": 2.0, "hafsb": 2.0, "hwrf": 2.0, "hmon": 2.0,
 }
 
 # Some servers refuse the default python-requests user agent outright, and a
@@ -1363,6 +1393,14 @@ RAMPS = {
     # Sea surface temperature, with the 26 C line that matters. Hurricanes
     # need about 26 C to keep going, so the ramp is built to change character
     # there rather than to be pretty across its whole width.
+    # Velocity, which is the one ramp that has to be symmetric. The number
+    # means "towards the radar" on one side of zero and "away" on the other,
+    # and the thing worth seeing is the two sitting next to each other, which
+    # is rotation. Green towards, red away, and nothing at the middle, because
+    # a colour at zero would fill the whole map with air that is not moving.
+    "velocity":[(0,(0,90,0)),(0.25,(0,220,0)),(0.45,(120,255,120)),
+                (0.5,(20,20,20)),(0.55,(255,140,140)),(0.75,(230,0,0)),
+                (1,(120,0,0))],
     "sst":    [(0,(20,20,90)),(0.35,(30,110,190)),(0.55,(60,180,170)),
                (0.62,(250,250,180)),(0.75,(245,160,60)),(1,(170,20,30))],
 }
