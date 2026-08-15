@@ -193,6 +193,16 @@ function ok(name, cond, extra) {
      document.getElementById('sev-region-sel').style.display);
   useOldIndex = false;
 
+
+  console.log('\n20. the hurricane model, whose regions are storms');
+  ok('a storm id reads as a storm', _hdRegionLabel('05l') === 'Storm 5 (Atlantic)',
+     _hdRegionLabel('05l'));
+  ok('and the eastern Pacific too', _hdRegionLabel('03e') === 'Storm 3 (E Pacific)',
+     _hdRegionLabel('03e'));
+  ok('places still read as places', _hdRegionLabel('prico') === 'Puerto Rico',
+     _hdRegionLabel('prico'));
+  ok('anything else is left alone', _hdRegionLabel('mars') === 'mars');
+
   console.log('\n' + (fail ? `${fail} FAILED, ${pass} passed` : `all ${pass} passed`));
   process.exit(fail ? 1 : 0);
 })();

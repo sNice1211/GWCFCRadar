@@ -193,6 +193,34 @@ ECMWF AIFS is their machine learned model, running beside the physical one and
 on several measures beating it. Same files and same index, one word different
 in the address.
 
+    gem       0.24 deg       to +168h   2x a day   CONUS, Tropics
+    icon      0.125 deg      to +120h   2x a day   CONUS, Tropics
+    hafs      storm grid     to  +72h   4x a day   one per active storm
+    hafsb     storm grid     to  +72h   4x a day   one per active storm
+
+## Three that do not work like the rest
+
+**GEM** and **ICON** publish one file per field per forecast hour with no index
+beside it, so there is nothing to range-request and nothing to crop server
+side. Each wanted field is its own request and they are glued together, which
+is valid because GRIB is a sequence of self describing messages. A field that
+is missing is skipped rather than failing the hour, since neither server
+publishes everything at every step.
+
+ICON is awkward twice over: every file is bz2 compressed, and the grid is
+icosahedral, triangles on a sphere rather than rows and columns. The regridder
+already handles a grid that is not rows and columns, because HRRR is not one
+either, so that part came free.
+
+**HAFS** is not published on a fixed domain at all. There is one run per active
+storm, on a grid that follows it, and when nothing is out there it does not run.
+So its regions are worked out at build time from the Hurricane Center's own
+list, and are storms rather than places: `05l` is the fifth Atlantic storm of
+the season, `03e` the third eastern Pacific one. The page writes those out.
+
+When the tropics are quiet HAFS simply has no regions, builds nothing, and does
+not appear. That is the correct behaviour rather than an error.
+
 ## Not carried, and why
 
     GSL RRFS-MPAS     a research server, not NOMADS
@@ -200,11 +228,6 @@ in the address.
     AI GFS, AI GEFS   no public GRIB feed
     HGEFS, REFS       no public GRIB feed
     HWRF, HMON        retired in 2023, HAFS replaced them
-    HAFS-A, HAFS-B    on NOMADS, but the files are named after each active
-                      storm, so carrying them means reading the live storm
-                      list first and building only what is out there
-    ICON, GEM         real and free, but from DWD and Environment Canada,
-                      which are separate servers with their own layouts
 
 ## A model and a region, not two models
 
