@@ -29,9 +29,21 @@ That installs what is missing, builds the Python environment, registers three
 services so it survives a reboot and a closed terminal, does a first build, and
 prints the address to give the site. Safe to run again if a step fails.
 
-    gwcfc-models   builds the images, hourly
-    gwcfc-serve    serves them with the header that makes them readable
-    gwcfc-tunnel   gives them a public HTTPS address
+    gwcfc-models    builds the model images, hourly
+    gwcfc-radar     decodes Level 2 radar, every five minutes
+    gwcfc-cyclones  DeepMind cyclone tracks and genesis, every three hours
+    gwcfc-serve     serves them with the header that makes them readable
+    gwcfc-tunnel    gives them a public HTTPS address
+    gwcfc-publish   tells the site where the tunnel is
+
+Everything updates itself. Radar is the fast one, because a new volume lands
+every four to six minutes and an hourly check would draw weather that had
+already moved. Cyclones run twice a day because that is how often they are
+published, and the timer checks every three hours so a run is picked up soon
+after it lands rather than at a fixed guess. Each has its own lock, so a slow
+one never holds up the others.
+
+    systemctl --user list-timers 'gwcfc-*'
 
 ## When the site cannot read the Pi
 
@@ -261,6 +273,38 @@ the number means towards the radar on one side of zero and away on the other,
 and the thing worth seeing is the two sitting next to each other, which is
 rotation. Green towards, red away, nothing at all at the middle, because a
 colour at zero fills the map with air that is not moving.
+
+## Cyclones, from DeepMind
+
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/cyclones_pipeline.py --check
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/cyclones_pipeline.py
+
+Two different things arrive from WeatherLab, and neither is a model chart.
+
+Tracks come as CSV: where each storm goes, one row per point, for every member
+of an ensemble. Drawn as lines, which is the spaghetti plot people mean when
+they say spaghetti plot, except from a model that has been beating the physical
+ones at track error.
+
+Cyclogenesis probability comes as NetCDF: a grid of how likely a storm is to
+form where none exists yet. That is a genuinely different question from where
+an existing one is going, and the harder half of a tropical forecast.
+
+Five variants are published. OPER is what they run operationally, FNV3P0
+through P2 are versions of the experimental model, and FNV3_LARGE_ENSEMBLE is
+the same with far more members and the only one carrying genesis.
+
+The CSV column names are not written down here and are not worth guessing at,
+so each wanted value lists the spellings it might arrive under and the first
+present wins. A file with none of them still parses, and `--check` prints the
+header, so a missing spelling is a line to add rather than something to hunt.
+
+The genesis grids are base64 inside gzip inside NetCDF, three wrappers each
+there for a good reason on their side and simply in the way on ours. Read with
+h5py, since NetCDF4 is HDF5 underneath and h5py is packaged for the Pi where
+netCDF4 wants building:
+
+    sudo apt install -y python3-h5py
 
 ## Finding out what else NOAA publishes
 
