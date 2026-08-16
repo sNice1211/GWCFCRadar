@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Reads index.html and writes bot/map-options.json: every layer, overlay and
+ * Reads index.html and writes services/bot/map-options.json: every layer, overlay and
  * product the site actually offers.
  *
  *     node tools/extract-map-options.js
@@ -116,7 +116,7 @@ const out = {
   layers, overlays, basemaps, satellite, families,
 };
 
-const dest = path.join(root, 'bot', 'map-options.json');
+const dest = path.join(root, 'services', 'bot', 'map-options.json');
 fs.writeFileSync(dest, JSON.stringify(out, null, 2) + '\n');
 
 console.log(`layers      ${layers.length}`);

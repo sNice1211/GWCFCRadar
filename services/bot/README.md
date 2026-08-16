@@ -91,7 +91,7 @@ the reply, that's the "thinking" state, not a hang.
 ## If something goes wrong
 
 **`Missing DISCORD_TOKEN or DISCORD_CLIENT_ID`**
-You haven't created `.env`, or it's not in the `bot/` folder. Step 4.
+You haven't created `.env`, or it's not in the `services/bot/` folder. Step 4.
 
 **`Could not log in: No Description`**
 Discord's unhelpful way of saying the token is wrong. Reset it in the portal and
@@ -147,7 +147,7 @@ worker, so those are reported rather than retried.
 
     node tools/extract-map-options.js
 
-Reads `index.html` and writes `bot/map-options.json`: every layer, overlay,
+Reads `index.html` and writes `services/bot/map-options.json`: every layer, overlay,
 basemap, satellite band and product family the site really offers. The command
 is built from that file, so the two cannot drift apart. Typed by hand they
 already had: the command offered six radar products where the page shows five,
@@ -160,7 +160,7 @@ command that offered them would promise a picture nobody can see.
 Run it after adding a layer, an overlay or a product to the site, then restart
 the bot so the command re-registers.
 
-    node bot/test-map-command.mjs
+    node services/bot/test-map-command.mjs
 
 Builds the real command and checks it against Discord's own limits, which are
 otherwise discovered at startup when registration fails and the bot is already

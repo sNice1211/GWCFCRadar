@@ -110,7 +110,7 @@ bridge on does not dump the channel's entire history onto the map.
 ## Firestore rules
 
 This writes to the `chat` and `chatBridge` collections. Publish the rules in
-`FIRESTORE_RULES.txt` or every write is refused and `/poll` reports a permission
+`firebase/FIRESTORE_RULES.txt` or every write is refused and `/poll` reports a permission
 error.
 
 ---
@@ -134,4 +134,4 @@ Webhook posts are skipped because those *are* the website's own messages coming
 back round, and relaying them would copy every message twice.
 
 **Permission errors mentioning Firestore**
-`FIRESTORE_RULES.txt` has not been published yet.
+`firebase/FIRESTORE_RULES.txt` has not been published yet.
