@@ -12771,6 +12771,110 @@ toggleOverlayPill = function (id) {
   return _cycOrigTogglePill.apply(this, arguments);
 };
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── PI RADAR, FROM THE RAW LEVEL 2 AND LEVEL 3 DATA ───────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// The Pi decodes the actual radar files, not tiles somebody else rendered, so
+// this can show a product nobody else offers on a colour scale of our own and
+// a frame from four minutes ago. It writes one index per level. Level 2 is the
+// real thing at full detail; Level 3 is cheaper and slightly later. Level 2 is
+// tried first and Level 3 is the fallback, so a site that only has one still
+// shows.
+
+let _prOn = false;
+let _prLayers = [];           // one image overlay per site currently on the map
+let _prFrames = [];           // the newest frame of each site, for animation
+let _prTimer = null;
+let _prIdx = 0;
+
+async function _prLoadIndex(base) {
+  // Level 2 for detail, Level 3 as the fallback. Cache-busted, since the newest
+  // volume is only minutes old and an intermediary must not serve a stale one.
+  for (const lvl of ['l2', 'l3']) {
+    const idx = await fetch(`${base}/radar/latest_${lvl}.json?t=${Date.now()}`,
+                            { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null).catch(() => null);
+    if (idx && idx.sites && Object.keys(idx.sites).length) return { lvl, idx };
+  }
+  return null;
+}
+
+function _prClear() {
+  if (_prTimer) { clearInterval(_prTimer); _prTimer = null; }
+  _prLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
+  _prLayers = [];
+}
+
+// The newest frame of every site, drawn at once, so a national picture is the
+// sum of the sites that are switched on rather than one radar at a time.
+async function _prDraw(base, lvl, idx) {
+  _prClear();
+  const product = lvl === 'l2' ? 'ref' : 'n0q';   // reflectivity either way
+  for (const [site, meta] of Object.entries(idx.sites)) {
+    const frame = meta.frames[meta.frames.length - 1];    // newest
+    const manPath = meta.path.replace('{frame}', frame);
+    const man = await fetch(`${base}/radar/${manPath}?t=${Date.now()}`,
+                            { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null).catch(() => null);
+    if (!man || !man.bounds) continue;
+    // A site may carry a different product than the default; take what it has.
+    const field = (man.fields && man.fields[product]) ? product
+                : Object.keys(man.fields || {})[0];
+    if (!field) continue;
+    const url = `${base}/radar/${lvl}/${site}/${frame}/${field}.png`;
+    const img = L.imageOverlay(url, man.bounds,
+      { opacity: 0.78, interactive: false, pane: 'radarPane' });
+    img.addTo(map);
+    _prLayers.push(img);
+  }
+}
+
+async function _prEnable() {
+  _prOn = true;
+  document.getElementById('op-pi-radar')?.classList.add('active');
+  const base = _hdBase || await _hdResolveBase();
+  if (!base) {
+    if (typeof showToast === 'function') {
+      showToast('No Pi address yet, so no radar to read. Turn on a Pi model '
+              + 'first, or check the Pi is publishing.', 4000);
+    }
+    return;
+  }
+  _hdBase = base;
+  const got = await _prLoadIndex(base);
+  if (!got) {
+    if (typeof showToast === 'function') {
+      showToast('The Pi has no radar built yet. It decodes a fresh volume '
+              + 'every five minutes once gwcfc-radar is running.', 4000);
+    }
+    return;
+  }
+  await _prDraw(base, got.lvl, got.idx);
+  // Re-read on the Pi's own cadence, so the map keeps up with new volumes
+  // without a reload. Cleared when the layer is turned off.
+  _prTimer = setInterval(async () => {
+    if (!_prOn) return;
+    const fresh = await _prLoadIndex(base);
+    if (fresh) await _prDraw(base, fresh.lvl, fresh.idx);
+  }, 5 * 60 * 1000);
+}
+
+function _prDisable() {
+  _prOn = false;
+  document.getElementById('op-pi-radar')?.classList.remove('active');
+  _prClear();
+}
+
+const _prOrigTogglePill = toggleOverlayPill;
+toggleOverlayPill = function (id) {
+  if (id === 'pi-radar') {
+    _prOn ? _prDisable() : _prEnable();
+    return;
+  }
+  return _prOrigTogglePill.apply(this, arguments);
+};
+
 // ══════════════════════════════════════════════════════════════════════════
 // ── POLYGON SPATIAL FILTER ────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════
@@ -34276,6 +34380,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-pi-cyclones" data-ovid="pi-cyclones" title="DeepMind cyclone tracks and where a storm is likely to form, from the Pi">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('pi-cyclones')">AI Cyclones</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-pi-radar" data-ovid="pi-radar" title="High-detail radar decoded on your Pi, from the raw Level 2 and Level 3 data">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('pi-radar')">Pi Radar</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -35302,6 +35409,7 @@ const OV_DESCRIPTIONS = {
   'spc-reports':      'Tornado, hail, and wind reports logged by local National Weather Service offices today.',
   'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, including any active hurricanes or tropical storms and their forecast tracks.",
   'pi-cyclones':      "Google DeepMind's cyclone forecast, from your Pi. Pale lines are the ensemble members, the gold line is their average, and the shading is where a new storm is likely to form. Empty when the tropics are quiet.",
+  'pi-radar':         "Radar your Pi decoded from the raw Level 2 and Level 3 files, so it can show a product and colour scale of its own. Level 2 is full detail; Level 3 is the fallback. Empty until gwcfc-radar has built a volume.",
   'wpc-outlook':      'Flash flood risk over the next 3 days, from the Weather Prediction Center.',
   'lightning':        'Live lightning strike data, updated as strikes happen.',
   'cloudcam':         'Upload a photo of the sky or storm damage near you, or browse photos other users have shared.',

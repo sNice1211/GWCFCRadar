@@ -229,6 +229,25 @@ function ok(name, cond, extra) {
      lines.length === 0, lines.length);
   _cycClear();
 
+
+  console.log('\n22. Pi radar, drawn from the newest volume');
+  _prClear();
+  _hdBase = 'https://pi.test';
+  await _prEnable();
+  ok('the radar layer is on', _prOn === true);
+  ok('it drew a site', _prLayers.length === 1, _prLayers.length);
+  const rl = _prLayers[_prLayers.length-1];
+  ok('from the newest frame, not the older one',
+     rl && rl.url.includes('/20260815_1205/'), rl && rl.url);
+  ok('and Level 2 reflectivity, the detailed product',
+     rl && rl.url.endsWith('/ref.png'), rl && rl.url);
+  ok('with bounds from the frame manifest',
+     rl && JSON.stringify(rl.bounds) === JSON.stringify([[33,-99],[37,-95]]),
+     rl && JSON.stringify(rl.bounds));
+  _prDisable();
+  ok('turning it off clears the layer', _prOn === false && _prLayers.length === 0,
+     _prLayers.length);
+
   console.log('\n' + (fail ? `${fail} FAILED, ${pass} passed` : `all ${pass} passed`));
   process.exit(fail ? 1 : 0);
 })();

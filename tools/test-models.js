@@ -166,6 +166,16 @@ global.fetch = async (url) => {
   const m = url.match(/models\/(\w+)\/(\w+)\/[\d_]+\/manifest\.json/);
   if (m) { const man = MANIFESTS()[m[1] + '/' + m[2]];
            return man ? { ok:true, json: async()=>man } : { ok:false }; }
+  // A fake Pi radar: Level 2 has two frames, Level 3 is absent, so the
+  // fallback and the newest-frame pick are both exercised.
+  if (url.split('?')[0].endsWith('radar/latest_l2.json'))
+    return { ok:true, json: async () => ({ level:2, sites:{
+      KTLX:{ frames:['20260815_1200','20260815_1205'],
+             path:'l2/KTLX/{frame}/manifest.json' } } }) };
+  if (url.split('?')[0].endsWith('radar/latest_l3.json')) return { ok:false };
+  const rm = url.split('?')[0].match(/radar\/l2\/(\w+)\/([\d_]+)\/manifest\.json/);
+  if (rm) return { ok:true, json: async () => ({ site:rm[1], level:2, time:rm[2],
+     bounds:[[33,-99],[37,-95]], fields:{ ref:{min:-10,max:75} } }) };
   return { ok:false };
 };
 
