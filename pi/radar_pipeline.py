@@ -79,6 +79,14 @@ L2_PRODUCTS = {
             "label": "Reflectivity", "unit": "dBZ"},
     "vel": {"moment": "VEL", "range": (-40, 40), "ramp": "velocity",
             "label": "Velocity", "unit": "m/s"},
+    # The dual polarity moments ride in the same volume, so reading them costs
+    # no extra download at all: the file is already on disk when these run.
+    "cc":  {"moment": "RHO", "range": (0.2, 1.05), "ramp": "viridis",
+            "label": "Correlation Coeff", "unit": ""},
+    "zdr": {"moment": "ZDR", "range": (-4, 8), "ramp": "spread",
+            "label": "Differential Refl", "unit": "dB"},
+    "sw":  {"moment": "SW", "range": (0, 15), "ramp": "heat",
+            "label": "Spectrum Width", "unit": "m/s"},
 }
 
 # Level 3 products. "dir" is the Weather Service's own name for the product on
