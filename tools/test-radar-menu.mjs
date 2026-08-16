@@ -99,21 +99,18 @@ const l2 = await row();
 ['Reflectivity', 'Velocity', 'Corr. Coeff.', 'Diff. Refl.',
  'Spec. Diff. Phase', 'Spectrum Width'].forEach(p =>
   ok('offers ' + p, l2.includes(p), l2.join(',')));
-ok('and names the radar it is showing beside them',
-   l2.length === 8, l2.join(','));
+ok('and offers nothing else: the station lives on the map, not in the menu',
+   l2.length === 7, l2.join(','));
 
-console.log('\n4. picking a site');
-await page.evaluate(() => document.getElementById('sub-radar-site').onclick());
-const sites = await row();
-ok('the site list is stations, in capitals the way they are displayed',
-   sites.slice(1).every(s => /^[A-Z]{4}$/.test(s)), sites.join(','));
-await page.evaluate(() => {
-  const all = [...document.querySelectorAll('[id^="sub-site-"]')];
-  (all[1] || all[0]).onclick();
-});
-const back = await row();
-ok('choosing one returns to the products', back.includes('Reflectivity'),
-   back.join(','));
+console.log('\n4. opening the row is what puts the station pills up');
+const pills = await page.evaluate(() => ({
+  source: _radarSource,
+  built: !!_nexradSiteLayer,
+  markers: Object.keys(_nexradSiteMarkers).length,
+}));
+ok('the source is recorded as Level 2', pills.source === 'l2', pills.source);
+ok('the station pill layer was built for the whole country',
+   pills.built && pills.markers > 100, pills.markers);
 
 console.log('\n5. the address the Worker is actually given');
 const url = await page.evaluate(() => {
@@ -134,7 +131,7 @@ console.log('\n6. Level 3 answers immediately, even with no Pi');
 await page.evaluate(() => { toggleRadarPiSub('l3'); });
 const l3now = await row();
 ok('the row is replaced at once rather than after the Pi answers',
-   l3now.includes('Back') && !l3now.includes('Corr. Coeff.'), l3now.join(','));
+   l3now.includes('Back') && l3now.includes('1-Hr Precip'), l3now.join(','));
 await page.waitForTimeout(1200);
 const l3 = await row();
 ok('and an unreachable Pi says so instead of leaving an empty row',
