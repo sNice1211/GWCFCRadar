@@ -12872,26 +12872,6 @@ try {
   if (pd && PR_PRODUCTS[pd]) _prProduct = pd;
 } catch (e) {}
 
-function _prFillOptions() {
-  const row = document.getElementById('pr-opts-row');
-  const lsel = document.getElementById('pr-level-sel');
-  const psel = document.getElementById('pr-product-sel');
-  if (!row || !lsel || !psel) return;
-  const fill = (sel, entries, chosen) => {
-    sel.innerHTML = '';
-    entries.forEach(([v, label]) => {
-      const o = document.createElement('option');
-      o.value = v; o.textContent = label;
-      if (v === chosen) o.selected = true;
-      sel.appendChild(o);
-    });
-  };
-  fill(lsel, Object.entries(PR_LEVELS), _prLevel);
-  fill(psel, Object.entries(PR_PRODUCTS).map(([k, v]) => [k, v.label]),
-       _prProduct);
-  row.style.display = '';
-}
-
 // async and returning the redraw, so a caller can wait for the map to catch
 // up. Without that the function comes back the instant the fetch is started
 // and the picture on screen is still the old product.
@@ -12977,7 +12957,6 @@ async function _prEnable() {
     }
     return;
   }
-  _prFillOptions();
   await _prDraw(base, got.lvl, got.idx);
   // Re-read on the Pi's own cadence, so the map keeps up with new volumes
   // without a reload. Cleared when the layer is turned off.
@@ -12991,8 +12970,6 @@ async function _prEnable() {
 function _prDisable() {
   _prOn = false;
   document.getElementById('op-pi-radar')?.classList.remove('active');
-  const row = document.getElementById('pr-opts-row');
-  if (row) row.style.display = 'none';
   _prClear();
 }
 
@@ -15937,7 +15914,10 @@ const TAB_BUBBLES = {
 const activeBubbles = {};
 
 function _getBubbleActive(id) {
-  if (id === 'radar')     return !!activeLayers.nexrad;
+  // The Pi's radar counts as the radar bubble being on. It draws image
+  // overlays rather than tiles, so activeLayers.nexrad never knows about it,
+  // and without this the bubble reads as off while radar is plainly on screen.
+  if (id === 'radar')     return !!activeLayers.nexrad || !!_prOn;
   if (id === 'satellite') return !!activeLayers.satellite;
   if (id === 'waves')       return !!wavesActive;
   if (id === 'air')         return !!airActive;
@@ -18276,6 +18256,32 @@ function showToast(msg, durationMs) {
   t._tid = setTimeout(() => { t.style.opacity = '0'; }, durationMs || 3000);
 }
 
+// The radar row is two deep now. The top of it asks where the radar should
+// come from, and only then which product, because those are different
+// questions and mixing them put six tile products next to two Pi ones as if
+// they were the same kind of thing.
+//
+//   Normal   the tile products that were always here, unchanged
+//   Level 2  the raw volume off the radar, decoded on the Pi
+//   Level 3  the lighter product the Weather Service makes from it
+const RADAR_SOURCE_BUBBLES = [
+  { id:'radar-normal', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>',
+    label:'Normal', action: () => { _prDisable(); toggleRadarNormalSub(); } },
+  { id:'radar-l2', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg>',
+    label:'Level 2', action: () => toggleRadarPiSub('l2') },
+  { id:'radar-l3', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>',
+    label:'Level 3', action: () => toggleRadarPiSub('l3') },
+];
+
+// The two products the Pi renders, named the way the pickers name them so the
+// bubble and the underlying setting cannot drift apart.
+const RADAR_PI_BUBBLES = [
+  { id:'pi-reflectivity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>',
+    label:'Reflectivity', product:'reflectivity' },
+  { id:'pi-velocity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>',
+    label:'Velocity', product:'velocity' },
+];
+
 const RADAR_SUB_BUBBLES = [
   { id:'mrms', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label:'MRMS 1km', action: () => {
     if (_mrmsActive) {
@@ -18295,7 +18301,10 @@ const RADAR_SUB_BUBBLES = [
       // products update through selectProduct(). MRMS sets it directly, so it
       // has to sync the parent itself or the bubble stays looking switched off.
       _syncParentBubble('radar');
-      toggleRadarSub();
+      // The Normal row, not the source row above it: MRMS is one of the
+      // Normal products, so re-rendering the row it lives on is what keeps it
+      // open with MRMS marked active.
+      toggleRadarNormalSub();
     }
   } },
   { id:'reflectivity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
@@ -18314,18 +18323,91 @@ const RADAR_SUB_BUBBLES = [
   // { id:'sw',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg>', label:'Spectrum Width', action: () => { if (currentProduct === 'sw')   { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('sw'); } } },
 ];
 
-function toggleRadarSub() {
-  const wrap = document.getElementById('sub-bubbles');
-  wrap.innerHTML = '';
+// One Back button, built the same way wherever a radar row needs one. What it
+// goes back TO is the argument, because the row is nested now: the product row
+// returns to the source row, and the source row returns to the main bubbles.
+function _radarBackBubble(wrap, onBack) {
   const back = document.createElement('div');
   back.className = 'sub-bubble';
   back.innerHTML = `<span class="sb-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(180deg)><use href=#ic-arrow></use></svg></span><span class="sb-label">Back</span>`;
-  back.onclick = () => {
+  back.onclick = onBack;
+  wrap.appendChild(back);
+}
+
+// The top of the radar row: where the picture should come from.
+function toggleRadarSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  _radarBackBubble(wrap, () => {
     if (!activeLayers.nexrad) _disableRadar();
     _syncParentBubble('radar');
     renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
-  };
-  wrap.appendChild(back);
+  });
+  RADAR_SOURCE_BUBBLES.forEach(b => {
+    const on = b.id === 'radar-normal' ? (!_prOn && !!activeLayers.nexrad)
+             : (_prOn && _prLevel === (b.id === 'radar-l2' ? 'l2' : 'l3'));
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (on ? ' active' : '');
+    el.id = 'sub-' + b.id;
+    el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
+    el.onclick = () => b.action();
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
+}
+
+// The Pi's own radar, at whichever level was picked. Turning the level on and
+// choosing a product are one step here rather than two, because arriving at an
+// empty row and having to pick again is the thing that made the old dropdown
+// feel like it had not worked.
+async function toggleRadarPiSub(level) {
+  const wrap = document.getElementById('sub-bubbles');
+  _disableSatellite();
+  _disableRadar();
+  await _prSetLevel(level);
+  if (!_prOn) await _prEnable();
+
+  wrap.innerHTML = '';
+  _radarBackBubble(wrap, () => toggleRadarSub());
+  RADAR_PI_BUBBLES.forEach(b => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (_prProduct === b.product ? ' active' : '');
+    el.id = 'sub-' + b.id;
+    el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
+    el.onclick = async () => {
+      if (_prOn && _prProduct === b.product) {
+        // Tapping the product that is already showing turns the layer off,
+        // which is how every other bubble on this row behaves.
+        _prDisable();
+      } else {
+        await _prSetProduct(b.product);
+        if (!_prOn) await _prEnable();
+      }
+      toggleRadarPiRefresh();
+    };
+    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
+  _syncParentBubble('radar');
+}
+
+// Repaint the product row in place. Re-running toggleRadarPiSub would re-enable
+// the layer that was just switched off, so the active marks are moved instead.
+function toggleRadarPiRefresh() {
+  RADAR_PI_BUBBLES.forEach(b => {
+    const el = document.getElementById('sub-' + b.id);
+    if (el) el.classList.toggle('active', _prOn && _prProduct === b.product);
+  });
+  _syncParentBubble('radar');
+}
+
+// The products that were always here, untouched.
+function toggleRadarNormalSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  _radarBackBubble(wrap, () => toggleRadarSub());
   RADAR_SUB_BUBBLES.forEach(b => {
     const isActiveProd =
       (b.id === 'mrms'         && _mrmsActive) ||
@@ -33113,7 +33195,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Air quality is back, so every model on the list is now working. Ozone and fine particulate, on the same grid the advisories use.";
+const APP_LATEST_UPDATE = "The Radar bubble now asks where the picture should come from first: Normal, Level 2 or Level 3.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -34519,13 +34601,6 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-pi-radar" data-ovid="pi-radar" title="High-detail radar decoded on your Pi, from the raw Level 2 and Level 3 data">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('pi-radar')">Pi Radar</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <!-- Which level and which product. Hidden until the overlay is on. -->
-    <div class="ov-sub" id="pr-opts-row" style="display:none">
-      <select id="pr-level-sel" onchange="_prSetLevel(this.value)"
-              title="Level 2 is the radar's own full detail; Level 3 is the lighter product the Weather Service makes from it"></select>
-      <select id="pr-product-sel" onchange="_prSetProduct(this.value)"
-              title="Reflectivity is how heavy the rain is; velocity is how fast it is moving toward or away from the radar"></select>
-    </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -35553,6 +35628,11 @@ const OV_DESCRIPTIONS = {
   'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, including any active hurricanes or tropical storms and their forecast tracks.",
   'pi-cyclones':      "Google DeepMind's cyclone forecast, from your Pi. Pale lines are the ensemble members, the gold line is their average, and the shading is where a new storm is likely to form. Empty when the tropics are quiet.",
   'pi-radar':         "Radar your Pi decoded from the raw Level 2 and Level 3 files, so it can show a product and colour scale of its own. Level 2 is full detail; Level 3 is the fallback. Empty until gwcfc-radar has built a volume.",
+  'radar-normal':     "The radar products this site has always shown, served as tiles: MRMS, reflectivity, velocity, hydrometeor class and the two accumulations.",
+  'radar-l2':         "Level 2 is what the radar itself produces: every gate of every sweep, about 6 MB a volume and a new one every four to six minutes. Your Pi decodes it, so this is the real data rather than someone else's picture of it.",
+  'radar-l3':         "Level 3 is what the Weather Service makes from Level 2: one product, already quality controlled, on a coarser grid and about 30 KB. Cheaper and slightly later, and it arrives even when a Level 2 volume is missing.",
+  'pi-reflectivity':  "How heavy the precipitation is, in dBZ. The usual radar picture.",
+  'pi-velocity':      "How fast the precipitation is moving toward or away from the antenna. Red beside green means rotation, which is what a tornado looks like on radar.",
   'wpc-outlook':      'Flash flood risk over the next 3 days, from the Weather Prediction Center.',
   'lightning':        'Live lightning strike data, updated as strikes happen.',
   'cloudcam':         'Upload a photo of the sky or storm damage near you, or browse photos other users have shared.',

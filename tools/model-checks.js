@@ -275,13 +275,6 @@ function ok(name, cond, extra) {
   ok('with bounds from the frame manifest',
      rl && JSON.stringify(rl.bounds) === JSON.stringify([[33,-99],[37,-95]]),
      rl && JSON.stringify(rl.bounds));
-  ok('and the level and product pickers are shown',
-     els['pr-opts-row'].style.display === '' &&
-     els['pr-level-sel'].children.length === 3 &&
-     els['pr-product-sel'].children.length === 2,
-     els['pr-level-sel'].children.length + '/' +
-     els['pr-product-sel'].children.length);
-
   // Velocity is a different file, not a different colour of the same one, so
   // switching product has to change the URL that gets fetched.
   await _prSetProduct('velocity');
@@ -301,9 +294,6 @@ function ok(name, cond, extra) {
   await _prSetLevel('auto');
 
   _prDisable();
-  ok('turning it off hides the pickers too',
-     els['pr-opts-row'].style.display === 'none',
-     els['pr-opts-row'].style.display);
   ok('turning it off clears the layer', _prOn === false && _prLayers.length === 0,
      _prLayers.length);
 
