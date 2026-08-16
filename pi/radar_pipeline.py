@@ -518,6 +518,16 @@ def main(argv):
     if "--check" in argv:
         return check(sites)
 
+    # Asked once, up front. Without this the missing reader shows up as five
+    # identical per-site failures with the real reason buried in each of them,
+    # and systemd reports "the control process exited with an error code",
+    # which says nothing at all about what to install.
+    try:
+        _metpy()
+    except RuntimeError as e:
+        log(str(e))
+        return 1
+
     os.makedirs(OUT_DIR, exist_ok=True)
     t0 = time.time()
     frames = int(os.environ.get("GWCFC_RADAR_FRAMES", "1"))

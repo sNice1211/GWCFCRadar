@@ -55,10 +55,20 @@ fi
 if ! "$VENV/bin/python" -c "import eccodes" >/dev/null 2>&1; then
   "$VENV/bin/pip" install --quiet eccodes
 fi
-"$VENV/bin/python" - <<'PY'
+# MetPy reads the raw radar files. Without it the radar service starts, fails
+# on the first import and systemd reports the unit as failed, which is exactly
+# what was happening: nothing was wrong with the radar code, the reader for it
+# had simply never been installed.
+if ! "$VENV/bin/python" -c "import metpy" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet metpy || \
+    warn "MetPy would not install; radar will not build until it does"
+fi
+# Braced and forgiven, because set -e would otherwise abandon the whole install
+# over one optional module.
+{ "$VENV/bin/python" - <<'PY'
 import sys
 mods = {}
-for m in ("eccodes", "numpy", "PIL", "requests"):
+for m in ("eccodes", "numpy", "PIL", "requests", "metpy"):
     try:
         __import__(m); mods[m] = "ok"
     except Exception as e:
@@ -67,6 +77,7 @@ for k, v in mods.items():
     print(f"   {k:10} {v}")
 sys.exit(0 if all(v == "ok" for v in mods.values()) else 1)
 PY
+} || warn "something above is missing; the parts that need it will not build"
 
 # ── 3. cloudflared ──────────────────────────────────────────────────────────
 say "Tunnel client"
@@ -188,7 +199,14 @@ Description=Decode NEXRAD Level 2 into map overlays
 
 [Service]
 Type=oneshot
-ExecStart=$VENV/bin/python $REPO/pi/radar_pipeline.py
+# Both levels, every run. Level 2 is the detailed one and Level 3 is the small
+# quality controlled one, and the page falls back from the first to the second,
+# so building only Level 2 left the fallback with nothing to fall back to.
+# A leading dash means "carry on if this one fails", so a bad Level 2 volume no
+# longer takes Level 3 down with it, and the unit stops reporting as failed for
+# something it recovered from.
+ExecStart=-$VENV/bin/python $REPO/pi/radar_pipeline.py
+ExecStart=-$VENV/bin/python $REPO/pi/radar_pipeline.py --l3
 TimeoutStartSec=900
 Nice=10
 EOF
