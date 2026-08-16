@@ -23432,6 +23432,98 @@ let _dpLayerPool   = [], _dpPoolLoaded = [];
 
 // ── L2/L3 CANVAS STATE (cc, zdr via Level-2 radar) ──
 const RADAR_WORKER_URL = 'https://l2data.ralphies1005.workers.dev';
+
+// ── Fetching the volume straight from the live feed ─────────────────────────
+// The NEXRAD real time bucket allows CORS, which means the browser can read
+// the radar's own chunks with nothing in between: no proxy to be down, no
+// mirror to lag, and it carries every site including the 45 terminal radars
+// at airports, which the old path could not promise. The Cloudflare Worker
+// stays as the fallback for when a listing fails.
+const L2_CHUNKS_BUCKET = 'https://unidata-nexrad-level2-chunks.s3.amazonaws.com';
+const L2_DIRECT_CAP = 5.5 * 1024 * 1024;   // decode the low sweeps, spare the phone
+
+async function _s3Xml(params) {
+  const r = await fetch(L2_CHUNKS_BUCKET + '/?list-type=2&' + params,
+                        { signal: _abortSignal(15000) });
+  if (!r.ok) throw new Error('bucket listing HTTP ' + r.status);
+  return new DOMParser().parseFromString(await r.text(), 'text/xml');
+}
+
+async function _s3VolTime(station, vol) {
+  // When one volume started, read from its first chunk's name.
+  const x = await _s3Xml('prefix=' + station + '/' + vol + '/&max-keys=1');
+  const k = x.querySelector('Contents > Key');
+  if (!k) return '';
+  const bits = k.textContent.split('/').pop().split('-');
+  return bits.length >= 2 && /^\d+$/.test(bits[0]) ? bits[0] + bits[1] : '';
+}
+
+async function _fetchVolumeDirect(stationId) {
+  const station = stationId.toUpperCase();
+  const dirs = await _s3Xml('prefix=' + station + '/&delimiter=/&max-keys=1000');
+  const vols = [...dirs.querySelectorAll('CommonPrefixes > Prefix')]
+    .map(p => p.textContent.replace(/\/$/, '').split('/').pop())
+    .filter(v => /^\d+$/.test(v))
+    .sort((a, b) => a - b);
+  if (!vols.length) throw new Error('no volumes for ' + station);
+
+  // The volume number rolls over at 999, so the highest number is only the
+  // newest when there has been no rollover. Time goes backwards exactly once
+  // in the number-sorted list, so a short binary search finds where.
+  let at = vols.length - 1;
+  const first = await _s3VolTime(station, vols[0]).catch(() => '');
+  const last = await _s3VolTime(station, vols[at]).catch(() => '');
+  if (first && last && first > last) {
+    let lo = 0, hi = vols.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      const t = await _s3VolTime(station, vols[mid]).catch(() => '');
+      if (t && t >= first) lo = mid; else hi = mid - 1;
+    }
+    at = lo;
+  }
+
+  // Newest first, stepping back past volumes that have only just started:
+  // a couple of chunks is an antenna part way round, not a picture.
+  for (let back = 0; back < 4; back++) {
+    const vol = vols[(at - back + vols.length) % vols.length];
+    const x = await _s3Xml('prefix=' + station + '/' + vol + '/&max-keys=200');
+    const entries = [...x.querySelectorAll('Contents')].map(c => ({
+      key: c.querySelector('Key').textContent,
+      size: parseInt(c.querySelector('Size')?.textContent || '0', 10),
+    })).sort((a, b) => a.key < b.key ? -1 : 1);
+    if (entries.length < 8 || !entries[0].key.endsWith('-001-S')) continue;
+    // Chunks are whole records, so any prefix of them is a valid file. The
+    // listing carries every chunk's size, so the ones under the cap are
+    // chosen before a byte moves: the low sweeps live at the front, and a
+    // phone does not want the whole volume.
+    const wanted = [];
+    let planned = 0;
+    for (const e of entries) {
+      wanted.push(e.key);
+      planned += e.size;
+      if (planned > L2_DIRECT_CAP) break;
+    }
+    const responses = await Promise.all(wanted.map(k =>
+      fetch(L2_CHUNKS_BUCKET + '/' + k, { signal: _abortSignal(30000) })));
+    const parts = [];
+    let total = 0;
+    for (const r of responses) {
+      if (!r.ok) break;
+      const b = await r.arrayBuffer();
+      parts.push(b);
+      total += b.byteLength;
+    }
+    if (total < 100000) continue;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const b of parts) { out.set(new Uint8Array(b), off); off += b.byteLength; }
+    console.log('[L2] direct: ' + station + ' vol ' + vol + ', '
+              + parts.length + ' chunks, ' + total + ' bytes');
+    return out.buffer;
+  }
+  throw new Error('no complete volume for ' + station);
+}
 let _l3Product  = null;
 let _l3Station  = null;
 let _l3Overlay  = null;   // L.imageOverlay on the map
@@ -23940,16 +24032,18 @@ async function loadL3Data(product, stationOverride) {
   try {
     if (buffer) throw { cached: true };
     console.log('[L2] Fetching', product.toUpperCase(), 'from station', station);
-    // Upper case, always. The station list is written in lower case and the
-    // Worker refuses anything that is not four capitals:
-    //     if (!/^[A-Z]{4}$/.test(station)) return jsonErr(...400)
-    // so every request built straight from the list came back HTTP 400 and the
-    // panel reported "fetch failed". That is the whole reason Level 2 never
-    // drew anything, and why the dual polarity products looked unfinished.
-    var res = await fetch(RADAR_WORKER_URL + '?station=' + station.toUpperCase(),
-                          { signal: _abortSignal(30000) });
-    if (!res.ok) { var errJson = await res.json().catch(function(){ return {}; }); throw new Error(errJson.error || 'HTTP ' + res.status); }
-    buffer = await res.arrayBuffer();
+    // The live feed first, the Worker as fallback. Direct is fresher, allows
+    // every station including the terminal radars, and has no middle box to
+    // be down; the Worker route needs the station in four capitals.
+    try {
+      buffer = await _fetchVolumeDirect(station);
+    } catch (direct) {
+      console.log('[L2] direct fetch failed (' + direct.message + '), trying worker');
+      var res = await fetch(RADAR_WORKER_URL + '?station=' + station.toUpperCase(),
+                            { signal: _abortSignal(30000) });
+      if (!res.ok) { var errJson = await res.json().catch(function(){ return {}; }); throw new Error(errJson.error || 'HTTP ' + res.status); }
+      buffer = await res.arrayBuffer();
+    }
     console.log('[L2] Fetched', buffer.byteLength, 'bytes for', station);
     // Keep a copy: the one handed to the worker is transferred away.
     _l2VolCache = { station: station, at: Date.now(), buf: buffer.slice(0) };
@@ -33494,7 +33588,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Clicking radar products quickly no longer shows the previous click's error on everything after it, and switching products stops re-downloading the volume.";
+const APP_LATEST_UPDATE = "Level 2 now streams straight from the radar feed, spectrum width found its data one sweep up, and all 45 airport terminal radars work.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -35914,7 +36008,7 @@ const OV_DESCRIPTIONS = {
   'spc-reports':      'Tornado, hail, and wind reports logged by local National Weather Service offices today.',
   'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, including any active hurricanes or tropical storms and their forecast tracks.",
       'radar-normal':     "The radar products this site has always shown, served as tiles: MRMS, reflectivity, velocity, hydrometeor class and the two accumulations.",
-  'radar-l2':         "Level 2 is what the radar itself produces: every gate of every sweep. This decodes the nearest station's own volume in your browser, so it is the real data rather than someone else's picture of it. Pan and pick again to change radar.",
+  'radar-l2':         "Level 2 is what the radar itself produces: every gate of every sweep, streamed straight from the live feed and decoded in your browser. Pick any station on the map, including the T pills, which are the terminal radars at major airports.",
   'l2-ref':           "How heavy the precipitation is, in dBZ, from the station's own volume rather than a mosaic.",
   'l2-vel':           "How fast the precipitation is moving toward or away from the antenna. Red beside green is rotation, which is what a tornado looks like on radar.",
   'l2-cc':            "Correlation coefficient: how alike the targets in one gate are. Rain is uniform and reads near 1.0. Debris, hail and birds are not, and read lower, which is how a debris ball under a tornado is spotted.",
