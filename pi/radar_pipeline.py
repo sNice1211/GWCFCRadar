@@ -461,15 +461,39 @@ def read_l2(path, moment="REF"):
 
 
 def read_l3(path):
-    """One Level 3 product, which is already a single sweep of one thing."""
+    """
+    One Level 3 product, whichever of the two shapes it arrives in.
+
+    Most products are radial, a sweep of azimuths like Level 2. Echo tops and
+    composite reflectivity are raster: a square grid of cells centred on the
+    radar, no azimuths anywhere in them. Assuming everything was radial is why
+    exactly those two products "were never made": the reader threw KeyError on
+    start_az, the build logged and skipped them, and the manifest never
+    carried what the check had proved the server was publishing.
+    """
     _, Level3File = _metpy()
     f = Level3File(path)
     sym = f.sym_block[0][0]
     data = np.array(f.map_data(sym["data"]), dtype=np.float32)
-    az = np.array(sym["start_az"]) + 90.0
-    rng = np.linspace(0, f.max_range * 1000.0, data.shape[-1])
     site_lat, site_lon = float(f.lat), float(f.lon)
-    lat, lon = gate_latlon(site_lat, site_lon, az, rng)
+
+    if "start_az" in sym:
+        az = np.array(sym["start_az"]) + 90.0
+        rng = np.linspace(0, f.max_range * 1000.0, data.shape[-1])
+        lat, lon = gate_latlon(site_lat, site_lon, az, rng)
+        return data, lat, lon, (site_lat, site_lon)
+
+    # Raster. The radar sits at the centre of the grid and the whole square
+    # spans the product's range both ways, so the cell size falls out of the
+    # shape: 464 km across 464 cells for composite, the same span across 116
+    # for echo tops. Rows run north to south.
+    rows, cols = data.shape
+    cell_km = 464.0 / rows
+    x = (np.arange(cols) + 0.5 - cols / 2.0) * cell_km * 1000.0
+    y = (rows / 2.0 - np.arange(rows) - 0.5) * cell_km * 1000.0
+    lat = site_lat + np.degrees(y / EARTH_R)[:, None] * np.ones((1, cols))
+    lon = site_lon + np.degrees(
+        x / (EARTH_R * np.cos(np.radians(site_lat))))[None, :] * np.ones((rows, 1))
     return data, lat, lon, (site_lat, site_lon)
 
 
