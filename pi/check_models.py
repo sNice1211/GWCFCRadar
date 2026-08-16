@@ -232,6 +232,10 @@ def check_files(name, m):
         when = datetime.now(timezone.utc) - timedelta(hours=back * m["cycle_h"])
         date_str, cyc = cycle_for(m, when)
         urls = URL_SOURCES[m["source"]](m, date_str, cyc, hours[0])
+        if not urls:
+            # A source that works its address out by probing says "not this
+            # cycle" by handing back nothing, which is an answer, not a crash.
+            continue
         t0 = time.time()
         try:
             r = requests.get(urls[0], timeout=90)
