@@ -70,9 +70,15 @@ global.localStorage = { _d:{}, getItem(k){return this._d[k]??null;}, setItem(k,v
 
 // Leaflet + map
 const added = [];
-global.L = { imageOverlay(url, bounds, opts) {
-  return { url, bounds, opts, _h:{}, on(ev,fn){this._h[ev]=fn;}, addTo(m){ added.push(this); return this; } };
-}};
+const lines = [];
+global.L = {
+  imageOverlay(url, bounds, opts) {
+    return { url, bounds, opts, _h:{}, on(ev,fn){this._h[ev]=fn;}, addTo(m){ added.push(this); return this; } };
+  },
+  polyline(pts, opts) {
+    return { pts, opts, addTo(m){ lines.push(this); added.push(this); return this; } };
+  },
+};
 global.map = { removeLayer(l){ const i = added.indexOf(l); if(i>=0) added.splice(i,1); } };
 global.showToast = () => {};
 

@@ -12632,6 +12632,136 @@ setTimeout(async function _hdPrimeModelList() {
   } catch (e) {}
 }, 2500);
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── DEEPMIND CYCLONES, FROM THE PI ────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// Two things, and they are drawn differently because they answer different
+// questions. Tracks are lines: where a storm that already exists is going,
+// one line per ensemble member. Genesis is a picture: how likely a storm is
+// to form where there is none yet, which is the harder half of a tropical
+// forecast and the part nothing else on this map shows at all.
+//
+// The Pi builds both. This reads its index and draws.
+
+let _cycOn = false;
+let _cycIndex = null;
+let _cycLayers = [];          // every line and image currently on the map
+let _cycAt = 0;
+const CYC_TTL = 10 * 60 * 1000;
+
+// Members pale, the mean heavy. Fifty pale lines and one solid one reads as
+// "here is the spread and here is the answer", where fifty-one identical ones
+// reads as a tangle.
+const CYC_MEMBER = { color: '#7fd4ff', weight: 1, opacity: 0.35 };
+const CYC_MEAN   = { color: '#ffd166', weight: 3, opacity: 0.95 };
+
+async function _cycFresh() {
+  if (_cycIndex && Date.now() - _cycAt < CYC_TTL) return _cycIndex;
+  const base = _hdBase || await _hdResolveBase();
+  if (!base) return null;
+  _hdBase = base;
+  const idx = await fetch(`${base}/cyclones/latest.json?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!idx) return _cycIndex;
+  const man = await fetch(`${base}/cyclones/${idx.path}?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!man) return _cycIndex;
+  _cycIndex = { run: idx.run, man };
+  _cycAt = Date.now();
+  return _cycIndex;
+}
+
+function _cycClear() {
+  _cycLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
+  _cycLayers = [];
+}
+
+// A track is a list of points already in order along the line, so this is a
+// polyline and nothing more. The dateline is the one thing that needs care:
+// a storm crossing it has longitudes that jump from 179 to -179, and a
+// straight line between those two goes the wrong way round the world.
+function _cycDrawTrack(points, style) {
+  const legs = [[]];
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    if (i && Math.abs(p.lon - points[i - 1].lon) > 180) legs.push([]);
+    legs[legs.length - 1].push([p.lat, p.lon]);
+  }
+  legs.filter(l => l.length > 1).forEach(l => {
+    const line = L.polyline(l, { ...style, interactive: false,
+                                 pane: 'radarPane' });
+    line.addTo(map);
+    _cycLayers.push(line);
+  });
+}
+
+async function _cycEnable() {
+  _cycOn = true;
+  document.getElementById('op-pi-cyclones')?.classList.add('active');
+  const idx = await _cycFresh();
+  if (!idx) {
+    if (typeof showToast === 'function') {
+      showToast('No cyclone data from the Pi yet. It builds every three '
+              + 'hours, and only when DeepMind have published a run.', 4000);
+    }
+    return;
+  }
+  _cycClear();
+  const base = _hdBase;
+  const man = idx.man;
+
+  // Genesis first, so the lines land on top of the picture rather than under
+  // it. Only the cumulative field: the instantaneous one is the same thing
+  // for a single moment and two probability washes on one map is unreadable.
+  const gen = man.genesis && man.genesis.cumulative;
+  if (gen && gen.bounds) {
+    const img = L.imageOverlay(
+      `${base}/cyclones/${idx.run}/${gen.png}`, gen.bounds,
+      { opacity: 0.55, interactive: false, pane: 'radarPane' });
+    img.addTo(map);
+    _cycLayers.push(img);
+  }
+
+  // The operational run's mean is the one worth drawing heavy. The rest of
+  // the variants are experimental and would triple the lines for very little,
+  // so they are left to the panel rather than thrown on the map at once.
+  const want = Object.entries(man.tracks || {})
+    .filter(([k]) => k.startsWith('OPER'));
+  for (const [name, meta] of want) {
+    const data = await fetch(`${base}/cyclones/${idx.run}/${meta.path}`,
+                             { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null).catch(() => null);
+    if (!data || !data.tracks) continue;
+    const isMean = name.endsWith('ensemble_mean');
+    Object.values(data.tracks).forEach(pts => {
+      if (pts.length > 1) _cycDrawTrack(pts, isMean ? CYC_MEAN : CYC_MEMBER);
+    });
+  }
+
+  if (!_cycLayers.length && typeof showToast === 'function') {
+    showToast('The Pi has a cyclone run but nothing to draw in it, which '
+            + 'usually means the tropics are quiet.', 4000);
+  }
+}
+
+function _cycDisable() {
+  _cycOn = false;
+  document.getElementById('op-pi-cyclones')?.classList.remove('active');
+  _cycClear();
+}
+
+const _cycOrigTogglePill = toggleOverlayPill;
+toggleOverlayPill = function (id) {
+  if (id === 'pi-cyclones') {
+    _cycOn ? _cycDisable() : _cycEnable();
+    return;
+  }
+  return _cycOrigTogglePill.apply(this, arguments);
+};
+
 // ══════════════════════════════════════════════════════════════════════════
 // ── POLYGON SPATIAL FILTER ────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════
@@ -34107,6 +34237,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-pi-cyclones" data-ovid="pi-cyclones" title="DeepMind cyclone tracks and where a storm is likely to form, from the Pi">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('pi-cyclones')">AI Cyclones</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -35132,6 +35265,7 @@ const OV_DESCRIPTIONS = {
   'spc-outlook':      "The Storm Prediction Center's forecast for severe thunderstorms over the next 8 days. Darker colors mean higher risk.",
   'spc-reports':      'Tornado, hail, and wind reports logged by local National Weather Service offices today.',
   'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, including any active hurricanes or tropical storms and their forecast tracks.",
+  'pi-cyclones':      "Google DeepMind's cyclone forecast, from your Pi. Pale lines are the ensemble members, the gold line is their average, and the shading is where a new storm is likely to form. Empty when the tropics are quiet.",
   'wpc-outlook':      'Flash flood risk over the next 3 days, from the Weather Prediction Center.',
   'lightning':        'Live lightning strike data, updated as strikes happen.',
   'cloudcam':         'Upload a photo of the sky or storm damage near you, or browse photos other users have shared.',

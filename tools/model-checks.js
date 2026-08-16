@@ -203,6 +203,32 @@ function ok(name, cond, extra) {
      _hdRegionLabel('prico'));
   ok('anything else is left alone', _hdRegionLabel('mars') === 'mars');
 
+
+  console.log('\n21. cyclone tracks, and the dateline');
+  // A storm crossing 180 has longitudes that jump from 179 to -179, and a
+  // straight line between those two goes the wrong way round the world.
+  lines.length = 0;
+  _cycLayers = [];
+  _cycDrawTrack([{lat:10,lon:170},{lat:12,lon:176},{lat:14,lon:-178},
+                 {lat:16,lon:-172}], CYC_MEMBER);
+  ok('split into two legs at the dateline', lines.length === 2, lines.length);
+  ok('and neither leg spans the world',
+     lines.every(l => Math.abs(l.pts[0][1] - l.pts[l.pts.length-1][1]) < 180),
+     lines.map(l => l.pts.map(p => p[1]).join('/')).join('  '));
+
+  lines.length = 0; _cycLayers = [];
+  _cycDrawTrack([{lat:25,lon:-71},{lat:26,lon:-72},{lat:27,lon:-73}], CYC_MEAN);
+  ok('an ordinary track is one line', lines.length === 1, lines.length);
+  ok('with every point on it', lines[0].pts.length === 3, lines[0].pts.length);
+  ok('the mean is drawn heavier than a member',
+     CYC_MEAN.weight > CYC_MEMBER.weight && CYC_MEAN.opacity > CYC_MEMBER.opacity);
+
+  lines.length = 0; _cycLayers = [];
+  _cycDrawTrack([{lat:20,lon:-60}], CYC_MEMBER);
+  ok('a single point draws nothing, since one point is not a line',
+     lines.length === 0, lines.length);
+  _cycClear();
+
   console.log('\n' + (fail ? `${fail} FAILED, ${pass} passed` : `all ${pass} passed`));
   process.exit(fail ? 1 : 0);
 })();
