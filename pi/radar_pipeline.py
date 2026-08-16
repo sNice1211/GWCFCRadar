@@ -529,10 +529,19 @@ def build_site_l2(site, frames=1):
     return built[-1] if built else None
 
 
-def build_site_l3(site, products=("n0q",), frames=1):
+def build_site_l3(site, products=("n0q", "n0u"), frames=1):
     """The same for Level 3, which is one file per product rather than one
     volume holding all of them."""
     newest = None
+    # One stamp for the whole pass, taken from the first product fetched.
+    #
+    # Each product's sn.last is written when that product was made, and they
+    # are made minutes apart, so asking each one for its own time scattered
+    # them into separate frame folders holding one field each. The page reads
+    # the newest folder and takes what is in it, so half the products were
+    # invisible depending on which happened to be newest. They came off the
+    # same volume, so they belong in the same frame.
+    frame = None
     for pname in products:
         spec = L3_PRODUCTS[pname]
         # Only ever the current one. There is no listing to walk back through,
@@ -542,6 +551,8 @@ def build_site_l3(site, products=("n0q",), frames=1):
         os.makedirs(os.path.dirname(tmp), exist_ok=True)
         stamp = fetch_l3(site, spec, tmp)
         if stamp:
+            frame = frame or stamp
+            stamp = frame
             out = os.path.join(OUT_DIR, "l3", site, stamp)
             os.makedirs(out, exist_ok=True)
             done = os.path.join(out, "manifest.json")
