@@ -11738,6 +11738,16 @@
           }
         }
       }
+    } else if (layer === "CC") {
+      radarData = radar.getHighresCorrelationCoefficient();
+    } else if (layer === "KDP") {
+      radarData = radar.getHighresDiffPhase();
+    } else if (layer === "SW") {
+      radarData = radar.getHighresSpectrum();
+    } else if (layer == "ZDR") {
+      radarData = radar.getHighresDiffReflectivity();
+    } else {
+      throw new Error(`Unknown radar layer: ${layer}`);
     }
     if (!Array.isArray(radarData) || radarData.length === 0) {
       throw new Error(`No radar data available for layer: ${layer}`);
@@ -12149,7 +12159,11 @@
           timeIso: new Date(header.julian_date * 86400 * 1e3 + header.mseconds - 36e5).toISOString(),
           elevationAngle: header.elevation_angle,
           station: options?.station || null,
-          vcp: getLevel2Vcp(radar, header)
+          vcp: getLevel2Vcp(radar, header),
+          // GWCFC: the page builds its tilt picker from what this volume
+          // actually carries, so the list rides back with the result.
+          availableElevations: elevations,
+          elevationNumber: radar.elevation
         };
         self.postMessage({
           type: "result",
