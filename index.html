@@ -18328,7 +18328,8 @@ function showToast(msg, durationMs) {
 //   Level 3  the lighter product the Weather Service makes from it
 const RADAR_SOURCE_BUBBLES = [
   { id:'radar-normal', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>',
-    label:'Normal', action: () => { _prDisable(); toggleRadarNormalSub(); } },
+    label:'Normal', action: () => { _radarSource = 'normal'; _prDisable();
+                                    toggleRadarNormalSub(); } },
   { id:'radar-l2', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg>',
     label:'Level 2', action: () => toggleRadarL2Sub() },
   { id:'radar-l3', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>',
@@ -18423,6 +18424,12 @@ const RADAR_SUB_BUBBLES = [
 // coefficient. So every level here carries a site bubble that says which radar
 // is being shown, and opens the list of the others.
 let _l2Site = null;      // the browser decoder's station, null = nearest
+// Which source the Radar bubble is showing: 'normal', 'l2' or 'l3'. The map's
+// station pills need this. Without it a click on a pill while Level 2 was
+// showing reflectivity fell into the branch for the tile layers, because both
+// call that product "ref", and quietly swapped the decoded volume for a
+// mosaic tile without saying so.
+let _radarSource = 'normal';
 try { _l2Site = localStorage.getItem('gwcfc_l2_site') || null; } catch (e) {}
 
 function _radarSiteBubble(wrap, id, onOpen) {
@@ -18540,6 +18547,7 @@ function toggleRadarL2Sub() {
       _clearSingleSiteRef();
       activeLayers.nexrad = false;
       currentProduct = b.product;
+      _radarSource = 'l2';
       RADAR_L2_BUBBLES.forEach(o =>
         document.getElementById('sub-' + o.id)
           ?.classList.toggle('active', o.id === b.id));
@@ -18561,6 +18569,7 @@ function toggleRadarL2Sub() {
 // feel like it had not worked.
 async function toggleRadarPiSub(level) {
   const wrap = document.getElementById('sub-bubbles');
+  _radarSource = 'l3';
   _disableSatellite();
   _disableRadar();
 
@@ -24182,6 +24191,31 @@ function _buildNexradSiteMarkers() {
 
     // Click on pill , single-site only activates in REF mode
     label.on('click', () => {
+      // Level 2 and Level 3 first, because both call a product "ref" and the
+      // branch below that name belongs to the tile layers. Checked in the
+      // wrong order, clicking a pill while Level 2 was showing reflectivity
+      // swapped the decoded volume for a mosaic tile without a word about it.
+      if (_radarSource === 'l2') {
+        _l2Site = s.id;
+        try { localStorage.setItem('gwcfc_l2_site', s.id); } catch (e) {}
+        loadL3Data(currentProduct || 'ref', s.id);
+        if (document.getElementById('sub-radar-site')) toggleRadarL2Sub();
+        _refreshNexradSiteStyles();
+        return;
+      }
+      if (_radarSource === 'l3') {
+        // Only the radars the Pi has actually built. Clicking any other pill
+        // would set a station it has no volume for and draw nothing.
+        if (_prIndex && _prIndex.sites && _prIndex.sites[s.id]) {
+          _prSetSite(s.id);
+          if (document.getElementById('sub-radar-site')) toggleRadarPiSub('l3');
+          _refreshNexradSiteStyles();
+        } else if (typeof showToast === 'function') {
+          showToast(s.id.toUpperCase() + ' is not one of the radars your Pi '
+                  + 'builds. Add it with GWCFC_RADAR_SITES.', 4000);
+        }
+        return;
+      }
       if (currentProduct === 'ref') {
         _loadSingleSiteRef(s.id);
       } else if (currentProduct === 'vel') {
@@ -24212,7 +24246,9 @@ function _refreshNexradSiteStyles() {
     const isActive = (currentProduct === 'vel' && id === _velStation) ||
                      (currentProduct === 'ref' && id === _refStation) ||
                      ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') && id === _dpStation) ||
-                     ((currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') && id === _l3Station);
+                     ((currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') && id === _l3Station) ||
+                     (_radarSource === 'l2' && id === (_l2Site || _l3Station)) ||
+                     (_radarSource === 'l3' && id === _prSite);
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
   });
 }
@@ -33436,7 +33472,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Level 2 radar works now. Every request was being sent with a lower case station name, which the server refuses.";
+const APP_LATEST_UPDATE = "Clicking a radar station on the map now switches Level 2 and Level 3 too, the same way it always did for the normal products.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

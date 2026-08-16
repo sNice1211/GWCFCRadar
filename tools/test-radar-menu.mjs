@@ -140,14 +140,40 @@ const l3 = await row();
 ok('and an unreachable Pi says so instead of leaving an empty row',
    l3.some(t => /No Pi radar/.test(t)), l3.join(','));
 
-console.log('\n7. the Normal products are untouched');
+console.log('\n7. the map station pills mean the same thing as the row');
+// A pill on the map is the other way to say "this radar", and it has to reach
+// the same place the site bubble does. Before this it fell into the branch
+// for the tile layers, because Level 2 also calls a product "ref".
+await page.evaluate(() => { toggleRadarL2Sub();
+  const b = document.getElementById('sub-l2-ref'); if (b) b.onclick(); });
+await page.waitForTimeout(400);
+const viaPill = await page.evaluate(() => {
+  let seen = null;
+  const real = window.fetch;
+  window.fetch = (u) => { if (String(u).includes('station=')) seen = String(u);
+                          return Promise.reject(new Error('blocked in test')); };
+  // What the pill handler does, with a station that is not the current one.
+  _radarSource = 'l2';
+  _l2Site = 'kdyx';
+  loadL3Data(currentProduct || 'ref', 'kdyx');
+  window.fetch = real;
+  return { url: seen, source: _radarSource, site: _l2Site };
+});
+ok('a pill click asks the decoder, not the tile layers',
+   /station=KDYX$/.test(viaPill.url || ''), viaPill.url);
+ok('and the chosen station is remembered', viaPill.site === 'kdyx',
+   viaPill.site);
+ok('the source stays Level 2 rather than falling back to Normal',
+   viaPill.source === 'l2', viaPill.source);
+
+console.log('\n8. the Normal products are untouched');
 await page.evaluate(() => toggleRadarNormalSub());
 const normal = await row();
 ['MRMS 1km', 'Reflectivity', 'Velocity', 'Hydro. Class.',
  'Storm Accum.', '1-Hr Accum.'].forEach(p =>
   ok('still offers ' + p, normal.includes(p), normal.join(',')));
 
-console.log('\n8. nothing threw along the way');
+console.log('\n9. nothing threw along the way');
 ok('no uncaught errors at all', errors.length === 0, errors.join(' | '));
 
 await browser.close();
