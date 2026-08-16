@@ -11197,7 +11197,7 @@
           if (value !== "rf") value = computeKdpFromPhi(radial.moment_data, gateIndex, gateSize);
         }
         if (value == null) continue;
-        if (layer === "REF" && gateLimit !== null && value !== "rf" && value < gateLimit) continue;
+        if (gateLimit !== null && gateIndex >= gateLimit) break;
         if (layer === "VEL" && value !== "rf" && Number.isFinite(value)) value *= 1.94384;
         const coords = buildPolygon(project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2);
         builder.pushQuad(coords, value);
@@ -11241,7 +11241,7 @@
           if (value == "rf") value = 0;
         }
         if (value == null) continue;
-        if (value !== "rf" && gateLimit && value < gateLimit) continue;
+        if (gateLimit && binIndex >= gateLimit) break;
         const r1 = (firstBin + binIndex * rangeScaleKm) * scaleFactor;
         const r2 = (firstBin + (binIndex + 1) * rangeScaleKm) * scaleFactor;
         builder.pushQuad(buildPolygon(project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2), value);

@@ -84,11 +84,38 @@ L2_PRODUCTS = {
 # Level 3 products. "dir" is the Weather Service's own name for the product on
 # their file server, which is not the three letter code everyone else uses:
 # p94r0 is what they call N0Q, and there is no pattern to learn, only a list.
+#
+# Every entry past the first two is fetched on the same terms as a model
+# address: the build logs and skips a product whose directory is not there,
+# and --check prints per-product status, so a wrong guess costs one line of
+# output rather than the run. MetPy reads all of them.
 L3_PRODUCTS = {
     "n0q": {"code": "N0Q", "dir": "DS.p94r0", "range": (-10, 75),
             "ramp": "radar", "label": "Base Reflectivity", "unit": "dBZ"},
     "n0u": {"code": "N0U", "dir": "DS.p99v0", "range": (-40, 40),
             "ramp": "velocity", "label": "Base Velocity", "unit": "kt"},
+    # The dual polarity set, which is what tells rain from hail from debris.
+    "n0c": {"code": "N0C", "dir": "DS.161c0", "range": (0.2, 1.05),
+            "ramp": "viridis", "label": "Correlation Coeff", "unit": ""},
+    "n0x": {"code": "N0X", "dir": "DS.159x0", "range": (-4, 8),
+            "ramp": "spread", "label": "Differential Refl", "unit": "dB"},
+    "n0k": {"code": "N0K", "dir": "DS.163k0", "range": (-2, 7),
+            "ramp": "moisture", "label": "Specific Diff Phase", "unit": "deg/km"},
+    "n0h": {"code": "N0H", "dir": "DS.165h0", "range": (0, 160),
+            "ramp": "viridis", "label": "Hydrometeor Class", "unit": ""},
+    # What the storm has dropped and how much it holds.
+    "ohp": {"code": "N1P", "dir": "DS.78ohp", "range": (0, 75),
+            "ramp": "precip", "label": "1 Hour Precip", "unit": "mm"},
+    "stp": {"code": "NTP", "dir": "DS.80stp", "range": (0, 200),
+            "ramp": "precip", "label": "Storm Total Precip", "unit": "mm"},
+    "dvl": {"code": "DVL", "dir": "DS.134il", "range": (0, 80),
+            "ramp": "heat", "label": "Vertically Integrated Liquid",
+            "unit": "kg/m2"},
+    "eet": {"code": "EET", "dir": "DS.135eet", "range": (0, 21),
+            "ramp": "viridis", "label": "Echo Tops", "unit": "km"},
+    # The whole column's strongest echo, not just the lowest sweep.
+    "ncr": {"code": "NCR", "dir": "DS.p37cr", "range": (-10, 75),
+            "ramp": "radar", "label": "Composite Reflectivity", "unit": "dBZ"},
 }
 
 EARTH_R = 6371000.0
@@ -529,7 +556,7 @@ def build_site_l2(site, frames=1):
     return built[-1] if built else None
 
 
-def build_site_l3(site, products=("n0q", "n0u"), frames=1):
+def build_site_l3(site, products=tuple(L3_PRODUCTS), frames=1):
     """The same for Level 3, which is one file per product rather than one
     volume holding all of them."""
     newest = None
@@ -652,16 +679,24 @@ def check(sites):
         else:
             print(f"  {site}  L2  nothing found")
             ok = False
-        # A HEAD rather than a GET, so --check stays a check.
-        url = f"{L3_TGFTP}/{L3_PRODUCTS['n0q']['dir']}/SI.{site.lower()}/sn.last"
-        try:
-            r = HTTP.head(url, timeout=30, allow_redirects=True)
-            when = r.headers.get("Last-Modified", "")
-            print(f"  {site}  L3  HTTP {r.status_code}  {when or 'no date'}")
-            if r.status_code != 200:
-                ok = False
-        except Exception as e:
-            print(f"  {site}  L3  {e}")
+        # A HEAD per product rather than a GET, so --check stays a check, and
+        # per product because most of these directories were added on the
+        # strength of documentation rather than a listing: this line of output
+        # is what confirms or disproves each one.
+        good, bad = [], []
+        for pname, spec in L3_PRODUCTS.items():
+            url = f"{L3_TGFTP}/{spec['dir']}/SI.{site.lower()}/sn.last"
+            try:
+                r = HTTP.head(url, timeout=30, allow_redirects=True)
+                (good if r.status_code == 200 else bad).append(
+                    pname if r.status_code == 200 else f"{pname}({r.status_code})")
+            except Exception:
+                bad.append(f"{pname}(net)")
+        print(f"  {site}  L3  {len(good)}/{len(L3_PRODUCTS)} products: "
+              f"{', '.join(good) or 'none'}")
+        if bad:
+            print(f"        missing: {', '.join(bad)}")
+        if not good:
             ok = False
     print()
     try:

@@ -281,7 +281,12 @@ const processRadarData = (radar, radarLocation, extent, layer, options = {}) => 
                 if (value !== 'rf') value = computeKdpFromPhi(radial.moment_data, gateIndex, gateSize);
             }
             if (value == null) continue;
-            if (layer === 'REF' && gateLimit !== null && value !== 'rf' && value < gateLimit) continue;
+            // gate_limit caps how far out to draw: it is a count of gates, so
+            // it bounds the gate INDEX. It was being compared against the gate
+            // VALUE, and "value < 460" is true of every dBZ ever measured, so
+            // every reflectivity gate was skipped and the mesh came back
+            // empty. That is the whole reason Level 2 reflectivity never drew.
+            if (gateLimit !== null && gateIndex >= gateLimit) break;
             if (layer === 'VEL' && value !== 'rf' && Number.isFinite(value)) value *= 1.94384;
             const coords = buildPolygon(project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2);
             builder.pushQuad(coords, value);
@@ -329,7 +334,7 @@ const processLevel3Data = (radar, radarLocation, options = {}) => {
                 if (value == 'rf') value = 0;
             }
             if (value == null) continue;
-            if (value !== 'rf' && gateLimit && value < gateLimit) continue;
+            if (gateLimit && binIndex >= gateLimit) break;
             const r1 = (firstBin + (binIndex * rangeScaleKm)) * scaleFactor;
             const r2 = (firstBin + ((binIndex + 1) * rangeScaleKm)) * scaleFactor;
             builder.pushQuad(buildPolygon(project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2), value);

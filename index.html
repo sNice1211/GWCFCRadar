@@ -12893,6 +12893,17 @@ let _prIdx = 0;
 const PR_PRODUCTS = {
   reflectivity: { label: 'Reflectivity', l2: 'ref', l3: 'n0q' },
   velocity:     { label: 'Velocity',     l2: 'vel', l3: 'n0u' },
+  // Level 3 only: the Weather Service computes these from the full volume, so
+  // the Pi gets them ready made and Level 2 has no equivalent file.
+  corrcoeff:    { label: 'Corr. Coeff.',    l3: 'n0c' },
+  diffrefl:     { label: 'Diff. Refl.',     l3: 'n0x' },
+  kdp:          { label: 'Spec. Diff. Phase', l3: 'n0k' },
+  hydroclass:   { label: 'Hydro. Class.',   l3: 'n0h' },
+  onehour:      { label: '1-Hr Precip',     l3: 'ohp' },
+  stormtotal:   { label: 'Storm Total',     l3: 'stp' },
+  vil:          { label: 'VIL',             l3: 'dvl' },
+  echotops:     { label: 'Echo Tops',       l3: 'eet' },
+  composite:    { label: 'Composite Refl.', l3: 'ncr' },
 };
 const PR_LEVELS = {
   auto: 'Best available',
@@ -12984,10 +12995,17 @@ async function _prDraw(base, lvl, idx) {
                             { cache: 'no-store' })
       .then(r => r.ok ? r.json() : null).catch(() => null);
     if (!man || !man.bounds) continue;
-    // A site may carry a different product than the default; take what it has.
+    // A site may carry a different product than the default; take what it
+    // has, and say so, because a picture of the wrong product with no word
+    // about it reads as the right product looking strange.
     const field = (man.fields && man.fields[product]) ? product
                 : Object.keys(man.fields || {})[0];
     if (!field) continue;
+    if (field !== product && typeof showToast === 'function') {
+      showToast(site + ' has no ' + (PR_PRODUCTS[_prProduct] || {}).label
+              + ' in this frame yet, showing '
+              + field.toUpperCase() + ' instead.', 3500);
+    }
     const url = `${base}/radar/${lvl}/${site}/${frame}/${field}.png`;
     const img = L.imageOverlay(url, man.bounds,
       { opacity: 0.78, interactive: false, pane: 'radarPane' });
@@ -13028,6 +13046,7 @@ async function _prEnable() {
 
 function _prDisable() {
   _prOn = false;
+  if (typeof _syncNexradSites === 'function') try { _syncNexradSites(); } catch (e) {}
   _prClear();
 }
 
@@ -18368,12 +18387,19 @@ const RADAR_L2_BUBBLES = [
 
 // The two products the Pi renders, named the way the pickers name them so the
 // bubble and the underlying setting cannot drift apart.
-const RADAR_PI_BUBBLES = [
-  { id:'pi-reflectivity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>',
-    label:'Reflectivity', product:'reflectivity' },
-  { id:'pi-velocity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>',
-    label:'Velocity', product:'velocity' },
-];
+const _PR_ICONS = {
+  reflectivity: 'ic-cloud-rain', velocity: 'ic-wind', corrcoeff: 'ic-hex',
+  diffrefl: 'ic-signal', kdp: 'ic-gauge', hydroclass: 'ic-rainbow',
+  onehour: 'ic-cloud-rain', stormtotal: 'ic-drop', vil: 'ic-gauge',
+  echotops: 'ic-mountain', composite: 'ic-cloud',
+};
+// One bubble per product the picked level can actually serve, built from
+// PR_PRODUCTS so adding a product there is the whole job.
+const RADAR_PI_BUBBLES = Object.entries(PR_PRODUCTS).map(([k, v]) => ({
+  id: 'pi-' + k, product: k, label: v.label,
+  icon: `<svg class=svgi width=1em height=1em style=vertical-align:-.15em>`
+      + `<use href=#${_PR_ICONS[k] || 'ic-antenna'}></use></svg>`,
+}));
 
 const RADAR_SUB_BUBBLES = [
   { id:'mrms', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label:'MRMS 1km', action: () => {
@@ -18419,65 +18445,16 @@ const RADAR_SUB_BUBBLES = [
 // One Back button, built the same way wherever a radar row needs one. What it
 // goes back TO is the argument, because the row is nested now: the product row
 // returns to the source row, and the source row returns to the main bubbles.
-// Radar is a single site product. One antenna sweeps, and what comes back is
-// that antenna's picture: there is no such thing as a national correlation
-// coefficient. So every level here carries a site bubble that says which radar
-// is being shown, and opens the list of the others.
-let _l2Site = null;      // the browser decoder's station, null = nearest
-// Which source the Radar bubble is showing: 'normal', 'l2' or 'l3'. The map's
-// station pills need this. Without it a click on a pill while Level 2 was
-// showing reflectivity fell into the branch for the tile layers, because both
-// call that product "ref", and quietly swapped the decoded volume for a
-// mosaic tile without saying so.
-let _radarSource = 'normal';
+// Which station the browser decoder is on. Set by clicking a station pill on
+// the map, which is the same way the normal products pick one: the pills ARE
+// the site chooser, so the menu does not need a second one.
+let _l2Site = null;
 try { _l2Site = localStorage.getItem('gwcfc_l2_site') || null; } catch (e) {}
 
-function _radarSiteBubble(wrap, id, onOpen) {
-  const el = document.createElement('div');
-  el.className = 'sub-bubble active';
-  el.id = 'sub-radar-site';
-  el.innerHTML = `<span class="sb-icon"><svg class=svgi width=1em height=1em`
-               + ` style=vertical-align:-.15em><use href=#ic-antenna></use>`
-               + `</svg></span><span class="sb-label">`
-               + `${id ? String(id).toUpperCase() : 'Nearest'}</span>`;
-  el.onclick = onOpen;
-  wrap.appendChild(el);
-}
-
-// The stations worth offering, which are the ones near where you are looking.
-// The full list is 160-odd and a row of that is not a chooser, it is a wall.
-function _radarNearbySites(n) {
-  if (typeof NEXRAD_STATIONS === 'undefined' || !map) return [];
-  const c = map.getCenter();
-  return NEXRAD_STATIONS
-    .filter(s => !s.tdwr)
-    .map(s => ({ id: s.id,
-                 d: (s.lat - c.lat) ** 2 + (s.lon - c.lng) ** 2 }))
-    .sort((a, b) => a.d - b.d)
-    .slice(0, n || 8)
-    .map(s => s.id);
-}
-
-// A row of sites, and what to do when one is picked. Shared by both levels,
-// which differ only in where the list comes from: the browser decoder can ask
-// any station in the country, the Pi only has the handful it has built.
-function _radarSiteRow(ids, current, onPick, onBack) {
-  const wrap = document.getElementById('sub-bubbles');
-  wrap.innerHTML = '';
-  _radarBackBubble(wrap, onBack);
-  ids.forEach(id => {
-    const el = document.createElement('div');
-    el.className = 'sub-bubble' + (id === current ? ' active' : '');
-    el.id = 'sub-site-' + id;
-    el.innerHTML = `<span class="sb-icon"><svg class=svgi width=1em height=1em`
-                 + ` style=vertical-align:-.15em><use href=#ic-antenna></use>`
-                 + `</svg></span><span class="sb-label">`
-                 + `${String(id).toUpperCase()}</span>`;
-    el.onclick = () => onPick(id);
-    wrap.appendChild(el);
-  });
-  wrap.style.display = 'flex';
-}
+// Which source the Radar bubble is showing: 'normal', 'l2' or 'l3'. The map's
+// station pills read this to know what a click should mean, and _syncNexradSites
+// reads it to keep the pills up while a decoder mode is active.
+let _radarSource = 'normal';
 
 function _radarBackBubble(wrap, onBack) {
   const back = document.createElement('div');
@@ -18494,6 +18471,10 @@ function toggleRadarSub() {
   _radarBackBubble(wrap, () => {
     if (!activeLayers.nexrad) _disableRadar();
     _syncParentBubble('radar');
+    // Leaving the menu without drawing anything must take the station pills
+    // back down; they were put up for choosing, and there is nothing to
+    // choose for any more.
+    if (typeof _syncNexradSites === 'function') try { _syncNexradSites(); } catch (e) {}
     renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
   });
   RADAR_SOURCE_BUBBLES.forEach(b => {
@@ -18517,15 +18498,11 @@ function toggleRadarL2Sub() {
   _prDisable();
   wrap.innerHTML = '';
   _radarBackBubble(wrap, () => toggleRadarSub());
-  _radarSiteBubble(wrap, _l2Site, () => _radarSiteRow(
-    _radarNearbySites(8), _l2Site,
-    (id) => { _l2Site = id;
-              try { localStorage.setItem('gwcfc_l2_site', id); } catch (e) {}
-              // Straight back to the products, and redraw at the new station
-              // if something was already showing.
-              toggleRadarL2Sub();
-              if (_l3Overlay && currentProduct) loadL3Data(currentProduct, id); },
-    () => toggleRadarL2Sub()));
+  // The station is picked on the map itself, exactly like the normal
+  // products: opening this row puts the station pills up, and clicking one
+  // switches the volume. No second chooser in the menu.
+  _radarSource = 'l2';
+  if (typeof showNexradSites === 'function') showNexradSites();
   RADAR_L2_BUBBLES.forEach(b => {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (currentProduct === b.product ? ' active' : '');
@@ -18589,14 +18566,12 @@ function _prRenderPiRow(level) {
   if (!wrap) return;
   wrap.innerHTML = '';
   _radarBackBubble(wrap, () => toggleRadarSub());
-  // The sites the Pi has actually built, which is a handful rather than the
-  // whole country: it only decodes the ones it was told to.
+  // Station choice happens on the map pills here too. The Pi only holds a few
+  // radars, so the pills for everything else explain themselves when clicked.
   const sites = Object.keys((_prIndex && _prIndex.sites) || {});
-  _radarSiteBubble(wrap, _prSite, () => _radarSiteRow(
-    sites, _prSite,
-    async (id) => { await _prSetSite(id); toggleRadarPiSub(level); },
-    () => toggleRadarPiSub(level)));
-  RADAR_PI_BUBBLES.forEach(b => {
+  if (typeof showNexradSites === 'function') showNexradSites();
+  RADAR_PI_BUBBLES.filter(b =>
+    level === 'auto' || (PR_PRODUCTS[b.product] || {})[level]).forEach(b => {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (_prProduct === b.product ? ' active' : '');
     el.id = 'sub-' + b.id;
@@ -23910,6 +23885,7 @@ function _zdrColor(t) {
 
 function _disableL3() {
   if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} _l3Overlay = null; }
+  if (typeof _syncNexradSites === 'function') try { _syncNexradSites(); } catch (e) {}
   _l3Canvas = null; _l3Product = null; _l3Station = null;
   const at = document.getElementById('anim-time');
   if (at) at.textContent = '';
@@ -23919,8 +23895,18 @@ async function loadL3Data(product, stationOverride) {
   _disableL3();
   _l3Product = product;
 
-  var center  = map.getCenter();
-  var station = stationOverride || _nearestStation(center.lat, center.lng);
+  var station = stationOverride;
+  if (!station) {
+    // The map comes from a CDN and can still be loading, or blocked outright.
+    // getCenter() on a map that does not exist yet threw, and the throw took
+    // the whole click with it. The remembered station is a fine answer.
+    try {
+      var _c = map.getCenter();
+      station = _nearestStation(_c.lat, _c.lng);
+    } catch (e) {
+      station = (typeof _l2Site !== 'undefined' && _l2Site) || 'ktlx';
+    }
+  }
   _l3Station  = station;
 
   var at = document.getElementById('anim-time');
@@ -24199,7 +24185,6 @@ function _buildNexradSiteMarkers() {
         _l2Site = s.id;
         try { localStorage.setItem('gwcfc_l2_site', s.id); } catch (e) {}
         loadL3Data(currentProduct || 'ref', s.id);
-        if (document.getElementById('sub-radar-site')) toggleRadarL2Sub();
         _refreshNexradSiteStyles();
         return;
       }
@@ -24208,7 +24193,6 @@ function _buildNexradSiteMarkers() {
         // would set a station it has no volume for and draw nothing.
         if (_prIndex && _prIndex.sites && _prIndex.sites[s.id]) {
           _prSetSite(s.id);
-          if (document.getElementById('sub-radar-site')) toggleRadarPiSub('l3');
           _refreshNexradSiteStyles();
         } else if (typeof showToast === 'function') {
           showToast(s.id.toUpperCase() + ' is not one of the radars your Pi '
@@ -24326,7 +24310,13 @@ function hideNexradSites() {
 // via a small helper called after any radar-state mutation.
 function _syncNexradSites() {
   // Show markers whenever nexrad layer is ON OR velocity is active
-  const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha';
+  const radarOn = activeLayers.nexrad || currentProduct === 'vel' || _refStation !== null || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha'
+    // The two decoder modes count as radar being on. Without these the pills
+    // never appeared in Level 2 reflectivity or velocity, because those set
+    // activeLayers.nexrad to false and _refStation to null on the way in, and
+    // the station chooser IS the pills now.
+    || (_radarSource === 'l2' && _l3Overlay != null)
+    || (_radarSource === 'l3' && typeof _prOn !== 'undefined' && _prOn);
   if (radarOn) showNexradSites();
   else         hideNexradSites();
 }
@@ -33472,7 +33462,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Clicking a radar station on the map now switches Level 2 and Level 3 too, the same way it always did for the normal products.";
+const APP_LATEST_UPDATE = "Level 2 draws now: a limit meant to cap range was filtering out every gate. Stations are picked on the map itself, and Level 3 has nine more products.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
