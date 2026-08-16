@@ -23440,6 +23440,7 @@ let _lastMeshData = null, _lastMeshBounds = null, _lastMeshProduct = null;
 
 // ── Radar Web Worker (assets/radar_worker.bundle.js parses L2 binary) ──
 let _radarWebWorker   = null;
+let _l2VolCache = { station: null, at: 0, buf: null };
 let _radarWorkerPending = null;  // { resolve, reject } for current request
 
 function _getRadarWebWorker() {
@@ -23471,6 +23472,19 @@ function _workerProcess(buffer, layer, extraOptions) {
   // Limit gates to 460 per radial (~230 km) - cuts memory and CPU ~50% vs full scan
   var options = Object.assign({ gate_limit: 460 }, extraOptions);
   return new Promise(function(resolve, reject) {
+    // One slot, so a new request must fully retire the old one first. The
+    // slot used to be overwritten in place, and then the OLD reply settled
+    // the NEW promise: every click showed the click before it, off by one
+    // for as long as you kept clicking. One "No SW data" error entered the
+    // stream and every product after it wore the same popup. Terminating
+    // the worker is what guarantees the stale reply can never arrive.
+    if (_radarWorkerPending) {
+      var old = _radarWorkerPending;
+      _radarWorkerPending = null;
+      if (old._timeout) clearTimeout(old._timeout);
+      _killRadarWorker();
+      old.reject(new Error('superseded'));
+    }
     var p = { resolve: resolve, reject: reject, _timeout: null };
     _radarWorkerPending = p;
     // 45-second hard timeout: if the worker hangs (OOM on device, etc.), surface a clear error
@@ -23914,8 +23928,17 @@ async function loadL3Data(product, stationOverride) {
   var at = document.getElementById('anim-time');
   if (at) at.textContent = 'Loading ' + product.toUpperCase() + '…';
 
+  // The same station's volume is good for a couple of minutes, and it is a
+  // 5 MB download. Re-fetching it for every product switch made each click
+  // half a minute of waiting on a slow link, and slow overlapping fetches are
+  // exactly the weather that grows races.
   var buffer;
+  if (_l2VolCache.station === station &&
+      Date.now() - _l2VolCache.at < 120000 && _l2VolCache.buf) {
+    buffer = _l2VolCache.buf.slice(0);
+  }
   try {
+    if (buffer) throw { cached: true };
     console.log('[L2] Fetching', product.toUpperCase(), 'from station', station);
     // Upper case, always. The station list is written in lower case and the
     // Worker refuses anything that is not four capitals:
@@ -23928,10 +23951,14 @@ async function loadL3Data(product, stationOverride) {
     if (!res.ok) { var errJson = await res.json().catch(function(){ return {}; }); throw new Error(errJson.error || 'HTTP ' + res.status); }
     buffer = await res.arrayBuffer();
     console.log('[L2] Fetched', buffer.byteLength, 'bytes for', station);
+    // Keep a copy: the one handed to the worker is transferred away.
+    _l2VolCache = { station: station, at: Date.now(), buf: buffer.slice(0) };
   } catch(e) {
-    console.error('[L2] Fetch failed:', e);
-    _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> <b>' + product.toUpperCase() + ' fetch failed</b><br>' + e.message);
-    return;
+    if (!e || !e.cached) {
+      console.error('[L2] Fetch failed:', e);
+      _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> <b>' + product.toUpperCase() + ' fetch failed</b><br>' + e.message);
+      return;
+    }
   }
 
   var layerMap = { cc: 'CC', zdr: 'ZDR', vel: 'VEL', ref: 'REF', kdp: 'KDP', sw: 'SW' };
@@ -23942,6 +23969,9 @@ async function loadL3Data(product, stationOverride) {
     result = await _workerProcess(buffer, layer);
     console.log('[L2] Worker result: meshData length =', result.meshData?.length, 'bounds =', result.bounds);
   } catch(e) {
+    // A superseded request lost to a newer click on purpose; the newer one
+    // owns the screen and a popup for the loser would be noise.
+    if (e && e.message === 'superseded') return;
     console.error('[L2] Parse failed:', e);
     _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> <b>Parse failed</b><br>' + e.message);
     return;
@@ -33464,7 +33494,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Echo tops and composite reflectivity work now. They arrive as a grid rather than a sweep, and the reader only spoke sweep.";
+const APP_LATEST_UPDATE = "Clicking radar products quickly no longer shows the previous click's error on everything after it, and switching products stops re-downloading the volume.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
