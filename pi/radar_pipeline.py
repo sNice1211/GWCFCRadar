@@ -34,7 +34,9 @@ import os
 import sys
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from urllib.parse import quote
 
 import numpy as np
 from PIL import Image
@@ -49,8 +51,18 @@ from gfs_pipeline import (HTTP, LUTS, MAX_EDGE_PX, Lock, bounds_from, log,
 
 OUT_DIR = os.path.expanduser("~/wxdata/radar")
 
-L2_BUCKET = "https://noaa-nexrad-level2.s3.amazonaws.com"
-L3_BUCKET = "https://unidata-nexrad-level3.s3.amazonaws.com"
+# Where the data actually is, which is not where it used to be.
+#
+# The obvious addresses are both dead ends. noaa-nexrad-level2 holds the whole
+# archive but refuses an anonymous listing, so there is no way to ask it what
+# the newest volume is called. unidata-nexrad-level3 does allow listing, but it
+# stopped being written to in 2022, so what it hands back is a real radar image
+# from six years ago. That is worse than an error: it looked like it worked.
+#
+# So Level 2 comes from the chunks bucket, which is the live feed and is
+# listable, and Level 3 comes from the Weather Service's own file server.
+L2_CHUNKS = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com"
+L3_TGFTP = "https://tgftp.nws.noaa.gov/SL.us008001/DF.of/DC.radar"
 
 # Which radars to build. Kept short on purpose: every site is another volume
 # to fetch and decode, and a Pi doing ten of them every five minutes is busy.
@@ -69,14 +81,14 @@ L2_PRODUCTS = {
             "label": "Velocity", "unit": "m/s"},
 }
 
-# Level 3 products, by the three letter code the Weather Service uses.
+# Level 3 products. "dir" is the Weather Service's own name for the product on
+# their file server, which is not the three letter code everyone else uses:
+# p94r0 is what they call N0Q, and there is no pattern to learn, only a list.
 L3_PRODUCTS = {
-    "n0q": {"code": "N0Q", "range": (-10, 75), "ramp": "radar",
-            "label": "Base Reflectivity", "unit": "dBZ"},
-    "n0u": {"code": "N0U", "range": (-40, 40), "ramp": "velocity",
-            "label": "Base Velocity", "unit": "kt"},
-    "ntp": {"code": "NTP", "range": (0, 100), "ramp": "precip",
-            "label": "Storm Total Precip", "unit": "mm"},
+    "n0q": {"code": "N0Q", "dir": "DS.p94r0", "range": (-10, 75),
+            "ramp": "radar", "label": "Base Reflectivity", "unit": "dBZ"},
+    "n0u": {"code": "N0U", "dir": "DS.p99v0", "range": (-40, 40),
+            "ramp": "velocity", "label": "Base Velocity", "unit": "kt"},
 }
 
 EARTH_R = 6371000.0
@@ -84,73 +96,149 @@ EARTH_R = 6371000.0
 
 # ── Finding files ───────────────────────────────────────────────────────────
 
-def s3_list(bucket, prefix, limit=200):
+NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+
+
+def s3_list(bucket, prefix, delimiter=None, pages=8):
     """
-    What is in a public S3 bucket under a prefix, newest last.
+    What is in a public S3 bucket under a prefix, in order.
 
     Plain HTTPS against the bucket's own listing, so there is no account, no
-    key and no SDK. The response is XML with one Key per object.
+    key and no SDK.
+
+    It follows the continuation token to the end rather than taking the first
+    page, and that is the whole point. S3 returns keys in alphabetical order
+    from the start of the prefix, so one page of a big prefix is the OLDEST
+    keys, not the newest. Asking for one page and taking the last entry is how
+    this ended up serving radar from 2020 while looking entirely healthy.
+
+    With a delimiter it returns folder names instead of keys, which is one
+    small request rather than thousands.
     """
-    url = f"{bucket}/?list-type=2&prefix={prefix}&max-keys={limit}"
-    try:
-        r = HTTP.get(url, timeout=30)
-        if r.status_code != 200:
+    out, token = [], None
+    tag = f"{NS}CommonPrefixes" if delimiter else f"{NS}Contents"
+    field = f"{NS}Prefix" if delimiter else f"{NS}Key"
+    for _ in range(pages):
+        url = f"{bucket}/?list-type=2&prefix={prefix}&max-keys=1000"
+        if delimiter:
+            url += f"&delimiter={delimiter}"
+        if token:
+            url += f"&continuation-token={quote(token, safe='')}"
+        try:
+            r = HTTP.get(url, timeout=30)
+            if r.status_code != 200:
+                # Said out loud, because a silent empty list is indistinguishable
+                # from "there is no weather", and that cost a day.
+                log(f"  listing {prefix or '/'}: HTTP {r.status_code}")
+                return []
+            root = ET.fromstring(r.text)
+        except Exception as e:
+            log(f"  listing {prefix or '/'} failed: {e}")
             return []
-        root = ET.fromstring(r.text)
-    except Exception as e:
-        log(f"  listing failed: {e}")
-        return []
-    ns = "{http://s3.amazonaws.com/doc/2006-03-01/}"
-    return sorted(k.text for k in root.iter(f"{ns}Key") if k.text)
-
-
-def latest_l2_keys(site, count=1, now=None):
-    """
-    The newest Level 2 volumes for one site.
-
-    Yesterday is listed as well as today when the day has only just turned
-    over, because at 00:03 UTC today's prefix holds one file and the frames
-    worth animating are all in yesterday's.
-    """
-    now = now or datetime.now(timezone.utc)
-    keys = []
-    for back in (0, 1):
-        d = now - timedelta(days=back)
-        keys = s3_list(L2_BUCKET,
-                       f"{d.year:04d}/{d.month:02d}/{d.day:02d}/{site}/") + keys
-        if len(keys) >= count + 2:
+        out += [t.findtext(field) for t in root.iter(tag) if t.findtext(field)]
+        if root.findtext(f"{NS}IsTruncated") != "true":
             break
-    # The bucket carries a MDM marker file alongside the volumes, which is not
-    # a volume and will not decode.
-    keys = [k for k in keys if not k.endswith("_MDM")]
-    return keys[-count:] if keys else []
+        token = root.findtext(f"{NS}NextContinuationToken")
+        if not token:
+            break
+    return sorted(out)
 
 
-def latest_l3_keys(site, code, count=1):
+def _chunk_time(key):
+    """The time out of a chunk key, which carries it: .../20260816-023410-001-S"""
+    base = key.rsplit("/", 1)[-1]
+    bits = base.split("-")
+    return f"{bits[0]}_{bits[1]}" if len(bits) >= 2 and bits[0].isdigit() else ""
+
+
+def latest_l2_volumes(site, count=1):
     """
-    The newest Level 3 files for one site and product.
+    The newest Level 2 volumes for one site, as (stamp, [chunk keys]).
 
-    The key is SSS_PPP_YYYY_MM_DD_HH_MM_SS with the leading K dropped from the
-    site, which is a small thing to get wrong and returns an empty list rather
-    than an error when you do.
+    The live feed publishes a volume in pieces as the antenna goes round, under
+    a volume number that counts up and rolls over at 999. So the highest number
+    is usually the newest, but right after a rollover it is the lowest, and
+    neither the numbers nor the names sort into time order. The times are in
+    the chunk names, so a handful of candidates from each end of the range get
+    listed and the real timestamps decide.
     """
-    short = site[1:] if len(site) == 4 and site[0] in "KPT" else site
-    keys = s3_list(L3_BUCKET, f"{short}_{code}_", limit=400)
-    return keys[-count:] if keys else []
+    vols = [p.rstrip("/").rsplit("/", 1)[-1]
+            for p in s3_list(L2_CHUNKS, f"{site}/", delimiter="/")]
+    vols = sorted((v for v in vols if v.isdigit()), key=int)
+    if not vols:
+        return []
+
+    # Both ends, because of the rollover. A few more than asked for, so that a
+    # volume that has only just started can be passed over for a complete one.
+    edge = count + 3
+    found = []
+    for vol in list(dict.fromkeys(vols[-edge:] + vols[:edge])):
+        keys = s3_list(L2_CHUNKS, f"{site}/{vol}/")
+        if not keys:
+            continue
+        # A volume that has only a few chunks is still being written and has
+        # not got a whole bottom sweep in it yet. The one before it has.
+        if len(keys) < 8:
+            continue
+        found.append((_chunk_time(keys[0]), keys))
+    found.sort(key=lambda t: t[0])
+    return found[-count:]
 
 
-def fetch(bucket, key, path):
-    try:
-        r = HTTP.get(f"{bucket}/{key}", timeout=120)
-        if r.status_code != 200 or len(r.content) < 200:
-            log(f"  {key}: HTTP {r.status_code}, {len(r.content)} bytes")
-            return False
-        with open(path, "wb") as f:
+def fetch_chunks(keys, path):
+    """
+    One volume, rebuilt from its pieces.
+
+    The chunks are the file cut into parts in order, not separate files, so
+    joining them back together in key order gives exactly the Archive II volume
+    the archive would have held. The first chunk carries the AR2V header.
+    """
+    total = 0
+    with open(path, "wb") as f:
+        for k in keys:
+            try:
+                r = HTTP.get(f"{L2_CHUNKS}/{k}", timeout=60)
+            except Exception as e:
+                log(f"  {k}: {e}")
+                return False
+            if r.status_code != 200:
+                log(f"  {k}: HTTP {r.status_code}")
+                return False
             f.write(r.content)
-        return True
+            total += len(r.content)
+    return total > 10000
+
+
+def fetch_l3(site, spec, path):
+    """
+    The newest Level 3 product for one site, and when it was made.
+
+    The Weather Service keeps the current one at a fixed address called
+    sn.last, so there is nothing to list and nothing to sort: the newest file
+    is always at the same URL. Which also means the name carries no time, so
+    the time comes from the header the server sends with it.
+    """
+    url = f"{L3_TGFTP}/{spec['dir']}/SI.{site.lower()}/sn.last"
+    try:
+        r = HTTP.get(url, timeout=60)
     except Exception as e:
-        log(f"  {key}: {e}")
-        return False
+        log(f"  {site} {spec['code']}: {e}")
+        return None
+    if r.status_code != 200 or len(r.content) < 200:
+        log(f"  {site} {spec['code']}: HTTP {r.status_code},"
+            f" {len(r.content)} bytes")
+        return None
+    with open(path, "wb") as f:
+        f.write(r.content)
+
+    stamp = datetime.now(timezone.utc)
+    when = r.headers.get("Last-Modified")
+    if when:
+        try:
+            stamp = parsedate_to_datetime(when).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            pass
+    return stamp.strftime("%Y%m%d_%H%M%S")
 
 
 # ── Turning polar sweeps into map coordinates ───────────────────────────────
@@ -336,38 +424,24 @@ def prune(site_dir, keep=KEEP_FRAMES):
         shutil.rmtree(os.path.join(site_dir, old), ignore_errors=True)
 
 
-def key_stamp(key):
-    """The time out of a bucket key, as the folder name to write under."""
-    base = key.rsplit("/", 1)[-1]
-    # Level 2: KTLX20260815_120000_V06
-    if len(base) > 20 and base[4:12].isdigit():
-        return f"{base[4:12]}_{base[13:19]}"
-    # Level 3: TLX_N0Q_2026_08_15_12_00_00
-    bits = base.split("_")
-    if len(bits) >= 8:
-        return f"{bits[2]}{bits[3]}{bits[4]}_{bits[5]}{bits[6]}{bits[7]}"
-    return base
-
-
 # ── Building ────────────────────────────────────────────────────────────────
 
 def build_site_l2(site, frames=1):
     """Fetch and render the newest Level 2 volumes for one site."""
-    keys = latest_l2_keys(site, count=frames)
-    if not keys:
-        log(f"{site}: nothing in the bucket")
+    vols = latest_l2_volumes(site, count=frames)
+    if not vols:
+        log(f"{site}: nothing in the live feed")
         return None
 
     built = []
-    for key in keys:
-        stamp = key_stamp(key)
+    for stamp, keys in vols:
         out = os.path.join(OUT_DIR, "l2", site, stamp)
         if os.path.exists(os.path.join(out, "manifest.json")):
             built.append(stamp)
             continue
         os.makedirs(out, exist_ok=True)
         tmp = os.path.join(out, "_volume")
-        if not fetch(L2_BUCKET, key, tmp):
+        if not fetch_chunks(keys, tmp):
             continue
 
         fields, bounds, where = {}, None, None
@@ -413,18 +487,22 @@ def build_site_l3(site, products=("n0q",), frames=1):
     newest = None
     for pname in products:
         spec = L3_PRODUCTS[pname]
-        keys = latest_l3_keys(site, spec["code"], count=frames)
-        for key in keys:
-            stamp = key_stamp(key)
+        # Only ever the current one. There is no listing to walk back through,
+        # which is the trade for the file being live: past frames accumulate
+        # here run by run rather than being fetched all at once.
+        tmp = os.path.join(OUT_DIR, "l3", site, "_prod")
+        os.makedirs(os.path.dirname(tmp), exist_ok=True)
+        stamp = fetch_l3(site, spec, tmp)
+        if stamp:
             out = os.path.join(OUT_DIR, "l3", site, stamp)
             os.makedirs(out, exist_ok=True)
             done = os.path.join(out, "manifest.json")
             if os.path.exists(os.path.join(out, f"{pname}.png")):
                 newest = stamp
+                os.unlink(tmp)
                 continue
+            os.replace(tmp, os.path.join(out, "_prod"))
             tmp = os.path.join(out, "_prod")
-            if not fetch(L3_BUCKET, key, tmp):
-                continue
             try:
                 data, lat, lon, where = read_l3(tmp)
                 b = render(data, lat, lon, spec,
@@ -483,22 +561,48 @@ def write_index(level, sites):
     return index
 
 
+def _age(stamp, now):
+    """How old a frame is, in words, because that is the thing worth knowing.
+
+    A timestamp printed on its own reads as fine whatever it says, which is how
+    a 2020 file sat there looking current.
+    """
+    try:
+        t = datetime.strptime(stamp, "%Y%m%d_%H%M%S").replace(
+            tzinfo=timezone.utc)
+    except ValueError:
+        return "?"
+    mins = (now - t).total_seconds() / 60.0
+    if mins < 60:
+        return f"{mins:.0f} min old"
+    if mins < 60 * 48:
+        return f"{mins / 60:.1f} hours old  <-- stale"
+    return f"{mins / 1440:.0f} DAYS old  <-- not live"
+
+
 def check(sites):
     """What is available, without downloading or rendering anything."""
     print(f"sites: {', '.join(sites)}\n")
     ok = True
+    now = datetime.now(timezone.utc)
     for site in sites:
-        keys = latest_l2_keys(site, count=3)
-        if keys:
-            newest = key_stamp(keys[-1])
-            print(f"  {site}  L2  {len(keys)} recent, newest {newest}")
-            print(f"        {keys[-1]}")
+        vols = latest_l2_volumes(site, count=1)
+        if vols:
+            stamp, keys = vols[-1]
+            print(f"  {site}  L2  {stamp}  {len(keys)} chunks  {_age(stamp, now)}")
         else:
             print(f"  {site}  L2  nothing found")
             ok = False
-        l3 = latest_l3_keys(site, "N0Q", count=1)
-        print(f"  {site}  L3  {l3[-1] if l3 else 'nothing found'}")
-        if not l3:
+        # A HEAD rather than a GET, so --check stays a check.
+        url = f"{L3_TGFTP}/{L3_PRODUCTS['n0q']['dir']}/SI.{site.lower()}/sn.last"
+        try:
+            r = HTTP.head(url, timeout=30, allow_redirects=True)
+            when = r.headers.get("Last-Modified", "")
+            print(f"  {site}  L3  HTTP {r.status_code}  {when or 'no date'}")
+            if r.status_code != 200:
+                ok = False
+        except Exception as e:
+            print(f"  {site}  L3  {e}")
             ok = False
     print()
     try:
