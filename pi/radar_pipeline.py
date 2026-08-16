@@ -119,8 +119,12 @@ L3_PRODUCTS = {
     "dvl": {"code": "DVL", "dir": "DS.134il", "range": (0, 80),
             "ramp": "heat", "label": "Vertically Integrated Liquid",
             "unit": "kg/m2"},
-    "eet": {"code": "EET", "dir": "DS.135eet", "range": (0, 21),
-            "ramp": "viridis", "label": "Echo Tops", "unit": "km"},
+    # DS.135eet 404'd on all five sites, which settles it: the digital
+    # enhanced product is not published there. The legacy echo tops is, under
+    # the same pNN style as composite reflectivity, and it reports in
+    # thousands of feet.
+    "eet": {"code": "NET", "dir": "DS.p41et", "range": (0, 70),
+            "ramp": "viridis", "label": "Echo Tops", "unit": "kft"},
     # The whole column's strongest echo, not just the lowest sweep.
     "ncr": {"code": "NCR", "dir": "DS.p37cr", "range": (-10, 75),
             "ramp": "radar", "label": "Composite Reflectivity", "unit": "dBZ"},
