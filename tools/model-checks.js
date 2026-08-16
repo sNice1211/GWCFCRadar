@@ -229,36 +229,33 @@ function ok(name, cond, extra) {
      lines.length === 0, lines.length);
   _cycClear();
 
-  // The picker exists because all five of DeepMind's models were being
-  // downloaded and four of them thrown away. These check that the list is
-  // built from the run rather than from the hardcoded names, since a variant
-  // the Pi could not fetch must not be offered and then draw nothing.
-  const cycMan = { tracks: {
-    OPER_ensemble_mean:   { variant:'OPER',   kind:'ensemble_mean' },
-    OPER_ensemble:        { variant:'OPER',   kind:'ensemble' },
-    FNV3P2_ensemble_mean: { variant:'FNV3P2', kind:'ensemble_mean' },
-  }};
-  _cycFillVariants(cycMan);
-  const cycSel = els['cyc-variant-sel'];
-  ok('the picker lists only the variants this run actually has',
-     cycSel.children.length === 2, cycSel.children.length);
-  ok('and it is shown once there is something to pick',
-     els['cyc-variant-row'].style.display === '');
-  ok('the operational one is the default',
-     _cycVariant === 'OPER', _cycVariant);
+  // The cyclone models belong in the model list, not the overlay pills: they
+  // are a forecast, and somebody looking for where a storm is going opens the
+  // model list. These check they are offered there and that picking one draws.
+  console.log('\n21b. cyclone models in the Run Models list');
+  await _cycFillModelPicker();
+  const cg = els['sev-cyc-group'];
+  ok('the run\'s variants are offered as models',
+     cg.children.length === 2, cg.children.length);
+  ok('and they are named as models rather than as raw keys',
+     cg.children[0].value === 'cyc:OPER' &&
+     cg.children[0].textContent.includes('Operational'),
+     cg.children[0].value + ' / ' + cg.children[0].textContent);
+  ok('the group is shown, because there is a run to offer',
+     cg.style.display === '', cg.style.display);
 
-  // A run without OPER in it must fall back rather than pick a name that is
-  // not there, which would silently draw an empty map.
-  _cycFillVariants({ tracks: {
-    FNV3P1_ensemble_mean: { variant:'FNV3P1', kind:'ensemble_mean' } }});
-  ok('a run missing the default falls back to what it does have',
-     _cycVariant === 'FNV3P1', _cycVariant);
-
-  _cycFillVariants({ tracks: {} });
-  ok('and an empty run hides the picker instead of offering nothing',
-     els['cyc-variant-row'].style.display === 'none',
-     els['cyc-variant-row'].style.display);
-  _cycVariant = 'OPER';
+  lines.length = 0;
+  await _sevSetSection('cyc:FNV3P2');
+  ok('picking one records it as the section', _sevSection === 'cyc:FNV3P2',
+     _sevSection);
+  ok('and switches the cyclone layer to that variant',
+     _cycOn === true && _cycVariant === 'FNV3P2',
+     _cycOn + '/' + _cycVariant);
+  ok('and it drew tracks on the map', lines.length > 0, lines.length);
+  // A gridded model's picture underneath would read as this one having drawn
+  // it, so picking a cyclone model has to take that down.
+  ok('the gridded model image is taken down', _hdOn === false, _hdOn);
+  _cycDisable();
 
 
   console.log('\n22. Pi radar, drawn from the newest volume');
@@ -266,7 +263,8 @@ function ok(name, cond, extra) {
   _hdBase = 'https://pi.test';
   await _prEnable();
   ok('the radar layer is on', _prOn === true);
-  ok('it drew a site', _prLayers.length === 1, _prLayers.length);
+  ok('it drew one site, not every site the Pi has',
+     _prLayers.length === 1, _prLayers.length);
   const rl = _prLayers[_prLayers.length-1];
   ok('from the newest frame, not the older one',
      rl && rl.url.includes('/20260815_1205/'), rl && rl.url);
@@ -292,6 +290,22 @@ function ok(name, cond, extra) {
   ok('and that fallback is still Level 2',
      fb && fb.url.includes('/l2/'), fb && fb.url);
   await _prSetLevel('auto');
+
+  // The site bubbles pick which radar. Switching has to change the picture,
+  // and must not add a second one beside the first.
+  await _prSetSite('KFWS');
+  ok('choosing another site draws that one instead',
+     _prLayers.length === 1 &&
+     _prLayers[0].url.includes('/KFWS/'), _prLayers.length + ' ' +
+     (_prLayers[0] && _prLayers[0].url));
+  await _prSetSite('KTLX');
+
+  // A remembered site the current run does not have must not draw nothing.
+  await _prSetSite('KEMX');
+  ok('a site this run does not have falls back rather than drawing nothing',
+     _prLayers.length === 1, _prLayers.length);
+  ok('and the remembered site is corrected to match the map',
+     _prSite === 'KFWS' || _prSite === 'KTLX', _prSite);
 
   _prDisable();
   ok('turning it off clears the layer', _prOn === false && _prLayers.length === 0,
