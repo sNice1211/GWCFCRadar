@@ -31,6 +31,7 @@ models, so nothing else has to change.
 """
 
 import os
+import re
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -683,6 +684,7 @@ def check(sites):
     print(f"sites: {', '.join(sites)}\n")
     ok = True
     now = datetime.now(timezone.utc)
+    any_missing = False
     for site in sites:
         vols = latest_l2_volumes(site, count=1)
         if vols:
@@ -707,9 +709,23 @@ def check(sites):
         print(f"  {site}  L3  {len(good)}/{len(L3_PRODUCTS)} products: "
               f"{', '.join(good) or 'none'}")
         if bad:
+            any_missing = True
             print(f"        missing: {', '.join(bad)}")
         if not good:
             ok = False
+    # When a directory guess is wrong, stop guessing and ask the server for
+    # its real list. One request, printed once, and the next fix is a rename
+    # backed by evidence instead of another guess.
+    if any_missing:
+        try:
+            r = HTTP.get(f"{L3_TGFTP}/", timeout=30)
+            names = sorted(set(re.findall(r"DS\.[a-z0-9]+", r.text)))
+            if names:
+                print("  the server's own product directories, for the record:")
+                for i in range(0, len(names), 8):
+                    print("    " + "  ".join(names[i:i + 8]))
+        except Exception as e:
+            print(f"  could not list the product directories: {e}")
     print()
     try:
         _metpy()
