@@ -30,11 +30,19 @@ services so it survives a reboot and a closed terminal, does a first build, and
 prints the address to give the site. Safe to run again if a step fails.
 
     gwcfc-models    builds the model images, hourly
-    gwcfc-radar     decodes Level 2 radar, every five minutes
+    gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
     gwcfc-cyclones  DeepMind cyclone tracks and genesis, every three hours
     gwcfc-serve     serves them with the header that makes them readable
     gwcfc-tunnel    gives them a public HTTPS address
     gwcfc-publish   tells the site where the tunnel is
+    gwcfc-update    pulls new code every fifteen minutes
+
+The last one is why nothing here needs a `git pull` by hand. The pipelines are
+oneshot units fired by timers, so they read the files fresh on every run and
+pick up new code by themselves; only serve.py holds code in memory, so that is
+the one the updater restarts, and only when serve.py itself changed. It
+fast-forwards or it does nothing: if the Pi has local commits it says so and
+leaves them, rather than deciding on your behalf that they do not matter.
 
 Everything updates itself. Radar is the fast one, because a new volume lands
 every four to six minutes and an hourly check would draw weather that had
