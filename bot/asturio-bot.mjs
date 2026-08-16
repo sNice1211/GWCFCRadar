@@ -259,29 +259,54 @@ Rules:
 - Never invent a warning, a watch or a storm report that is not listed above. People may act on this.`;
 }
 
-async function askAsturio(question, ctx, history = []) {
-  const [alerts, reports] = await Promise.all([fetchAlerts(), fetchStormReports()]);
-  const contents = [
-    ...history,
-    { role: 'user', parts: [{ text: question }] },
-  ];
-  const endpoint = GEMINI_API_KEY
-    ? `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`
-    : AI_WORKER;
+// A key that Google will not let call Gemini is not a temporary failure, and
+// nothing about retrying it will help. But there is a second way to ask, the
+// same worker the website uses, which needs no key at all. So once a key has
+// been refused it is set aside for the rest of the process and everything goes
+// through the worker instead.
+//
+// Before this the bot answered every single mention with the same wall of
+// stack trace and told the user nothing, when a working path was sitting
+// right there unused.
+let _keyRefused = false;
+
+async function _callModel(endpoint, body) {
   const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemPrompt({ alerts, reports, ...ctx }) }] },
-      contents,
-      // Google Search grounding. Without it the model answers weather questions
-      // from training data that is months stale, which for this subject is worse
-      // than useless. With it, anything outside the feeds above is looked up.
-      tools: [{ google_search: {} }],
-    }),
+    body: JSON.stringify(body),
     signal: withTimeout(60000),
   });
   const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
+async function askAsturio(question, ctx, history = []) {
+  const [alerts, reports] = await Promise.all([fetchAlerts(), fetchStormReports()]);
+  const body = {
+    system_instruction: { parts: [{ text: systemPrompt({ alerts, reports, ...ctx }) }] },
+    contents: [...history, { role: 'user', parts: [{ text: question }] }],
+    // Google Search grounding. Without it the model answers weather questions
+    // from training data that is months stale, which for this subject is worse
+    // than useless. With it, anything outside the feeds above is looked up.
+    tools: [{ google_search: {} }],
+  };
+
+  const useKey = GEMINI_API_KEY && !_keyRefused;
+  const direct = `https://generativelanguage.googleapis.com/v1beta/models/`
+               + `${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+
+  let { res, data } = await _callModel(useKey ? direct : AI_WORKER, body);
+
+  // A refused key is a configuration fact, not a blip, so it is only reported
+  // once and the worker takes over from then on.
+  if (useKey && !res.ok && _isKeyProblem(data?.error?.message, res.status)) {
+    _keyRefused = true;
+    console.warn('Gemini key refused, switching to the shared worker for the '
+               + 'rest of this session. ' + explainApiError(data?.error?.message));
+    ({ res, data } = await _callModel(AI_WORKER, body));
+  }
+
   if (!res.ok) throw new Error(explainApiError(data?.error?.message) || `Asturio HTTP ${res.status}`);
   if (!data.candidates?.length) {
     const block = data.promptFeedback?.blockReason;
@@ -290,6 +315,15 @@ async function askAsturio(question, ctx, history = []) {
   const cand = data.candidates[0];
   return cand.content?.parts?.[0]?.text
       || (cand.finishReason && cand.finishReason !== 'STOP' ? `[Stopped: ${cand.finishReason}]` : 'No response.');
+}
+
+// Whether this is the key being rejected rather than the request being wrong.
+// Those need opposite responses: one is worth falling back from, the other
+// would fail exactly the same way through the worker.
+function _isKeyProblem(msg, status) {
+  if (status === 401 || status === 403) return true;
+  return /API_KEY|api key|blocked|PERMISSION_DENIED|not authorized|forbidden/i
+    .test(String(msg || ''));
 }
 
 // Google answers a disabled API with a wall of text that never says what to do.
@@ -873,7 +907,9 @@ client.on(Events.MessageCreate, async (m) => {
     saveHistory(m.author.id, q, answer).catch(() => {});
     for (const part of chunk(answer)) await m.reply(part);
   } catch (e) {
-    console.error('mention:', e);
+    // One line. A stack trace per mention buries everything else in the log
+    // and tells nobody anything the message does not already say.
+    console.error('mention:', e.message || e);
     await m.reply(`Could not answer that: ${e.message}`).catch(() => {});
   }
 });

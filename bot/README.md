@@ -124,6 +124,25 @@ npx pm2 stop asturio      # stop it
 For genuine 24/7 uptime it wants a machine that's always on, a small VPS, or a
 Raspberry Pi. The same files work anywhere Node runs.
 
+## If the Gemini key is refused
+
+    Gemini key refused, switching to the shared worker for the rest of
+    this session.
+
+That is not fatal. There are two ways to ask: a `GEMINI_API_KEY` of your own,
+or the same Cloudflare Worker the website uses, which needs no key. If Google
+refuses the key, the bot says so once and uses the worker from then on, so the
+bot keeps answering.
+
+To use your own key instead, the message says what to change: on the key at
+console.cloud.google.com/apis/credentials, set API restrictions to "Gemini
+API". Google will not let one key hold Gemini alongside other APIs, so Gemini
+needs its own.
+
+The distinction matters: a refused key is worth falling back from, but a quota
+message or a retired model name would fail exactly the same way through the
+worker, so those are reported rather than retried.
+
 ## /map only offers what the site has
 
     node tools/extract-map-options.js
