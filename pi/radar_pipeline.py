@@ -232,13 +232,34 @@ def read_l2(path, moment="REF"):
     if sweep is None:
         return None
 
-    hdr = sweep[0][4][moment.encode()][0]
+    key = moment.encode()
+    hdr = sweep[0][4][key][0]
     az = np.array([ray[0].az_angle for ray in sweep])
     el = float(sweep[0][0].el_angle)
-    rng = (np.arange(hdr.num_gates) * hdr.gate_width
-           + hdr.first_gate)
-    data = np.array([ray[4][moment.encode()][1] for ray in sweep],
-                    dtype=np.float32)
+
+    # MetPy reports first_gate and gate_width in KILOMETRES, and gate_latlon
+    # works in metres, the way read_l3 already feeds it. Without the thousand
+    # the whole sweep lands within a few hundred metres of the antenna and the
+    # picture is a dot, which is exactly "L2 does not work while L3 does": L3
+    # multiplied and L2 did not.
+    rng = (np.arange(hdr.num_gates) * hdr.gate_width + hdr.first_gate) * 1000.0
+
+    # Rays in one sweep can carry different gate counts, so a plain np.array
+    # over them makes a ragged object array that will not render. Pad every ray
+    # to the widest with NaN, which the renderer already treats as no data.
+    rows = [np.asarray(ray[4][key][1], dtype=np.float32)
+            for ray in sweep if key in ray[4]]
+    width = max(len(r) for r in rows)
+    data = np.full((len(rows), width), np.nan, dtype=np.float32)
+    for i, r in enumerate(rows):
+        # MetPy returns a masked array where the radar saw nothing; the mask
+        # has to become NaN or the fill value paints as a real echo.
+        r = np.ma.filled(np.ma.masked_invalid(r), np.nan)
+        data[i, :len(r)] = r
+
+    # rng is one gate axis; if a ray was shorter its extra columns are NaN and
+    # simply do not draw. az and data share the ray axis, so they line up.
+    rng = rng[:width]
 
     site_lat = float(f.sweeps[0][0][1].lat)
     site_lon = float(f.sweeps[0][0][1].lon)
