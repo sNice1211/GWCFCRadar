@@ -1207,6 +1207,14 @@ body {
   display: flex; align-items: center;
 }
 .ov-drag:hover { color: var(--accent2); }
+/* Tilt chips: a tiny horizontal strip on the active Level 2 product bubble. */
+.tilt-strip { display: inline-flex; gap: 2px; margin-left: 6px; vertical-align: middle; }
+.tilt-chip {
+  font-size: 9px; line-height: 1; padding: 2px 4px; border-radius: 3px;
+  background: rgba(0,140,186,0.15); border: 1px solid rgba(0,140,186,0.45);
+  color: #9fdcf2; cursor: pointer; user-select: none;
+}
+.tilt-chip.active { background: #008CBA; color: #fff; }
 /* A chooser that belongs to the pill above it, so it is indented under it
    rather than sitting in the list as if it were another overlay. */
 .ov-sub { padding: 2px 6px 6px 22px; display: flex; gap: 4px; }
@@ -18536,6 +18544,31 @@ function toggleRadarL2Sub() {
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span>`
                  + `<span class="sb-label">${b.label}</span>`;
+    // The tilt chips ride on the chosen product's own bubble: a tiny
+    // horizontal strip of cut numbers, because the tilt belongs to what is
+    // showing, not to the menu at large. The antenna sweeps the same circle
+    // at rising angles; 1 is the weather most people mean, the higher cuts
+    // look into a storm's structure, and switching re-decodes from the
+    // cached volume with no download at all.
+    if (currentProduct === b.product && _l2TiltList.length > 1) {
+      const strip = document.createElement('span');
+      strip.className = 'tilt-strip';
+      _l2TiltList.slice(0, 8).forEach(cut => {
+        const chip = document.createElement('span');
+        chip.className = 'tilt-chip' + (cut === _l2Tilt ? ' active' : '');
+        chip.textContent = cut;
+        chip.title = 'Tilt ' + cut;
+        chip.onclick = (ev) => {
+          ev.stopPropagation();
+          _l2Tilt = cut;
+          strip.querySelectorAll('.tilt-chip').forEach(c =>
+            c.classList.toggle('active', c.textContent == String(cut)));
+          loadL3Data(currentProduct || 'ref', _l2Site || undefined);
+        };
+        strip.appendChild(chip);
+      });
+      el.appendChild(strip);
+    }
     el.onclick = () => {
       if (currentProduct === b.product && _l3Overlay) {
         // Tapping the product already drawn turns it off, the way the rest of
@@ -33631,7 +33664,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Level 2 has tilts now, like SparkRadar: once a volume loads, pick any cut of the antenna sweep and it redraws with no new download.";
+const APP_LATEST_UPDATE = "The tilt picker is now a strip of tiny numbered chips on the product you have chosen, instead of a row of full bubbles.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
