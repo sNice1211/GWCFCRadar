@@ -11055,33 +11055,27 @@
     return { pushQuad, finalize };
   };
   var processRadarData = (radar, radarLocation, extent, layer, options = {}) => {
-    let radarData;
-    if (layer === "REF") {
-      radarData = radar.getHighresReflectivity();
-    } else if (layer === "VEL") {
-      radarData = radar.getHighresVelocity();
-      if (Array.isArray(radarData) && radarData.every((item) => item === void 0)) {
-        const elevationLevels = radar.listElevations().sort((a, b) => a - b);
-        let currentIndex = elevationLevels.indexOf(radar.elevation);
-        while (currentIndex + 1 < elevationLevels.length) {
-          currentIndex += 1;
-          radar.setElevation(elevationLevels[currentIndex]);
-          radarData = radar.getHighresVelocity();
-          if (Array.isArray(radarData) && !radarData.every((item) => item === void 0)) {
-            break;
-          }
-        }
+    const getters = {
+      REF: () => radar.getHighresReflectivity(),
+      VEL: () => radar.getHighresVelocity(),
+      CC: () => radar.getHighresCorrelationCoefficient(),
+      KDP: () => radar.getHighresDiffPhase(),
+      SW: () => radar.getHighresSpectrum(),
+      ZDR: () => radar.getHighresDiffReflectivity()
+    };
+    const getter = getters[layer];
+    if (!getter) throw new Error(`Unknown radar layer: ${layer}`);
+    const empty = (d) => !Array.isArray(d) || d.length === 0 || d.every((item) => item === void 0);
+    let radarData = getter();
+    if (empty(radarData)) {
+      const elevationLevels = radar.listElevations().sort((a, b) => a - b);
+      let currentIndex = elevationLevels.indexOf(radar.elevation);
+      while (currentIndex + 1 < elevationLevels.length) {
+        currentIndex += 1;
+        radar.setElevation(elevationLevels[currentIndex]);
+        radarData = getter();
+        if (!empty(radarData)) break;
       }
-    } else if (layer === "CC") {
-      radarData = radar.getHighresCorrelationCoefficient();
-    } else if (layer === "KDP") {
-      radarData = radar.getHighresDiffPhase();
-    } else if (layer === "SW") {
-      radarData = radar.getHighresSpectrum();
-    } else if (layer == "ZDR") {
-      radarData = radar.getHighresDiffReflectivity();
-    } else {
-      throw new Error(`Unknown radar layer: ${layer}`);
     }
     if (Array.isArray(radarData) && radarData.length > 0 && radarData.every((item) => item === void 0)) {
       throw new Error(`No ${layer} data at elevation ${radar.elevation} - this scan may not carry this moment`);

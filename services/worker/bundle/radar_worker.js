@@ -122,33 +122,35 @@ const createMeshBuilder = (includeGeojson) => {
 };
 
 const processRadarData = (radar, radarLocation, extent, layer, options = {}) => {
-    let radarData;
-    if (layer === 'REF') {
-        radarData = radar.getHighresReflectivity();
-    } else if (layer === 'VEL') {
-        radarData = radar.getHighresVelocity();
-        if (Array.isArray(radarData) && radarData.every(item => item === undefined)) {
-            const elevationLevels = radar.listElevations().sort((a, b) => a - b);
-            let currentIndex = elevationLevels.indexOf(radar.elevation);
-            while (currentIndex + 1 < elevationLevels.length) {
-                currentIndex += 1;
-                radar.setElevation(elevationLevels[currentIndex]);
-                radarData = radar.getHighresVelocity();
-                if (Array.isArray(radarData) && !radarData.every(item => item === undefined)) {
-                    break;
-                }
-            }
+    // Every moment gets the same treatment velocity always had. A volume's
+    // lowest cut is the surveillance sweep, and on the common scan patterns
+    // it carries reflectivity and the dual polarity fields but not velocity
+    // or spectrum width: those live one cut up, in the same file. Only VEL
+    // used to walk up to find its data, so SW failed with "no data at
+    // elevation 1" on virtually every scan, which read as the product being
+    // broken when the data was a sweep away the whole time.
+    const getters = {
+        REF: () => radar.getHighresReflectivity(),
+        VEL: () => radar.getHighresVelocity(),
+        CC:  () => radar.getHighresCorrelationCoefficient(),
+        KDP: () => radar.getHighresDiffPhase(),
+        SW:  () => radar.getHighresSpectrum(),
+        ZDR: () => radar.getHighresDiffReflectivity(),
+    };
+    const getter = getters[layer];
+    if (!getter) throw new Error(`Unknown radar layer: ${layer}`);
+    const empty = (d) => !Array.isArray(d) || d.length === 0
+        || d.every(item => item === undefined);
+    let radarData = getter();
+    if (empty(radarData)) {
+        const elevationLevels = radar.listElevations().sort((a, b) => a - b);
+        let currentIndex = elevationLevels.indexOf(radar.elevation);
+        while (currentIndex + 1 < elevationLevels.length) {
+            currentIndex += 1;
+            radar.setElevation(elevationLevels[currentIndex]);
+            radarData = getter();
+            if (!empty(radarData)) break;
         }
-    } else if (layer === 'CC') {
-        radarData = radar.getHighresCorrelationCoefficient();
-    } else if (layer === 'KDP') {
-        radarData = radar.getHighresDiffPhase();
-    } else if (layer === 'SW') {
-        radarData = radar.getHighresSpectrum();
-    } else if (layer == 'ZDR') {
-        radarData = radar.getHighresDiffReflectivity();
-    } else {
-        throw new Error(`Unknown radar layer: ${layer}`);
     }
 
     // CC/ZDR/KDP/SW aren't broadcast on every tilt of every VCP - a tilt that

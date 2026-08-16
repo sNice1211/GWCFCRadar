@@ -113,12 +113,15 @@ ok('the station pill layer was built for the whole country',
    pills.built && pills.markers > 100, pills.markers);
 
 console.log('\n5. the address the Worker is actually given');
-const url = await page.evaluate(() => {
+const url = await page.evaluate(async () => {
   let seen = null;
   const real = window.fetch;
   window.fetch = (u) => { if (String(u).includes('station=')) seen = String(u);
                           return Promise.reject(new Error('blocked in test')); };
-  try { loadL3Data('cc', _l2Site || undefined); } catch (e) {}
+  // Awaited, because the direct live-feed attempt now runs first and the
+  // Worker is the fallback: the spy has to stay in place for the whole
+  // chain, not just the first synchronous step.
+  try { await loadL3Data('cc', _l2Site || undefined); } catch (e) {}
   window.fetch = real;
   return seen;
 });
@@ -144,7 +147,7 @@ console.log('\n7. the map station pills mean the same thing as the row');
 await page.evaluate(() => { toggleRadarL2Sub();
   const b = document.getElementById('sub-l2-ref'); if (b) b.onclick(); });
 await page.waitForTimeout(400);
-const viaPill = await page.evaluate(() => {
+const viaPill = await page.evaluate(async () => {
   let seen = null;
   const real = window.fetch;
   window.fetch = (u) => { if (String(u).includes('station=')) seen = String(u);
@@ -152,7 +155,7 @@ const viaPill = await page.evaluate(() => {
   // What the pill handler does, with a station that is not the current one.
   _radarSource = 'l2';
   _l2Site = 'kdyx';
-  loadL3Data(currentProduct || 'ref', 'kdyx');
+  try { await loadL3Data(currentProduct || 'ref', 'kdyx'); } catch (e) {}
   window.fetch = real;
   return { url: seen, source: _radarSource, site: _l2Site };
 });
