@@ -573,7 +573,13 @@ MODELS = {
         # holds every hour at once, so a run is two downloads.
         "source": "aqm", "crop": True,
         "fields": {"ozone", "pm25"},
-        "label": "AQM Air Quality", "res": "5 km", "cycle_h": 6, "lag_h": 3,
+        "label": "AQM Air Quality", "res": "5 km",
+        # Once a day, on the 12z run. Each file is about 90 MB because it holds
+        # every forecast hour, and we render one, so four runs a day cost 700 MB
+        # to redraw the same two pictures. Air quality does not move like a
+        # thunderstorm: between one run and the next it barely changes, so the
+        # other three were paying full price for almost nothing.
+        "cycle_h": 24, "cycle_offset": 12, "lag_h": 3,
         "step": 1, "out": 0,
     },
     "etss": {
@@ -766,7 +772,10 @@ MB_PER_HOUR = {
     # Storm domains are small.
     "hafs": 2.0, "hafsb": 2.0, "hwrf": 2.0, "hmon": 2.0,
     "rrfssub": 5.4, "rrfsfire": 2.0, "gefswave": 1.6, "ecmwfwave": 4.0,
-    "aqm": 3.0, "etss": 1.0, "hrdps": 14.0, "rdps": 6.0,
+    # Measured, not guessed: 89 MB a species and two species, for the one
+    # hour it builds. Much the most expensive single frame here, which is
+    # exactly why the cheapest-first ordering needs to be told.
+    "aqm": 179.0, "etss": 1.0, "hrdps": 14.0, "rdps": 6.0,
     "iconeu": 6.0, "icond2": 4.0,
     "hireswnssl": 6.0, "cmce": 0.1, "iconeps": 21.0, "ecmwfaifsens": 4.3,
 }
@@ -1809,10 +1818,22 @@ def cycle_for(m, now=None):
     waiting for it. Each model has its own cadence and its own lag: GFS runs
     four times a day and lands about five hours later, HRRR runs every hour and
     lands about two.
+
+    cycle_offset is for a model whose runs do not start at midnight. Rounding
+    assumes cycle zero is 00z, which is true of everything on NOMADS except
+    where we deliberately want one run a day out of a model that publishes
+    several: a daily cadence rounds to 00z, and if the run we actually want is
+    12z then the offset is what says so. It must be smaller than cycle_h.
     """
     now = now or datetime.now(timezone.utc)
     t = now - timedelta(hours=m["lag_h"])
-    cyc = (t.hour // m["cycle_h"]) * m["cycle_h"]
+    off = m.get("cycle_offset", 0)
+    hour = t.hour - off
+    if hour < 0:
+        # Before today's first cycle, so the newest run is yesterday's last.
+        t -= timedelta(days=1)
+        hour += 24
+    cyc = (hour // m["cycle_h"]) * m["cycle_h"] + off
     return t.strftime("%Y%m%d"), f"{cyc:02d}"
 
 
