@@ -146,7 +146,7 @@ def publish_if_changed(force=False):
         log(f"could not publish: HTTP {e.code}: {detail}")
         if e.code in (401, 403):
             log("  that is the rules refusing the write. Publish the piEndpoint")
-            log("  block from FIRESTORE_RULES.txt in the Firebase console.")
+            log("  block from firebase/FIRESTORE_RULES.txt in the console.")
         elif e.code == 400 and "CONFIGURATION_NOT_FOUND" in detail:
             log("  anonymous sign-in is switched off for this project. Turn it")
             log("  on under Authentication, Sign-in method, Anonymous.")

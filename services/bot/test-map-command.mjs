@@ -2,7 +2,7 @@
 /*
  * Builds the real /map command and checks it against Discord's own limits.
  *
- *     node bot/test-map-command.mjs
+ *     node services/bot/test-map-command.mjs
  *
  * Those limits are otherwise discovered at startup, when registration fails
  * and the bot is already down. This also checks the command against what the

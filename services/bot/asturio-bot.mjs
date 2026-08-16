@@ -569,7 +569,7 @@ async function saveHistory(discordId, question, answer) {
 
 // ── Discord ───────────────────────────────────────────────────────────────
 // ── /map, built from what the site actually offers ─────────────────────────
-// The lists come from bot/map-options.json, which tools/extract-map-options.js
+// The lists come from services/bot/map-options.json, which tools/extract-map-options.js
 // reads out of index.html. Typed by hand they had already drifted: the command
 // offered six radar products where the page shows five, and eight satellite
 // bands where the page has sixteen.

@@ -34,7 +34,7 @@ function firestoreBase(projectId) {
   return `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
 }
 
-// Same approach the bot in bot/ uses: sign in anonymously with the public web
+// Same approach the bot in services/bot/ uses: sign in anonymously with the public web
 // API key rather than carrying a service-account key. The Worker then has
 // exactly the access an ordinary visitor has, and no more, so the worst case if
 // this Worker leaked is what any visitor could already do.
