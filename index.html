@@ -18452,6 +18452,11 @@ const RADAR_SUB_BUBBLES = [
 // the site chooser, so the menu does not need a second one.
 let _l2Site = null;
 try { _l2Site = localStorage.getItem('gwcfc_l2_site') || null; } catch (e) {}
+// Which cut of the volume to draw, the way SparkRadar offers tilts. Null is
+// the lowest. Reset when the radar changes, because cut numbers only mean
+// anything within one volume's scan pattern.
+let _l2Tilt = null;
+let _l2TiltList = [];
 
 // Which source the Radar bubble is showing: 'normal', 'l2' or 'l3'. The map's
 // station pills read this to know what a click should mean, and _syncNexradSites
@@ -18505,6 +18510,26 @@ function toggleRadarL2Sub() {
   // switches the volume. No second chooser in the menu.
   _radarSource = 'l2';
   if (typeof showNexradSites === 'function') showNexradSites();
+  // Tilts, once a volume has told us which cuts it carries. The antenna
+  // sweeps the same circle at rising angles; tilt 1 is the weather most
+  // people mean, the higher cuts look into a storm's structure. Switching
+  // re-decodes from the cached volume, so it costs no download at all.
+  _l2TiltList.slice(0, 8).forEach(cut => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (cut === _l2Tilt ? ' active' : '');
+    el.id = 'sub-l2-tilt-' + cut;
+    el.innerHTML = '<span class="sb-icon"><svg class=svgi width=1em height=1em'
+                 + ' style=vertical-align:-.15em><use href=#ic-chart-up></use>'
+                 + '</svg></span><span class="sb-label">Tilt ' + cut + '</span>';
+    el.onclick = () => {
+      _l2Tilt = cut;
+      _l2TiltList.slice(0, 8).forEach(c =>
+        document.getElementById('sub-l2-tilt-' + c)
+          ?.classList.toggle('active', c === cut));
+      loadL3Data(currentProduct || 'ref', _l2Site || undefined);
+    };
+    wrap.appendChild(el);
+  });
   RADAR_L2_BUBBLES.forEach(b => {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (currentProduct === b.product ? ' active' : '');
@@ -24070,7 +24095,8 @@ async function loadL3Data(product, stationOverride) {
   var result;
   try {
     console.log('[L2] Sending', buffer.byteLength, 'bytes to worker for layer', layer);
-    result = await _workerProcess(buffer, layer);
+    result = await _workerProcess(buffer, layer,
+      _l2Tilt ? { elevation: _l2Tilt } : undefined);
     console.log('[L2] Worker result: meshData length =', result.meshData?.length, 'bounds =', result.bounds);
   } catch(e) {
     // A superseded request lost to a newer click on purpose; the newer one
@@ -24082,6 +24108,12 @@ async function loadL3Data(product, stationOverride) {
   }
 
   _renderMesh(result, product, station);
+  var meta = result && result.metadata;
+  if (meta && Array.isArray(meta.availableElevations)) {
+    _l2TiltList = meta.availableElevations;
+    _l2Tilt = meta.elevationNumber || _l2Tilt;
+    if (document.getElementById('sub-l2-ref')) toggleRadarL2Sub();
+  }
 }
 
 function _renderMesh(result, product, station) {
@@ -24318,6 +24350,7 @@ function _buildNexradSiteMarkers() {
       // wrong order, clicking a pill while Level 2 was showing reflectivity
       // swapped the decoded volume for a mosaic tile without a word about it.
       if (_radarSource === 'l2') {
+        if (_l2Site !== s.id) { _l2Tilt = null; _l2TiltList = []; }
         _l2Site = s.id;
         try { localStorage.setItem('gwcfc_l2_site', s.id); } catch (e) {}
         loadL3Data(currentProduct || 'ref', s.id);
@@ -33598,7 +33631,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The radar decoder is now built from SparkRadar's own source, with their parsers vendored in full, and Level 2 loads faster.";
+const APP_LATEST_UPDATE = "Level 2 has tilts now, like SparkRadar: once a volume loads, pick any cut of the antenna sweep and it redraws with no new download.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

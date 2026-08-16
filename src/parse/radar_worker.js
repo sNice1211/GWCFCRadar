@@ -673,7 +673,11 @@ self.onmessage = (event) => {
                 timeIso: new Date((header.julian_date * 86400 * 1000) + header.mseconds - 3600000).toISOString(),
                 elevationAngle: header.elevation_angle,
                 station: options?.station || null,
-                vcp: getLevel2Vcp(radar, header)
+                vcp: getLevel2Vcp(radar, header),
+                // GWCFC: the page builds its tilt picker from what this volume
+                // actually carries, so the list rides back with the result.
+                availableElevations: elevations,
+                elevationNumber: radar.elevation
             };
 
             self.postMessage({
