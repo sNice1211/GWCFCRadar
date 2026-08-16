@@ -152,6 +152,7 @@ const OLD_INDEX = () => ({ models: {
              path:'gfstrop/'+RUN+'/manifest.json' },
 }});
 let useOldIndex = false;
+let usePiL3 = false;
 
 let fetchLog = [];
 global.fetch = async (url) => {
@@ -198,7 +199,18 @@ global.fetch = async (url) => {
              path:'l2/KTLX/{frame}/manifest.json' },
       KFWS:{ frames:['20260815_1201','20260815_1206'],
              path:'l2/KFWS/{frame}/manifest.json' } } }) };
-  if (url.split('?')[0].endsWith('radar/latest_l3.json')) return { ok:false };
+  if (url.split('?')[0].endsWith('radar/latest_l3.json'))
+    return usePiL3
+      ? { ok:true, json: async () => ({ level:3, sites:{
+          KTLX:{ frames:['20260816_0500'],
+                 path:'l3/KTLX/{frame}/manifest.json' } } }) }
+      : { ok:false };
+  const r3 = url.split('?')[0].match(/radar\/l3\/(\w+)\/([\d_]+)\/manifest\.json/);
+  if (r3) return { ok:true, json: async () => ({ site:r3[1], level:3, time:r3[2],
+     bounds:[[33,-99],[37,-95]],
+     // Every product the Pi builds, which is what the row offers.
+     fields: Object.fromEntries(['n0q','n0u','n0c','n0x','n0k','n0h',
+       'ohp','stp','dvl','eet','ncr'].map(f => [f, {min:0,max:1}])) }) };
   const rm = url.split('?')[0].match(/radar\/l2\/(\w+)\/([\d_]+)\/manifest\.json/);
   if (rm) return { ok:true, json: async () => ({ site:rm[1], level:2, time:rm[2],
      bounds:[[33,-99],[37,-95]],

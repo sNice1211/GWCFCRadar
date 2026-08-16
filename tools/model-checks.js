@@ -307,6 +307,23 @@ function ok(name, cond, extra) {
   ok('and the remembered site is corrected to match the map',
      _prSite === 'KFWS' || _prSite === 'KTLX', _prSite);
 
+  // The Pi's Level 3 row, against a Pi that has built all eleven products.
+  // "None of L3 works" has to be checkable on our half: each product bubble
+  // must fetch its own PNG out of the frame the manifest describes.
+  usePiL3 = true;
+  await _prSetLevel('l3');
+  for (const [prod, png] of [['reflectivity','n0q'], ['velocity','n0u'],
+      ['corrcoeff','n0c'], ['hydroclass','n0h'], ['stormtotal','stp'],
+      ['vil','dvl'], ['echotops','eet'], ['composite','ncr']]) {
+    await _prSetProduct(prod);
+    const u = _prLayers[0] && _prLayers[0].url;
+    ok('Level 3 ' + prod + ' draws its own image',
+       u && u.includes('/l3/KTLX/20260816_0500/' + png + '.png'), u);
+  }
+  usePiL3 = false;
+  await _prSetLevel('auto');
+  await _prSetProduct('reflectivity');
+
   _prDisable();
   ok('turning it off clears the layer', _prOn === false && _prLayers.length === 0,
      _prLayers.length);

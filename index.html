@@ -23470,9 +23470,19 @@ async function _fetchVolumeDirect(stationId) {
   // The volume number rolls over at 999, so the highest number is only the
   // newest when there has been no rollover. Time goes backwards exactly once
   // in the number-sorted list, so a short binary search finds where.
+  //
+  // Probe the highest number first: when it is minutes old it IS the newest,
+  // rollover or not, and the search is skipped entirely. That is the common
+  // case, and it saves a dozen sequential round trips on a slow connection.
   let at = vols.length - 1;
-  const first = await _s3VolTime(station, vols[0]).catch(() => '');
   const last = await _s3VolTime(station, vols[at]).catch(() => '');
+  const ageMin = (() => {
+    const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(last || '');
+    if (!m) return Infinity;
+    return (Date.now() - Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5])) / 60000;
+  })();
+  const first = ageMin < 12 ? ''
+    : await _s3VolTime(station, vols[0]).catch(() => '');
   if (first && last && first > last) {
     let lo = 0, hi = vols.length - 1;
     while (lo < hi) {
@@ -33588,7 +33598,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Level 2 now streams straight from the radar feed, spectrum width found its data one sweep up, and all 45 airport terminal radars work.";
+const APP_LATEST_UPDATE = "The radar decoder is now built from SparkRadar's own source, with their parsers vendored in full, and Level 2 loads faster.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -36679,6 +36689,24 @@ function _ovLoadOrder(){
           <div class="credit-desc">Free open-source CDN hosting for the JavaScript libraries this app loads at runtime.</div>
           <div class="credit-uses"><span class="credit-use">Libraries</span></div>
           <a class="credit-link" href="https://www.jsdelivr.com/" target="_blank" rel="noopener">jsdelivr.com</a>
+        </div>
+      </div>
+      <div class="credit-row">
+        <div class="credit-icon"><svg class=svgi width=1.1em height=1.1em><use href=#ic-antenna></use></svg></div>
+        <div class="credit-info">
+          <div class="credit-name">SparkRadar</div>
+          <div class="credit-desc">The Level 2 and Level 3 radar parsers and the decoding worker are SparkRadar's, vendored from their open source. The raw-radar half of this site stands on their work.</div>
+          <div class="credit-uses"><span class="credit-use">Radar Decoding</span></div>
+          <a class="credit-link" href="https://github.com/tgranz/sparkradar" target="_blank" rel="noopener">github.com/tgranz/sparkradar</a>
+        </div>
+      </div>
+      <div class="credit-row">
+        <div class="credit-icon"><svg class=svgi width=1.1em height=1.1em><use href=#ic-wind></use></svg></div>
+        <div class="credit-info">
+          <div class="credit-name">AtticRadar</div>
+          <div class="credit-desc">Doppler velocity dealiasing, and the terminal radar station table our list is verified against, come from SteepAtticStairs' AtticRadar.</div>
+          <div class="credit-uses"><span class="credit-use">Velocity Dealiasing</span></div>
+          <a class="credit-link" href="https://github.com/SteepAtticStairs/AtticRadar" target="_blank" rel="noopener">github.com/SteepAtticStairs/AtticRadar</a>
         </div>
       </div>
       <div class="credit-row">
