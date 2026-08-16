@@ -62,7 +62,7 @@ global.document = {
 };
 ['sev-var-sel','sev-run-sel','sev-frame-grid','sev-fcast-date','sev-fcast-flbl',
  'sev-playbar-fill','sev-playbar-thumb','sev-model-sel','sev-pi-group',
- 'sev-region-sel','cyc-variant-sel','cyc-variant-row'].forEach(id => els[id] = mkEl(id));
+ 'sev-region-sel','cyc-variant-sel','cyc-variant-row','sev-cyc-group'].forEach(id => els[id] = mkEl(id));
 // The <select> reports the options its optgroup holds, the way a real one does.
 els['sev-model-sel'].options = els['sev-pi-group'].children;
 
@@ -159,7 +159,10 @@ global.fetch = async (url) => {
   if (url.includes('firestore')) return { ok:true, json: async () => ({ fields:{ url:{ stringValue:'https://pi.test' } } }) };
   // The page cache-busts this with a query parameter, so match the path
   // rather than the whole string.
-  if (url.split('?')[0].endsWith('latest.json'))
+  // models/, not just latest.json: the radar and cyclone indexes are also
+  // called latest.json, and a matcher that only looked at the filename
+  // answered the cyclone request with the model list.
+  if (url.split('?')[0].endsWith('models/latest.json'))
     return { ok:true, json: async () => (useOldIndex ? OLD_INDEX() : INDEX()) };
   const old = url.match(/models\/gfstrop\/[\d_]+\/manifest\.json/);
   if (old) return { ok:true, json: async () => MANIFESTS()['gfs/tropics'] };
@@ -168,10 +171,33 @@ global.fetch = async (url) => {
            return man ? { ok:true, json: async()=>man } : { ok:false }; }
   // A fake Pi radar: Level 2 has two frames, Level 3 is absent, so the
   // fallback and the newest-frame pick are both exercised.
+  // A cyclone run, so the model picker has something to offer. Two variants,
+  // each with a mean and its members, which is the shape the Pi writes.
+  if (url.split('?')[0].endsWith('cyclones/latest.json'))
+    return { ok:true, json: async () => ({ run:'2026_08_16T00_00',
+      path:'2026_08_16T00_00/manifest.json' }) };
+  if (url.split('?')[0].endsWith('2026_08_16T00_00/manifest.json'))
+    return { ok:true, json: async () => ({ run:'2026_08_16T00_00', genesis:{},
+      tracks:{
+        OPER_ensemble_mean:   { variant:'OPER',   kind:'ensemble_mean',
+                                path:'tracks_OPER_ensemble_mean.json' },
+        OPER_ensemble:        { variant:'OPER',   kind:'ensemble',
+                                path:'tracks_OPER_ensemble.json' },
+        FNV3P2_ensemble_mean: { variant:'FNV3P2', kind:'ensemble_mean',
+                                path:'tracks_FNV3P2_ensemble_mean.json' },
+      } }) };
+  if (url.includes('tracks_') && url.includes('.json'))
+    return { ok:true, json: async () => ({ tracks:{
+      'AL05|0':[{lat:25,lon:-71},{lat:26,lon:-72},{lat:27,lon:-73}] } }) };
+  // Two sites, because radar is a single site product and drawing both at once
+  // was the bug: one antenna, one picture, and the overlapping edges of two
+  // stacked on each other where they met.
   if (url.split('?')[0].endsWith('radar/latest_l2.json'))
     return { ok:true, json: async () => ({ level:2, sites:{
       KTLX:{ frames:['20260815_1200','20260815_1205'],
-             path:'l2/KTLX/{frame}/manifest.json' } } }) };
+             path:'l2/KTLX/{frame}/manifest.json' },
+      KFWS:{ frames:['20260815_1201','20260815_1206'],
+             path:'l2/KFWS/{frame}/manifest.json' } } }) };
   if (url.split('?')[0].endsWith('radar/latest_l3.json')) return { ok:false };
   const rm = url.split('?')[0].match(/radar\/l2\/(\w+)\/([\d_]+)\/manifest\.json/);
   if (rm) return { ok:true, json: async () => ({ site:rm[1], level:2, time:rm[2],
