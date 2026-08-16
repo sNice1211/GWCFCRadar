@@ -405,13 +405,16 @@ MODELS = {
         # once, and all the spellings seen so far are tried.
         "fetch": "range", "fields": FINE_FIELDS,
         "label": "RRFS", "res": "3 km", "cycle_h": 1, "lag_h": 2,
+        # There is no prod/ under com/rrfs/: the listing shows only v1.0/ and
+        # para/, because the model has not been declared operational yet. v1.0
+        # is the one being fed, para is the experimental one beside it.
         "raw": [
-            "rrfs/prod/rrfs.{date}/{cyc}/"
+            "rrfs/v1.0/rrfs.{date}/{cyc}/"
+            "rrfs.t{cyc}z.prslev.f{fhr:03d}.conus_3km.grib2.idx",
+            "rrfs/para/rrfs.{date}/{cyc}/"
             "rrfs.t{cyc}z.prslev.f{fhr:03d}.conus_3km.grib2.idx",
             "rrfs_a/prod/rrfs_a.{date}/{cyc}/"
             "rrfs.t{cyc}z.prslev.f{fhr:03d}.conus_3km.grib2.idx",
-            "rrfs_a/prod/rrfs_a.{date}{cyc}/"
-            "rrfs_a.t{cyc}z.prslev.f{fhr:03d}.grib2.idx",
         ],
         "step": 3, "out": 18,
     },
@@ -522,10 +525,10 @@ MODELS = {
     "rrfssub": {
         "fetch": "range", "fields": FINE_FIELDS,
         "label": "RRFS Sub-Hourly", "res": "3 km", "cycle_h": 1, "lag_h": 2,
-        "raw": ["rrfs/prod/rrfs.{date}/{cyc}/"
+        "raw": ["rrfs/v1.0/rrfs.{date}/{cyc}/"
                 "rrfs.t{cyc}z.prslev.f{fhr:03d}.subh.conus_3km.grib2.idx",
-                "rrfs_a/prod/rrfs_a.{date}/{cyc}/"
-                "rrfs.t{cyc}z.subh.f{fhr:03d}.conus_3km.grib2.idx"],
+                "rrfs/para/rrfs.{date}/{cyc}/"
+                "rrfs.t{cyc}z.prslev.f{fhr:03d}.subh.conus_3km.grib2.idx"],
         "first": 1, "step": 1, "out": 6,
     },
     "rrfsfire": {
@@ -533,19 +536,22 @@ MODELS = {
         # is why its domain moves and its bounds come from the data.
         "fetch": "range", "fields": FINE_FIELDS,
         "label": "RRFS FireWx", "res": "3 km", "cycle_h": 6, "lag_h": 3,
-        "raw": ["rrfs/prod/rrfs.{date}/{cyc}/"
+        "raw": ["rrfs/v1.0/rrfs.{date}/{cyc}/"
                 "rrfs.t{cyc}z.prslev.f{fhr:03d}.firewx.grib2.idx",
-                "rrfs_a/prod/rrfs_a.{date}/{cyc}/"
-                "rrfs.t{cyc}z.firewx.f{fhr:03d}.grib2.idx"],
+                "rrfs/para/rrfs.{date}/{cyc}/"
+                "rrfs.t{cyc}z.prslev.f{fhr:03d}.firewx.grib2.idx"],
         "step": 3, "out": 36,
     },
     "gefswave": {
         "label": "GEFS Wave", "res": "0.25 deg ens", "cycle_h": 6, "lag_h": 7,
         "filter": "filter_gefs_wave.pl",
         "dir": "/gefs.{date}/{cyc}/wave/gridded",
-        "file": "gefs.wave.t{cyc}z.mean.global.0p25.f{fhr:03d}.grib2",
+        # The wave directory holds the members, not a mean: the listing shows
+        # c00 (the control run) and p01..p30, and no "mean" file at all. The
+        # control member is the one to take, so that is what is asked for.
+        "file": "gefs.wave.t{cyc}z.c00.global.0p25.f{fhr:03d}.grib2",
         "raw": "gens/prod/gefs.{date}/{cyc}/wave/gridded/"
-               "gefs.wave.t{cyc}z.mean.global.0p25.f{fhr:03d}.grib2.idx",
+               "gefs.wave.t{cyc}z.c00.global.0p25.f{fhr:03d}.grib2.idx",
         "step": 6, "out": 120,
         "regions": {"tropics": {}},
     },
@@ -562,9 +568,11 @@ MODELS = {
         "fetch": "range",
         "fields": {"ozone", "pm25"},
         "label": "AQM Air Quality", "res": "5 km", "cycle_h": 6, "lag_h": 3,
-        "raw": ["aqm/prod/cs.{date}/"
+        # The dated directory is the live one; the cs.{date} form is a stale
+        # guess kept only as a fallback. The listing confirms aqm.{date}.
+        "raw": ["aqm/prod/aqm.{date}/{cyc}/"
                 "aqm.t{cyc}z.ave_1hr_o3.227.grib2.idx",
-                "aqm/prod/aqm.{date}/{cyc}/"
+                "aqm/prod/cs.{date}/"
                 "aqm.t{cyc}z.ave_1hr_o3.227.grib2.idx"],
         "step": 1, "out": 0,
     },
@@ -659,13 +667,24 @@ MODELS = {
 # hour stale are last.
 DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "href", "gefs", "gefsspr", "gfswave",
-                  "ecmwf", "ecmwfaifs", "ecmwfens",
+                  "ecmwf", "ecmwfaifs",
                   "hireswarw", "hireswarw2", "hireswfv3",
                   "rrfs", "hrrrsub",
-                  "gem", "icon", "hafs", "hafsb", "hwrf", "hmon",
-                  "rrfssub", "rrfsfire", "gefswave", "ecmwfwave", "aqm",
-                  "etss", "hrdps", "rdps", "iconeu", "icond2",
-                  "hireswnssl", "cmce", "iconeps", "ecmwfaifsens"]
+                  "icon", "hafs", "hafsb",
+                  "rrfssub", "rrfsfire", "gefswave", "aqm",
+                  "iconeu", "cmce"]
+
+# Defined above and deliberately not built. Each of these was checked against
+# the publisher's own directory listing and the files are not there: HWRF and
+# HMON have been retired in favour of HAFS, the NSSL window member is gone,
+# ETSS moved off the open server, and the Canadian and German addresses used
+# here changed shape. They are kept rather than deleted because the definitions
+# are still correct in shape, so when an address is worked out again the model
+# comes back by adding one word here. Until then they are still buildable by
+# hand with --models, which is how you would test a new address.
+OFF_BY_DEFAULT = ["hwrf", "hmon", "hireswnssl", "etss",
+                  "ecmwfens", "ecmwfaifsens", "ecmwfwave",
+                  "gem", "hrdps", "rdps", "icond2", "iconeps"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
@@ -793,8 +812,10 @@ def http_get(url, tries=4, **kw):
                 raise
             time.sleep(1.5 * (attempt + 1))
             continue
-        # 302 is the throttle, 429 and 503 are the honest versions of it.
-        if r.status_code in (302, 429, 503) and attempt < tries - 1:
+        # 302 is the throttle; 403, 429 and 503 are the other faces it shows
+        # for a burst. The files are public, so a 403 on one is the limiter,
+        # not a real permission wall.
+        if r.status_code in (302, 403, 429, 503) and attempt < tries - 1:
             time.sleep(1.5 * (attempt + 1))
             continue
         return r
