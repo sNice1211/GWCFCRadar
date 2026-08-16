@@ -439,7 +439,10 @@ MODELS = {
         "label": "ECMWF ENS mean", "res": "0.25 deg ens", "cycle_h": 12,
         "lag_h": 9,
         "source": "ecmwf", "ecmwf_stream": "enfo", "ecmwf_type": "em",
-        "step": 6, "out": 240, "crop": True,
+        # An ensemble mean at step 0 is just the analysis, which ECMWF does not
+        # publish as "em", so hour 0 would 404 every run. Start at the first
+        # forecast step, where the mean actually exists.
+        "first": 6, "step": 6, "out": 240, "crop": True,
         "regions": {"conus": {}, "tropics": {"shear": True}},
     },
 
@@ -645,7 +648,7 @@ MODELS = {
         "lag_h": 9,
         "source": "ecmwf", "ecmwf_model": "aifs-ens",
         "ecmwf_stream": "enfo", "ecmwf_type": "em",
-        "step": 6, "out": 240, "crop": True,
+        "first": 6, "step": 6, "out": 240, "crop": True,
         "regions": {"conus": {}, "tropics": {"shear": True}},
     },
 }
@@ -748,6 +751,54 @@ HTTP.headers.update({"User-Agent": "GWCFCRadar/1.0 (Raspberry Pi; weather map ti
 
 FILTER_BASE = "https://nomads.ncep.noaa.gov/cgi-bin"
 RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
+
+# NOMADS rate limits, and it does it with a 302 to a throttle page rather than
+# an honest 429. So a burst of requests, which is exactly what a full build or
+# a --check pass is, sails through for the first handful and then every request
+# after is redirected and looks like a missing file. That was the whole of
+# "some models are not working": GFS answered and GFS tropical did not, on the
+# identical URL, seconds apart.
+#
+# Two defences. A minimum gap between NOMADS requests so the burst never trips
+# the limiter, and a back-off retry when one slips through anyway. Only NOMADS
+# needs this; the S3 buckets and ECMWF do not throttle this way.
+_NOMADS_MIN_GAP = 0.7          # seconds; NOMADS allows about 120 hits a minute
+_nomads_last = [0.0]
+
+
+def is_nomads(url):
+    return "nomads.ncep.noaa.gov" in url
+
+
+def http_get(url, tries=4, **kw):
+    """
+    A GET that paces itself against NOMADS and retries its throttle redirect.
+
+    A 302 from NOMADS is not a real redirect to follow, it is "you are asking
+    too fast". allow_redirects stays off for NOMADS so that 302 is seen as the
+    throttle it is rather than chased into a loop, and the answer is to wait and
+    ask again, longer each time.
+    """
+    nomads = is_nomads(url)
+    for attempt in range(tries):
+        if nomads:
+            gap = _NOMADS_MIN_GAP - (time.time() - _nomads_last[0])
+            if gap > 0:
+                time.sleep(gap)
+            _nomads_last[0] = time.time()
+        try:
+            r = HTTP.get(url, allow_redirects=not nomads, **kw)
+        except requests.RequestException:
+            if attempt == tries - 1:
+                raise
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        # 302 is the throttle, 429 and 503 are the honest versions of it.
+        if r.status_code in (302, 429, 503) and attempt < tries - 1:
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        return r
+    return r
 
 # Fields to render. Matched on the GRIB shortName, level type and level that
 # GRIB itself defines, rather than on a name invented during conversion,
@@ -941,7 +992,7 @@ def inventory(m, date_str, cyc, fhr):
     """
     url = f"{RAW_BASE}/" + m["raw"].format(date=date_str, cyc=cyc, fhr=fhr)
     try:
-        r = HTTP.get(url, timeout=30)
+        r = http_get(url, timeout=30)
         if r.status_code != 200 or "<" in r.text[:40]:
             return None
     except requests.RequestException:
@@ -1127,7 +1178,7 @@ def fetch_hour_range(m, date_str, cyc, fhr, path):
         with open(path, "wb") as f:
             for start, end in spans:
                 rng = f"bytes={start}-" + ("" if end is None else str(end))
-                rr = HTTP.get(grib_url, timeout=REQUEST_TIMEOUT,
+                rr = http_get(grib_url, timeout=REQUEST_TIMEOUT,
                                   headers={"Range": rng})
                 # 206 is the answer to a range request. A 200 means the server
                 # ignored it and is sending the whole file, which for these is
@@ -1242,7 +1293,7 @@ def fetch_hour_files(m, date_str, cyc, fhr, path):
         with open(path, "wb") as f:
             for url in urls:
                 try:
-                    r = HTTP.get(url, timeout=REQUEST_TIMEOUT)
+                    r = http_get(url, timeout=REQUEST_TIMEOUT)
                 except requests.RequestException:
                     continue
                 if r.status_code != 200 or len(r.content) < 500:
@@ -1308,7 +1359,7 @@ def ecmwf_index(m, date_str, cyc, fhr, timeout=REQUEST_TIMEOUT):
     codes = []
     for url in ecmwf_paths(m, date_str, cyc, fhr)[1]:
         try:
-            r = HTTP.get(url, timeout=timeout)
+            r = http_get(url, timeout=timeout)
         except requests.RequestException as e:
             codes.append((url, str(e)))
             continue
@@ -1379,7 +1430,7 @@ def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
     try:
         with open(path, "wb") as f:
             for off, ln in merged:
-                rr = HTTP.get(
+                rr = http_get(
                     grib_url, timeout=REQUEST_TIMEOUT,
                     headers={"Range": f"bytes={off}-{off + ln - 1}"})
                 # 206 is the answer to a range request. A 200 means the server
@@ -1668,7 +1719,7 @@ def find_index(m, date_str, cyc, fhr, timeout=30):
     for tmpl in raw_candidates(m):
         url = f"{RAW_BASE}/" + tmpl.format(date=date_str, cyc=cyc, fhr=fhr)
         try:
-            r = HTTP.get(url, timeout=timeout)
+            r = http_get(url, timeout=timeout)
         except requests.RequestException:
             continue
         if r.status_code == 200 and ":" in r.text and "<" not in r.text[:40]:
@@ -1707,7 +1758,7 @@ def run_is_complete(m, date_str, cyc):
         # No index to ask, so the last hour's first file standing in for the
         # run being finished is the best available signal.
         try:
-            r = HTTP.get(URL_SOURCES[m["source"]](m, date_str, cyc, last)[0],
+            r = http_get(URL_SOURCES[m["source"]](m, date_str, cyc, last)[0],
                          timeout=30, headers={"Range": "bytes=0-32"})
             return r.status_code in (200, 206)
         except requests.RequestException:
@@ -1760,7 +1811,7 @@ def fetch_hour(m, date_str, cyc, fhr, path):
         }
         for attempt in range(RETRIES):
             try:
-                r = HTTP.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                r = http_get(url, params=params, timeout=REQUEST_TIMEOUT)
                 if (r.status_code == 200 and len(r.content) > 5000
                         and r.content[:4] == b"GRIB"):
                     with open(path, "wb") as f:
@@ -2109,7 +2160,7 @@ def fetch_sounding_hour(m, date_str, cyc, fhr, path):
     url = f"{FILTER_BASE}/{m['filter']}"
     for attempt in range(RETRIES):
         try:
-            r = HTTP.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            r = http_get(url, params=params, timeout=REQUEST_TIMEOUT)
             if (r.status_code == 200 and len(r.content) > 5000
                     and r.content[:4] == b"GRIB"):
                 with open(path, "wb") as f:
@@ -2292,7 +2343,7 @@ def active_storms():
         return _storms_cache["ids"]
     ids = []
     try:
-        r = HTTP.get(NHC_STORMS, timeout=30)
+        r = http_get(NHC_STORMS, timeout=30)
         if r.status_code == 200:
             for st in (r.json().get("activeStorms") or []):
                 # "al052026" is basin, number, year. HAFS wants "05l": the
