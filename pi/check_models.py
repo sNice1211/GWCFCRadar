@@ -65,6 +65,35 @@ def listing(url, want=""):
     return out
 
 
+def summarise(names, limit=14):
+    """
+    A directory as its distinct filename shapes rather than its first few
+    files.
+
+    Printing twelve raw names sorts alphabetically and shows twelve forecast
+    hours of whichever product happens to sort first, which looks like the
+    whole answer and is not: it hid that RRFS publishes no .idx files at all,
+    and cost a round trip to find out. Collapsing the digits turns hundreds of
+    names into the handful of real patterns, and the count says how many of
+    each there were.
+
+    Whether any .idx exist is called out on its own, because that single fact
+    decides whether a model can be byte-ranged or has to be fetched whole.
+    """
+    shapes = {}
+    for n in names:
+        shapes[re.sub(r"\d+", "#", n)] = shapes.get(re.sub(r"\d+", "#", n), 0) + 1
+    out = [f"{len(names)} files, {len(shapes)} distinct shapes"]
+    idx = sum(v for k, v in shapes.items() if k.endswith(".idx"))
+    out.append(f"{idx} of them are .idx indexes"
+               if idx else "NO .idx indexes here, so byte ranges cannot work")
+    for shape, count in sorted(shapes.items(), key=lambda kv: -kv[1])[:limit]:
+        out.append(f"    {count:4d}x  {shape}")
+    if len(shapes) > limit:
+        out.append(f"    ... and {len(shapes) - limit} more shapes")
+    return out
+
+
 def explain_missing(m, date_str, cyc, fhr):
     """Say what the server does have, where we expected something."""
     for tmpl in raw_candidates(m):
@@ -80,16 +109,14 @@ def explain_missing(m, date_str, cyc, fhr):
                 here = listing(up)
                 if here is not None:
                     print(f"  {DIM}but {up} contains:{OFF}")
-                    for n in here[:12]:
-                        print(f"  {DIM}    {n}{OFF}")
+                    for line in summarise(here):
+                        print(f"  {DIM}  {line}{OFF}")
                     return
                 up = up.rstrip("/").rsplit("/", 1)[0] + "/"
             return
         print(f"  {DIM}{parent} exists and contains:{OFF}")
-        stem = rel.rsplit("/", 1)[-1].split(".")[0]
-        near = [n for n in got if n.startswith(stem[:6])] or got
-        for n in near[:12]:
-            print(f"  {DIM}    {n}{OFF}")
+        for line in summarise(got):
+            print(f"  {DIM}  {line}{OFF}")
         return
 
 def check_ecmwf(name, m):

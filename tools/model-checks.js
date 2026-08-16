@@ -229,6 +229,37 @@ function ok(name, cond, extra) {
      lines.length === 0, lines.length);
   _cycClear();
 
+  // The picker exists because all five of DeepMind's models were being
+  // downloaded and four of them thrown away. These check that the list is
+  // built from the run rather than from the hardcoded names, since a variant
+  // the Pi could not fetch must not be offered and then draw nothing.
+  const cycMan = { tracks: {
+    OPER_ensemble_mean:   { variant:'OPER',   kind:'ensemble_mean' },
+    OPER_ensemble:        { variant:'OPER',   kind:'ensemble' },
+    FNV3P2_ensemble_mean: { variant:'FNV3P2', kind:'ensemble_mean' },
+  }};
+  _cycFillVariants(cycMan);
+  const cycSel = els['cyc-variant-sel'];
+  ok('the picker lists only the variants this run actually has',
+     cycSel.children.length === 2, cycSel.children.length);
+  ok('and it is shown once there is something to pick',
+     els['cyc-variant-row'].style.display === '');
+  ok('the operational one is the default',
+     _cycVariant === 'OPER', _cycVariant);
+
+  // A run without OPER in it must fall back rather than pick a name that is
+  // not there, which would silently draw an empty map.
+  _cycFillVariants({ tracks: {
+    FNV3P1_ensemble_mean: { variant:'FNV3P1', kind:'ensemble_mean' } }});
+  ok('a run missing the default falls back to what it does have',
+     _cycVariant === 'FNV3P1', _cycVariant);
+
+  _cycFillVariants({ tracks: {} });
+  ok('and an empty run hides the picker instead of offering nothing',
+     els['cyc-variant-row'].style.display === 'none',
+     els['cyc-variant-row'].style.display);
+  _cycVariant = 'OPER';
+
 
   console.log('\n22. Pi radar, drawn from the newest volume');
   _prClear();

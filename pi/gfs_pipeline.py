@@ -543,13 +543,15 @@ MODELS = {
         "step": 3, "out": 36,
     },
     "gefswave": {
+        # Byte ranges rather than the filter service. There is no
+        # filter_gefs_wave.pl on NOMADS, which is why every request 404'd, but
+        # the index beside the file is there and holds all 23 messages. So the
+        # data was always reachable; only the door being knocked on was wrong.
+        "fetch": "range",
         "label": "GEFS Wave", "res": "0.25 deg ens", "cycle_h": 6, "lag_h": 7,
-        "filter": "filter_gefs_wave.pl",
-        "dir": "/gefs.{date}/{cyc}/wave/gridded",
         # The wave directory holds the members, not a mean: the listing shows
         # c00 (the control run) and p01..p30, and no "mean" file at all. The
         # control member is the one to take, so that is what is asked for.
-        "file": "gefs.wave.t{cyc}z.c00.global.0p25.f{fhr:03d}.grib2",
         "raw": "gens/prod/gefs.{date}/{cyc}/wave/gridded/"
                "gefs.wave.t{cyc}z.c00.global.0p25.f{fhr:03d}.grib2.idx",
         "step": 6, "out": 120,
@@ -568,12 +570,20 @@ MODELS = {
         "fetch": "range",
         "fields": {"ozone", "pm25"},
         "label": "AQM Air Quality", "res": "5 km", "cycle_h": 6, "lag_h": 3,
-        # The dated directory is the live one; the cs.{date} form is a stale
-        # guess kept only as a fallback. The listing confirms aqm.{date}.
+        # The listing settled the directory: aqm.{date}/{cyc}/ is real, and it
+        # holds only the 06 and 12 cycles, so asking for 18 was always going to
+        # fail. What is still unsettled is the grid number in the filename.
+        # 227 is the old 5 km grid and 793 is the one the current version uses,
+        # and "_bc" marks the bias corrected copy, which is the better product
+        # where it exists. All four spellings are tried, cheapest guess first.
         "raw": ["aqm/prod/aqm.{date}/{cyc}/"
+                "aqm.t{cyc}z.ave_1hr_o3.793.grib2.idx",
+                "aqm/prod/aqm.{date}/{cyc}/"
+                "aqm.t{cyc}z.ave_1hr_o3_bc.793.grib2.idx",
+                "aqm/prod/aqm.{date}/{cyc}/"
                 "aqm.t{cyc}z.ave_1hr_o3.227.grib2.idx",
-                "aqm/prod/cs.{date}/"
-                "aqm.t{cyc}z.ave_1hr_o3.227.grib2.idx"],
+                "aqm/prod/aqm.{date}/{cyc}/"
+                "aqm.t{cyc}z.ave_1hr_o3_bc.227.grib2.idx"],
         "step": 1, "out": 0,
     },
     "etss": {
@@ -669,9 +679,9 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "href", "gefs", "gefsspr", "gfswave",
                   "ecmwf", "ecmwfaifs",
                   "hireswarw", "hireswarw2", "hireswfv3",
-                  "rrfs", "hrrrsub",
+                  "hrrrsub",
                   "icon", "hafs", "hafsb",
-                  "rrfssub", "rrfsfire", "gefswave", "aqm",
+                  "gefswave", "aqm",
                   "iconeu", "cmce"]
 
 # Defined above and deliberately not built. Each of these was checked against
@@ -684,7 +694,16 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
 # hand with --models, which is how you would test a new address.
 OFF_BY_DEFAULT = ["hwrf", "hmon", "hireswnssl", "etss",
                   "ecmwfens", "ecmwfaifsens", "ecmwfwave",
-                  "gem", "hrdps", "rdps", "icond2", "iconeps"]
+                  "gem", "hrdps", "rdps", "icond2", "iconeps",
+                  # RRFS is here for a different reason from the rest, and a
+                  # more interesting one. The directory exists and has files
+                  # in it, but not one of them has a .idx beside it, and every
+                  # file is 2dfld.2p5km for Hawaii and Puerto Rico rather than
+                  # prslev for CONUS. No index means no byte ranges, and this
+                  # pipeline lives on byte ranges: fetching a 3 km CONUS file
+                  # whole to keep six fields out of it is most of a gigabyte
+                  # an hour. So it waits until NOAA publishes indexes with it.
+                  "rrfs", "rrfssub", "rrfsfire"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many

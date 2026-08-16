@@ -1207,6 +1207,15 @@ body {
   display: flex; align-items: center;
 }
 .ov-drag:hover { color: var(--accent2); }
+/* A chooser that belongs to the pill above it, so it is indented under it
+   rather than sitting in the list as if it were another overlay. */
+.ov-sub { padding: 2px 6px 6px 22px; }
+.ov-sub select {
+  width: 100%; max-width: 100%; box-sizing: border-box;
+  background: rgba(0,0,0,0.35); color: #dfe9f5;
+  border: 1px solid rgba(255,255,255,0.18); border-radius: 4px;
+  font-family: var(--display); font-size: 11px; padding: 2px 4px;
+}
 .ov-drag:active { cursor: grabbing; }
 .ov-info-btn {
   flex-shrink: 0; cursor: pointer; touch-action: none;
@@ -12665,6 +12674,53 @@ const CYC_TTL = 10 * 60 * 1000;
 const CYC_MEMBER = { color: '#7fd4ff', weight: 1, opacity: 0.35 };
 const CYC_MEAN   = { color: '#ffd166', weight: 3, opacity: 0.95 };
 
+// DeepMind's five cyclone models. OPER is the one they run operationally and
+// is the sane default; FNV3P0 through P2 are successive versions of the
+// experimental one; the large ensemble trades a coarser model for many more
+// members, which is what makes it the only one that can answer "where might
+// something form" rather than only "where is this one going".
+const CYC_VARIANTS = {
+  OPER:                 'Operational',
+  FNV3P0:               'FNV3 p0 (experimental)',
+  FNV3P1:               'FNV3 p1 (experimental)',
+  FNV3P2:               'FNV3 p2 (experimental)',
+  FNV3_LARGE_ENSEMBLE:  'FNV3 large ensemble',
+};
+let _cycVariant = 'OPER';
+try {
+  const saved = localStorage.getItem('gwcfc_cyc_variant');
+  if (saved && CYC_VARIANTS[saved]) _cycVariant = saved;
+} catch (e) {}
+
+// Built from what the run actually holds rather than from the list above, so
+// a variant the Pi could not fetch does not appear and pick nothing.
+function _cycFillVariants(man) {
+  const sel = document.getElementById('cyc-variant-sel');
+  const row = document.getElementById('cyc-variant-row');
+  if (!sel || !row) return;
+  const have = [];
+  Object.values((man && man.tracks) || {}).forEach(m => {
+    if (m.variant && !have.includes(m.variant)) have.push(m.variant);
+  });
+  if (!have.length) { row.style.display = 'none'; return; }
+  if (!have.includes(_cycVariant)) _cycVariant = have[0];
+  sel.innerHTML = '';
+  have.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = CYC_VARIANTS[v] || v;
+    if (v === _cycVariant) o.selected = true;
+    sel.appendChild(o);
+  });
+  row.style.display = '';
+}
+
+function _cycSetVariant(v) {
+  _cycVariant = v;
+  try { localStorage.setItem('gwcfc_cyc_variant', v); } catch (e) {}
+  if (_cycOn) _cycEnable();
+}
+
 async function _cycFresh() {
   if (_cycIndex && Date.now() - _cycAt < CYC_TTL) return _cycIndex;
   const base = _hdBase || await _hdResolveBase();
@@ -12734,11 +12790,14 @@ async function _cycEnable() {
     _cycLayers.push(img);
   }
 
-  // The operational run's mean is the one worth drawing heavy. The rest of
-  // the variants are experimental and would triple the lines for very little,
-  // so they are left to the panel rather than thrown on the map at once.
+  // One model at a time, chosen in the list. All five are downloaded by the
+  // Pi, and drawing them together would be five ensembles of pale lines on one
+  // map, which reads as nothing at all. The picker is what makes the other
+  // four reachable: before it they were fetched and then thrown away.
+  _cycFillVariants(man);
+  const pick = _cycVariant;
   const want = Object.entries(man.tracks || {})
-    .filter(([k]) => k.startsWith('OPER'));
+    .filter(([, m]) => m.variant === pick);
   for (const [name, meta] of want) {
     const data = await fetch(`${base}/cyclones/${idx.run}/${meta.path}`,
                              { cache: 'no-store' })
@@ -12759,6 +12818,8 @@ async function _cycEnable() {
 function _cycDisable() {
   _cycOn = false;
   document.getElementById('op-pi-cyclones')?.classList.remove('active');
+  const row = document.getElementById('cyc-variant-row');
+  if (row) row.style.display = 'none';
   _cycClear();
 }
 
@@ -32983,7 +33044,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Level 2 radar now comes from the live feed and works. The old Level 3 source had quietly been serving images from 2020.";
+const APP_LATEST_UPDATE = "All five DeepMind cyclone models are pickable now, not just the operational one, and GEFS Wave works again.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -34379,6 +34440,12 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-pi-cyclones" data-ovid="pi-cyclones" title="DeepMind cyclone tracks and where a storm is likely to form, from the Pi">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('pi-cyclones')">AI Cyclones</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <!-- Which of DeepMind's five models to draw. Hidden until the overlay is
+         on, because a chooser for something switched off is just clutter. -->
+    <div class="ov-sub" id="cyc-variant-row" style="display:none">
+      <select id="cyc-variant-sel" onchange="_cycSetVariant(this.value)"
+              title="Which DeepMind cyclone model to draw"></select>
     </div>
     <div class="ov-pill" id="op-pi-radar" data-ovid="pi-radar" title="High-detail radar decoded on your Pi, from the raw Level 2 and Level 3 data">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('pi-radar')">Pi Radar</span><span class="ov-drag" title="Drag to reorder">⠿</span>
