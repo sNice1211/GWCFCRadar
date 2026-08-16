@@ -751,6 +751,11 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # --check reads and downloads nothing, so it must not queue behind a
+    # build. Being told "another run is already going" by a status command is
+    # exactly backwards: a running build is the moment you most want to look.
+    if "--check" in sys.argv:
+        sys.exit(main(sys.argv[1:]))
     # Its own lock, so a slow radar run and the hourly model build do not wait
     # on each other. They touch different directories entirely.
     with Lock(os.path.expanduser("~/.gwcfc-radar.lock")):
