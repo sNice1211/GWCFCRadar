@@ -282,17 +282,19 @@ EOF
 
 cat > "$UNITS/gwcfc-update.timer" <<'EOF'
 [Unit]
-Description=Check for new code every fifteen minutes
+Description=Check for new code every minute
 
 [Timer]
-# Fifteen minutes rather than every few: a fetch that finds nothing is still a
-# request, and the pipelines read the files fresh on every run anyway, so the
-# most an update ever waits is until the next timer fires.
-OnCalendar=*:0/15
+# Every minute, which is the practical floor. A fetch takes seconds on a Pi
+# and GitHub rate-limits anything that polls harder, so one a minute lands a
+# merged fix in about thirty seconds on average without getting the Pi
+# banned. Interval timers rather than calendar ones, so a slow fetch just
+# delays the next tick instead of stacking.
+OnBootSec=60
+OnUnitActiveSec=60
 # Catches up after the Pi has been off, which is exactly when it is furthest
 # behind and most wants the newest code before the first build runs.
 Persistent=true
-RandomizedDelaySec=60
 
 [Install]
 WantedBy=timers.target
