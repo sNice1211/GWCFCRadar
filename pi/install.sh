@@ -6,10 +6,13 @@
 # Installs what is missing, builds the Python environment, and registers four
 # services so this survives a reboot and a closed terminal:
 #
-#   gwcfc-models   builds the model images, hourly
-#   gwcfc-serve    serves them with the header that makes them readable
-#   gwcfc-tunnel   gives them a public HTTPS address
-#   gwcfc-publish  tells the site that address, so nobody has to paste it
+#   gwcfc-models    builds the model images, hourly
+#   gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
+#   gwcfc-cyclones  fetches the DeepMind cyclone runs
+#   gwcfc-serve     serves them with the header that makes them readable
+#   gwcfc-tunnel    gives them a public HTTPS address
+#   gwcfc-publish   tells the site that address, so nobody has to paste it
+#   gwcfc-update    pulls new code, so the Pi does not run last week's
 #
 # Safe to run again. Everything it does is idempotent, so if a step failed the
 # first time, fix the cause and run it again rather than unpicking anything.
@@ -249,6 +252,43 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# Keeping itself current. Without this the Pi runs whatever was cloned until
+# somebody remembers to pull, which is how it ends up an hour of debugging away
+# from a bug that was fixed days ago.
+cat > "$UNITS/gwcfc-update.service" <<EOF
+[Unit]
+Description=Pull the newest GWCFCRadar code
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=REPO=$REPO
+Environment=VENV=$VENV
+ExecStart=/usr/bin/env bash $REPO/pi/selfupdate.sh
+TimeoutStartSec=300
+Nice=15
+EOF
+
+cat > "$UNITS/gwcfc-update.timer" <<'EOF'
+[Unit]
+Description=Check for new code every fifteen minutes
+
+[Timer]
+# Fifteen minutes rather than every few: a fetch that finds nothing is still a
+# request, and the pipelines read the files fresh on every run anyway, so the
+# most an update ever waits is until the next timer fires.
+OnCalendar=*:0/15
+# Catches up after the Pi has been off, which is exactly when it is furthest
+# behind and most wants the newest code before the first build runs.
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
+EOF
+
+chmod +x "$REPO/pi/selfupdate.sh" 2>/dev/null || true
+
 systemctl --user daemon-reload
 : > "$HOME/tunnel.log"
 systemctl --user enable --now gwcfc-serve.service  >/dev/null 2>&1
@@ -257,9 +297,10 @@ systemctl --user restart    gwcfc-tunnel.service   >/dev/null 2>&1 || \
 systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
 systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
+systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
 systemctl --user restart    gwcfc-publish.service  >/dev/null 2>&1 || \
   systemctl --user enable --now gwcfc-publish.service >/dev/null 2>&1
-ok "serve, tunnel, publish, models, radar and cyclones are running"
+ok "serve, tunnel, publish, models, radar, cyclones and self-update are running"
 
 # ── 5. the address ──────────────────────────────────────────────────────────
 say "Public address"
