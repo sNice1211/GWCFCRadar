@@ -1209,7 +1209,7 @@ body {
 .ov-drag:hover { color: var(--accent2); }
 /* A chooser that belongs to the pill above it, so it is indented under it
    rather than sitting in the list as if it were another overlay. */
-.ov-sub { padding: 2px 6px 6px 22px; }
+.ov-sub { padding: 2px 6px 6px 22px; display: flex; gap: 4px; }
 .ov-sub select {
   width: 100%; max-width: 100%; box-sizing: border-box;
   background: rgba(0,0,0,0.35); color: #dfe9f5;
@@ -12715,10 +12715,10 @@ function _cycFillVariants(man) {
   row.style.display = '';
 }
 
-function _cycSetVariant(v) {
+async function _cycSetVariant(v) {
   _cycVariant = v;
   try { localStorage.setItem('gwcfc_cyc_variant', v); } catch (e) {}
-  if (_cycOn) _cycEnable();
+  if (_cycOn) await _cycEnable();
 }
 
 async function _cycFresh() {
@@ -12849,10 +12849,75 @@ let _prFrames = [];           // the newest frame of each site, for animation
 let _prTimer = null;
 let _prIdx = 0;
 
+// What can be asked for. A product is named once, in the words a person would
+// use, and each level's own spelling for it sits underneath: the Pi writes
+// ref.png for Level 2 and n0q.png for Level 3, and those are the same picture
+// made two different ways. Naming it "Reflectivity" once means switching level
+// does not throw away the product you had chosen.
+const PR_PRODUCTS = {
+  reflectivity: { label: 'Reflectivity', l2: 'ref', l3: 'n0q' },
+  velocity:     { label: 'Velocity',     l2: 'vel', l3: 'n0u' },
+};
+const PR_LEVELS = {
+  auto: 'Best available',
+  l2:   'Level 2 (full detail)',
+  l3:   'Level 3 (lighter)',
+};
+let _prLevel = 'auto';
+let _prProduct = 'reflectivity';
+try {
+  const lv = localStorage.getItem('gwcfc_pr_level');
+  const pd = localStorage.getItem('gwcfc_pr_product');
+  if (lv && PR_LEVELS[lv]) _prLevel = lv;
+  if (pd && PR_PRODUCTS[pd]) _prProduct = pd;
+} catch (e) {}
+
+function _prFillOptions() {
+  const row = document.getElementById('pr-opts-row');
+  const lsel = document.getElementById('pr-level-sel');
+  const psel = document.getElementById('pr-product-sel');
+  if (!row || !lsel || !psel) return;
+  const fill = (sel, entries, chosen) => {
+    sel.innerHTML = '';
+    entries.forEach(([v, label]) => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = label;
+      if (v === chosen) o.selected = true;
+      sel.appendChild(o);
+    });
+  };
+  fill(lsel, Object.entries(PR_LEVELS), _prLevel);
+  fill(psel, Object.entries(PR_PRODUCTS).map(([k, v]) => [k, v.label]),
+       _prProduct);
+  row.style.display = '';
+}
+
+// async and returning the redraw, so a caller can wait for the map to catch
+// up. Without that the function comes back the instant the fetch is started
+// and the picture on screen is still the old product.
+async function _prSetLevel(v) {
+  _prLevel = v;
+  try { localStorage.setItem('gwcfc_pr_level', v); } catch (e) {}
+  if (_prOn) await _prEnable();
+}
+
+async function _prSetProduct(v) {
+  _prProduct = v;
+  try { localStorage.setItem('gwcfc_pr_product', v); } catch (e) {}
+  if (_prOn) await _prEnable();
+}
+
 async function _prLoadIndex(base) {
-  // Level 2 for detail, Level 3 as the fallback. Cache-busted, since the newest
-  // volume is only minutes old and an intermediary must not serve a stale one.
-  for (const lvl of ['l2', 'l3']) {
+  // Cache-busted, since the newest volume is only minutes old and an
+  // intermediary must not serve a stale one.
+  //
+  // On "best available" it is Level 2 for detail with Level 3 as the fallback,
+  // which is what it always did. Picking a level explicitly still falls back
+  // rather than showing an empty map, because a level with nothing built is a
+  // worse answer than the other level with something in it.
+  const order = _prLevel === 'auto' ? ['l2', 'l3']
+              : [_prLevel, _prLevel === 'l2' ? 'l3' : 'l2'];
+  for (const lvl of order) {
     const idx = await fetch(`${base}/radar/latest_${lvl}.json?t=${Date.now()}`,
                             { cache: 'no-store' })
       .then(r => r.ok ? r.json() : null).catch(() => null);
@@ -12871,7 +12936,8 @@ function _prClear() {
 // sum of the sites that are switched on rather than one radar at a time.
 async function _prDraw(base, lvl, idx) {
   _prClear();
-  const product = lvl === 'l2' ? 'ref' : 'n0q';   // reflectivity either way
+  // The chosen product in this level's own spelling.
+  const product = (PR_PRODUCTS[_prProduct] || PR_PRODUCTS.reflectivity)[lvl];
   for (const [site, meta] of Object.entries(idx.sites)) {
     const frame = meta.frames[meta.frames.length - 1];    // newest
     const manPath = meta.path.replace('{frame}', frame);
@@ -12911,6 +12977,7 @@ async function _prEnable() {
     }
     return;
   }
+  _prFillOptions();
   await _prDraw(base, got.lvl, got.idx);
   // Re-read on the Pi's own cadence, so the map keeps up with new volumes
   // without a reload. Cleared when the layer is turned off.
@@ -12924,6 +12991,8 @@ async function _prEnable() {
 function _prDisable() {
   _prOn = false;
   document.getElementById('op-pi-radar')?.classList.remove('active');
+  const row = document.getElementById('pr-opts-row');
+  if (row) row.style.display = 'none';
   _prClear();
 }
 
@@ -33044,7 +33113,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "All five DeepMind cyclone models are pickable now, not just the operational one, and GEFS Wave works again.";
+const APP_LATEST_UPDATE = "Pi Radar has level and product pickers now, and two sites that were hours behind are live again.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -34449,6 +34518,13 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-pi-radar" data-ovid="pi-radar" title="High-detail radar decoded on your Pi, from the raw Level 2 and Level 3 data">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('pi-radar')">Pi Radar</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <!-- Which level and which product. Hidden until the overlay is on. -->
+    <div class="ov-sub" id="pr-opts-row" style="display:none">
+      <select id="pr-level-sel" onchange="_prSetLevel(this.value)"
+              title="Level 2 is the radar's own full detail; Level 3 is the lighter product the Weather Service makes from it"></select>
+      <select id="pr-product-sel" onchange="_prSetProduct(this.value)"
+              title="Reflectivity is how heavy the rain is; velocity is how fast it is moving toward or away from the radar"></select>
     </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
