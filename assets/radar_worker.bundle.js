@@ -11738,16 +11738,6 @@
           }
         }
       }
-    } else if (layer === "CC") {
-      radarData = radar.getHighresCorrelationCoefficient();
-    } else if (layer === "KDP") {
-      radarData = radar.getHighresDiffPhase();
-    } else if (layer === "SW") {
-      radarData = radar.getHighresSpectrum();
-    } else if (layer == "ZDR") {
-      radarData = radar.getHighresDiffReflectivity();
-    } else {
-      throw new Error(`Unknown radar layer: ${layer}`);
     }
     if (!Array.isArray(radarData) || radarData.length === 0) {
       throw new Error(`No radar data available for layer: ${layer}`);
