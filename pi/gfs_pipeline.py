@@ -567,23 +567,13 @@ MODELS = {
     "aqm": {
         # Air quality: the ozone and fine particulate the health advisories
         # are written against, on the same 5 km grid the AirNow map uses.
-        "fetch": "range",
+        # Whole files rather than byte ranges, because the listing proved there
+        # are no indexes to range against. Affordable here for the reason it
+        # would not be for a 3 km model: one file is a single surface field and
+        # holds every hour at once, so a run is two downloads.
+        "source": "aqm", "crop": True,
         "fields": {"ozone", "pm25"},
         "label": "AQM Air Quality", "res": "5 km", "cycle_h": 6, "lag_h": 3,
-        # The listing settled the directory: aqm.{date}/{cyc}/ is real, and it
-        # holds only the 06 and 12 cycles, so asking for 18 was always going to
-        # fail. What is still unsettled is the grid number in the filename.
-        # 227 is the old 5 km grid and 793 is the one the current version uses,
-        # and "_bc" marks the bias corrected copy, which is the better product
-        # where it exists. All four spellings are tried, cheapest guess first.
-        "raw": ["aqm/prod/aqm.{date}/{cyc}/"
-                "aqm.t{cyc}z.ave_1hr_o3.793.grib2.idx",
-                "aqm/prod/aqm.{date}/{cyc}/"
-                "aqm.t{cyc}z.ave_1hr_o3_bc.793.grib2.idx",
-                "aqm/prod/aqm.{date}/{cyc}/"
-                "aqm.t{cyc}z.ave_1hr_o3.227.grib2.idx",
-                "aqm/prod/aqm.{date}/{cyc}/"
-                "aqm.t{cyc}z.ave_1hr_o3_bc.227.grib2.idx"],
         "step": 1, "out": 0,
     },
     "etss": {
@@ -1264,6 +1254,49 @@ def gem_urls(m, date_str, cyc, fhr):
             for var, lvt, lvl in GEM_FIELDS]
 
 
+# Air quality, which publishes no indexes at all. The directory listing shows
+# 28 files and not one .idx among them, so byte ranges are impossible and the
+# file has to come whole. That is affordable here and nowhere else: one AQM
+# file is a single surface field on a 5 km grid, a few megabytes, and it holds
+# every forecast hour at once, so a run is two downloads rather than seventy.
+#
+# The grid number in the name is the one thing not settled. 227 is the old 5 km
+# grid and 793 the one the current version uses, so it is probed once per run
+# and remembered, rather than guessed at in the filename.
+AQM_BASE = f"{RAW_BASE}/aqm/prod"
+AQM_SPECIES = {"ozone": "o3", "pm25": "pm25"}
+_aqm_grid = {}
+
+
+def aqm_urls(m, date_str, cyc, fhr):
+    key = (date_str, cyc)
+    if key not in _aqm_grid:
+        _aqm_grid[key] = None
+        for grid in ("793", "227"):
+            for bc in ("_bc", ""):
+                url = (f"{AQM_BASE}/aqm.{date_str}/{cyc}/"
+                       f"aqm.t{cyc}z.ave_1hr_o3{bc}.{grid}.grib2")
+                try:
+                    r = http_get(url, timeout=30,
+                                 headers={"Range": "bytes=0-32"})
+                except requests.RequestException:
+                    continue
+                if r.status_code in (200, 206) and r.content[:4] == b"GRIB":
+                    # Bias corrected where it exists: same field, adjusted
+                    # against what the monitors actually measured, which is
+                    # the number the advisories are written against.
+                    _aqm_grid[key] = (grid, bc)
+                    break
+            if _aqm_grid[key]:
+                break
+    if not _aqm_grid[key]:
+        return []
+    grid, bc = _aqm_grid[key]
+    return [f"{AQM_BASE}/aqm.{date_str}/{cyc}/"
+            f"aqm.t{cyc}z.ave_1hr_{sp}{bc}.{grid}.grib2"
+            for sp in AQM_SPECIES.values()]
+
+
 def icon_urls(m, date_str, cyc, fhr):
     return [f"{ICON_BASE}/{cyc}/{f}/"
             f"icon_global_icosahedral_single-level_{date_str}{cyc}_"
@@ -1307,7 +1340,7 @@ def icon_regional_urls(m, date_str, cyc, fhr):
             for f in ICON_FIELDS]
 
 
-URL_SOURCES = {"gem": gem_urls, "icon": icon_urls,
+URL_SOURCES = {"aqm": aqm_urls, "gem": gem_urls, "icon": icon_urls,
                "hrdps": ca_urls, "rdps": ca_urls,
                "iconeu": icon_regional_urls, "icond2": icon_regional_urls,
                "iconeps": icon_regional_urls}
