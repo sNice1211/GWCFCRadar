@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from gfs_pipeline import (BOX, ECMWF_BASE, DEFAULT_MODELS, REGIONS, regions_of, region_spec, ECMWF_PARAMS,
+from gfs_pipeline import (BOX, ECMWF_BASE, DEFAULT_MODELS, REGIONS, URL_SOURCES, regions_of, region_spec, ECMWF_PARAMS,
                           ECMWF_SHEAR_PARAMS, FILTER_BASE, HTTP, MODELS,
                           RAW_BASE, SHEAR_LEVELS, SHEAR_LEVEL_NAMES,
                           WANT_VARS, ask_from_inventory, cycle_for,
@@ -193,6 +193,36 @@ def check_ecmwf(name, m):
     return True
 
 
+def check_files(name, m):
+    """
+    A source that publishes one file per field, like GEM and ICON, has no
+    index to read, so this just confirms the first field's file is there and
+    times one download. The whole hour is that file times however many fields.
+    """
+    hours = fhours_for(m)
+    urls0 = URL_SOURCES[m["source"]](m, None, None, hours[0]) if False else None
+    for back in range(0, 4):
+        when = datetime.now(timezone.utc) - timedelta(hours=back * m["cycle_h"])
+        date_str, cyc = cycle_for(m, when)
+        urls = URL_SOURCES[m["source"]](m, date_str, cyc, hours[0])
+        t0 = time.time()
+        try:
+            r = requests.get(urls[0], timeout=90)
+        except Exception as e:
+            print(f"  {RED}network{OFF} {e}")
+            return False
+        if r.status_code == 200 and len(r.content) > 500:
+            mb = len(r.content) / 1e6
+            print(f"  {GREEN}first field found{OFF}  {date_str} {cyc}z, "
+                  f"{mb:.2f} MB in {time.time() - t0:.1f}s")
+            print(f"  {len(urls)} fields per hour, {len(hours)} hours: "
+                  f"roughly {mb * len(urls) * len(hours):.0f} MB a run")
+            return True
+    print(f"  {RED}no file found{OFF} for the last few cycles")
+    print(f"  {DIM}HTTP {r.status_code}  {urls[0]}{OFF}")
+    return False
+
+
 def check(name, region="conus"):
     m = region_spec(MODELS[name], region)
     kind = m.get("source") or m.get("fetch") or "filter"
@@ -200,6 +230,8 @@ def check(name, region="conus"):
     print(f"\n{BOLD}{tag}{OFF}  {m['label']}, {m['res']}  {DIM}[{kind}]{OFF}")
     if m.get("source") == "ecmwf":
         return check_ecmwf(name, m)
+    if m.get("source") in URL_SOURCES:
+        return check_files(name, m)
 
     # Recent cycles, not just the newest: a model can be a run behind without
     # anything being wrong with its address, and calling that a broken model
