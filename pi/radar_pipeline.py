@@ -164,16 +164,27 @@ def s3_list(bucket, prefix, delimiter=None, pages=8, limit=1000):
             url += f"&delimiter={delimiter}"
         if token:
             url += f"&continuation-token={quote(token, safe='')}"
-        try:
-            r = HTTP.get(url, timeout=30)
-            if r.status_code != 200:
-                # Said out loud, because a silent empty list is indistinguishable
-                # from "there is no weather", and that cost a day.
-                log(f"  listing {prefix or '/'}: HTTP {r.status_code}")
-                return []
-            root = ET.fromstring(r.text)
-        except Exception as e:
-            log(f"  listing {prefix or '/'} failed: {e}")
+        # One retry on a transport error before giving up. A single aborted
+        # connection while probing for a rollover made KMLB assume there was
+        # none and serve a volume 2.8 hours old, so a moment of network is
+        # worth more than it looks here.
+        root = None
+        for attempt in (0, 1):
+            try:
+                r = HTTP.get(url, timeout=30)
+                if r.status_code != 200:
+                    # Said out loud, because a silent empty list is
+                    # indistinguishable from "there is no weather".
+                    log(f"  listing {prefix or '/'}: HTTP {r.status_code}")
+                    return []
+                root = ET.fromstring(r.text)
+                break
+            except Exception as e:
+                if attempt:
+                    log(f"  listing {prefix or '/'} failed: {e}")
+                    return []
+                time.sleep(1.5)
+        if root is None:
             return []
         out += [t.findtext(field) for t in root.iter(tag) if t.findtext(field)]
         if root.findtext(f"{NS}IsTruncated") != "true":
@@ -219,7 +230,13 @@ def _newest_index(site, vols):
     the newest only when there has been no rollover, which is why KTLX was live
     and KLOT was nine hours stale on the same run.
     """
-    first, last = _vol_time(site, vols[0]), _vol_time(site, vols[-1])
+    # A failed probe must not be read as an answer. Assuming "no rollover"
+    # because a request dropped is how one aborted connection served a site
+    # 2.8 hours stale, so a neighbour stands in when an end will not speak.
+    first = _vol_time(site, vols[0]) or (
+        _vol_time(site, vols[1]) if len(vols) > 1 else "")
+    last = _vol_time(site, vols[-1]) or (
+        _vol_time(site, vols[-2]) if len(vols) > 1 else "")
     if not first or not last or first <= last:
         return len(vols) - 1          # no rollover, so the highest is newest
 
