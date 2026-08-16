@@ -15967,7 +15967,19 @@ function _getBubbleActive(id) {
   // The Pi's radar counts as the radar bubble being on. It draws image
   // overlays rather than tiles, so activeLayers.nexrad never knows about it,
   // and without this the bubble reads as off while radar is plainly on screen.
-  if (id === 'radar')     return !!activeLayers.nexrad || !!_prOn || !!_l3Overlay;
+  // _l3Overlay is declared with let in a LATER <script> block than this one.
+  // A let is not hoisted across blocks the way a var is, so reading it from
+  // here before that block has run throws "Cannot access before
+  // initialization" rather than returning undefined. This function runs during
+  // the first renderSubBubbles, which happens in this block, so a bare
+  // reference killed the whole script and took the site down with it.
+  //
+  // typeof is the one form that is safe on a name in that state.
+  if (id === 'radar') {
+    const l3 = typeof _l3Overlay !== 'undefined' && _l3Overlay;
+    const pi = typeof _prOn !== 'undefined' && _prOn;
+    return !!activeLayers.nexrad || !!pi || !!l3;
+  }
   if (id === 'satellite') return !!activeLayers.satellite;
   if (id === 'waves')       return !!wavesActive;
   if (id === 'air')         return !!airActive;
@@ -18419,7 +18431,8 @@ function _radarSiteBubble(wrap, id, onOpen) {
   el.id = 'sub-radar-site';
   el.innerHTML = `<span class="sb-icon"><svg class=svgi width=1em height=1em`
                + ` style=vertical-align:-.15em><use href=#ic-antenna></use>`
-               + `</svg></span><span class="sb-label">${id || 'Nearest'}</span>`;
+               + `</svg></span><span class="sb-label">`
+               + `${id ? String(id).toUpperCase() : 'Nearest'}</span>`;
   el.onclick = onOpen;
   wrap.appendChild(el);
 }
@@ -18451,7 +18464,8 @@ function _radarSiteRow(ids, current, onPick, onBack) {
     el.id = 'sub-site-' + id;
     el.innerHTML = `<span class="sb-icon"><svg class=svgi width=1em height=1em`
                  + ` style=vertical-align:-.15em><use href=#ic-antenna></use>`
-                 + `</svg></span><span class="sb-label">${id}</span>`;
+                 + `</svg></span><span class="sb-label">`
+                 + `${String(id).toUpperCase()}</span>`;
     el.onclick = () => onPick(id);
     wrap.appendChild(el);
   });
@@ -18549,9 +18563,21 @@ async function toggleRadarPiSub(level) {
   const wrap = document.getElementById('sub-bubbles');
   _disableSatellite();
   _disableRadar();
+
+  // The row is drawn BEFORE the Pi is asked, not after. Awaiting first left
+  // the previous row on screen for as long as the fetch took, and forever if
+  // the Pi was not answering, so tapping Level 3 looked like it did nothing at
+  // all. Now the row appears at once and fills itself in.
+  _prRenderPiRow(level);
   await _prSetLevel(level);
   if (!_prOn) await _prEnable();
+  _prRenderPiRow(level);          // again, now that the sites are known
+  toggleRadarPiRefresh();
+}
 
+function _prRenderPiRow(level) {
+  const wrap = document.getElementById('sub-bubbles');
+  if (!wrap) return;
   wrap.innerHTML = '';
   _radarBackBubble(wrap, () => toggleRadarSub());
   // The sites the Pi has actually built, which is a handful rather than the
@@ -18580,6 +18606,21 @@ async function toggleRadarPiSub(level) {
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
+  // Said out loud rather than left as an empty row. A Pi that is off, or has
+  // not built this level yet, is the ordinary case and it should read as an
+  // answer rather than as the menu being broken.
+  if (!sites.length) {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble';
+    el.innerHTML = '<span class="sb-icon">'
+                 + '<svg class=svgi width=1em height=1em '
+                 + 'style=vertical-align:-.15em><use href=#ic-info></use></svg>'
+                 + '</span><span class="sb-label">No Pi radar yet</span>';
+    el.onclick = () => { if (typeof showToast === 'function') {
+      showToast('Your Pi has not published a radar volume yet. It builds one '
+              + 'every five minutes once gwcfc-radar is running.', 4500); } };
+    wrap.appendChild(el);
+  }
   wrap.style.display = 'flex';
   _syncParentBubble('radar');
 }
@@ -23879,7 +23920,14 @@ async function loadL3Data(product, stationOverride) {
   var buffer;
   try {
     console.log('[L2] Fetching', product.toUpperCase(), 'from station', station);
-    var res = await fetch(RADAR_WORKER_URL + '?station=' + station, { signal: _abortSignal(30000) });
+    // Upper case, always. The station list is written in lower case and the
+    // Worker refuses anything that is not four capitals:
+    //     if (!/^[A-Z]{4}$/.test(station)) return jsonErr(...400)
+    // so every request built straight from the list came back HTTP 400 and the
+    // panel reported "fetch failed". That is the whole reason Level 2 never
+    // drew anything, and why the dual polarity products looked unfinished.
+    var res = await fetch(RADAR_WORKER_URL + '?station=' + station.toUpperCase(),
+                          { signal: _abortSignal(30000) });
     if (!res.ok) { var errJson = await res.json().catch(function(){ return {}; }); throw new Error(errJson.error || 'HTTP ' + res.status); }
     buffer = await res.arrayBuffer();
     console.log('[L2] Fetched', buffer.byteLength, 'bytes for', station);
@@ -33388,7 +33436,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Radar and AI Cyclones moved out of the overlay list into Radar and Run Models, where they belong. Radar is one site at a time now.";
+const APP_LATEST_UPDATE = "Level 2 radar works now. Every request was being sent with a lower case station name, which the server refuses.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
