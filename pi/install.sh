@@ -152,6 +152,16 @@ RestartSec=5
 WantedBy=default.target
 EOF
 
+# A named tunnel, if one has been set up, is left alone. Rewriting this unit
+# would put the quick tunnel back, and since the updater now tells you to run
+# this script whenever install.sh changes, a permanent address would quietly
+# revert to a random one every time you took its advice.
+if [ -f "$HOME/.cloudflared/config.yml" ] && \
+   grep -q '^tunnel:' "$HOME/.cloudflared/config.yml" 2>/dev/null; then
+  ok "named tunnel found, leaving gwcfc-tunnel.service alone"
+  NAMED_TUNNEL=1
+else
+  NAMED_TUNNEL=0
 cat > "$UNITS/gwcfc-tunnel.service" <<EOF
 [Unit]
 Description=Public HTTPS address for the GWCFC model images
@@ -168,6 +178,7 @@ StandardError=append:$HOME/tunnel.log
 [Install]
 WantedBy=default.target
 EOF
+fi
 cat > "$UNITS/gwcfc-publish.service" <<EOF
 [Unit]
 Description=Tell the site where the Pi is
@@ -290,7 +301,9 @@ EOF
 chmod +x "$REPO/pi/selfupdate.sh" 2>/dev/null || true
 
 systemctl --user daemon-reload
-: > "$HOME/tunnel.log"
+# Only the quick tunnel writes this log, and only it is confused by old lines
+# in it. A named tunnel does not use it at all.
+[ "$NAMED_TUNNEL" = "1" ] || : > "$HOME/tunnel.log"
 systemctl --user enable --now gwcfc-serve.service  >/dev/null 2>&1
 systemctl --user restart    gwcfc-tunnel.service   >/dev/null 2>&1 || \
   systemctl --user enable --now gwcfc-tunnel.service >/dev/null 2>&1
@@ -305,13 +318,19 @@ ok "serve, tunnel, publish, models, radar, cyclones and self-update are running"
 # ── 5. the address ──────────────────────────────────────────────────────────
 say "Public address"
 URL=""
-for _ in $(seq 1 20); do
-  # tail, not head: the log is appended to across restarts, so the last
-  # address is the live one and every earlier one is dead.
-  URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$HOME/tunnel.log" 2>/dev/null | tail -1 || true)
-  [ -n "$URL" ] && break
-  sleep 2
-done
+# A pinned address is the answer already and there is nothing to wait for.
+if [ -s "$HOME/.gwcfc-pinned-url" ]; then
+  URL=$(tr -d '[:space:]' < "$HOME/.gwcfc-pinned-url")
+  ok "permanent address, so nothing to look up"
+else
+  for _ in $(seq 1 20); do
+    # tail, not head: the log is appended to across restarts, so the last
+    # address is the live one and every earlier one is dead.
+    URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$HOME/tunnel.log" 2>/dev/null | tail -1 || true)
+    [ -n "$URL" ] && break
+    sleep 2
+  done
+fi
 
 # ── 6. first build ──────────────────────────────────────────────────────────
 # Started through systemd rather than run here. Run from the script it belongs
