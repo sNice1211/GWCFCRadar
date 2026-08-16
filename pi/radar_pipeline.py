@@ -99,7 +99,7 @@ EARTH_R = 6371000.0
 NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 
 
-def s3_list(bucket, prefix, delimiter=None, pages=8):
+def s3_list(bucket, prefix, delimiter=None, pages=8, limit=1000):
     """
     What is in a public S3 bucket under a prefix, in order.
 
@@ -119,7 +119,7 @@ def s3_list(bucket, prefix, delimiter=None, pages=8):
     tag = f"{NS}CommonPrefixes" if delimiter else f"{NS}Contents"
     field = f"{NS}Prefix" if delimiter else f"{NS}Key"
     for _ in range(pages):
-        url = f"{bucket}/?list-type=2&prefix={prefix}&max-keys=1000"
+        url = f"{bucket}/?list-type=2&prefix={prefix}&max-keys={limit}"
         if delimiter:
             url += f"&delimiter={delimiter}"
         if token:
@@ -151,16 +151,60 @@ def _chunk_time(key):
     return f"{bits[0]}_{bits[1]}" if len(bits) >= 2 and bits[0].isdigit() else ""
 
 
+def _vol_time(site, vol):
+    """When one volume started, from the name of its first chunk.
+
+    One request that asks for a single key, so this is cheap enough to do
+    repeatedly while hunting for the newest volume.
+    """
+    keys = s3_list(L2_CHUNKS, f"{site}/{vol}/", limit=1, pages=1)
+    return _chunk_time(keys[0]) if keys else ""
+
+
+def _newest_index(site, vols):
+    """
+    Where the newest volume sits in the number-sorted list.
+
+    The volume number counts up and rolls over at 999, and the bucket keeps
+    about two days, so after a rollover the numbers present are the tail of the
+    old cycle and the head of the new one. Sorted by number that reads as: the
+    new run first, low numbers, ending at the newest volume there is, and then
+    a jump backwards to the old run, high numbers, ending just before the
+    rollover.
+
+    So there is exactly one place where time goes backwards, and everything in
+    the first block is newer than everything in the second. That makes it a
+    binary search rather than a scan: about ten small requests instead of six
+    hundred. Checking only the two ends, which is what this did before, finds
+    the newest only when there has been no rollover, which is why KTLX was live
+    and KLOT was nine hours stale on the same run.
+    """
+    first, last = _vol_time(site, vols[0]), _vol_time(site, vols[-1])
+    if not first or not last or first <= last:
+        return len(vols) - 1          # no rollover, so the highest is newest
+
+    # The first block holds every volume at or after first, and the second
+    # block holds none, so "is this one at least as new as vols[0]" is true
+    # then false exactly once and can be searched for.
+    lo, hi = 0, len(vols) - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        t = _vol_time(site, vols[mid])
+        if t and t >= first:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+
 def latest_l2_volumes(site, count=1):
     """
     The newest Level 2 volumes for one site, as (stamp, [chunk keys]).
 
-    The live feed publishes a volume in pieces as the antenna goes round, under
-    a volume number that counts up and rolls over at 999. So the highest number
-    is usually the newest, but right after a rollover it is the lowest, and
-    neither the numbers nor the names sort into time order. The times are in
-    the chunk names, so a handful of candidates from each end of the range get
-    listed and the real timestamps decide.
+    The live feed publishes a volume in pieces as the antenna goes round, so
+    the newest one is usually still being written. Its neighbours in number are
+    its neighbours in time, so once the newest is located the ones before it
+    are simply the entries before it in the list.
     """
     vols = [p.rstrip("/").rsplit("/", 1)[-1]
             for p in s3_list(L2_CHUNKS, f"{site}/", delimiter="/")]
@@ -168,19 +212,23 @@ def latest_l2_volumes(site, count=1):
     if not vols:
         return []
 
-    # Both ends, because of the rollover. A few more than asked for, so that a
-    # volume that has only just started can be passed over for a complete one.
-    edge = count + 3
+    at = _newest_index(site, vols)
+    # A few more than asked for, so a volume that has only just started can be
+    # passed over for the complete one before it. Walking backwards from the
+    # newest, and wrapping round the list, since the entry before number 1 is
+    # number 999.
+    want = [vols[(at - i) % len(vols)] for i in range(count + 3)]
+
     found = []
-    for vol in list(dict.fromkeys(vols[-edge:] + vols[:edge])):
+    for vol in want:
         keys = s3_list(L2_CHUNKS, f"{site}/{vol}/")
-        if not keys:
-            continue
-        # A volume that has only a few chunks is still being written and has
-        # not got a whole bottom sweep in it yet. The one before it has.
-        if len(keys) < 8:
+        if not keys or len(keys) < 8:
+            # Too few chunks means the antenna is still part way round and
+            # there is no whole bottom sweep in there yet.
             continue
         found.append((_chunk_time(keys[0]), keys))
+        if len(found) >= count:
+            break
     found.sort(key=lambda t: t[0])
     return found[-count:]
 

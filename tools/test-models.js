@@ -62,7 +62,7 @@ global.document = {
 };
 ['sev-var-sel','sev-run-sel','sev-frame-grid','sev-fcast-date','sev-fcast-flbl',
  'sev-playbar-fill','sev-playbar-thumb','sev-model-sel','sev-pi-group',
- 'sev-region-sel','cyc-variant-sel','cyc-variant-row'].forEach(id => els[id] = mkEl(id));
+ 'sev-region-sel','cyc-variant-sel','cyc-variant-row','pr-opts-row','pr-level-sel','pr-product-sel'].forEach(id => els[id] = mkEl(id));
 // The <select> reports the options its optgroup holds, the way a real one does.
 els['sev-model-sel'].options = els['sev-pi-group'].children;
 
@@ -175,7 +175,10 @@ global.fetch = async (url) => {
   if (url.split('?')[0].endsWith('radar/latest_l3.json')) return { ok:false };
   const rm = url.split('?')[0].match(/radar\/l2\/(\w+)\/([\d_]+)\/manifest\.json/);
   if (rm) return { ok:true, json: async () => ({ site:rm[1], level:2, time:rm[2],
-     bounds:[[33,-99],[37,-95]], fields:{ ref:{min:-10,max:75} } }) };
+     bounds:[[33,-99],[37,-95]],
+     // Both moments, because the product picker is only meaningfully tested
+     // against a site that actually carries more than one.
+     fields:{ ref:{min:-10,max:75}, vel:{min:-40,max:40} } }) };
   return { ok:false };
 };
 

@@ -275,7 +275,35 @@ function ok(name, cond, extra) {
   ok('with bounds from the frame manifest',
      rl && JSON.stringify(rl.bounds) === JSON.stringify([[33,-99],[37,-95]]),
      rl && JSON.stringify(rl.bounds));
+  ok('and the level and product pickers are shown',
+     els['pr-opts-row'].style.display === '' &&
+     els['pr-level-sel'].children.length === 3 &&
+     els['pr-product-sel'].children.length === 2,
+     els['pr-level-sel'].children.length + '/' +
+     els['pr-product-sel'].children.length);
+
+  // Velocity is a different file, not a different colour of the same one, so
+  // switching product has to change the URL that gets fetched.
+  await _prSetProduct('velocity');
+  const vl = _prLayers[_prLayers.length - 1];
+  ok('choosing velocity draws the velocity file',
+     vl && vl.url.endsWith('/vel.png'), vl && vl.url);
+  await _prSetProduct('reflectivity');
+
+  // The fake Pi has Level 2 but no Level 3. Asking for Level 3 must fall back
+  // rather than clear the map, since an empty map is the worse answer.
+  await _prSetLevel('l3');
+  ok('asking for a level the Pi has not built falls back to the one it has',
+     _prLayers.length === 1, _prLayers.length);
+  const fb = _prLayers[_prLayers.length - 1];
+  ok('and that fallback is still Level 2',
+     fb && fb.url.includes('/l2/'), fb && fb.url);
+  await _prSetLevel('auto');
+
   _prDisable();
+  ok('turning it off hides the pickers too',
+     els['pr-opts-row'].style.display === 'none',
+     els['pr-opts-row'].style.display);
   ok('turning it off clears the layer', _prOn === false && _prLayers.length === 0,
      _prLayers.length);
 
