@@ -33,6 +33,16 @@ API_KEY = "AIzaSyAAPuBJFlhBFPhqPGlrNnn_c0NZFRgZTI8"
 DOC = "piEndpoint/models"
 TUNNEL_LOG = os.path.expanduser("~/tunnel.log")
 STATE = os.path.expanduser("~/.gwcfc-published-url")
+# Written by --set, which is what the named tunnel uses. Its presence means the
+# address is fixed and must not be worked out from a log again.
+#
+# Without this the two halves fight each other. The quick tunnel appends its
+# address to ~/tunnel.log, the log is never truncated, and --watch takes the
+# last match in it. So a minute after switching to a permanent address, the
+# watcher would find the old trycloudflare line still sitting in that file and
+# publish it back over the good one, and the site would go to an address that
+# stopped answering when the quick tunnel did.
+PINNED = os.path.expanduser("~/.gwcfc-pinned-url")
 
 URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
@@ -109,8 +119,17 @@ def publish(url, token):
         return r.status in (200, 201)
 
 
+def pinned_url():
+    """The fixed address, if one was set, else None."""
+    try:
+        with open(PINNED) as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
 def publish_if_changed(force=False):
-    url = current_url()
+    url = pinned_url() or current_url()
     if not url:
         log("no address in the tunnel log yet")
         return False
@@ -191,19 +210,31 @@ def main():
             log(f"could not publish: {e}")
             return 1
         if ok:
-            try:
-                with open(STATE, "w") as f:
-                    f.write(url)
-            except OSError:
-                pass
+            for path in (STATE, PINNED):
+                try:
+                    with open(path, "w") as f:
+                        f.write(url)
+                except OSError:
+                    pass
             log(f"published {url}")
+            log("pinned, so --watch will stop reading the tunnel log")
         return 0 if ok else 1
+    if "--unpin" in sys.argv:
+        # Going back to a quick tunnel, which is the only reason to do this.
+        try:
+            os.unlink(PINNED)
+            log("unpinned, the address will be read from the log again")
+        except OSError:
+            log("was not pinned")
+        return 0
     watch = "--watch" in sys.argv
     if not watch:
         return 0 if publish_if_changed(force="--force" in sys.argv) else 1
     # The tunnel can take a while to come up, and can be restarted underneath
     # us, so this keeps looking rather than checking once and giving up.
-    log("watching the tunnel log")
+    fixed = pinned_url()
+    log(f"address is pinned to {fixed}, republishing only if it is lost"
+        if fixed else "watching the tunnel log")
     while True:
         try:
             publish_if_changed()
