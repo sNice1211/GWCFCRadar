@@ -62,7 +62,7 @@ global.document = {
 };
 ['sev-var-sel','sev-run-sel','sev-frame-grid','sev-fcast-date','sev-fcast-flbl',
  'sev-playbar-fill','sev-playbar-thumb','sev-model-sel','sev-pi-group',
- 'sev-region-sel','cyc-variant-sel','cyc-variant-row','pr-opts-row','pr-level-sel','pr-product-sel'].forEach(id => els[id] = mkEl(id));
+ 'sev-region-sel','cyc-variant-sel','cyc-variant-row'].forEach(id => els[id] = mkEl(id));
 // The <select> reports the options its optgroup holds, the way a real one does.
 els['sev-model-sel'].options = els['sev-pi-group'].children;
 
