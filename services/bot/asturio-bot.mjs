@@ -291,19 +291,30 @@ const IMAGE_MAX_COUNT = 4;
 
 async function imageParts(attachments) {
   const parts = [];
+  // Every skip says why. An image silently not looked at reads as the bot
+  // being unable to see, and which step dropped it is the whole diagnosis.
   for (const a of attachments) {
     if (parts.length >= IMAGE_MAX_COUNT) break;
-    if (!IMAGE_TYPES.test(a.contentType || '')) continue;
-    if ((a.size || 0) > IMAGE_MAX_BYTES) continue;
+    if (!IMAGE_TYPES.test(a.contentType || '')) {
+      console.log(`image skipped: type "${a.contentType}" (${a.name})`);
+      continue;
+    }
+    if ((a.size || 0) > IMAGE_MAX_BYTES) {
+      console.log(`image skipped: ${Math.round(a.size / 1048576)}MB is over the ${IMAGE_MAX_BYTES / 1048576}MB cap (${a.name})`);
+      continue;
+    }
     try {
       const r = await fetch(a.url, { signal: withTimeout(20000) });
-      if (!r.ok) continue;
+      if (!r.ok) { console.log(`image skipped: HTTP ${r.status} fetching ${a.name}`); continue; }
       const buf = Buffer.from(await r.arrayBuffer());
       parts.push({ inline_data: {
         mime_type: (a.contentType || 'image/png').split(';')[0],
         data: buf.toString('base64'),
       } });
-    } catch {}   // a picture that cannot be fetched just is not looked at
+      console.log(`image attached: ${a.name}, ${Math.round(buf.length / 1024)}KB`);
+    } catch (e) {
+      console.log(`image skipped: ${e.message} (${a.name})`);
+    }
   }
   return parts;
 }
@@ -319,6 +330,8 @@ async function askAsturio(question, ctx, history = [], images = []) {
     // than useless. With it, anything outside the feeds above is looked up.
     tools: [{ google_search: {} }],
   };
+
+  if (images.length) console.log(`asking with ${images.length} image(s)`);
 
   const useKey = GEMINI_API_KEY && !_keyRefused;
   const direct = `https://generativelanguage.googleapis.com/v1beta/models/`
