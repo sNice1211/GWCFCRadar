@@ -100,6 +100,26 @@ async function boot(piMode) {
         body: JSON.stringify({ fields: { url: { stringValue: PI } } }) });
     if (url.startsWith(PI)) {
       if (piMode === 'down') return route.abort();
+      // The cyclone spaghetti: one OPER file holding a mean and two members.
+      if (url.includes('/cyclones/')) {
+        if (url.includes('latest.json'))
+          return route.fulfill({ contentType: 'application/json',
+            body: JSON.stringify({ run: '20260817_00',
+                                   path: '20260817_00/cyc.json' }) });
+        if (url.includes('cyc.json'))
+          return route.fulfill({ contentType: 'application/json',
+            body: JSON.stringify({ run: '20260817_00', genesis: {},
+              tracks: { gencast_oper: { variant: 'OPER',
+                                        path: 'tracks_oper.json' } } }) });
+        if (url.includes('tracks_oper.json'))
+          return route.fulfill({ contentType: 'application/json',
+            body: JSON.stringify({ tracks: {
+              '01c|mean': [{ lat: 20, lon: -60 }, { lat: 24, lon: -66 }],
+              '01c|1':    [{ lat: 20, lon: -60 }, { lat: 26, lon: -63 }],
+              '01c|2':    [{ lat: 20, lon: -60 }, { lat: 22, lon: -69 }],
+            } }) });
+        return route.fulfill({ status: 404, body: 'nope' });
+      }
       // What Cloudflare's edge really says when the tunnel process is dead:
       // it answers, with an error, and the Pi never saw the request.
       if (piMode === 'edge530')
@@ -265,6 +285,35 @@ console.log('\n1. a healthy Pi, seen from the page');
   }));
   ok('toggling off removes both images and stops the refresh',
      off.gone && off.timer, JSON.stringify(off));
+
+  // The cyclone spaghetti wears name tags now: every line ends in a pill
+  // saying which member it is, and tapping a tag dims everything else.
+  await page.evaluate(() => _cycEnable());
+  await page.waitForTimeout(800);
+  const cyc = await page.evaluate(() => ({
+    groups: Object.keys(_cycGroups).length,
+    labels: Object.values(_cycGroups)
+      .flatMap(g => g.tags.map(t => t.getElement().textContent.trim())).sort(),
+  }));
+  ok('every track line carries a name tag', cyc.groups === 3, String(cyc.groups));
+  ok('and the tags say storm and member, shortly',
+     cyc.labels.join(',') === '01C M1,01C M2,01C MEAN', cyc.labels.join(','));
+
+  const focus = await page.evaluate(() => {
+    const key = 'gencast_oper|01c|1';
+    _cycGroups[key].tags[0].fire('click');
+    const others = Object.entries(_cycGroups).filter(([k]) => k !== key);
+    const dimmed = others.every(([, g]) =>
+      g.lines.every(l => l.options.opacity === 0.05));
+    const lifted = _cycGroups[key].lines.every(l => l.options.opacity === 1);
+    _cycGroups[key].tags[0].fire('click');   // tap again restores
+    const restored = others.every(([, g]) =>
+      g.lines.every(l => l.options.opacity === g.baseOpacity));
+    return { dimmed, lifted, restored };
+  });
+  ok('tapping a tag dims every other line', focus.dimmed, JSON.stringify(focus));
+  ok('and brightens its own', focus.lifted, JSON.stringify(focus));
+  ok('tapping again restores the tangle', focus.restored, JSON.stringify(focus));
 
   ok('nothing threw along the way', errors.length === 0, errors.join(' | '));
   await page.close();

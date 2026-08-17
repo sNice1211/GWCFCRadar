@@ -76,7 +76,21 @@ global.L = {
     return { url, bounds, opts, _h:{}, on(ev,fn){this._h[ev]=fn;}, addTo(m){ added.push(this); return this; } };
   },
   polyline(pts, opts) {
-    return { pts, opts, addTo(m){ lines.push(this); added.push(this); return this; } };
+    return { pts, opts, options: opts,
+             setStyle(s){ Object.assign(this.options, s); },
+             addTo(m){ lines.push(this); added.push(this); return this; } };
+  },
+  // Enough marker surface for the spaghetti name tags: an element with the
+  // label text, click wiring, and addTo/remove bookkeeping.
+  divIcon(opts) { return { _div: opts }; },
+  marker(ll, opts) {
+    const el = { textContent: String((opts?.icon?._div?.html || ''))
+                   .replace(/<[^>]*>/g, ''), style: {} };
+    return { ll, opts, _h: {},
+             on(ev, fn){ this._h[ev] = fn; return this; },
+             fire(ev){ if (this._h[ev]) this._h[ev](); return this; },
+             getElement(){ return el; },
+             addTo(m){ added.push(this); return this; } };
   },
 };
 global.map = { removeLayer(l){ const i = added.indexOf(l); if(i>=0) added.splice(i,1); } };

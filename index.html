@@ -12582,25 +12582,81 @@ async function _cycFresh() {
 function _cycClear() {
   _cycLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
   _cycLayers = [];
+  _cycGroups = {};
+  _cycFocusKey = null;
+}
+
+// Every line's layers by its track key, so tapping one tag can dim all the
+// others. The tag is the handle: lines stay non-interactive so the map
+// underneath them still pans and clicks.
+let _cycGroups = {};
+let _cycFocusKey = null;
+
+function _cycFocus(key) {
+  _cycFocusKey = _cycFocusKey === key ? null : key;
+  for (const [k, g] of Object.entries(_cycGroups)) {
+    const dim = _cycFocusKey !== null && k !== _cycFocusKey;
+    const lift = _cycFocusKey !== null && k === _cycFocusKey;
+    g.lines.forEach(l => l.setStyle({
+      opacity: dim ? 0.05 : (lift ? 1 : g.baseOpacity),
+      weight: lift ? g.baseWeight + 1.5 : g.baseWeight,
+    }));
+    g.tags.forEach(t => {
+      const el = t.getElement && t.getElement();
+      if (el) el.style.opacity = dim ? 0.15 : 1;
+    });
+  }
 }
 
 // A track is a list of points already in order along the line, so this is a
 // polyline and nothing more. The dateline is the one thing that needs care:
 // a storm crossing it has longitudes that jump from 179 to -179, and a
 // straight line between those two goes the wrong way round the world.
-function _cycDrawTrack(points, style) {
+function _cycDrawTrack(points, style, key, label) {
   const legs = [[]];
   for (let i = 0; i < points.length; i++) {
     const p = points[i];
     if (i && Math.abs(p.lon - points[i - 1].lon) > 180) legs.push([]);
     legs[legs.length - 1].push([p.lat, p.lon]);
   }
+  const drawn = [];
   legs.filter(l => l.length > 1).forEach(l => {
     const line = L.polyline(l, { ...style, interactive: false,
                                  pane: 'radarPane' });
     line.addTo(map);
     _cycLayers.push(line);
+    drawn.push(line);
   });
+  if (!drawn.length || !label) return;
+
+  const group = _cycGroups[key] || (_cycGroups[key] = {
+    lines: [], tags: [],
+    baseOpacity: style.opacity, baseWeight: style.weight,
+  });
+  group.lines.push(...drawn);
+
+  // The name tag at the line's far end, the way the sketch has it: the tags
+  // fan out with the tracks instead of piling onto the storm. The pill sizes
+  // itself to its text, so any name fits by construction.
+  const lastLeg = legs.filter(l => l.length > 1).pop();
+  const tag = L.marker(lastLeg[lastLeg.length - 1], {
+    icon: L.divIcon({
+      className: '',
+      iconAnchor: [-4, 8],
+      html: `<span style="
+        display:inline-block;padding:1px 6px 2px;
+        background:rgba(0,0,0,0.72);
+        border:1px solid ${style.color};border-radius:8px;
+        color:${style.color};font-family:'Comfortaa', sans-serif;
+        font-size:9px;font-weight:700;white-space:nowrap;
+        cursor:pointer;text-shadow:0 1px 3px #000;
+      ">${label}</span>`,
+    }),
+    zIndexOffset: 250,
+  }).addTo(map);
+  tag.on('click', () => _cycFocus(key));
+  _cycLayers.push(tag);
+  group.tags.push(tag);
 }
 
 async function _cycEnable() {
@@ -12646,8 +12702,17 @@ async function _cycEnable() {
       .then(r => r.ok ? r.json() : null).catch(() => null);
     if (!data || !data.tracks) continue;
     const isMean = name.endsWith('ensemble_mean');
-    Object.values(data.tracks).forEach(pts => {
-      if (pts.length > 1) _cycDrawTrack(pts, isMean ? CYC_MEAN : CYC_MEMBER);
+    // Keys read "storm|member". The tag says both, shortly: "01C MEAN",
+    // "01C M3". One storm's mean file keys its member as "mean" too.
+    Object.entries(data.tracks).forEach(([key, pts]) => {
+      if (pts.length < 2) return;
+      const [storm, member] = String(key).split('|');
+      const who = (isMean || member === 'mean') ? 'MEAN'
+                : 'M' + String(member).replace(/^0+(?=\d)/, '');
+      const label = (storm && storm !== 'unknown')
+        ? `${storm.toUpperCase()} ${who}` : who;
+      _cycDrawTrack(pts, isMean ? CYC_MEAN : CYC_MEMBER,
+                    `${name}|${key}`, label);
     });
   }
 
@@ -32749,7 +32814,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Level 3 has tilts now: reflectivity and velocity carry chips 1 to 4 on their bubble, each showing a higher antenna cut. The Pi builds all four every five minutes.";
+const APP_LATEST_UPDATE = "Spaghetti tracks wear name tags now: every cyclone model line ends in a little pill saying which storm and member it is. Tap a tag to spotlight that line and dim the rest; tap again to restore.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
