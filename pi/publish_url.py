@@ -166,11 +166,25 @@ def publish_if_changed(force=False):
 
 def check():
     """Report where things stand, in words, without changing anything."""
-    url = current_url()
-    print(f"  tunnel address : {url or 'NONE FOUND in ' + TUNNEL_LOG}")
+    url = pinned_url() or current_url()
+    src = 'pinned' if pinned_url() else 'from the log'
+    print(f"  tunnel address : {url + ' (' + src + ')' if url else 'NONE FOUND in ' + TUNNEL_LOG}")
     if not url:
         print("    the tunnel may still be starting. systemctl --user status gwcfc-tunnel")
         return 1
+    # Knock on the door. The log is append-only across restarts, so after a
+    # reboot with a dead tunnel the last address in it still reads as current,
+    # and this check once said "match: yes" about an address nothing answered.
+    # Agreeing with the database means nothing unless the address is alive.
+    alive = False
+    try:
+        with urllib.request.urlopen(url + "/models/latest.json", timeout=20) as r:
+            alive = r.status == 200
+    except Exception:
+        pass
+    print("  answers        : " + ("yes, the tunnel is alive" if alive else
+        "NO. The address does not answer, so the tunnel is not actually "
+        "running.\n    FIX: systemctl --user restart gwcfc-tunnel gwcfc-publish"))
     try:
         with urllib.request.urlopen(
                 f"https://firestore.googleapis.com/v1/projects/{PROJECT}"
@@ -178,10 +192,13 @@ def check():
             doc = json.load(r)
         have = doc.get("fields", {}).get("url", {}).get("stringValue", "")
         print(f"  site is told   : {have or '(nothing)'}")
+        good = have == url and alive
         print("  match          : " + ("yes, the site can find the Pi"
-                                       if have == url else
-                                       "NO, the site is pointed somewhere else"))
-        return 0 if have == url else 1
+                                       if good else
+                                       "NO, the site is pointed somewhere else"
+                                       if have != url else
+                                       "the addresses agree but nothing answers there"))
+        return 0 if good else 1
     except urllib.error.HTTPError as e:
         print(f"  could not read it back: HTTP {e.code}: {_detail(e)}")
         return 1
