@@ -909,13 +909,13 @@ FIELDS = {
     # the biggest waves in a sea are noticeably larger than this number. Swell
     # from a hurricane reaches a coast days before the storm does, and is what
     # closes beaches and floods low ground well ahead of landfall.
-    "swh":   {"short": ("swh", "htsgw"), "levtype": ("surface",), "level": 0,
+    "swh":   {"short": ("swh", "htsgw"), "levtype": ("surface",), "level": (0, 1),
               "convert": lambda a: a,           "range": (0, 12),
               "ramp": "viridis"},
     # Wave period. Long period swell is the signature of a distant storm: wind
     # waves from local weather are short and choppy, a 15 second swell has
     # travelled a long way to get here.
-    "perpw": {"short": ("perpw", "pp1d"), "levtype": ("surface",), "level": 0,
+    "perpw": {"short": ("perpw", "pp1d"), "levtype": ("surface",), "level": (0, 1),
               "convert": lambda a: a,           "range": (0, 20), "ramp": "heat"},
 
     # ── Air quality ─────────────────────────────────────────────────────────
@@ -947,9 +947,15 @@ SHEAR_LEVELS = (200, 850)
 
 
 def _matches(spec, short, levtype, level):
+    # "level" may be one number or several. Wave files write the surface as
+    # level 1 where every other model writes 0, and demanding exactly 0 threw
+    # away five perfectly good messages an hour, every hour.
+    want = spec["level"]
+    if not isinstance(want, tuple):
+        want = (want,)
     return (short in spec["short"]
             and levtype in spec["levtype"]
-            and int(level) == int(spec["level"]))
+            and int(level) in tuple(int(v) for v in want))
 
 # NOMADS query flags: which variables and which levels to ask for.
 #
