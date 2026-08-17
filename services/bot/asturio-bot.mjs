@@ -281,11 +281,39 @@ async function _callModel(endpoint, body) {
   return { res, data };
 }
 
-async function askAsturio(question, ctx, history = []) {
+// Turns Discord image attachments into the inline parts Gemini reads. Discord
+// serves attachments over plain HTTPS, so each is fetched and carried as
+// base64. Only types Gemini accepts, capped in size and count so one post
+// full of screenshots cannot blow the request limit.
+const IMAGE_TYPES = /^image\/(png|jpe?g|webp|heic|heif)/i;
+const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+const IMAGE_MAX_COUNT = 4;
+
+async function imageParts(attachments) {
+  const parts = [];
+  for (const a of attachments) {
+    if (parts.length >= IMAGE_MAX_COUNT) break;
+    if (!IMAGE_TYPES.test(a.contentType || '')) continue;
+    if ((a.size || 0) > IMAGE_MAX_BYTES) continue;
+    try {
+      const r = await fetch(a.url, { signal: withTimeout(20000) });
+      if (!r.ok) continue;
+      const buf = Buffer.from(await r.arrayBuffer());
+      parts.push({ inline_data: {
+        mime_type: (a.contentType || 'image/png').split(';')[0],
+        data: buf.toString('base64'),
+      } });
+    } catch {}   // a picture that cannot be fetched just is not looked at
+  }
+  return parts;
+}
+
+async function askAsturio(question, ctx, history = [], images = []) {
   const [alerts, reports] = await Promise.all([fetchAlerts(), fetchStormReports()]);
   const body = {
     system_instruction: { parts: [{ text: systemPrompt({ alerts, reports, ...ctx }) }] },
-    contents: [...history, { role: 'user', parts: [{ text: question }] }],
+    // Images go in front of the words, which is the order Gemini reads best.
+    contents: [...history, { role: 'user', parts: [...images, { text: question }] }],
     // Google Search grounding. Without it the model answers weather questions
     // from training data that is months stale, which for this subject is worse
     // than useless. With it, anything outside the feeds above is looked up.
@@ -710,7 +738,9 @@ const commands = [
     .setName('ask')
     .setDescription('Ask Asturio a weather question')
     .addStringOption(o => o.setName('question')
-      .setDescription('What do you want to know?').setRequired(true)),
+      .setDescription('What do you want to know?').setRequired(true))
+    .addAttachmentOption(o => o.setName('image')
+      .setDescription('A picture for Asturio to look at').setRequired(false)),
   new SlashCommandBuilder()
     .setName('alerts')
     .setDescription('Current nationwide NWS alert summary'),
@@ -842,14 +872,16 @@ client.on(Events.InteractionCreate, async (i) => {
 
     if (i.commandName === 'ask') {
       const q = i.options.getString('question', true);
+      const shot = i.options.getAttachment('image');
       // Answers take several seconds, well past Discord's 3 second window.
       await i.deferReply();
-      const [user, recent, prior] = await Promise.all([
+      const [user, recent, prior, images] = await Promise.all([
         getUserContext(i.user, i.guild),
         getRecentMessages(i.channel),
         loadHistory(i.user.id).catch(() => ({ linked: false, history: [] })),
+        imageParts(shot ? [shot] : []),
       ]);
-      const answer = await askAsturio(q, { user, server: serverContextOf(i.guild), recent }, prior.history);
+      const answer = await askAsturio(q, { user, server: serverContextOf(i.guild), recent }, prior.history, images);
       saveHistory(i.user.id, q, answer).catch(() => {});
       for (const [n, part] of chunk(answer).entries()) {
         n === 0 ? await i.editReply(part) : await i.followUp(part);
@@ -894,16 +926,32 @@ client.on(Events.MessageCreate, async (m) => {
 client.on(Events.MessageCreate, async (m) => {
   if (m.author.bot || !client.user) return;
   if (!m.mentions.has(client.user)) return;
-  const q = m.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
-  if (!q) { await m.reply(`Ask me something, or use /ask. Live map: ${SITE_URL}`); return; }
+  let q = m.content.replace(new RegExp(`<@!?${client.user.id}>`, 'g'), '').trim();
+
+  // Pictures come from the message itself, and failing that from the message
+  // being replied to: "@Asturio what is this?" said over someone's screenshot
+  // is about that screenshot.
+  const sources = [...m.attachments.values()];
+  if (!sources.some(a => IMAGE_TYPES.test(a.contentType || '')) && m.reference?.messageId) {
+    try {
+      const ref = await m.channel.messages.fetch(m.reference.messageId);
+      sources.push(...ref.attachments.values());
+    } catch {}
+  }
+
+  if (!q && !sources.length) { await m.reply(`Ask me something, or use /ask. Live map: ${SITE_URL}`); return; }
   try {
     await m.channel.sendTyping();
-    const [user, recent, prior] = await Promise.all([
+    const [user, recent, prior, images] = await Promise.all([
       getUserContext(m.author, m.guild),
       getRecentMessages(m.channel),
       loadHistory(m.author.id).catch(() => ({ linked: false, history: [] })),
+      imageParts(sources),
     ]);
-    const answer = await askAsturio(q, { user, server: serverContextOf(m.guild), recent }, prior.history);
+    if (!q && !images.length) { await m.reply(`Ask me something, or use /ask. Live map: ${SITE_URL}`); return; }
+    // A bare picture is a question in itself.
+    if (!q) q = 'What does this image show? If it is weather, say what is happening and where.';
+    const answer = await askAsturio(q, { user, server: serverContextOf(m.guild), recent }, prior.history, images);
     saveHistory(m.author.id, q, answer).catch(() => {});
     for (const part of chunk(answer)) await m.reply(part);
   } catch (e) {
