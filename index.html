@@ -24434,8 +24434,15 @@ function _buildNexradSiteMarkers() {
       if (_radarSource === 'l3') {
         // Only the radars the Pi has actually built. Clicking any other pill
         // would set a station it has no volume for and draw nothing.
-        if (_prIndex && _prIndex.sites && _prIndex.sites[s.id]) {
-          _prSetSite(s.id);
+        //
+        // Upper case for the lookup: the pills carry lower case ids and the
+        // Pi writes its index under the station's real name, so the bare
+        // s.id missed every entry and even the Pi's own five radars were
+        // told they were not built. Four letters of case, the same bug that
+        // once broke Level 2 against the Worker.
+        const sid = String(s.id).toUpperCase();
+        if (_prIndex && _prIndex.sites && _prIndex.sites[sid]) {
+          _prSetSite(sid);
           _refreshNexradSiteStyles();
         } else if (typeof showToast === 'function') {
           showToast(s.id.toUpperCase() + ' is not one of the radars your Pi '
@@ -24475,7 +24482,8 @@ function _refreshNexradSiteStyles() {
                      ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') && id === _dpStation) ||
                      ((currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') && id === _l3Station) ||
                      (_radarSource === 'l2' && id === (_l2Site || _l3Station)) ||
-                     (_radarSource === 'l3' && id === _prSite);
+                     (_radarSource === 'l3' && _prSite &&
+                      id.toUpperCase() === String(_prSite).toUpperCase());
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
   });
 }
@@ -33705,7 +33713,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "When the Pi's tunnel address changes mid-session, the radar now looks up the new one itself instead of insisting nothing was built.";
+const APP_LATEST_UPDATE = "Level 3 recognises the Pi's own radars again when you click their pills. A lowercase id was missing the uppercase index, for every station.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
