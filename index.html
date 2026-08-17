@@ -143,7 +143,7 @@ button, input, select, textarea { font-family: 'Comfortaa', sans-serif; font-wei
 /* Mono elements stay at normal weight - bold numbers look bad */
 #anim-time, #eas-panel-count, #eas-panel-title, #trop-frame-lbl, #sev-frame-lbl,
 .cp-dms, .dp-coord, .eas-loading, .eas-meta, .eas-type-badge, .layer-badge,
-.load-status, .ov-label, .radar-pal-label, .sb-title, .status-item,
+.load-status, .ov-label, .radar-pal-label, .sb-title,
 .trop-model-err, .trop-mtab, .trop-run-lbl, .trop-stab, .tt-group-label,
 .ap-desc, .ap-meta-val, .ap-counties, .ap-timeline-labels, .load-logo-sub,
 pre, code { font-weight: 400 !important; }
@@ -1401,9 +1401,6 @@ body {
   #anim-time { min-width: 64px; font-size: 10px; }
   #timeline-labels { font-size: 8px; }
 
-  /* Status bar , hide less-critical items */
-  #statusbar { gap: 12px; padding: 0 10px; }
-  #statusbar .status-item:nth-child(n+3) { display: none; }
 
   /* Alerts panel , keep within bounds */
   #alerts-panel {
@@ -1492,10 +1489,6 @@ body {
   #lqm-profile-btn { padding: 4px 8px 4px 4px; left: 8px; top: 14px; }
   #lqm-search-input { font-size: 11px; padding: 5px 8px; }
 
-  /* Status bar , show only radar + alerts */
-  #statusbar .status-item:nth-child(n+2) { display: none; }
-  #statusbar .status-item:nth-child(1),
-  #statusbar .status-item:nth-child(2) { display: flex; }
 
   /* Alerts panel */
   #alerts-panel { width: calc(100vw - 100px); }
@@ -1990,38 +1983,6 @@ body {
 }
 .right-bubble .rb-icon { font-size: 13px; }
 
-#statusbar {
-  height: 24px;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  padding-bottom: env(safe-area-inset-bottom, 0px); /* iPhone home bar */
-  gap: 20px;
-  z-index: 1000;
-  flex-shrink: 0;
-}
-.status-item {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.status-dot {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: var(--success);
-  animation: pulse-dot 2s infinite;
-}
-.status-dot.warn { background: var(--warn); }
-@keyframes pulse-dot {
-  0%,100% { opacity: 1; }
-  50% { opacity: 0.4; }
-}
-.status-item span { color: var(--text); }
 
 /* Leaflet overrides */
 .leaflet-control-zoom { display: none; }
@@ -7233,7 +7194,6 @@ body.clean-mode #lqm-profile-btn,
 body.clean-mode #lqm-ai-btn,
 body.clean-mode #overlay-launcher,
 body.clean-mode #overlay-toggle-btn,
-body.clean-mode #statusbar,
 body.clean-mode #map-compass,
 body.clean-mode #map-reset-bearing,
 body.clean-mode #draw-toolbar,
@@ -7248,7 +7208,7 @@ body.clean-mode #poly-toolbar {
 /* Transition in + out for all toggled elements */
 #tabs-left, #tabs-right, #topbar, #sidebar, #animbar,
 #right-menu, #sub-bubbles, #top-search-bar, #lqm-profile-btn, #lqm-ai-btn,
-#overlay-launcher, #overlay-toggle-btn, #statusbar,
+#overlay-launcher, #overlay-toggle-btn,
 #map-compass, #map-reset-bearing,
 #draw-toolbar, #text-toolbar, #stormcone-toolbar, #radius-toolbar, #dist-toolbar, #poly-toolbar {
   transition: opacity 0.35s ease;
@@ -7885,13 +7845,6 @@ body.clean-mode #clean-hint { opacity: 1; }
     </div>
 </div><!-- /main -->
 
-<!-- Status Bar -->
-<div id="statusbar">
-  <div class="status-item">Lat <span id="sb-lat">--</span></div>
-  <div class="status-item">Lon <span id="sb-lon">--</span></div>
-  <div class="status-item">Zoom <span id="sb-zoom">--</span></div>
-  <div class="status-item" id="model-status" style="display:none">Model <span id="model-status-val">GFS</span></div>
-</div>
 
 <script>
 
@@ -8077,17 +8030,7 @@ function initMap() {
   map.getPane('alertsPane').style.zIndex = 450;
   map.getPane('alertsPane').style.pointerEvents = 'auto';
 
-  let _mmRaf = null;
   try { map.getContainer().addEventListener('touchstart', ()=>{}, {passive:true}); } catch(e){}
-  map.on('mousemove', e => {
-    if (_mmRaf) return;
-    const lat = e.latlng.lat, lng = e.latlng.lng;
-    _mmRaf = requestAnimationFrame(() => {
-      document.getElementById('sb-lat').textContent = lat.toFixed(4);
-      document.getElementById('sb-lon').textContent = lng.toFixed(4);
-      _mmRaf = null;
-    });
-  });
   let _zoomTimer = null;
   map.on('zoomstart', () => {
     // Suspend non-current radar frames during zoom to prevent tile avalanche.
@@ -8099,7 +8042,6 @@ function initMap() {
     }
   });
   map.on('zoomend', () => {
-    document.getElementById('sb-zoom').textContent = map.getZoom();
     _applyRadarPolyMask();
     // Re-enable updateWhenZooming on all layers (was suppressed during zoom)
     if (_radarPoolBuilt) {
@@ -8118,7 +8060,6 @@ function initMap() {
     }, 300);
   });
   map.on('moveend', _applyRadarPolyMask);
-  document.getElementById('sb-zoom').textContent = map.getZoom();
 
   // Double-click → lat/lon popup
   map.on('dblclick', function(e) {
@@ -11468,8 +11409,7 @@ function updateModelInfo(model) {
   document.getElementById('mi-run').textContent = run;
   document.getElementById('mi-fcst').textContent = 'F+' + String(Math.floor(Math.random()*24)).padStart(3,'0');
   document.getElementById('model-info').style.display = activeLayers.models ? 'block' : 'none';
-  document.getElementById('model-status').style.display = activeLayers.models ? 'flex' : 'none';
-  document.getElementById('model-status-val').textContent = model.toUpperCase();
+
 }
 
 
@@ -18500,7 +18440,6 @@ function switchTab(tab) {
 
   // Model info
   document.getElementById('model-info').style.display = 'none';
-  document.getElementById('model-status').style.display = 'none';
 
   // Alerts panel
   document.getElementById('alerts-panel').style.display = 'none';
@@ -28116,14 +28055,6 @@ function selectProduct(p) {
   <div class="lqm-settings-group">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-desktop></use></svg> Display</div>
     <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Show Status Bar</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-statusbar" checked onchange="lqmToggleSetting('statusbar',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Map Style</span>
       <select id="lqm-set-maptype" class="lqm-settings-select" onchange="setMapType(this.value)">
         <option value="dark"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-moon></use></svg> Dark</option>
@@ -29931,9 +29862,6 @@ function lqmOpenSettings() {
   const el = document.getElementById('lqm-settings-overlay');
   if (el) el.classList.add('lqm-panel-open');
   // Sync toggles with current app state
-  const sb = document.getElementById('statusbar');
-  const sbCb = document.getElementById('lqm-set-statusbar');
-  if (sb && sbCb) sbCb.checked = (sb.style.display !== 'none');
   const mtSel = document.getElementById('lqm-set-maptype');
   if (mtSel) mtSel.value = currentMapType;
   const tzSel = document.getElementById('lqm-set-tz');
@@ -29971,9 +29899,6 @@ function lqmToggleSetting(key, val) {
   } else if (key === 'autoplay') {
     // Store preference
     try { localStorage.setItem('lqm_autoplay', val ? '1' : '0'); } catch(e){}
-  } else if (key === 'statusbar') {
-    const sb = document.getElementById('statusbar');
-    if (sb) sb.style.display = val ? '' : 'none';
   } else if (key === 'labels') {
     // Toggle nexrad labels visibility
     document.querySelectorAll('.nexrad-label').forEach(el => {
@@ -32911,7 +32836,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The GWCFC.net home page matches the radar now: same blue, same logo, gold trim. Also new since you last looked: spaghetti name tags that fit, Level 3 tilts, and rotation and hail overlays.";
+const APP_LATEST_UPDATE = "The bottom status bar (Lat, Lon, Zoom) is gone for good, and the map gets its space back. The double-click popup still shows exact coordinates when you need them.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -33344,7 +33269,7 @@ function lqmSetPressureOpacity(val) {
 // Extend lqmToggleSetting for new options
 const _origLqmToggle = lqmToggleSetting;
 lqmToggleSetting = function(key, val) {
-  if (['smooth','autoplay','statusbar','labels','follow','gpshud','breadcrumb','location',
+  if (['smooth','autoplay','labels','follow','gpshud','breadcrumb','location',
        'windunit','tempunit','pressureunit','precipunit','distunit'].includes(key)) { _origLqmToggle(key,val); return; }
   try { localStorage.setItem('lqm_'+key, typeof val==='boolean'?(val?'1':'0'):val); } catch(e){}
   if (key==='crosshair') {
@@ -34373,7 +34298,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const EXCLUDED = '#tabs-left,#tabs-right,#topbar,#sidebar,#animbar,' +
     '#right-menu,#sub-bubbles,#top-search-bar,#lqm-profile-btn,#lqm-ai-btn,' +
-    '#overlay-launcher,#overlay-toggle-btn,#statusbar,' +
+    '#overlay-launcher,#overlay-toggle-btn,' +
     '.leaflet-control,input,button,select,textarea';
 
   function onDown(e) {
