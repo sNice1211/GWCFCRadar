@@ -109,6 +109,14 @@ async function boot(piMode) {
             ? JSON.stringify({ level: 3, sites: {} }) : INDEX_L3 });
       if (url.includes('latest_l2.json'))
         return route.fulfill({ status: 404, body: 'not built' });
+      if (url.includes('mrms/mrms.json'))
+        return route.fulfill({ contentType: 'application/json',
+          body: JSON.stringify({ updated: '2026-08-17T02:10:00Z', products: {
+            rotation: { file: 'rotation.png', label: 'Rotation Tracks',
+                        bounds: [[20, -130], [55, -60]] },
+            mesh:     { file: 'mesh.png', label: 'Hail Swaths',
+                        bounds: [[20, -130], [55, -60]] },
+          } }) });
       if (url.includes('manifest.json'))
         return route.fulfill({ contentType: 'application/json', body: MANIFEST });
       if (url.endsWith('.png'))
@@ -201,6 +209,36 @@ console.log('\n1. a healthy Pi, seen from the page');
   ok('the built radars wear the green ring', built.ktlx && built.kfws,
      JSON.stringify(built));
   ok('and the rest do not', !built.kdyx, JSON.stringify(built));
+
+  // The severe overlays: two pills, each drawing one national image from the
+  // Pi's MRMS build, on and off through the same dispatcher as every pill.
+  await page.evaluate(() => { window.__toasts.length = 0;
+                              toggleOverlayPill('rotation');
+                              toggleOverlayPill('hail'); });
+  await page.waitForTimeout(800);
+  const sev = await page.evaluate(() => ({
+    rot: _mrmsOv.rotation && _mrmsOv.rotation._url,
+    hail: _mrmsOv.mesh && _mrmsOv.mesh._url,
+    pills: [document.getElementById('op-rotation').classList.contains('active'),
+            document.getElementById('op-hail').classList.contains('active')],
+    toasts: window.__toasts,
+  }));
+  ok('rotation tracks draw from the Pi',
+     /\/radar\/mrms\/rotation\.png/.test(sev.rot || ''), sev.rot);
+  ok('hail swaths draw from the Pi',
+     /\/radar\/mrms\/mesh\.png/.test(sev.hail || ''), sev.hail);
+  ok('both pills light up', sev.pills.every(Boolean), sev.pills.join(','));
+  ok('with no complaints', sev.toasts.length === 0, sev.toasts.join(' | '));
+
+  await page.evaluate(() => { toggleOverlayPill('rotation');
+                              toggleOverlayPill('hail'); });
+  await page.waitForTimeout(400);
+  const off = await page.evaluate(() => ({
+    gone: !_mrmsOv.rotation && !_mrmsOv.mesh,
+    timer: _mrmsTimer === null,
+  }));
+  ok('toggling off removes both images and stops the refresh',
+     off.gone && off.timer, JSON.stringify(off));
 
   ok('nothing threw along the way', errors.length === 0, errors.join(' | '));
   await page.close();

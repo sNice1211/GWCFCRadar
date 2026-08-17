@@ -701,6 +701,134 @@ def write_index(level, sites):
     return index
 
 
+# ── MRMS national severe products ───────────────────────────────────────────
+# Rotation tracks and hail swaths, the two derived products people pay other
+# apps for, straight from NOAA's own MRMS feed. One small gzipped GRIB each,
+# published every two minutes, covering the whole CONUS at 1 km: where storms
+# have rotated over the last hour, and the largest hail they have produced.
+MRMS_BASE = "https://mrms.ncep.noaa.gov/data/2D"
+MRMS_PRODUCTS = {
+    # Azimuthal shear leaves a trail where a mesocyclone travelled. The floor
+    # hides the weak-shear speckle that covers every map, so what remains
+    # drawn is rotation worth looking at.
+    "rotation": {"path": "RotationTrackML60min", "label": "Rotation Tracks",
+                 "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
+                 "floor": 0.003},
+    # MESH is the algorithm's largest hail over the hour, in millimetres.
+    # 6 mm is under pea size, the smallest worth drawing at all.
+    "mesh":     {"path": "MESH_Max_60min", "label": "Hail Swaths",
+                 "unit": "mm", "range": (0, 100), "ramp": "radar",
+                 "floor": 6.0},
+}
+
+
+def _mrms_read(url):
+    """One MRMS grib: (array, south, north, west, east), or None."""
+    import gzip
+    import tempfile
+
+    import eccodes
+
+    r = HTTP.get(url, timeout=90)
+    if r.status_code != 200 or len(r.content) < 500:
+        log(f"  mrms: HTTP {r.status_code} for {url.rsplit('/', 1)[-1]}")
+        return None
+    raw = gzip.decompress(r.content)
+    with tempfile.NamedTemporaryFile(suffix=".grib2", delete=False) as tf:
+        tf.write(raw)
+        tmp = tf.name
+    del raw
+    try:
+        with open(tmp, "rb") as fh:
+            gid = eccodes.codes_grib_new_from_file(fh)
+            if gid is None:
+                return None
+            try:
+                ni = int(eccodes.codes_get(gid, "Ni"))
+                nj = int(eccodes.codes_get(gid, "Nj"))
+                lat1 = float(eccodes.codes_get(
+                    gid, "latitudeOfFirstGridPointInDegrees"))
+                lat2 = float(eccodes.codes_get(
+                    gid, "latitudeOfLastGridPointInDegrees"))
+                lon1 = float(eccodes.codes_get(
+                    gid, "longitudeOfFirstGridPointInDegrees"))
+                lon2 = float(eccodes.codes_get(
+                    gid, "longitudeOfLastGridPointInDegrees"))
+                vals = eccodes.codes_get_values(gid)
+            finally:
+                eccodes.codes_release(gid)
+        # float32 immediately: the full CONUS grid is 24.5 million points and
+        # the float64 eccodes hands over is 200MB this board will miss.
+        arr = np.asarray(vals, dtype=np.float32).reshape(nj, ni)
+        del vals
+        lon1, lon2 = ((lon1 + 180) % 360) - 180, ((lon2 + 180) % 360) - 180
+        south, north = min(lat1, lat2), max(lat1, lat2)
+        # First grid row is the north edge, which is also image row 0.
+        if lat1 < lat2:
+            arr = arr[::-1]
+        return arr, south, north, lon1, lon2
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def build_mrms():
+    """Both products into OUT_DIR/mrms, plus the manifest the page reads."""
+    out = os.path.join(OUT_DIR, "mrms")
+    os.makedirs(out, exist_ok=True)
+    man = {"updated": datetime.now(timezone.utc).isoformat(), "products": {}}
+    for name, spec in MRMS_PRODUCTS.items():
+        url = f"{MRMS_BASE}/{spec['path']}/MRMS_{spec['path']}.latest.grib2.gz"
+        try:
+            got = _mrms_read(url)
+        except Exception as e:
+            log(f"  mrms {name}: {e}")
+            got = None
+        if not got:
+            continue
+        arr, south, north, west, east = got
+        # MRMS writes -1 and -3 for missing and out of coverage.
+        arr[arr < 0] = np.nan
+        # Halve the grid by taking each 2x2 block's maximum, not by slicing.
+        # A rotation track is a filament one or two cells wide, and plain
+        # slicing deletes every filament that falls on a dropped row; these
+        # are both maximum-over-time products, so the block maximum is the
+        # honest way to shrink them.
+        nj, ni = arr.shape
+        with np.errstate(all="ignore"):
+            import warnings
+            with warnings.catch_warnings():
+                # A 2x2 block that is entirely out of coverage is all NaN, and
+                # nanmax warning about each one would flood the log for what
+                # is the ordinary state of most of the grid.
+                warnings.simplefilter("ignore", RuntimeWarning)
+                arr = np.nanmax(
+                    arr[:nj - nj % 2, :ni - ni % 2]
+                    .reshape(nj // 2, 2, ni // 2, 2), axis=(1, 3))
+        lo, hi = spec["range"]
+        norm = (arr - lo) / float(hi - lo)
+        keep = np.isfinite(arr) & (arr >= spec["floor"])
+        idx = np.clip(np.nan_to_num(norm) * 255.0, 0, 255).astype(np.uint8)
+        rgb = LUTS[spec["ramp"]][idx]
+        alpha = np.where(keep, 205, 0).astype(np.uint8)
+        del arr, norm, keep, idx
+        path = os.path.join(out, f"{name}.png")
+        Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA").save(
+            path, optimize=True)
+        del rgb, alpha
+        man["products"][name] = {
+            "file": f"{name}.png", "label": spec["label"],
+            "unit": spec["unit"], "min": lo, "max": hi,
+            "bounds": [[south, west], [north, east]],
+        }
+        log(f"  mrms {name}: built")
+    if man["products"]:
+        write_json(os.path.join(out, "mrms.json"), man)
+    return len(man["products"])
+
+
 def _age(stamp, now):
     """How old a frame is, in words, because that is the thing worth knowing.
 
@@ -807,6 +935,13 @@ def main(argv):
         except Exception as e:
             log(f"{site}: failed: {e}")
     idx = write_index(3 if level3 else 2, sites)
+    # National severe products ride the Level 2 pass, so they refresh on the
+    # same five minute cadence without another unit or timer existing.
+    if not level3:
+        try:
+            build_mrms()
+        except Exception as e:
+            log(f"mrms: failed: {e}")
     log(f"{len(idx['sites'])} sites in {time.time() - t0:.0f}s")
     return 0 if idx["sites"] else 1
 
