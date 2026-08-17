@@ -62,7 +62,8 @@ global.document = {
 };
 ['sev-var-sel','sev-run-sel','sev-frame-grid','sev-fcast-date','sev-fcast-flbl',
  'sev-playbar-fill','sev-playbar-thumb','sev-model-sel','sev-pi-group',
- 'sev-region-sel','cyc-variant-sel','cyc-variant-row','sev-cyc-group'].forEach(id => els[id] = mkEl(id));
+ 'sev-region-sel','cyc-variant-sel','cyc-genesis-sel','cyc-lab-btn',
+ 'cyc-lab-status','cyc-focus-info'].forEach(id => els[id] = mkEl(id));
 // The <select> reports the options its optgroup holds, the way a real one does.
 els['sev-model-sel'].options = els['sev-pi-group'].children;
 
@@ -192,18 +193,29 @@ global.fetch = async (url) => {
     return { ok:true, json: async () => ({ run:'2026_08_16T00_00',
       path:'2026_08_16T00_00/manifest.json' }) };
   if (url.split('?')[0].endsWith('2026_08_16T00_00/manifest.json'))
-    return { ok:true, json: async () => ({ run:'2026_08_16T00_00', genesis:{},
+    return { ok:true, json: async () => ({ run:'2026_08_16T00_00',
+      genesis:{
+        cumulative:    { png:'cumulative.png',
+                         bounds:[[0,-120],[60,-10]], unit:'%' },
+        instantaneous: { png:'instantaneous.png',
+                         bounds:[[0,-120],[60,-10]], unit:'%' },
+      },
       tracks:{
         OPER_ensemble_mean:   { variant:'OPER',   kind:'ensemble_mean',
-                                path:'tracks_OPER_ensemble_mean.json' },
+                                path:'tracks_OPER_ensemble_mean.json',
+                                storms:1, lines:1 },
         OPER_ensemble:        { variant:'OPER',   kind:'ensemble',
-                                path:'tracks_OPER_ensemble.json' },
+                                path:'tracks_OPER_ensemble.json',
+                                storms:1, lines:1 },
         FNV3P2_ensemble_mean: { variant:'FNV3P2', kind:'ensemble_mean',
-                                path:'tracks_FNV3P2_ensemble_mean.json' },
+                                path:'tracks_FNV3P2_ensemble_mean.json',
+                                storms:1, lines:1 },
       } }) };
   if (url.includes('tracks_') && url.includes('.json'))
     return { ok:true, json: async () => ({ tracks:{
-      'AL05|0':[{lat:25,lon:-71},{lat:26,lon:-72},{lat:27,lon:-73}] } }) };
+      'AL05|0':[{lat:25,lon:-71,wind:60,mslp:990,lead:0},
+                {lat:26,lon:-72,wind:85,mslp:962,lead:24},
+                {lat:27,lon:-73,wind:70,mslp:975,lead:48}] } }) };
   // Two sites, because radar is a single site product and drawing both at once
   // was the bug: one antenna, one picture, and the overlapping edges of two
   // stacked on each other where they met.

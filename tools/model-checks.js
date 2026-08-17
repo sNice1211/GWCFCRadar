@@ -229,33 +229,60 @@ function ok(name, cond, extra) {
      lines.length === 0, lines.length);
   _cycClear();
 
-  // The cyclone models belong in the model list, not the overlay pills: they
-  // are a forecast, and somebody looking for where a storm is going opens the
-  // model list. These check they are offered there and that picking one draws.
-  console.log('\n21b. cyclone models in the Run Models list');
-  await _cycFillModelPicker();
-  const cg = els['sev-cyc-group'];
-  ok('the run\'s variants are offered as models',
-     cg.children.length === 2, cg.children.length);
-  ok('and they are named as models rather than as raw keys',
-     cg.children[0].value === 'cyc:OPER' &&
-     cg.children[0].textContent.includes('Operational'),
-     cg.children[0].value + ' / ' + cg.children[0].textContent);
-  ok('the group is shown, because there is a run to offer',
-     cg.style.display === '', cg.style.display);
+  // The cyclone models live in the Spaghetti Models panel now, beside every
+  // other storm track. These check the panel's own controls fill from the
+  // run, the toggle draws, and everything the lab publishes is reachable.
+  console.log('\n21b. AI cyclones in the Spaghetti Models panel');
+  await _spagCycSync();
+  const cv = els['cyc-variant-sel'];
+  ok('the run\'s variants fill the panel picker',
+     cv.children.length === 2, cv.children.length);
+  ok('named as models rather than raw keys',
+     cv.children[0].value === 'OPER' &&
+     cv.children[0].textContent.includes('Operational'),
+     cv.children[0].value + ' / ' + cv.children[0].textContent);
+  ok('the status line says what the run holds',
+     /Run 2026_08_16T00_00/.test(els['cyc-lab-status'].textContent) &&
+     /genesis: cumulative \+ instantaneous/.test(els['cyc-lab-status'].textContent),
+     els['cyc-lab-status'].textContent);
 
   lines.length = 0;
-  await _sevSetSection('cyc:FNV3P2');
-  ok('picking one records it as the section', _sevSection === 'cyc:FNV3P2',
-     _sevSection);
-  ok('and switches the cyclone layer to that variant',
+  await _spagCycVariant('FNV3P2');
+  await _spagCycToggle();
+  ok('the toggle switches the layer on with that variant',
      _cycOn === true && _cycVariant === 'FNV3P2',
      _cycOn + '/' + _cycVariant);
   ok('and it drew tracks on the map', lines.length > 0, lines.length);
-  // A gridded model's picture underneath would read as this one having drawn
-  // it, so picking a cyclone model has to take that down.
-  ok('the gridded model image is taken down', _hdOn === false, _hdOn);
+  ok('with the cumulative genesis wash underneath',
+     added.some(l => l.url && l.url.includes('cumulative.png')),
+     added.filter(l => l.url).map(l => l.url).join(','));
+
+  // Both genesis fields exist and both must be reachable.
+  await _spagCycGenesis('instantaneous');
+  ok('switching genesis draws the instantaneous field instead',
+     added.some(l => l.url && l.url.includes('instantaneous.png')) &&
+     !added.some(l => l.url && l.url.includes('cumulative.png')),
+     added.filter(l => l.url).map(l => l.url).join(','));
+  await _spagCycGenesis('off');
+  ok('genesis off draws neither wash',
+     !added.some(l => l.url && (l.url.includes('cumulative.png') ||
+                                l.url.includes('instantaneous.png'))),
+     added.filter(l => l.url).map(l => l.url).join(','));
+
+  // The focus readout renders the numbers riding the points: wind, pressure
+  // and lead, which nothing displayed before.
+  const fkey = Object.keys(_cycGroups)[0];
+  _cycFocus(fkey);
+  ok('focusing a line reads out its peak wind, pressure and span',
+     /peak wind 85 kt/.test(els['cyc-focus-info'].textContent) &&
+     /lowest pressure 962 hPa/.test(els['cyc-focus-info'].textContent) &&
+     /F\+48h/.test(els['cyc-focus-info'].textContent),
+     els['cyc-focus-info'].textContent);
+  _cycFocus(fkey);
+  ok('unfocusing clears the readout',
+     els['cyc-focus-info'].textContent === '', els['cyc-focus-info'].textContent);
   _cycDisable();
+  await _spagCycGenesis('cumulative');
 
 
   console.log('\n22. Pi radar, drawn from the newest volume');

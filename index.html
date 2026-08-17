@@ -2431,6 +2431,25 @@ body {
   font-family: var(--mono); font-size: 10px; color: rgba(212,232,255,0.55);
   line-height: 1.5; margin: 2px 0 8px;
 }
+#cyc-lab-head {
+  font-family: var(--display); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.5px; color: #ffd166; margin: 4px 0 2px;
+}
+#cyc-lab-btn {
+  margin: 4px 0; padding: 4px 12px; font-family: 'Comfortaa', sans-serif;
+  font-size: 10px; font-weight: 700; cursor: pointer; border-radius: 12px;
+  background: rgba(255,209,102,0.12); border: 1px solid rgba(255,209,102,0.5);
+  color: #ffd166;
+}
+#cyc-lab-btn.active { background: #ffd166; color: #1a1200; }
+#cyc-lab-status {
+  font-family: var(--mono); font-size: 9px; color: rgba(212,232,255,0.75);
+  margin: 2px 0;
+}
+#cyc-focus-info {
+  font-family: var(--mono); font-size: 9px; color: #ffd166;
+  border-top: 1px dashed rgba(255,209,102,0.35); padding-top: 3px; margin-top: 3px;
+}
 #trop-storm-status {
   font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.4); padding: 4px 0;
 }
@@ -7460,14 +7479,8 @@ body.clean-mode #clean-hint { opacity: 1; }
               <option value="pi:gefs">GEFS Mean (Pi)</option>
               <option value="pi:gefsspr">GEFS Spread (Pi)</option>
             </optgroup>
-            <!-- DeepMind's cyclone models. They belong in this list rather
-                 than in the overlay pills because they are forecast guidance,
-                 the same kind of thing as everything above: somebody looking
-                 for where a storm is going comes here. Filled in from the run
-                 the Pi actually has, by _cycFillModelPicker(), and hidden
-                 entirely when there is no run. -->
-            <optgroup id="sev-cyc-group" label="AI Cyclones (Pi)"
-                      style="display:none"></optgroup>
+            <!-- The AI cyclone models moved to the Spaghetti Models panel,
+                 beside every other storm track. -->
           </select>
           <!-- Only shown when the chosen model has more than one region.
                Filled in by _hdFillRegionPicker(). -->
@@ -7540,6 +7553,25 @@ body.clean-mode #clean-hint { opacity: 1; }
       <p id="trop-intro">The National Hurricane Center's official forecast track, cone, and any areas being watched for development. Same live feed as the <b>NHC Outlook</b> overlay pill, kept in sync.</p>
       <div id="trop-storm-status">Loading active storms…</div>
       <div id="trop-storm-list"></div>
+      <div style="border-top:1px solid rgba(255,255,255,0.08);margin:6px 0 2px;"></div>
+      <div id="cyc-lab-head"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg> AI Cyclones · Google DeepMind</div>
+      <div id="sev-dropdowns">
+        <div class="sev-dd-wrap">
+          <label class="sev-dd-label">Model</label>
+          <select id="cyc-variant-sel" onchange="_spagCycVariant(this.value)"></select>
+        </div>
+        <div class="sev-dd-wrap">
+          <label class="sev-dd-label">Genesis</label>
+          <select id="cyc-genesis-sel" onchange="_spagCycGenesis(this.value)" title="Where the ensemble thinks a storm could FORM, as a probability wash">
+            <option value="cumulative">Cumulative</option>
+            <option value="instantaneous">Instantaneous</option>
+            <option value="off">Off</option>
+          </select>
+        </div>
+      </div>
+      <button id="cyc-lab-btn" onclick="_spagCycToggle()">Show tracks</button>
+      <div id="cyc-lab-status">Looking for the Pi's newest run…</div>
+      <div id="cyc-focus-info" style="display:none"></div>
     </div>
 
     <!-- Alerts Panel -->
@@ -11668,11 +11700,11 @@ async function _hdFreshIndex() {
   _hdIndex = next;
   if (before && after && before !== after) _hdManifest = null;
   _hdFillModelPicker();
-  // The cyclone list is refreshed on the same beat, since it is the same Pi
-  // and the same panel. Not awaited: a slow or absent cyclone run must not
-  // hold up the model list, which is what people came for.
-  if (typeof _cycFillModelPicker === 'function') {
-    _cycFillModelPicker().catch(() => {});
+  // The cyclone controls live in the Spaghetti Models panel now, refreshed on
+  // this same beat since it is the same Pi. Not awaited: a slow or absent
+  // cyclone run must not hold up the model list.
+  if (typeof _spagCycSync === 'function') {
+    _spagCycSync().catch(() => {});
   }
   return _hdIndex;
 }
@@ -12215,24 +12247,9 @@ async function _sndRefresh(el, fhr) {
 // that was already there, untouched.
 const _hdOrigSetSection = _sevSetSection;
 _sevSetSection = async function (value) {
-  // A cyclone model draws lines on the map rather than a picture in the panel,
-  // so it stops short of the product list and the hour grid below: those
-  // belong to a gridded model and mean nothing here. Leaving the previous
-  // model's image up underneath would read as this one having drawn it, so it
-  // is taken down first.
-  if (String(value).startsWith('cyc:')) {
-    const which = String(value).slice(4);
-    _sevSection = value;
-    if (typeof _hdDisable === 'function') _hdDisable();
-    await _cycSetVariant(which);
-    if (!_cycOn) await _cycEnable();
-    if (typeof showToast === 'function') {
-      showToast((CYC_VARIANTS[which] || which)
-              + ': tracks are on the map. Pale lines are the members, the gold '
-              + 'line is their average.', 4000);
-    }
-    return;
-  }
+  // The cyclone models used to be reachable from here with a "cyc:" value.
+  // They live in the Spaghetti Models panel now, beside every other storm
+  // track, which is the shelf a person looks on for them.
   if (String(value).startsWith('pi:')) {
     const which = String(value).slice(3);
     // Cyclone tracks belong to the cyclone models. Left up under a gridded
@@ -12518,9 +12535,15 @@ const CYC_VARIANTS = {
   FNV3_LARGE_ENSEMBLE:  'FNV3 large ensemble',
 };
 let _cycVariant = 'OPER';
+// Which genesis wash to draw: the cumulative field, the instantaneous one, or
+// neither. Only the large ensemble publishes them; the choice simply finds
+// nothing to draw on runs without them.
+let _cycGenesis = 'cumulative';
 try {
   const saved = localStorage.getItem('gwcfc_cyc_variant');
   if (saved && CYC_VARIANTS[saved]) _cycVariant = saved;
+  const g = localStorage.getItem('gwcfc_cyc_genesis');
+  if (['off', 'cumulative', 'instantaneous'].includes(g)) _cycGenesis = g;
 } catch (e) {}
 
 async function _cycSetVariant(v) {
@@ -12529,36 +12552,72 @@ async function _cycSetVariant(v) {
   if (_cycOn) await _cycEnable();
 }
 
-// The cyclone models, as entries in the Run Models list.
-//
-// They were only reachable from the overlay pills, which is the wrong shelf:
-// an overlay is something drawn over a map, and these are a forecast. Anyone
-// looking for where a storm is going opens the model list, so that is where
-// they are, built from the run the Pi actually has rather than from a fixed
-// list, and hidden entirely when there is no run to offer.
-async function _cycFillModelPicker() {
-  const group = document.getElementById('sev-cyc-group');
-  if (!group) return;
+// The AI cyclone models live in the Spaghetti Models panel: they draw storm
+// tracks, and the spaghetti panel is where every other storm track lives.
+// This fills the panel's own controls from the run the Pi actually has, and
+// says what that run holds, so nothing the lab publishes goes unmentioned.
+async function _spagCycSync() {
+  const sel = document.getElementById('cyc-variant-sel');
+  const status = document.getElementById('cyc-lab-status');
+  const btn = document.getElementById('cyc-lab-btn');
+  const gsel = document.getElementById('cyc-genesis-sel');
+  if (gsel && gsel.value !== _cycGenesis) gsel.value = _cycGenesis;
+  if (btn) {
+    btn.textContent = _cycOn ? 'Hide tracks' : 'Show tracks';
+    btn.classList.toggle('active', _cycOn);
+  }
   const idx = await _cycFresh();
+  if (!idx || !idx.man) {
+    if (status) status.textContent =
+      'No run from the Pi yet. It looks every three hours, and only when '
+      + 'DeepMind have published one.';
+    return;
+  }
   const have = [];
-  Object.values((idx && idx.man && idx.man.tracks) || {}).forEach(m => {
+  Object.values(idx.man.tracks || {}).forEach(m => {
     if (m.variant && !have.includes(m.variant)) have.push(m.variant);
   });
-  const sel = document.getElementById('sev-model-sel');
-  const chosen = sel && sel.value;
-  group.innerHTML = '';
-  if (!have.length) { group.style.display = 'none'; return; }
-  have.forEach(v => {
-    const o = document.createElement('option');
-    o.value = 'cyc:' + v;
-    o.textContent = (CYC_VARIANTS[v] || v) + ' (Pi, cyclones)';
-    group.appendChild(o);
-  });
-  group.style.display = '';
-  if (sel && chosen && Array.from(sel.options || [])
-      .some(o => o.value === chosen)) {
-    sel.value = chosen;
+  if (sel) {
+    const chosen = _cycVariant;
+    sel.innerHTML = '';
+    have.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v;
+      o.textContent = CYC_VARIANTS[v] || v;
+      sel.appendChild(o);
+    });
+    if (have.includes(chosen)) sel.value = chosen;
   }
+  if (status) {
+    // What this run actually holds, per variant: how many storms, how many
+    // lines, and whether the genesis fields came through.
+    const pick = have.includes(_cycVariant) ? _cycVariant : have[0];
+    const bits = Object.values(idx.man.tracks || {})
+      .filter(m => m.variant === pick)
+      .map(m => `${m.kind === 'ensemble_mean' ? 'mean' : 'members'}: `
+              + `${m.storms || '?'} storm${m.storms === 1 ? '' : 's'}, `
+              + `${m.lines || '?'} line${m.lines === 1 ? '' : 's'}`);
+    const gen = Object.keys(idx.man.genesis || {})
+      .filter(k => k !== 'csv');
+    if (gen.length) bits.push('genesis: ' + gen.join(' + '));
+    status.textContent = `Run ${idx.run}` + (bits.length ? ` · ${bits.join(' · ')}` : '');
+  }
+}
+
+async function _spagCycToggle() {
+  if (_cycOn) _cycDisable(); else await _cycEnable();
+  _spagCycSync();
+}
+
+async function _spagCycVariant(v) {
+  await _cycSetVariant(v);
+  _spagCycSync();
+}
+
+async function _spagCycGenesis(v) {
+  _cycGenesis = v;
+  try { localStorage.setItem('gwcfc_cyc_genesis', v); } catch (e) {}
+  if (_cycOn) await _cycEnable();
 }
 
 async function _cycFresh() {
@@ -12584,6 +12643,8 @@ function _cycClear() {
   _cycLayers = [];
   _cycGroups = {};
   _cycFocusKey = null;
+  const info = document.getElementById('cyc-focus-info');
+  if (info) { info.textContent = ''; info.style.display = 'none'; }
 }
 
 // Every line's layers by its track key, so tapping one tag can dim all the
@@ -12606,6 +12667,25 @@ function _cycFocus(key) {
       if (el) el.style.opacity = dim ? 0.15 : 1;
     });
   }
+  // The rest of what the lab publishes for this line: peak wind, lowest
+  // pressure and the forecast span, read straight off the focused track's
+  // own points and shown in the panel.
+  const info = document.getElementById('cyc-focus-info');
+  if (!info) return;
+  const g = _cycFocusKey && _cycGroups[_cycFocusKey];
+  if (!g || !g.pts) { info.textContent = ''; info.style.display = 'none'; return; }
+  const winds = g.pts.map(p => p.wind).filter(v => v != null);
+  const mslps = g.pts.map(p => p.mslp).filter(v => v != null);
+  const times = g.pts.map(p => p.time).filter(Boolean);
+  const leads = g.pts.map(p => p.lead).filter(v => v != null);
+  const bits = [`${g.label}: ${g.pts.length} points`];
+  if (winds.length) bits.push(`peak wind ${Math.round(Math.max(...winds))} kt`);
+  if (mslps.length) bits.push(`lowest pressure ${Math.round(Math.min(...mslps))} hPa`);
+  if (leads.length) bits.push(`out to F+${Math.round(Math.max(...leads))}h`);
+  else if (times.length > 1)
+    bits.push(`${String(times[0]).slice(0, 16)} to ${String(times[times.length - 1]).slice(0, 16)}`);
+  info.textContent = bits.join(' · ');
+  info.style.display = 'block';
 }
 
 // A track is a list of points already in order along the line, so this is a
@@ -12674,9 +12754,10 @@ async function _cycEnable() {
   const man = idx.man;
 
   // Genesis first, so the lines land on top of the picture rather than under
-  // it. Only the cumulative field: the instantaneous one is the same thing
-  // for a single moment and two probability washes on one map is unreadable.
-  const gen = man.genesis && man.genesis.cumulative;
+  // it. One field at a time, chosen in the panel: two probability washes on
+  // one map is unreadable, but both exist and both are now reachable.
+  const gen = _cycGenesis !== 'off' && man.genesis
+            && man.genesis[_cycGenesis];
   if (gen && gen.bounds) {
     const img = L.imageOverlay(
       `${base}/cyclones/${idx.run}/${gen.png}`, gen.bounds,
@@ -12713,8 +12794,13 @@ async function _cycEnable() {
         ? `${storm.toUpperCase()} ${who}` : who;
       _cycDrawTrack(pts, isMean ? CYC_MEAN : CYC_MEMBER,
                     `${name}|${key}`, label);
+      // The points carry more than shape: wind, pressure and times ride
+      // along, and the focus readout below is what renders them.
+      const g = _cycGroups[`${name}|${key}`];
+      if (g) { g.pts = pts; g.label = label; }
     });
   }
+  _spagCycSync();
 
   if (!_cycLayers.length && typeof showToast === 'function') {
     showToast('The Pi has a cyclone run but nothing to draw in it, which '
@@ -18962,6 +19048,8 @@ function openSpaghettiModelsPanel() {
   const btn = document.getElementById('sub-spaghetti-models');
   if (btn) btn.classList.add('active');
   _tropInit();
+  // The AI cyclone section fills itself from the Pi's newest run.
+  if (typeof _spagCycSync === 'function') _spagCycSync().catch(() => {});
 }
 
 function collapseSpaghettiModelsPanel() {
@@ -18977,6 +19065,9 @@ function closeSpaghettiModelsPanel() {
   if (btn) btn.classList.remove('active');
   _clearTropTrackLayers();
   _clearSpagModelTracks();
+  // Closing the panel clears its map layers, and the AI cyclone tracks are
+  // its layers now too.
+  if (typeof _cycDisable === 'function' && _cycOn) _cycDisable();
 }
 
 function _spaghettiModelsPanelIsOpen() {
@@ -32814,7 +32905,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Spaghetti tracks wear name tags now: every cyclone model line ends in a little pill saying which storm and member it is. Tap a tag to spotlight that line and dim the rest; tap again to restore.";
+const APP_LATEST_UPDATE = "The AI cyclone models moved into the Spaghetti Models panel with their own section: model picker, a genesis switch that now reaches both probability fields, and tapping a track's tag reads out its peak wind, lowest pressure and forecast span.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
