@@ -12888,6 +12888,59 @@ function _prDisable() {
   _prClear();
 }
 
+// ── ROTATION TRACKS + HAIL SWATHS, from the Pi's MRMS build ────────────────
+// Where storms have rotated over the last hour, and the largest hail they
+// have produced, as national images the Pi renders from NOAA's MRMS feed on
+// the same five minute beat as the radar. Two overlay pills, one loader.
+let _mrmsOn = { rotation: false, mesh: false };
+let _mrmsOv = { rotation: null, mesh: null };
+let _mrmsTimer = null;
+
+async function _mrmsLoad() {
+  // Always take the old pictures down first, so toggling off works through
+  // the same path as refreshing.
+  for (const k of Object.keys(_mrmsOv)) {
+    if (_mrmsOv[k]) { try { map.removeLayer(_mrmsOv[k]); } catch (e) {} _mrmsOv[k] = null; }
+  }
+  if (!_mrmsOn.rotation && !_mrmsOn.mesh) return;
+  const base = _hdBase || await _hdResolveBase();
+  if (!base) {
+    if (typeof showToast === 'function') {
+      showToast('No Pi address yet, so no severe layers to read.', 4000);
+    }
+    return;
+  }
+  _hdBase = base;
+  const man = await fetch(`${base}/radar/mrms/mrms.json?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!man || !man.products) {
+    if (typeof showToast === 'function') {
+      showToast('The Pi has not built the severe layers yet. They build with '
+              + 'the radar, every five minutes.', 4000);
+    }
+    return;
+  }
+  for (const k of Object.keys(_mrmsOn)) {
+    const p = man.products[k];
+    if (!_mrmsOn[k] || !p) continue;
+    _mrmsOv[k] = L.imageOverlay(
+      `${base}/radar/mrms/${p.file}?t=${encodeURIComponent(man.updated)}`,
+      p.bounds, { opacity: 0.8, interactive: false, pane: 'radarPane' }
+    ).addTo(map);
+  }
+}
+
+function _mrmsToggle(key, pillId) {
+  _mrmsOn[key] = !_mrmsOn[key];
+  const pill = document.getElementById(pillId);
+  if (pill) pill.classList.toggle('active', _mrmsOn[key]);
+  const any = _mrmsOn.rotation || _mrmsOn.mesh;
+  if (any && !_mrmsTimer) _mrmsTimer = setInterval(_mrmsLoad, 5 * 60 * 1000);
+  if (!any && _mrmsTimer) { clearInterval(_mrmsTimer); _mrmsTimer = null; }
+  _mrmsLoad();
+}
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // ── POLYGON SPATIAL FILTER ────────────────────────────────────────────────
@@ -15877,7 +15930,11 @@ function toggleOverlayLauncher() {
 
 // ── OVERLAY BAR PILLS (Lightning, Radio, Forecasts) ──
 function toggleOverlayPill(id) {
-  if (id === 'lightning') {
+  if (id === 'rotation') {
+    _mrmsToggle('rotation', 'op-rotation');
+  } else if (id === 'hail') {
+    _mrmsToggle('mesh', 'op-hail');
+  } else if (id === 'lightning') {
     toggleLayer('lightning');
     const pill = document.getElementById('op-lightning');
     if (pill) pill.classList.toggle('active', activeLayers.lightning);
@@ -32645,7 +32702,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "For the record: the lightning overlay is real strikes from the Blitzortung detector network, not an effect. An old note in the code called it simulated, from a placeholder version long gone, and that note is now gone too.";
+const APP_LATEST_UPDATE = "Two new overlays: Rotation Tracks shows where storms have rotated over the last hour, and Hail Swaths shows the largest hail they produced. Both come from NOAA's MRMS feed, built by the Pi every five minutes.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -34008,6 +34065,12 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-spc-reports" data-ovid="spc-reports" title="Storm Reports - Local Storm Reports for tornado, hail, and wind from SPC">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-reports')">Storm Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-rotation" data-ovid="rotation" title="Rotation Tracks - where storms have rotated over the last hour, from NOAA MRMS via your Pi">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('rotation')">Rotation Tracks</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-hail" data-ovid="hail" title="Hail Swaths - largest estimated hail over the last hour (MRMS MESH) via your Pi">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('hail')">Hail Swaths</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
