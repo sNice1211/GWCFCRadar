@@ -676,7 +676,7 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "ecmwf", "ecmwfaifs",
                   "hireswarw", "hireswarw2", "hireswfv3",
                   "hrrrsub",
-                  "icon", "hafs", "hafsb",
+                  "hafs", "hafsb",
                   "gefswave",
                   "iconeu", "cmce"]
 
@@ -705,7 +705,16 @@ OFF_BY_DEFAULT = ["hwrf", "hmon", "hireswnssl", "etss",
                   # off: the socket timeout only fires on dead silence, so one
                   # air-quality hour held a whole build hostage for half an
                   # hour. Off until it can be fetched by byte range.
-                  "aqm"]
+                  "aqm",
+                  # ICON Global's icosahedral files carry no Ni/Nj and no
+                  # coordinates at all: DWD ships the point positions as
+                  # separate CLAT/CLON companion files. So every message dies
+                  # on "Key/value not found" and the model has never built
+                  # once, at ten minutes of downloads per attempt, and a 2.9
+                  # million point regrid every hour is more than this board
+                  # has memory for anyway. ICON Europe (iconeu) is on a plain
+                  # lat-lon grid and stays on, so ICON is still represented.
+                  "icon"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
