@@ -35,7 +35,7 @@ import re
 import sys
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from urllib.parse import quote
 
@@ -54,14 +54,18 @@ OUT_DIR = os.path.expanduser("~/wxdata/radar")
 
 # Where the data actually is, which is not where it used to be.
 #
-# The obvious addresses are both dead ends. noaa-nexrad-level2 holds the whole
-# archive but refuses an anonymous listing, so there is no way to ask it what
-# the newest volume is called. unidata-nexrad-level3 does allow listing, but it
-# stopped being written to in 2022, so what it hands back is a real radar image
-# from six years ago. That is worse than an error: it looked like it worked.
+# noaa-nexrad-level2 holds the whole archive but refuses an anonymous
+# listing, so there is no way to ask it what the newest volume is called.
+# unidata-nexrad-level3 once looked dead too, but that verdict was wrong in
+# an instructive way: it was probed with the retired N0Q product code, and
+# the bucket answers emptiness for a product that no longer exists. Probed
+# with the codes actually being written, TDWR's TZ0 among them, it is alive
+# and fresh to the minute. NEXRAD Level 3 still comes from tgftp, which is
+# proven for all eleven products; the terminals come from the bucket.
 #
 # So Level 2 comes from the chunks bucket, which is the live feed and is
-# listable, and Level 3 comes from the Weather Service's own file server.
+# listable, NEXRAD Level 3 from the Weather Service's own file server, and
+# TDWR Level 3 from the Unidata bucket.
 L2_CHUNKS = "https://unidata-nexrad-level2-chunks.s3.amazonaws.com"
 L3_TGFTP = "https://tgftp.nws.noaa.gov/SL.us008001/DF.of/DC.radar"
 
@@ -69,7 +73,7 @@ L3_TGFTP = "https://tgftp.nws.noaa.gov/SL.us008001/DF.of/DC.radar"
 # to fetch and decode, and a Pi doing ten of them every five minutes is busy.
 # Override on the command line, or set GWCFC_RADAR_SITES.
 SITES = (os.environ.get("GWCFC_RADAR_SITES", "").split()
-         or ["KTLX", "KFWS", "KLOT", "KATX", "KMLB"])
+         or ["KTLX", "KFWS", "KLOT", "KATX", "KMLB", "TTPA"])
 
 # How many past volumes to keep, which is what the animation scrubs through.
 KEEP_FRAMES = 12
@@ -147,6 +151,40 @@ L3_PRODUCTS = {
     "n3u": {"code": "N3U", "dir": "DS.p99v3", "range": (-40, 40),
             "ramp": "velocity", "label": "Velocity Tilt 4", "unit": "kt"},
 }
+
+# ── TDWR Level 3, the terminal radars' own dialect ──────────────────────────
+# The airport radars (T sites) publish the same kinds of products under their
+# own names, which AtticRadar's tables document: TZ0 and TZ1 are the base
+# reflectivity tilts, TV0 and TV1 the velocity tilts, TZL the long range
+# reflectivity, NCR the same composite NEXRAD has. No dual-pol products at
+# all: the terminals carry no such hardware, so none are listed rather than
+# listed and forever missing.
+#
+# They also publish through a different door: the Unidata Level 3 bucket,
+# keyed by the site's three letter id and the product, with the time in the
+# key itself. TTPA's newest base reflectivity is the last key under
+# TPA_TZ0_<today>_. Verified live: fresh to the minute.
+TDWR_L3_PRODUCTS = {
+    "tz0": {"code": "TZ0", "range": (-10, 75), "ramp": "radar",
+            "label": "Base Reflectivity", "unit": "dBZ"},
+    "tv0": {"code": "TV0", "range": (-40, 40), "ramp": "velocity",
+            "label": "Base Velocity", "unit": "kt"},
+    "tz1": {"code": "TZ1", "range": (-10, 75), "ramp": "radar",
+            "label": "Reflectivity Tilt 2", "unit": "dBZ"},
+    "tv1": {"code": "TV1", "range": (-40, 40), "ramp": "velocity",
+            "label": "Velocity Tilt 2", "unit": "kt"},
+    "tzl": {"code": "TZL", "range": (-10, 75), "ramp": "radar",
+            "label": "Long Range Reflectivity", "unit": "dBZ"},
+    "ncr": {"code": "NCR", "range": (-10, 75), "ramp": "radar",
+            "label": "Composite Reflectivity", "unit": "dBZ"},
+}
+
+L3_BUCKET = "https://unidata-nexrad-level3.s3.amazonaws.com"
+
+
+def is_tdwr(site):
+    """The terminal radars all start with T; no NEXRAD site does."""
+    return str(site).upper().startswith("T")
 
 EARTH_R = 6371000.0
 
@@ -361,6 +399,41 @@ def fetch_l3(site, spec, path):
         except (TypeError, ValueError):
             pass
     return stamp.strftime("%Y%m%d_%H%M%S")
+
+
+def fetch_l3_tdwr(site, spec, path):
+    """
+    The newest TDWR product from the Unidata bucket.
+
+    No sn.last here: the bucket holds every file of the day and S3 lists keys
+    in order, so the newest is the LAST key under today's prefix. The key
+    carries its own time, TPA_TZ0_2026_08_17_19_40_31, so the stamp is read
+    straight off the name rather than off a header.
+    """
+    sid = str(site).upper()[1:]      # TTPA -> TPA, the bucket's spelling
+    for back in (0, 1):              # today, then yesterday around midnight
+        day = datetime.now(timezone.utc) - timedelta(days=back)
+        keys = s3_list(L3_BUCKET, f"{sid}_{spec['code']}_{day:%Y_%m_%d}_")
+        if not keys:
+            continue
+        key = keys[-1]
+        try:
+            r = HTTP.get(f"{L3_BUCKET}/{key}", timeout=60)
+        except Exception as e:
+            log(f"  {site} {spec['code']}: {e}")
+            return None
+        if r.status_code != 200 or len(r.content) < 200:
+            log(f"  {site} {spec['code']}: HTTP {r.status_code},"
+                f" {len(r.content)} bytes")
+            return None
+        with open(path, "wb") as f:
+            f.write(r.content)
+        p = key.split("_")           # SID, CODE, Y, M, D, h, m, s
+        if len(p) >= 8:
+            return f"{p[2]}{p[3]}{p[4]}_{p[5]}{p[6]}{p[7]}"
+        return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    log(f"  {site} {spec['code']}: nothing in the bucket for two days")
+    return None
 
 
 # ── Turning polar sweeps into map coordinates ───────────────────────────────
@@ -627,9 +700,13 @@ def build_site_l2(site, frames=1):
     return built[-1] if built else None
 
 
-def build_site_l3(site, products=tuple(L3_PRODUCTS), frames=1):
+def build_site_l3(site, products=None, frames=1):
     """The same for Level 3, which is one file per product rather than one
-    volume holding all of them."""
+    volume holding all of them. A terminal radar builds its own dialect of
+    products from its own source; everything downstream is shared."""
+    specs = TDWR_L3_PRODUCTS if is_tdwr(site) else L3_PRODUCTS
+    fetch = fetch_l3_tdwr if is_tdwr(site) else fetch_l3
+    products = products or tuple(specs)
     newest = None
     # One stamp for the whole pass, taken from the first product fetched.
     #
@@ -641,13 +718,13 @@ def build_site_l3(site, products=tuple(L3_PRODUCTS), frames=1):
     # same volume, so they belong in the same frame.
     frame = None
     for pname in products:
-        spec = L3_PRODUCTS[pname]
+        spec = specs[pname]
         # Only ever the current one. There is no listing to walk back through,
         # which is the trade for the file being live: past frames accumulate
         # here run by run rather than being fetched all at once.
         tmp = os.path.join(OUT_DIR, "l3", site, "_prod")
         os.makedirs(os.path.dirname(tmp), exist_ok=True)
-        stamp = fetch_l3(site, spec, tmp)
+        stamp = fetch(site, spec, tmp)
         if stamp:
             frame = frame or stamp
             stamp = frame
@@ -884,15 +961,27 @@ def check(sites):
         # strength of documentation rather than a listing: this line of output
         # is what confirms or disproves each one.
         good, bad = [], []
-        for pname, spec in L3_PRODUCTS.items():
-            url = f"{L3_TGFTP}/{spec['dir']}/SI.{site.lower()}/sn.last"
+        specs = TDWR_L3_PRODUCTS if is_tdwr(site) else L3_PRODUCTS
+        for pname, spec in specs.items():
             try:
-                r = HTTP.head(url, timeout=30, allow_redirects=True)
-                (good if r.status_code == 200 else bad).append(
-                    pname if r.status_code == 200 else f"{pname}({r.status_code})")
+                if is_tdwr(site):
+                    # The bucket has no sn.last; existence is a listing with
+                    # at least one key under today's prefix.
+                    sid = site.upper()[1:]
+                    day = datetime.now(timezone.utc)
+                    keys = s3_list(L3_BUCKET,
+                                   f"{sid}_{spec['code']}_{day:%Y_%m_%d}_",
+                                   pages=1, limit=1)
+                    (good if keys else bad).append(
+                        pname if keys else f"{pname}(empty)")
+                else:
+                    url = f"{L3_TGFTP}/{spec['dir']}/SI.{site.lower()}/sn.last"
+                    r = HTTP.head(url, timeout=30, allow_redirects=True)
+                    (good if r.status_code == 200 else bad).append(
+                        pname if r.status_code == 200 else f"{pname}({r.status_code})")
             except Exception:
                 bad.append(f"{pname}(net)")
-        print(f"  {site}  L3  {len(good)}/{len(L3_PRODUCTS)} products: "
+        print(f"  {site}  L3  {len(good)}/{len(specs)} products: "
               f"{', '.join(good) or 'none'}")
         if bad:
             any_missing = True
