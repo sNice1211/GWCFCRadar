@@ -11,9 +11,10 @@
 
 import {
   Client, GatewayIntentBits, Partials, Events,
-  REST, Routes, SlashCommandBuilder,
+  REST, Routes, SlashCommandBuilder, ActivityType,
 } from 'discord.js';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { timingSafeEqual } from 'node:crypto';
 import { getLinkCode, claimLinkCode, getSyncHistory, appendSyncHistory,
          addChatMessage } from './firestore.mjs';
 
@@ -768,6 +769,30 @@ const commands = [
   new SlashCommandBuilder()
     .setName('unlink')
     .setDescription('Disconnect this Discord account from GWCFC Radar'),
+  new SlashCommandBuilder()
+    .setName('status')
+    .setDescription("Change Asturio's status (password required)")
+    .addStringOption(o => o.setName('text')
+      .setDescription('What the status should say').setRequired(true))
+    .addStringOption(o => o.setName('password')
+      .setDescription('The status password').setRequired(true))
+    .addStringOption(o => o.setName('type')
+      .setDescription('How it reads. Default: Watching').setRequired(false)
+      .addChoices(
+        { name: 'Watching',  value: 'watching'  },
+        { name: 'Playing',   value: 'playing'   },
+        { name: 'Listening to', value: 'listening' },
+        { name: 'Competing in', value: 'competing' },
+        { name: 'Custom (no prefix)', value: 'custom' },
+      ))
+    .addStringOption(o => o.setName('presence')
+      .setDescription('The dot beside the name. Default: online').setRequired(false)
+      .addChoices(
+        { name: 'Online',        value: 'online'    },
+        { name: 'Idle',          value: 'idle'      },
+        { name: 'Do Not Disturb', value: 'dnd'      },
+        { name: 'Invisible',     value: 'invisible' },
+      )),
   mapCommand(),
 ].map(c => c.toJSON());
 
@@ -794,9 +819,61 @@ const client = new Client({
   partials: [Partials.Channel],
 });
 
+// ── The bot's own status ────────────────────────────────────────────────────
+// Changed from Discord with /status, behind a password, and remembered here so
+// a restart does not quietly put the old one back.
+//
+// The password comes from the environment first. This repository is public, so
+// the value written below is readable by anyone who looks: setting
+// STATUS_PASSWORD in services/bot/.env, which is not committed, is what makes
+// it actually secret. Until then the fallback keeps the command working.
+const STATUS_PASSWORD = process.env.STATUS_PASSWORD || 'GWCFCISSOSIGMA';
+const STATUS_FILE = new URL('./status.json', import.meta.url);
+
+const ACTIVITY_KINDS = {
+  playing:   ActivityType.Playing,
+  watching:  ActivityType.Watching,
+  listening: ActivityType.Listening,
+  competing: ActivityType.Competing,
+  custom:    ActivityType.Custom,
+};
+
+// Compared byte for byte in constant time, so the answer cannot be found one
+// character at a time by timing the replies.
+function passwordOk(given) {
+  const a = Buffer.from(String(given || ''));
+  const b = Buffer.from(STATUS_PASSWORD);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function applyStatus(user, s) {
+  const type = ACTIVITY_KINDS[s.kind] ?? ActivityType.Watching;
+  // A custom status shows its text from state rather than name, which is the
+  // one activity type that does not read its own label.
+  const activity = type === ActivityType.Custom
+    ? { name: 'custom', state: s.text, type }
+    : { name: s.text, type };
+  user.setPresence({ activities: [activity], status: s.presence || 'online' });
+}
+
+function saveStatus(s) {
+  try { writeFileSync(STATUS_FILE, JSON.stringify(s, null, 2)); } catch (e) {
+    console.warn('status save:', e.message);
+  }
+}
+
+function loadStatus() {
+  try {
+    if (existsSync(STATUS_FILE)) return JSON.parse(readFileSync(STATUS_FILE, 'utf8'));
+  } catch (e) { console.warn('status read:', e.message); }
+  return { text: 'the radar', kind: 'watching', presence: 'online' };
+}
+
 client.once(Events.ClientReady, c => {
   console.log(`Asturio online as ${c.user.tag}`);
-  c.user.setActivity('the radar', { type: 3 });   // 3 = Watching
+  const s = loadStatus();
+  applyStatus(c.user, s);
+  console.log(`Status: ${s.kind} "${s.text}" (${s.presence || 'online'})`);
 });
 
 client.on(Events.InteractionCreate, async (i) => {
@@ -821,6 +898,34 @@ client.on(Events.InteractionCreate, async (i) => {
         n === 0 ? await i.editReply(part) : await i.followUp(part);
       }
       return;
+    }
+    if (i.commandName === 'status') {
+      // Ephemeral, and that is not decoration: an ephemeral reply keeps the
+      // whole interaction, the typed password included, visible only to the
+      // person who ran it. A public reply would print the password in chat.
+      await i.deferReply({ ephemeral: true });
+      if (!passwordOk(i.options.getString('password', true))) {
+        console.warn(`status refused for ${i.user.tag}`);
+        return i.editReply('Wrong password, so nothing changed.');
+      }
+      const s = {
+        text: i.options.getString('text', true).slice(0, 128),
+        kind: i.options.getString('type') || 'watching',
+        presence: i.options.getString('presence') || 'online',
+      };
+      try {
+        applyStatus(client.user, s);
+      } catch (e) {
+        return i.editReply(`Discord refused that status: ${e.message}`);
+      }
+      saveStatus(s);            // so a restart keeps it
+      const shown = s.kind === 'custom' ? s.text
+        : `${s.kind === 'listening' ? 'Listening to'
+           : s.kind === 'competing' ? 'Competing in'
+           : s.kind[0].toUpperCase() + s.kind.slice(1)} ${s.text}`;
+      console.log(`status set by ${i.user.tag}: ${s.kind} "${s.text}" (${s.presence})`);
+      return i.editReply(`Status set: **${shown}** · ${s.presence}\n`
+        + 'It sticks through restarts, and only you can see this reply.');
     }
     if (i.commandName === 'map') {
       const asked = Object.fromEntries(
