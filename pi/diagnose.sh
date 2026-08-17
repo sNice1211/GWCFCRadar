@@ -20,8 +20,15 @@ if [ -f "$DATA/models/latest.json" ] && [ -s "$DATA/models/latest.json" ]; then
   python3 -c "
 import json
 d=json.load(open('$DATA/models/latest.json'))
+# A model's runs live under its regions now; the old flat run/fields shape is
+# kept as the fallback so this can still read an index from before the change.
 for k,v in (d.get('models') or {}).items():
-    print(f'        {k:8} run {v.get(\"run\")}  fields: {\",\".join(v.get(\"fields\") or [])}')
+    regs=v.get('regions') or {}
+    if regs:
+        for reg,rv in regs.items():
+            print(f'        {k:10} {reg:8} run {rv.get(\"run\")}  fields: {\",\".join(rv.get(\"fields\") or [])}')
+    else:
+        print(f'        {k:10} run {v.get(\"run\")}  fields: {\",\".join(v.get(\"fields\") or [])}')
 if d.get('sounding'): print(f'        sounding run {d[\"sounding\"][\"run\"]}')
 " 2>/dev/null || bad "latest.json is not valid JSON"
 else
@@ -38,12 +45,17 @@ if [ -z "$HOLDER" ]; then
   bad "nothing is listening on $PORT"
 else
   note "$HOLDER"
-  if echo "$HOLDER" | grep -q "serve.py"; then
+  # ss prints the short process name, which for serve.py is just "python", so
+  # matching the ss line called the right server an intruder. The full command
+  # line of the holding pid is what actually says which script it is.
+  HPID=$(echo "$HOLDER" | grep -oP 'pid=\K[0-9]+' | head -1)
+  HCMD=$(tr '\0' ' ' < "/proc/$HPID/cmdline" 2>/dev/null)
+  if echo "$HCMD" | grep -q "serve.py"; then
     good "the CORS server has the port"
   else
-    bad "something else holds $PORT, most likely a plain 'python3 -m http.server'"
-    note "that one sends no CORS header, so the browser refuses to read it."
-    note "FIX:  pkill -f 'http.server $PORT'"
+    bad "something else holds $PORT: ${HCMD:-unknown}"
+    note "a plain server sends no CORS header, so the browser refuses to read it."
+    note "FIX:  kill $HPID"
     note "      systemctl --user restart gwcfc-serve"
   fi
 fi

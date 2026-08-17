@@ -307,14 +307,18 @@ systemctl --user daemon-reload
 # in it. A named tunnel does not use it at all.
 [ "$NAMED_TUNNEL" = "1" ] || : > "$HOME/tunnel.log"
 systemctl --user enable --now gwcfc-serve.service  >/dev/null 2>&1
-systemctl --user restart    gwcfc-tunnel.service   >/dev/null 2>&1 || \
-  systemctl --user enable --now gwcfc-tunnel.service >/dev/null 2>&1
+# enable THEN restart, as two separate steps. These used to be
+# "restart || enable --now", and restart succeeds on a unit that exists but
+# was never enabled, so the enable half never ran: the tunnel worked all day
+# and then a reboot left it dead, because nothing had registered it to start.
+systemctl --user enable  gwcfc-tunnel.service      >/dev/null 2>&1
+systemctl --user restart gwcfc-tunnel.service      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
 systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
-systemctl --user restart    gwcfc-publish.service  >/dev/null 2>&1 || \
-  systemctl --user enable --now gwcfc-publish.service >/dev/null 2>&1
+systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1
+systemctl --user restart gwcfc-publish.service     >/dev/null 2>&1
 ok "serve, tunnel, publish, models, radar, cyclones and self-update are running"
 
 # ── 5. the address ──────────────────────────────────────────────────────────
