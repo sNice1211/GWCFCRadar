@@ -229,13 +229,22 @@ console.log('\n1. a healthy Pi, seen from the page');
      pill.layers === 1 && /KFWS/.test(pill.url || ''), pill.url);
   ok('without complaining', pill.toasts.length === 0, pill.toasts.join(' | '));
 
-  // And a pill the Pi does not build: the answer is an explanation.
+  // A pill the Pi does not build is no longer a refusal: it is decoded in the
+  // browser from the Level 3 bucket. Offline, as here, that cannot land, and
+  // what matters is that it tried and said why rather than telling anyone to
+  // go and edit a config file on the Pi.
   await page.evaluate(() => { window.__toasts.length = 0;
                               _nexradSiteMarkers['kdyx'].label.fire('click'); });
-  await page.waitForTimeout(400);
-  const other = await page.evaluate(() => window.__toasts);
-  ok('any other pill explains how to add that radar',
-     other.some(t => /KDYX is not one of the radars/.test(t)), other.join(' | '));
+  await page.waitForTimeout(1200);
+  const other = await page.evaluate(() => ({ toasts: window.__toasts,
+                                             stuck: _prBucketSite }));
+  ok('any other pill is decoded here instead of being refused',
+     other.toasts.some(t => /^KDYX N0B:/.test(t)) &&
+     !other.toasts.some(t => /is not one of the radars/.test(t)),
+     other.toasts.join(' | '));
+  // Back to null, which is "the Pi's own pictures", the state before the click.
+  ok('and a site that could not be read does not stay selected',
+     other.stuck === null, String(other.stuck));
 
   // The pills themselves say which radars will answer.
   const built = await page.evaluate(() => ({

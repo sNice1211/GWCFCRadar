@@ -1554,7 +1554,7 @@ def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
     return True
 
 
-def regrid_to_latlon(vals, plats, plons, box, max_edge=MAX_EDGE_PX):
+def regrid_to_latlon(vals, plats, plons, box, max_edge=MAX_EDGE_PX, edge=None):
     """
     Put a model's own grid onto a plain latitude and longitude mesh.
 
@@ -1591,7 +1591,19 @@ def regrid_to_latlon(vals, plats, plons, box, max_edge=MAX_EDGE_PX):
     # Roughly one output cell per input point, keeping the aspect ratio, then
     # capped. Asking for more cells than there are points only spreads the same
     # data over more gaps.
-    scale = np.sqrt(n / (span_lat * span_lon))
+    #
+    # A caller that knows the data's own resolution can say so with edge, and
+    # for radar it must. Counting points is right for a model grid, whose
+    # points are spread evenly, and wrong for a sweep, whose points crowd
+    # around the antenna: the count is diluted by the empty corners of the
+    # bounding box and by gates that cover more ground the further out they
+    # are, so the honest native resolution comes out two or three times
+    # coarser than the file actually is.
+    if edge:
+        long_side = max(span_lat, span_lon)
+        scale = float(edge) / long_side
+    else:
+        scale = np.sqrt(n / (span_lat * span_lon))
     nrow = int(min(max_edge, max(32, round(span_lat * scale))))
     ncol = int(min(max_edge, max(32, round(span_lon * scale))))
 
