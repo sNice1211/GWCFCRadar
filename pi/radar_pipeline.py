@@ -73,7 +73,7 @@ L3_TGFTP = "https://tgftp.nws.noaa.gov/SL.us008001/DF.of/DC.radar"
 # to fetch and decode, and a Pi doing ten of them every five minutes is busy.
 # Override on the command line, or set GWCFC_RADAR_SITES.
 SITES = (os.environ.get("GWCFC_RADAR_SITES", "").split()
-         or ["KTLX", "KFWS", "KLOT", "KATX", "KMLB", "TTPA"])
+         or ["KTLX", "KFWS", "KLOT", "KATX", "KMLB", "TTPA", "TDFW"])
 
 # How many past volumes to keep, which is what the animation scrubs through.
 KEEP_FRAMES = 12
