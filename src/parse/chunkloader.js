@@ -444,7 +444,7 @@ export default class ChunkLoader {
             if (numericId < 1 || numericId > 999) {
                 return false;
             }
-            // setDayToken: false — discovery probes must not contaminate activeDayToken.
+            // setDayToken: false - discovery probes must not contaminate activeDayToken.
             const urls = await this._loadChunkURLsForVolume(formatVolumeId(numericId), [dateToken], { setDayToken: false });
             return urls.length > 0;
         };

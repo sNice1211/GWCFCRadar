@@ -220,7 +220,7 @@ async function getLatestFileUrl(level, product = null) {
         }
 
         // If we searched for a specific product and found nothing, try again without product
-        // — some stations (TDWR/T-prefix) use different product codes (e.g., TZ0) and the
+        // - some stations (TDWR/T-prefix) use different product codes (e.g., TZ0) and the
         // requested product (N0B) may not exist. Fall back to any product for the station.
         if (normalizedProduct) {
             const fallbackPrefixes = [`${stationCode}`];
