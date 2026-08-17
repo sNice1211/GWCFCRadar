@@ -13094,10 +13094,21 @@ const PR_BUCKET = {
 // screen came prebuilt from the Pi.
 let _prBucketSite = null;
 
+// Which family a site belongs to. Every terminal radar's id starts with T,
+// and exactly one WSR-88D's does too: TJUA, the NEXRAD at San Juan. Judged by
+// the letter alone it was asked for terminal products it does not publish and
+// answered nothing at all, which is the whole of Puerto Rico missing from
+// Level 3 for the sake of one initial.
+const _NEXRAD_T_SITES = ['TJUA'];
+function _isTdwrSite(site) {
+  const id = String(site).toUpperCase();
+  return id.startsWith('T') && !_NEXRAD_T_SITES.includes(id);
+}
+
 function _l3BucketCode(site, product, tilt) {
   const fam = PR_BUCKET[product];
   if (!fam) return null;
-  const list = String(site).toUpperCase().startsWith('T') ? fam.t : fam.k;
+  const list = _isTdwrSite(site) ? fam.t : fam.k;
   if (!list || !list.length) return null;
   return list[Math.min(Math.max(tilt || 1, 1), list.length) - 1];
 }
@@ -18336,7 +18347,7 @@ function _prRenderPiRow(level) {
     // for velocity and shorter again for a terminal.
     const cuts = _prBucketSite
       ? ((PR_BUCKET[b.product] || {})[
-           _prBucketSite.startsWith('T') ? 't' : 'k'] || [])
+           _isTdwrSite(_prBucketSite) ? 't' : 'k'] || [])
       : ((PR_PRODUCTS[b.product] || {}).l3Tilts || []);
     if (_prOn && _prProduct === b.product && cuts.length > 1 &&
         (_prBucketSite || _prDrawnLvl === 'l3')) {

@@ -164,6 +164,18 @@ console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
      'no overlay');
   await clearDraw();
 
+  // TJUA: the one WSR-88D whose id starts with T, which the code used to read
+  // as a terminal and hand terminal product codes it does not publish. Puerto
+  // Rico's radar was missing from Level 3 for the sake of one initial.
+  await page.evaluate(() => { _prProduct = 'reflectivity'; _prTilt = 1;
+                              return _l3BucketShow('TJUA'); });
+  ok('San Juan draws, being a NEXRAD despite its T', await waitForDraw(),
+     'no overlay');
+  const jua = await page.evaluate(() => _l3BucketCode('TJUA', 'reflectivity', 1));
+  ok('and it is asked for a NEXRAD product code, not a terminal one',
+     jua === 'N0B', String(jua));
+  await clearDraw();
+
   // Velocity, and a second tilt, both of which have their own product code.
   await page.evaluate(() => { _prProduct = 'velocity'; _prTilt = 2;
                               return _l3BucketShow('KTLX'); });

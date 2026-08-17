@@ -83,7 +83,7 @@ SITES = (os.environ.get("GWCFC_RADAR_SITES", "").split()
 TDWR_SITES = [
     "TADW", "TATL", "TBNA", "TBOS", "TBWI", "TCLT", "TCMH", "TCVG", "TDAL",
     "TDAY", "TDCA", "TDEN", "TDFW", "TDTW", "TEWR", "TFLL", "THOU", "TIAD",
-    "TIAH", "TICH", "TIDS", "TJFK", "TJUA", "TLAS", "TLVE", "TMCI", "TMCO",
+    "TIAH", "TICH", "TIDS", "TJFK", "TLAS", "TLVE", "TMCI", "TMCO",
     "TMDW", "TMEM", "TMIA", "TMKE", "TMSP", "TMSY", "TOKC", "TORD", "TPBI",
     "TPHL", "TPHX", "TPIT", "TRDU", "TSDF", "TSJU", "TSLC", "TSTL", "TTPA",
     "TTUL",
@@ -196,9 +196,17 @@ TDWR_L3_PRODUCTS = {
 L3_BUCKET = "https://unidata-nexrad-level3.s3.amazonaws.com"
 
 
+# Every terminal radar's id starts with T, and exactly one WSR-88D's does
+# too: TJUA, the NEXRAD at San Juan. Judged by the letter alone it was asked
+# for terminal products it does not publish and answered nothing, which is the
+# whole of Puerto Rico missing for the sake of one initial.
+NEXRAD_T_SITES = ("TJUA",)
+
+
 def is_tdwr(site):
-    """The terminal radars all start with T; no NEXRAD site does."""
-    return str(site).upper().startswith("T")
+    """A terminal radar, rather than a WSR-88D whose id merely starts with T."""
+    sid = str(site).upper()
+    return sid.startswith("T") and sid not in NEXRAD_T_SITES
 
 EARTH_R = 6371000.0
 
