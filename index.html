@@ -4147,6 +4147,13 @@ body {
   box-shadow: 0 0 12px rgba(0,140,186,1);
   z-index: 1000;
 }
+/* The radars the Pi actually builds, while Level 3 is the source. Lit in
+   green so which pills will answer is visible before any clicking. Sits
+   above this rule so an active station keeps its gold glow. */
+.nexrad-label.pi-built {
+  border-color: #46e08a;
+  box-shadow: 0 0 10px rgba(70,224,138,0.9);
+}
 .nexrad-label.active-station {
   background: #e8b800;
   border-color: rgba(0,0,0,0.55);
@@ -12969,13 +12976,21 @@ async function _prLoadIndex(base) {
   // worse answer than the other level with something in it.
   const order = _prLevel === 'auto' ? ['l2', 'l3']
               : [_prLevel, _prLevel === 'l2' ? 'l3' : 'l2'];
+  // Not reaching the Pi and reaching a Pi with nothing built are different
+  // answers, and they used to be folded into one, so a blocked tunnel was
+  // reported as "no radar built" while the Pi sat there with radar built.
+  // Anything the Pi itself can say, a 404 included, proves it was reached.
+  // A 5xx is the tunnel's edge apologising for a Pi it cannot find, and a
+  // thrown fetch never got anywhere; both come back as 'unreachable'.
+  let reached = false;
   for (const lvl of order) {
-    const idx = await fetch(`${base}/radar/latest_${lvl}.json?t=${Date.now()}`,
-                            { cache: 'no-store' })
-      .then(r => r.ok ? r.json() : null).catch(() => null);
+    const r = await fetch(`${base}/radar/latest_${lvl}.json?t=${Date.now()}`,
+                          { cache: 'no-store' }).catch(() => null);
+    if (r && r.status < 500) reached = true;
+    const idx = (r && r.ok) ? await r.json().catch(() => null) : null;
     if (idx && idx.sites && Object.keys(idx.sites).length) return { lvl, idx };
   }
-  return null;
+  return reached ? null : 'unreachable';
 }
 
 function _prClear() {
@@ -13039,7 +13054,7 @@ async function _prEnable() {
   // page remembers the address for its whole session. So a failed index is
   // first treated as a stale address: look it up fresh and try once more,
   // rather than telling someone with a healthy Pi that it has built nothing.
-  if (!got) {
+  if (!got || got === 'unreachable') {
     _hdBase = null;
     const fresh = await _hdResolveBase();
     if (fresh && fresh !== base) {
@@ -13049,21 +13064,44 @@ async function _prEnable() {
       _hdBase = base;
     }
   }
-  if (got) _prIndex = got.idx;
-  if (!got) {
+  if (!got || got === 'unreachable') {
     if (typeof showToast === 'function') {
-      showToast('The Pi has no radar built yet. It decodes a fresh volume '
-              + 'every five minutes once gwcfc-radar is running.', 4000);
+      if (got === 'unreachable') {
+        // The road failed, not the radar. Saying "no radar built" here sent
+        // a person to debug a Pi that was healthy the whole time.
+        let host = _hdBase;
+        try { host = new URL(_hdBase).host; } catch (e) {}
+        showToast('Could not reach the Pi at ' + host + '. The tunnel may be '
+                + 'down or blocked on this network; the Pi itself may be '
+                + 'fine. It is retried on every tap here.', 5000);
+      } else {
+        showToast('The Pi answered but has no radar built yet. It decodes a '
+                + 'fresh volume every five minutes once gwcfc-radar is '
+                + 'running.', 4000);
+      }
     }
     return;
   }
-  await _prDraw(base, got.lvl, got.idx);
+  _prIndex = got.idx;
+  // The pills can now show which radars the Pi builds.
+  if (typeof _refreshNexradSiteStyles === 'function') {
+    try { _refreshNexradSiteStyles(); } catch (e) {}
+  }
+  // _hdBase, not the base variable from the top: when the stale-address retry
+  // above succeeded, base still names the dead tunnel, and drawing from it
+  // fetched every manifest from an address that had just failed. The index
+  // loaded, nothing appeared, and nothing said why.
+  await _prDraw(_hdBase, got.lvl, got.idx);
   // Re-read on the Pi's own cadence, so the map keeps up with new volumes
-  // without a reload. Cleared when the layer is turned off.
+  // without a reload. Cleared when the layer is turned off. Reads _hdBase at
+  // fire time for the same reason as above.
   _prTimer = setInterval(async () => {
     if (!_prOn) return;
-    const fresh = await _prLoadIndex(base);
-    if (fresh) { _prIndex = fresh.idx; await _prDraw(base, fresh.lvl, fresh.idx); }
+    const fresh = await _prLoadIndex(_hdBase);
+    if (fresh && fresh.idx) {
+      _prIndex = fresh.idx;
+      await _prDraw(_hdBase, fresh.lvl, fresh.idx);
+    }
   }, 5 * 60 * 1000);
 }
 
@@ -24418,7 +24456,7 @@ function _buildNexradSiteMarkers() {
     const label = L.marker([s.lat, s.lon], { icon: labelIcon, zIndexOffset: 300 });
 
     // Click on pill , single-site only activates in REF mode
-    label.on('click', () => {
+    label.on('click', async () => {
       // Level 2 and Level 3 first, because both call a product "ref" and the
       // branch below that name belongs to the tile layers. Checked in the
       // wrong order, clicking a pill while Level 2 was showing reflectivity
@@ -24441,10 +24479,19 @@ function _buildNexradSiteMarkers() {
         // told they were not built. Four letters of case, the same bug that
         // once broke Level 2 against the Worker.
         const sid = String(s.id).toUpperCase();
+        // No index yet means the Pi could not be read when the row opened,
+        // not that this radar is unbuilt. The click is a fresh reason to try
+        // again; claiming "not built" for every pill on a bad connection
+        // read as no data existing for any station at all.
+        if (!_prIndex || !_prIndex.sites) await _prEnable();
         if (_prIndex && _prIndex.sites && _prIndex.sites[sid]) {
           _prSetSite(sid);
           _refreshNexradSiteStyles();
-        } else if (typeof showToast === 'function') {
+        } else if (_prIndex && _prIndex.sites &&
+                   typeof showToast === 'function') {
+          // Only when an index really answered and this site is not in it.
+          // When there is still no index, _prEnable has just toasted the
+          // actual reason, and a second toast on top would bury it.
           showToast(s.id.toUpperCase() + ' is not one of the radars your Pi '
                   + 'builds. Add it with GWCFC_RADAR_SITES.', 4000);
         }
@@ -24485,6 +24532,11 @@ function _refreshNexradSiteStyles() {
                      (_radarSource === 'l3' && _prSite &&
                       id.toUpperCase() === String(_prSite).toUpperCase());
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
+    // In Level 3 the Pi only builds a handful of radars, and until now the
+    // pills gave no hint which ones. Green ring = this pill will answer.
+    const isBuilt = _radarSource === 'l3' && _prIndex && _prIndex.sites &&
+                    !!_prIndex.sites[id.toUpperCase()];
+    if (labelEl) labelEl.classList.toggle('pi-built', isBuilt);
   });
 }
 
@@ -33713,7 +33765,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Wave height and wave period are back. The wave model files call the sea surface level 1, and the Pi was only accepting level 0, so it threw the data away.";
+const APP_LATEST_UPDATE = "Level 3 now tells the truth: a green ring marks the radars your Pi builds, clicking retries a bad connection, and an unreachable tunnel is no longer reported as no radar built.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
