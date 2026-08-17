@@ -197,7 +197,11 @@ export async function getSyncHistory(discordId) {
   try {
     doc = await call(`/asturioSync/${encodeURIComponent(discordId)}`);
   } catch (e) {
-    if (/404|NOT_FOUND/i.test(e.message)) return null;   // not linked yet
+    // Firestore words this two ways: the status is NOT_FOUND, but the message
+    // this code actually receives says 'Document "..." not found.' with a
+    // space, which the old pattern missed, so every unlinked user logged a
+    // scary error on every message.
+    if (/404|NOT[_ ]FOUND/i.test(e.message)) return null;   // not linked yet
     throw e;
   }
   const data = fromFields(doc.fields);
