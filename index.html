@@ -12683,8 +12683,12 @@ let _prTimer = null;
 // made two different ways. Naming it "Reflectivity" once means switching level
 // does not throw away the product you had chosen.
 const PR_PRODUCTS = {
-  reflectivity: { label: 'Reflectivity', l2: 'ref', l3: 'n0q' },
-  velocity:     { label: 'Velocity',     l2: 'vel', l3: 'n0u' },
+  // l3Tilts: the Weather Service publishes each antenna cut of the two base
+  // products as its own file, so a tilt here is just a different spelling.
+  reflectivity: { label: 'Reflectivity', l2: 'ref', l3: 'n0q',
+                  l3Tilts: ['n0q', 'n1q', 'n2q', 'n3q'] },
+  velocity:     { label: 'Velocity',     l2: 'vel', l3: 'n0u',
+                  l3Tilts: ['n0u', 'n1u', 'n2u', 'n3u'] },
   // Level 3 only: the Weather Service computes these from the full volume, so
   // the Pi gets them ready made and Level 2 has no equivalent file.
   corrcoeff:    { label: 'Corr. Coeff.',    l2: 'cc',  l3: 'n0c' },
@@ -12710,6 +12714,11 @@ let _prProduct = 'reflectivity';
 // once made a mosaic out of things that are not a mosaic, and stacked their
 // overlapping edges on top of each other where they met.
 let _prSite = null;
+// Which antenna cut, 1 to 4, for the products that have them in Level 3.
+let _prTilt = 1;
+// Which level the last draw actually used. "auto" means the menu cannot know
+// until the Pi answers, and the tilt chips only make sense on Level 3.
+let _prDrawnLvl = null;
 // The last index read from the Pi, kept so the site bubbles know which radars
 // exist without fetching it again on every menu open.
 let _prIndex = null;
@@ -12717,9 +12726,11 @@ try {
   const lv = localStorage.getItem('gwcfc_pr_level');
   const pd = localStorage.getItem('gwcfc_pr_product');
   const st = localStorage.getItem('gwcfc_pr_site');
+  const tl = parseInt(localStorage.getItem('gwcfc_pr_tilt') || '1', 10);
   if (lv && PR_LEVELS[lv]) _prLevel = lv;
   if (pd && PR_PRODUCTS[pd]) _prProduct = pd;
   if (st) _prSite = st;
+  if (tl >= 1 && tl <= 4) _prTilt = tl;
 } catch (e) {}
 
 async function _prSetSite(id) {
@@ -12780,8 +12791,14 @@ function _prClear() {
 // sum of the sites that are switched on rather than one radar at a time.
 async function _prDraw(base, lvl, idx) {
   _prClear();
-  // The chosen product in this level's own spelling.
-  const product = (PR_PRODUCTS[_prProduct] || PR_PRODUCTS.reflectivity)[lvl];
+  // The chosen product in this level's own spelling, at the chosen tilt when
+  // this level publishes the cuts separately.
+  let product = (PR_PRODUCTS[_prProduct] || PR_PRODUCTS.reflectivity)[lvl];
+  const cuts = (PR_PRODUCTS[_prProduct] || {}).l3Tilts;
+  if (lvl === 'l3' && cuts) {
+    product = cuts[Math.min(Math.max(_prTilt, 1), cuts.length) - 1];
+  }
+  _prDrawnLvl = lvl;
   // One site. If the remembered one is not in this run, the first the Pi has
   // is used rather than drawing nothing, and _prSite is moved to match so the
   // bubbles agree with the map.
@@ -18048,16 +18065,46 @@ function _prRenderPiRow(level) {
     el.className = 'sub-bubble' + (_prProduct === b.product ? ' active' : '');
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
+    // The same tilt chips Level 2 wears, on the active product's own bubble.
+    // Level 3 publishes each antenna cut as its own product, so a chip simply
+    // asks the Pi for a different file. Only when the last draw really came
+    // from Level 3: the Pi's Level 2 images are single-cut.
+    if (_prOn && _prProduct === b.product && _prDrawnLvl === 'l3' &&
+        (PR_PRODUCTS[b.product] || {}).l3Tilts) {
+      const strip = document.createElement('span');
+      strip.className = 'tilt-strip';
+      PR_PRODUCTS[b.product].l3Tilts.forEach((_, i) => {
+        const cut = i + 1;
+        const chip = document.createElement('span');
+        chip.className = 'tilt-chip' + (cut === _prTilt ? ' active' : '');
+        chip.textContent = cut;
+        chip.title = 'Tilt ' + cut;
+        chip.onclick = async (ev) => {
+          ev.stopPropagation();
+          _prTilt = cut;
+          try { localStorage.setItem('gwcfc_pr_tilt', String(cut)); } catch (e) {}
+          strip.querySelectorAll('.tilt-chip').forEach(c =>
+            c.classList.toggle('active', c.textContent == String(cut)));
+          await _prEnable();
+        };
+        strip.appendChild(chip);
+      });
+      el.appendChild(strip);
+    }
     el.onclick = async () => {
       if (_prOn && _prProduct === b.product) {
         // Tapping the product that is already showing turns the layer off,
         // which is how every other bubble on this row behaves.
         _prDisable();
-      } else {
-        await _prSetProduct(b.product);
-        if (!_prOn) await _prEnable();
+        toggleRadarPiRefresh();
+        return;
       }
-      toggleRadarPiRefresh();
+      await _prSetProduct(b.product);
+      if (!_prOn) await _prEnable();
+      // The whole row again, not just the active marks: the tilt chips live
+      // on the active bubble and only exist after a draw has said which
+      // level is really showing.
+      _prRenderPiRow(level);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
@@ -32702,7 +32749,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Two new overlays: Rotation Tracks shows where storms have rotated over the last hour, and Hail Swaths shows the largest hail they produced. Both come from NOAA's MRMS feed, built by the Pi every five minutes.";
+const APP_LATEST_UPDATE = "Level 3 has tilts now: reflectivity and velocity carry chips 1 to 4 on their bubble, each showing a higher antenna cut. The Pi builds all four every five minutes.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

@@ -52,7 +52,8 @@ const MANIFEST = JSON.stringify({
   site_latlon: [35.33, -97.28],
   built_at: new Date().toISOString(),
   fields: Object.fromEntries(
-    ['n0q','n0u','n0c','n0x','n0k','n0h','ohp','stp','dvl','eet','ncr']
+    ['n0q','n0u','n0c','n0x','n0k','n0h','ohp','stp','dvl','eet','ncr',
+     'n1q','n2q','n3q','n1u','n2u','n3u']
       .map(f => [f, { label: f, unit: '', min: 0, max: 1 }])),
 });
 // The smallest valid PNG there is: 1x1, transparent.
@@ -172,8 +173,11 @@ console.log('\n1. a healthy Pi, seen from the page');
      st.toasts.join(' | '));
 
   const labels = await row(page);
+  // startsWith, not equals: the active product's label carries its tilt
+  // chips ("Reflectivity1234"), which is the feature, not a failure.
   ok('the product row filled in',
-     ['Reflectivity', '1-Hr Precip', 'Echo Tops'].every(l => labels.includes(l)),
+     ['Reflectivity', '1-Hr Precip', 'Echo Tops'].every(l =>
+       labels.some(t => t.startsWith(l))),
      labels.join(','));
   ok('and does not claim there is no Pi radar',
      !labels.some(t => /No Pi radar/.test(t)), labels.join(','));
@@ -209,6 +213,28 @@ console.log('\n1. a healthy Pi, seen from the page');
   ok('the built radars wear the green ring', built.ktlx && built.kfws,
      JSON.stringify(built));
   ok('and the rest do not', !built.kdyx, JSON.stringify(built));
+
+  // Tilts: Level 3 publishes every antenna cut as its own product, and the
+  // chips on the active bubble switch between them. Chip 2 must redraw from
+  // the tilt-2 file, and the choice must survive a site change.
+  const chips = await page.evaluate(() =>
+    [...document.querySelectorAll('#sub-bubbles .tilt-chip')].map(c => c.textContent));
+  ok('four tilt chips ride the active product bubble',
+     chips.join(',') === '1,2,3,4', chips.join(','));
+  await page.evaluate(() => {
+    document.querySelectorAll('#sub-bubbles .tilt-chip')[1].onclick(new Event('x'));
+  });
+  await page.waitForTimeout(900);
+  const tilt = await page.evaluate(() => ({
+    tilt: _prTilt,
+    url: _prLayers[0] && _prLayers[0]._url,
+  }));
+  ok('chip 2 redraws from the tilt 2 file',
+     tilt.tilt === 2 && /n1q\.png$/.test(tilt.url || ''), JSON.stringify(tilt));
+  await page.evaluate(() => {
+    document.querySelectorAll('#sub-bubbles .tilt-chip')[0].onclick(new Event('x'));
+  });
+  await page.waitForTimeout(900);
 
   // The severe overlays: two pills, each drawing one national image from the
   // Pi's MRMS build, on and off through the same dispatcher as every pill.
