@@ -677,7 +677,7 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "hireswarw", "hireswarw2", "hireswfv3",
                   "hrrrsub",
                   "icon", "hafs", "hafsb",
-                  "gefswave", "aqm",
+                  "gefswave",
                   "iconeu", "cmce"]
 
 # Defined above and deliberately not built. Each of these was checked against
@@ -699,7 +699,13 @@ OFF_BY_DEFAULT = ["hwrf", "hmon", "hireswnssl", "etss",
                   # pipeline lives on byte ranges: fetching a 3 km CONUS file
                   # whole to keep six fields out of it is most of a gigabyte
                   # an hour. So it waits until NOAA publishes indexes with it.
-                  "rrfs", "rrfssub", "rrfsfire"]
+                  "rrfs", "rrfssub", "rrfsfire",
+                  # AQM publishes no index either, so it is fetched as whole
+                  # files, and those come down at a trickle NOMADS never cuts
+                  # off: the socket timeout only fires on dead silence, so one
+                  # air-quality hour held a whole build hostage for half an
+                  # hour. Off until it can be fetched by byte range.
+                  "aqm"]
 
 # ── Soundings ───────────────────────────────────────────────────────────────
 # A sounding is a vertical profile, so it needs the same variables at many
