@@ -75,6 +75,20 @@ L3_TGFTP = "https://tgftp.nws.noaa.gov/SL.us008001/DF.of/DC.radar"
 SITES = (os.environ.get("GWCFC_RADAR_SITES", "").split()
          or ["KTLX", "KFWS", "KLOT", "KATX", "KMLB", "TTPA", "TDFW"])
 
+# Every terminal radar the map shows a pill for. They all join the Level 3
+# build: their products are six small files each, fetched in parallel below,
+# so the whole country's terminals cost about a minute of wall clock. They do
+# NOT join Level 2 here: the browser decodes terminal Level 2 live on its
+# own, and 46 more volume decodes every five minutes would bury the Pi.
+TDWR_SITES = [
+    "TADW", "TATL", "TBNA", "TBOS", "TBWI", "TCLT", "TCMH", "TCVG", "TDAL",
+    "TDAY", "TDCA", "TDEN", "TDFW", "TDTW", "TEWR", "TFLL", "THOU", "TIAD",
+    "TIAH", "TICH", "TIDS", "TJFK", "TJUA", "TLAS", "TLVE", "TMCI", "TMCO",
+    "TMDW", "TMEM", "TMIA", "TMKE", "TMSP", "TMSY", "TOKC", "TORD", "TPBI",
+    "TPHL", "TPHX", "TPIT", "TRDU", "TSDF", "TSJU", "TSLC", "TSTL", "TTPA",
+    "TTUL",
+]
+
 # How many past volumes to keep, which is what the animation scrubs through.
 KEEP_FRAMES = 12
 
@@ -1032,14 +1046,32 @@ def main(argv):
     os.makedirs(OUT_DIR, exist_ok=True)
     t0 = time.time()
     frames = int(os.environ.get("GWCFC_RADAR_FRAMES", "1"))
-    for site in sites:
-        try:
-            if level3:
+
+    # Level 3 covers every terminal on the map, not just the configured
+    # sites, unless sites were named on the command line and meant exactly.
+    explicit = any(not a.startswith("-") and len(a) == 4 for a in argv)
+    if level3 and not explicit:
+        sites = sites + [t for t in TDWR_SITES if t not in sites]
+
+    if level3:
+        # Six small fetches per site, forty-odd sites: the network waits are
+        # the whole cost, so they overlap. Decode and render inside each
+        # worker are numpy and PIL, which release the interpreter lock, so
+        # the threads genuinely help rather than queueing on it.
+        from concurrent.futures import ThreadPoolExecutor
+        def one(site):
+            try:
                 build_site_l3(site, frames=frames)
-            else:
+            except Exception as e:
+                log(f"{site}: failed: {e}")
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            list(pool.map(one, sites))
+    else:
+        for site in sites:
+            try:
                 build_site_l2(site, frames=frames)
-        except Exception as e:
-            log(f"{site}: failed: {e}")
+            except Exception as e:
+                log(f"{site}: failed: {e}")
     idx = write_index(3 if level3 else 2, sites)
     # National severe products ride the Level 2 pass, so they refresh on the
     # same five minute cadence without another unit or timer existing.
