@@ -129,6 +129,23 @@ L3_PRODUCTS = {
     # The whole column's strongest echo, not just the lowest sweep.
     "ncr": {"code": "NCR", "dir": "DS.p37cr", "range": (-10, 75),
             "ramp": "radar", "label": "Composite Reflectivity", "unit": "dBZ"},
+    # The higher sweeps of the two base products. The antenna scans the same
+    # circle at rising angles, and the Weather Service publishes every cut as
+    # its own product: r0 to r3 and v0 to v3 are tilts 1 to 4. Last in this
+    # dict on purpose, so the frame stamp stays pinned to n0q above and a
+    # site missing a higher cut costs only that cut.
+    "n1q": {"code": "N1Q", "dir": "DS.p94r1", "range": (-10, 75),
+            "ramp": "radar", "label": "Reflectivity Tilt 2", "unit": "dBZ"},
+    "n2q": {"code": "N2Q", "dir": "DS.p94r2", "range": (-10, 75),
+            "ramp": "radar", "label": "Reflectivity Tilt 3", "unit": "dBZ"},
+    "n3q": {"code": "N3Q", "dir": "DS.p94r3", "range": (-10, 75),
+            "ramp": "radar", "label": "Reflectivity Tilt 4", "unit": "dBZ"},
+    "n1u": {"code": "N1U", "dir": "DS.p99v1", "range": (-40, 40),
+            "ramp": "velocity", "label": "Velocity Tilt 2", "unit": "kt"},
+    "n2u": {"code": "N2U", "dir": "DS.p99v2", "range": (-40, 40),
+            "ramp": "velocity", "label": "Velocity Tilt 3", "unit": "kt"},
+    "n3u": {"code": "N3U", "dir": "DS.p99v3", "range": (-40, 40),
+            "ramp": "velocity", "label": "Velocity Tilt 4", "unit": "kt"},
 }
 
 EARTH_R = 6371000.0
