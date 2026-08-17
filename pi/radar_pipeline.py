@@ -603,6 +603,42 @@ def read_l3(path):
 
 # ── Rendering ───────────────────────────────────────────────────────────────
 
+def _fill_ray_gaps(arr, passes=3):
+    """
+    Close the thin gaps a sweep leaves between its rays.
+
+    A sweep is 360 rays from one point, so the further out you go the wider
+    apart they are: at the edge of a terminal radar's 90 km reach, neighbouring
+    rays are over a kilometre apart while the picture's cells are 150 metres.
+    Rendered honestly that leaves nine empty cells between every pair of rays,
+    which reads as speckle and is why a sharper picture can look worse.
+
+    So a cell with measured neighbours on two sides takes their average. That is
+    not inventing weather: the beam physically swept the space between those
+    rays, and this is the same interpolation every radar display does. A cell
+    with only one neighbour is left alone, so an isolated echo stays the size
+    it was measured rather than smearing outwards.
+    """
+    out = arr
+    for _ in range(passes):
+        holes = ~np.isfinite(out)
+        if not holes.any():
+            break
+        tot = np.zeros(out.shape, dtype=np.float32)
+        cnt = np.zeros(out.shape, dtype=np.int8)
+        for shift, axis in ((1, 0), (-1, 0), (1, 1), (-1, 1)):
+            nb = np.roll(out, shift, axis=axis)
+            ok = np.isfinite(nb)
+            tot[ok] += nb[ok]
+            cnt[ok] += 1
+        fill = holes & (cnt >= 2)
+        if not fill.any():
+            break
+        out = out.copy()
+        out[fill] = tot[fill] / cnt[fill]
+    return out
+
+
 def render(data, lat, lon, spec, out_path):
     """
     One sweep as a PNG, on the same lat/lon mesh everything else uses.
@@ -615,13 +651,33 @@ def render(data, lat, lon, spec, out_path):
     box = {"bottomlat": float(np.nanmin(lat)), "toplat": float(np.nanmax(lat)),
            "leftlon": float(np.nanmin(lon)) % 360.0,
            "rightlon": float(np.nanmax(lon)) % 360.0}
+
+    # How fine this data actually is, measured rather than guessed: the typical
+    # step between neighbouring samples along the range axis, which is the gate
+    # spacing for a sweep and the cell size for a raster. Asking the regridder
+    # for that many cells across the picture is what keeps a terminal radar
+    # sharp. Left to count points instead, a TDWR sweep came out around 435
+    # cells wide where its 150 metre gates support nearly 1200, and a radar
+    # meant to be read zoomed in over an airport looked soft at every zoom.
+    step = None
+    if lat.ndim == 2 and lat.shape[1] > 1:
+        dlat = np.diff(lat, axis=1)
+        dlon = np.diff(lon, axis=1) * np.cos(np.radians(np.nanmean(lat)))
+        with np.errstate(all="ignore"):
+            s = float(np.nanmedian(np.hypot(dlat, dlon)))
+        if np.isfinite(s) and s > 0:
+            span = max(box["toplat"] - box["bottomlat"],
+                       abs(box["rightlon"] - box["leftlon"]))
+            step = int(min(1600, max(64, round(span / s))))
+
     got = regrid_to_latlon(data.ravel(),
                            lat.ravel().astype(np.float32),
                            (lon.ravel() % 360.0).astype(np.float32),
-                           box, max_edge=min(MAX_EDGE_PX, 1200))
+                           box, max_edge=min(MAX_EDGE_PX, 1200), edge=step)
     if got is None:
         return None
     arr, lats, lons = got
+    arr = _fill_ray_gaps(arr)
 
     lo, hi = spec["range"]
     norm = (arr - lo) / float(hi - lo)

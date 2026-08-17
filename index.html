@@ -12882,7 +12882,10 @@ async function _prSetLevel(v) {
 async function _prSetProduct(v) {
   _prProduct = v;
   try { localStorage.setItem('gwcfc_pr_product', v); } catch (e) {}
-  if (_prOn) await _prEnable();
+  // A browser-decoded site redraws from the bucket; the Pi's sites redraw from
+  // the Pi. Same menu, two sources, and the row does not need to know which.
+  if (_prBucketSite) await _l3BucketShow(_prBucketSite);
+  else if (_prOn) await _prEnable();
 }
 
 async function _prLoadIndex(base) {
@@ -13032,6 +13035,9 @@ async function _prEnable() {
   // fire time for the same reason as above.
   _prTimer = setInterval(async () => {
     if (!_prOn) return;
+    // A browser-decoded site owns the screen; redrawing the Pi's sites over it
+    // would swap the picture out from under whoever is looking at it.
+    if (_prBucketSite) return;
     const fresh = await _prLoadIndex(_hdBase);
     if (fresh && fresh.idx) {
       _prIndex = fresh.idx;
@@ -13042,8 +13048,123 @@ async function _prEnable() {
 
 function _prDisable() {
   _prOn = false;
+  // Only a picture Level 3 drew itself. _disableL3 owns the overlay Level 2
+  // draws as well, and this function is called on the way into the Level 2
+  // row, so clearing it unconditionally threw away the volume Level 2 had
+  // just decoded: the terminal radars showed nothing at all, because they are
+  // the ones whose metadata triggers that row refresh.
+  if (_prBucketSite && typeof _disableL3 === 'function') {
+    try { _disableL3(); } catch (e) {}
+  }
+  _prBucketSite = null;
   if (typeof _syncNexradSites === 'function') try { _syncNexradSites(); } catch (e) {}
   _prClear();
+}
+
+// ── LEVEL 3 FOR EVERY RADAR IN THE COUNTRY, DECODED HERE ───────────────────
+// The Pi builds a handful of sites, which is instant to draw and as many as a
+// small board can keep up with. Every other radar is served straight from
+// Unidata's Level 3 bucket and decoded in this browser by the same worker that
+// does Level 2, so all 160-odd NEXRADs and all 46 terminals answer.
+//
+// That bucket had been written off here as dead. It was not: it had been
+// probed with N0Q, a product code the Weather Service retired, and a bucket
+// answers emptiness for a product nobody writes any more. Probed with the
+// codes actually in use it is alive, fresh to the minute, and it sends
+// Access-Control-Allow-Origin *, which is what makes reading it from a page
+// possible at all.
+const L3_BUCKET = 'https://unidata-nexrad-level3.s3.amazonaws.com';
+
+// The bucket's own product codes, per product and per tilt. The two radar
+// families speak different dialects of the same thing: N0B is a NEXRAD's base
+// reflectivity, TZ0 is a terminal's. Missing entries are honest, so velocity
+// stops at two tilts and the terminals carry no dual-pol at all.
+const PR_BUCKET = {
+  reflectivity: { k: ['N0B', 'N1B', 'N2B', 'N3B'], t: ['TZ0', 'TZ1'] },
+  velocity:     { k: ['N0G', 'N1G'],               t: ['TV0', 'TV1'] },
+  corrcoeff:    { k: ['N0C'] },
+  diffrefl:     { k: ['N0X'] },
+  kdp:          { k: ['N0K'] },
+  hydroclass:   { k: ['N0H'] },
+  composite:    { k: ['NCR'], t: ['NCR'] },
+  vil:          { k: ['DVL'] },
+};
+
+// Which site the browser is currently decoding, or null when the picture on
+// screen came prebuilt from the Pi.
+let _prBucketSite = null;
+
+function _l3BucketCode(site, product, tilt) {
+  const fam = PR_BUCKET[product];
+  if (!fam) return null;
+  const list = String(site).toUpperCase().startsWith('T') ? fam.t : fam.k;
+  if (!list || !list.length) return null;
+  return list[Math.min(Math.max(tilt || 1, 1), list.length) - 1];
+}
+
+// The newest file for one product, found by listing the bucket an hour at a
+// time. Keys are named SID_CODE_YYYY_MM_DD_HH_MM_SS and S3 lists them in
+// order, so the last key of the newest hour that has any is the current one.
+// Asking by the hour rather than by the day keeps each listing to a few dozen
+// entries instead of several hundred, and needs no paging.
+async function _l3BucketNewest(site, code) {
+  const sid = String(site).toUpperCase().replace(/^([KT])/, m => m === 'K' ? '' : '');
+  for (let back = 0; back < 4; back++) {
+    const t = new Date(Date.now() - back * 3600000);
+    const p = `${sid}_${code}_${t.getUTCFullYear()}_`
+            + `${String(t.getUTCMonth() + 1).padStart(2, '0')}_`
+            + `${String(t.getUTCDate()).padStart(2, '0')}_`
+            + `${String(t.getUTCHours()).padStart(2, '0')}_`;
+    const xml = await fetch(`${L3_BUCKET}/?list-type=2&prefix=${p}`,
+                            { cache: 'no-store', signal: _abortSignal(20000) })
+      .then(r => r.ok ? r.text() : null).catch(() => null);
+    if (!xml) continue;
+    const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map(m => m[1]).sort();
+    if (keys.length) return `${L3_BUCKET}/${keys[keys.length - 1]}`;
+  }
+  return null;
+}
+
+// Fetch, decode and draw one product for one site, entirely in the browser.
+async function _l3BucketShow(site) {
+  const product = _prProduct;
+  const code = _l3BucketCode(site, product, _prTilt);
+  const label = (PR_PRODUCTS[product] || {}).label || product;
+  if (!code) {
+    if (typeof showToast === 'function') {
+      showToast(`${label} is not published for ${String(site).toUpperCase()}. `
+              + 'The terminal radars carry no dual-pol, and the higher tilts '
+              + 'stop where the Weather Service stops writing them.', 4500);
+    }
+    return;
+  }
+  const wasBucket = _prBucketSite;
+  _prBucketSite = String(site).toUpperCase();
+  _prOn = true;
+  _prClear();                       // the Pi's images, if any, come down
+  if (typeof _refreshNexradSiteStyles === 'function') _refreshNexradSiteStyles();
+  const at = document.getElementById('anim-time');
+  if (at) at.textContent = `Loading ${code}…`;
+  try {
+    const url = await _l3BucketNewest(site, code);
+    if (!url) throw new Error(`nothing published in the last few hours`);
+    const buf = await fetch(url, { signal: _abortSignal(30000) })
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+    // The worker reads any product name it does not recognise as Level 2 with
+    // the Level 3 parser, which is exactly what these files are.
+    const result = await _workerProcess(buf, code);
+    _disableL3();                   // clear the previous browser-drawn picture
+    _renderMesh(result, code.toLowerCase(), site);
+  } catch (e) {
+    if (e && e.message === 'superseded') return;
+    // A site that could not be read is not the site being looked at. Left set,
+    // every later product or tilt click would keep asking the dead one and the
+    // Pi's own radars would be shadowed by a picture that never arrived.
+    _prBucketSite = wasBucket;
+    if (typeof showToast === 'function') {
+      showToast(`${String(site).toUpperCase()} ${code}: ${e.message}`, 4500);
+    }
+  }
 }
 
 // ── ROTATION TRACKS + HAIL SWATHS, from the Pi's MRMS build ────────────────
@@ -18210,11 +18331,18 @@ function _prRenderPiRow(level) {
     // Level 3 publishes each antenna cut as its own product, so a chip simply
     // asks the Pi for a different file. Only when the last draw really came
     // from Level 3: the Pi's Level 2 images are single-cut.
-    if (_prOn && _prProduct === b.product && _prDrawnLvl === 'l3' &&
-        (PR_PRODUCTS[b.product] || {}).l3Tilts) {
+    // How many cuts this product really has here: the Pi's own set for a Pi
+    // site, and the bucket's list for a browser-decoded one, which is shorter
+    // for velocity and shorter again for a terminal.
+    const cuts = _prBucketSite
+      ? ((PR_BUCKET[b.product] || {})[
+           _prBucketSite.startsWith('T') ? 't' : 'k'] || [])
+      : ((PR_PRODUCTS[b.product] || {}).l3Tilts || []);
+    if (_prOn && _prProduct === b.product && cuts.length > 1 &&
+        (_prBucketSite || _prDrawnLvl === 'l3')) {
       const strip = document.createElement('span');
       strip.className = 'tilt-strip';
-      PR_PRODUCTS[b.product].l3Tilts.forEach((_, i) => {
+      cuts.forEach((_, i) => {
         const cut = i + 1;
         const chip = document.createElement('span');
         chip.className = 'tilt-chip' + (cut === _prTilt ? ' active' : '');
@@ -18226,7 +18354,8 @@ function _prRenderPiRow(level) {
           try { localStorage.setItem('gwcfc_pr_tilt', String(cut)); } catch (e) {}
           strip.querySelectorAll('.tilt-chip').forEach(c =>
             c.classList.toggle('active', c.textContent == String(cut)));
-          await _prEnable();
+          if (_prBucketSite) await _l3BucketShow(_prBucketSite);
+          else await _prEnable();
         };
         strip.appendChild(chip);
       });
@@ -23669,15 +23798,13 @@ function _buildNexradSiteMarkers() {
         // read as no data existing for any station at all.
         if (!_prIndex || !_prIndex.sites) await _prEnable();
         if (_prIndex && _prIndex.sites && _prIndex.sites[sid]) {
+          _prBucketSite = null;     // back to the Pi's own prebuilt pictures
           _prSetSite(sid);
           _refreshNexradSiteStyles();
-        } else if (_prIndex && _prIndex.sites &&
-                   typeof showToast === 'function') {
-          // Only when an index really answered and this site is not in it.
-          // When there is still no index, _prEnable has just toasted the
-          // actual reason, and a second toast on top would bury it.
-          showToast(s.id.toUpperCase() + ' is not one of the radars your Pi '
-                  + 'builds. Add it with GWCFC_RADAR_SITES.', 4000);
+        } else {
+          // Every other radar in the country, decoded here from the Level 3
+          // bucket. The Pi's few sites are the fast path, not the only one.
+          await _l3BucketShow(sid);
         }
         return;
       }
@@ -23713,8 +23840,12 @@ function _refreshNexradSiteStyles() {
                      ((currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') && id === _dpStation) ||
                      ((currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') && id === _l3Station) ||
                      (_radarSource === 'l2' && id === (_l2Site || _l3Station)) ||
-                     (_radarSource === 'l3' && _prSite &&
-                      id.toUpperCase() === String(_prSite).toUpperCase());
+                     (_radarSource === 'l3' && _prSite && !_prBucketSite &&
+                      id.toUpperCase() === String(_prSite).toUpperCase()) ||
+                     // A browser-decoded site is the active one just as much
+                     // as a Pi-built one, and reads that way on the map.
+                     (_radarSource === 'l3' && _prBucketSite &&
+                      id.toUpperCase() === _prBucketSite);
     if (labelEl) labelEl.classList.toggle('active-station', isActive);
     // In Level 3 the Pi only builds a handful of radars, and until now the
     // pills gave no hint which ones. Green ring = this pill will answer.
@@ -23803,7 +23934,11 @@ function _syncNexradSites() {
     // activeLayers.nexrad to false and _refStation to null on the way in, and
     // the station chooser IS the pills now.
     || (_radarSource === 'l2' && (_l3Overlay != null || _l2Loading))
-    || (_radarSource === 'l3' && typeof _prOn !== 'undefined' && _prOn);
+    // Level 3 counts when the Pi is drawing, and equally when this browser is
+    // decoding a site the Pi does not build: the pills are the station chooser
+    // for both, so hiding them mid-look would take the chooser away.
+    || (_radarSource === 'l3' && ((typeof _prOn !== 'undefined' && _prOn)
+                                 || _l3Overlay != null));
   if (radarOn) showNexradSites();
   else         hideNexradSites();
 }
@@ -32880,7 +33015,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Every terminal radar on the map is live in Level 3 now, all 46 airport radars, built by the Pi in parallel every five minutes. Every T pill wears the green ring and answers with reflectivity and velocity tilts, long range, and composite.";
+const APP_LATEST_UPDATE = "Level 3 now works for every radar in the country: the Pi's own sites draw instantly, and every other NEXRAD and airport radar is decoded right here in your browser. Terminal radar pictures are also nearly three times sharper.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

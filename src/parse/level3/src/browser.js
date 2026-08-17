@@ -29,6 +29,11 @@ import * as product165Module from './products/165/index.js';
 import * as product170Module from './products/170/index.js';
 import * as product172Module from './products/172/index.js';
 import * as product177Module from './products/177/index.js';
+// The terminal radars' own products. Without these every T site answered
+// "Unsupported product type: TZ0" and no airport radar could draw at all.
+import * as product180Module from './products/180/index.js';
+import * as product182Module from './products/182/index.js';
+import * as product186Module from './products/186/index.js';
 
 const toModule = (mod) => mod?.default ?? mod;
 const toProduct = (mod) => mod?.default ?? mod;
@@ -64,7 +69,10 @@ const productsRaw = [
     toProduct(product165Module),
     toProduct(product170Module),
     toProduct(product172Module),
-    toProduct(product177Module)
+    toProduct(product177Module),
+    toProduct(product180Module),
+    toProduct(product182Module),
+    toProduct(product186Module)
 ];
 
 const products = {};

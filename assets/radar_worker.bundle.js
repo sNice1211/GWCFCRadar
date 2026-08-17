@@ -58,10 +58,10 @@
       var lookup = [];
       var revLookup = [];
       var Arr = typeof Uint8Array !== "undefined" ? Uint8Array : Array;
-      var code38 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-      for (i = 0, len = code38.length; i < len; ++i) {
-        lookup[i] = code38[i];
-        revLookup[code38.charCodeAt(i)] = i;
+      var code41 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      for (i = 0, len = code41.length; i < len; ++i) {
+        lookup[i] = code41[i];
+        revLookup[code41.charCodeAt(i)] = i;
       }
       var i;
       var len;
@@ -1546,9 +1546,9 @@
             throw new TypeError("Unknown encoding: " + encoding);
           }
           if (val.length === 1) {
-            const code38 = val.charCodeAt(0);
-            if (encoding === "utf8" && code38 < 128 || encoding === "latin1") {
-              val = code38;
+            const code41 = val.charCodeAt(0);
+            if (encoding === "utf8" && code41 < 128 || encoding === "latin1") {
+              val = code41;
             }
           }
         } else if (typeof val === "number") {
@@ -3489,11 +3489,11 @@
       /*.Len*/
     );
   };
-  var bi_reverse = (code38, len) => {
+  var bi_reverse = (code41, len) => {
     let res = 0;
     do {
-      res |= code38 & 1;
-      code38 >>>= 1;
+      res |= code41 & 1;
+      code41 >>>= 1;
       res <<= 1;
     } while (--len > 0);
     return res >>> 1;
@@ -3579,12 +3579,12 @@
   };
   var gen_codes = (tree, max_code, bl_count) => {
     const next_code = new Array(MAX_BITS$1 + 1);
-    let code38 = 0;
+    let code41 = 0;
     let bits;
     let n;
     for (bits = 1; bits <= MAX_BITS$1; bits++) {
-      code38 = code38 + bl_count[bits - 1] << 1;
-      next_code[bits] = code38;
+      code41 = code41 + bl_count[bits - 1] << 1;
+      next_code[bits] = code41;
     }
     for (n = 0; n <= max_code; n++) {
       let len = tree[n * 2 + 1];
@@ -3598,29 +3598,29 @@
     let n;
     let bits;
     let length;
-    let code38;
+    let code41;
     let dist;
     const bl_count = new Array(MAX_BITS$1 + 1);
     length = 0;
-    for (code38 = 0; code38 < LENGTH_CODES$1 - 1; code38++) {
-      base_length[code38] = length;
-      for (n = 0; n < 1 << extra_lbits[code38]; n++) {
-        _length_code[length++] = code38;
+    for (code41 = 0; code41 < LENGTH_CODES$1 - 1; code41++) {
+      base_length[code41] = length;
+      for (n = 0; n < 1 << extra_lbits[code41]; n++) {
+        _length_code[length++] = code41;
       }
     }
-    _length_code[length - 1] = code38;
+    _length_code[length - 1] = code41;
     dist = 0;
-    for (code38 = 0; code38 < 16; code38++) {
-      base_dist[code38] = dist;
-      for (n = 0; n < 1 << extra_dbits[code38]; n++) {
-        _dist_code[dist++] = code38;
+    for (code41 = 0; code41 < 16; code41++) {
+      base_dist[code41] = dist;
+      for (n = 0; n < 1 << extra_dbits[code41]; n++) {
+        _dist_code[dist++] = code41;
       }
     }
     dist >>= 7;
-    for (; code38 < D_CODES$1; code38++) {
-      base_dist[code38] = dist << 7;
-      for (n = 0; n < 1 << extra_dbits[code38] - 7; n++) {
-        _dist_code[256 + dist++] = code38;
+    for (; code41 < D_CODES$1; code41++) {
+      base_dist[code41] = dist << 7;
+      for (n = 0; n < 1 << extra_dbits[code41] - 7; n++) {
+        _dist_code[256 + dist++] = code41;
       }
     }
     for (bits = 0; bits <= MAX_BITS$1; bits++) {
@@ -3705,7 +3705,7 @@
     let dist;
     let lc;
     let sx = 0;
-    let code38;
+    let code41;
     let extra;
     if (s.sym_next !== 0) {
       do {
@@ -3715,19 +3715,19 @@
         if (dist === 0) {
           send_code(s, lc, ltree);
         } else {
-          code38 = _length_code[lc];
-          send_code(s, code38 + LITERALS$1 + 1, ltree);
-          extra = extra_lbits[code38];
+          code41 = _length_code[lc];
+          send_code(s, code41 + LITERALS$1 + 1, ltree);
+          extra = extra_lbits[code41];
           if (extra !== 0) {
-            lc -= base_length[code38];
+            lc -= base_length[code41];
             send_bits(s, lc, extra);
           }
           dist--;
-          code38 = d_code(dist);
-          send_code(s, code38, dtree);
-          extra = extra_dbits[code38];
+          code41 = d_code(dist);
+          send_code(s, code41, dtree);
+          extra = extra_dbits[code41];
           if (extra !== 0) {
-            dist -= base_dist[code38];
+            dist -= base_dist[code41];
             send_bits(s, dist, extra);
           }
         }
@@ -8198,12 +8198,12 @@
   var MODE_MAINTENANCE = 0;
   var MODE_CLEAN_AIR = 1;
   var MODE_PRECIPITATION = 2;
-  var parseProductDescription = (raf, product22) => {
+  var parseProductDescription = (raf, product25) => {
     const divider = raf.readShort();
     if (divider !== -1) throw new Error(`Invalid product description divider: ${divider}`);
     const result = {
-      abbreviation: product22.abbreviation,
-      description: product22.description,
+      abbreviation: product25.abbreviation,
+      description: product25.description,
       latitude: raf.readInt() / 1e3,
       longitude: raf.readInt() / 1e3,
       height: raf.readShort(),
@@ -8217,16 +8217,16 @@
       productDate: raf.readShort(),
       productTime: raf.readInt(),
       // halfwords 27-28 are product dependent
-      ...product22?.productDescription?.halfwords27_28?.(raf.read(4)) ?? { dependent27_28: raf.read(4) },
+      ...product25?.productDescription?.halfwords27_28?.(raf.read(4)) ?? { dependent27_28: raf.read(4) },
       elevationNumber: raf.readShort(),
       // halfwords 30-53 are product dependent
-      ...product22?.productDescription?.halfwords30_53?.(raf.read(48)) ?? { dependent30_53: raf.read(48) },
+      ...product25?.productDescription?.halfwords30_53?.(raf.read(48)) ?? { dependent30_53: raf.read(48) },
       version: raf.readByte(),
       spotBlank: raf.readByte(),
       offsetSymbology: raf.readInt(),
       offsetGraphic: raf.readInt(),
       offsetTabular: raf.readInt(),
-      supplemental: product22.supplemental
+      supplemental: product25.supplemental
     };
     return result;
   };
@@ -8301,7 +8301,7 @@
     default: () => tabular_default
   });
   init_inject_buffer();
-  var parse7 = (raf, product22) => {
+  var parse7 = (raf, product25) => {
     const blockDivider = raf.readShort();
     const blockId = raf.readShort();
     const blockLength = raf.readInt();
@@ -8310,7 +8310,7 @@
     if (blockLength < 1 || blockLength > 65535) throw new Error(`Invalid block length ${blockLength}`);
     if (blockLength + raf.getPos() - 8 > raf.getLength()) throw new Error(`Block length ${blockLength} overruns file length for block id: ${blockId}`);
     const messageHeader2 = message_default(raf);
-    const productDescription2 = parseProductDescription(raf, product22);
+    const productDescription2 = parseProductDescription(raf, product25);
     const blockDivider2 = raf.readShort();
     if (blockDivider2 !== -1) throw new Error(`Invalid second tabular block divider: ${blockDivider2}`);
     const result = {
@@ -10560,6 +10560,138 @@
   }
   var __default32 = product21;
 
+  // src/parse/level3/src/products/180/index.js
+  var __exports33 = {};
+  __export(__exports33, {
+    abbreviation: () => abbreviation22,
+    code: () => code38,
+    default: () => __default33,
+    description: () => description38,
+    halfwords30_53: () => halfwords30_5319
+  });
+  init_inject_buffer();
+  var code38 = 180;
+  var abbreviation22 = ["TZ0", "TZ1", "TZ2", "TZ3"];
+  var description38 = "TDWR Base Reflectivity";
+  var halfwords30_5319 = (data) => {
+    const raf = new RandomAccessFile2(data);
+    return {
+      elevationAngle: raf.readShort() / 10,
+      plot: {
+        minimumDataValue: raf.readShort() / 10,
+        dataIncrement: raf.readShort() / 10,
+        dataLevels: raf.readShort()
+      },
+      dependent34_46: raf.read(26),
+      maxReflectivity: raf.readShort(),
+      // dBZ
+      dependent48_49: raf.read(4),
+      deltaTime: raf.readShort(),
+      compressionMethod: raf.readShort(),
+      uncompressedProductSize: (raf.readUShort() << 16) + raf.readUShort()
+    };
+  };
+  var product22 = {
+    code: code38,
+    abbreviation: abbreviation22,
+    description: description38,
+    productDescription: {
+      halfwords30_53: halfwords30_5319
+    }
+  };
+  if (typeof module !== "undefined") {
+    module.exports = product22;
+  }
+  var __default33 = product22;
+
+  // src/parse/level3/src/products/182/index.js
+  var __exports34 = {};
+  __export(__exports34, {
+    abbreviation: () => abbreviation23,
+    code: () => code39,
+    default: () => __default34,
+    description: () => description39,
+    halfwords30_53: () => halfwords30_5320
+  });
+  init_inject_buffer();
+  var code39 = 182;
+  var abbreviation23 = ["TV0", "TV1", "TV2", "TV3"];
+  var description39 = "TDWR Base Velocity";
+  var halfwords30_5320 = (data) => {
+    const raf = new RandomAccessFile2(data);
+    return {
+      elevationAngle: raf.readShort() / 10,
+      plot: {
+        minimumDataValue: raf.readShort() / 10,
+        dataIncrement: raf.readShort() / 10,
+        dataLevels: raf.readShort()
+      },
+      dependent34_46: raf.read(26),
+      maxVelocity: raf.readShort(),
+      // kt
+      dependent48_49: raf.read(4),
+      deltaTime: raf.readShort(),
+      compressionMethod: raf.readShort(),
+      uncompressedProductSize: (raf.readUShort() << 16) + raf.readUShort()
+    };
+  };
+  var product23 = {
+    code: code39,
+    abbreviation: abbreviation23,
+    description: description39,
+    productDescription: {
+      halfwords30_53: halfwords30_5320
+    }
+  };
+  if (typeof module !== "undefined") {
+    module.exports = product23;
+  }
+  var __default34 = product23;
+
+  // src/parse/level3/src/products/186/index.js
+  var __exports35 = {};
+  __export(__exports35, {
+    abbreviation: () => abbreviation24,
+    code: () => code40,
+    default: () => __default35,
+    description: () => description40,
+    halfwords30_53: () => halfwords30_5321
+  });
+  init_inject_buffer();
+  var code40 = 186;
+  var abbreviation24 = ["TZL"];
+  var description40 = "TDWR Long Range Base Reflectivity";
+  var halfwords30_5321 = (data) => {
+    const raf = new RandomAccessFile2(data);
+    return {
+      elevationAngle: raf.readShort() / 10,
+      plot: {
+        minimumDataValue: raf.readShort() / 10,
+        dataIncrement: raf.readShort() / 10,
+        dataLevels: raf.readShort()
+      },
+      dependent34_46: raf.read(26),
+      maxReflectivity: raf.readShort(),
+      // dBZ
+      dependent48_49: raf.read(4),
+      deltaTime: raf.readShort(),
+      compressionMethod: raf.readShort(),
+      uncompressedProductSize: (raf.readUShort() << 16) + raf.readUShort()
+    };
+  };
+  var product24 = {
+    code: code40,
+    abbreviation: abbreviation24,
+    description: description40,
+    productDescription: {
+      halfwords30_53: halfwords30_5321
+    }
+  };
+  if (typeof module !== "undefined") {
+    module.exports = product24;
+  }
+  var __default35 = product24;
+
   // src/parse/level3/src/browser.js
   var toModule = (mod) => mod?.default ?? mod;
   var toProduct = (mod) => mod?.default ?? mod;
@@ -10591,16 +10723,19 @@
     toProduct(__exports29),
     toProduct(__exports30),
     toProduct(__exports31),
-    toProduct(__exports32)
+    toProduct(__exports32),
+    toProduct(__exports33),
+    toProduct(__exports34),
+    toProduct(__exports35)
   ];
   var products = {};
-  productsRaw.forEach((product22) => {
-    if (products[product22.code]) {
-      throw new Error(`Duplicate product code ${product22.code}`);
+  productsRaw.forEach((product25) => {
+    if (products[product25.code]) {
+      throw new Error(`Duplicate product code ${product25.code}`);
     }
-    products[product22.code] = product22;
+    products[product25.code] = product25;
   });
-  var productAbbreviations = productsRaw.map((product22) => product22.abbreviation).flat();
+  var productAbbreviations = productsRaw.map((product25) => product25.abbreviation).flat();
   var combineOptions2 = (newOptions) => {
     let logger = newOptions?.logger ?? console;
     if (logger === false) logger = nullLogger2;
@@ -10644,11 +10779,11 @@
     if (!minimalOutput) {
       result.messageHeader = parsedMessageHeader;
     }
-    const product22 = products[parsedMessageHeader.code.toString()];
-    if (!product22) {
+    const product25 = products[parsedMessageHeader.code.toString()];
+    if (!product25) {
       throw new Error(`Unsupported product code: ${parsedMessageHeader.code}`);
     }
-    const parsedProductDescription = parseProductDescription2(raf, product22);
+    const parsedProductDescription = parseProductDescription2(raf, product25);
     result.productDescription = parsedProductDescription;
     let decompressed;
     if (parsedProductDescription.compressionMethod > 0) {
@@ -10701,7 +10836,7 @@
           throw new Error(`Invalid tabular offset: ${parsedProductDescription.offsetTabular}`);
         }
         decompressed.seek(offsetTabularBytes);
-        result.tabular = tabularHeader(decompressed, product22);
+        result.tabular = tabularHeader(decompressed, product25);
       }
     } catch (error) {
       options.logger.warn(error.stack);
@@ -10709,7 +10844,7 @@
     }
     try {
       if (options.parseFormatted) {
-        const formatted = product22?.formatter?.(result);
+        const formatted = product25?.formatter?.(result);
         if (formatted) result.formatted = formatted;
       }
     } catch (error) {
