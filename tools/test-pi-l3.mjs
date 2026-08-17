@@ -44,7 +44,18 @@ const INDEX_L3 = JSON.stringify({
   sites: {
     KTLX: { frames: [FRAME], path: 'l3/KTLX/{frame}/manifest.json' },
     KFWS: { frames: [FRAME], path: 'l3/KFWS/{frame}/manifest.json' },
+    TTPA: { frames: [FRAME], path: 'l3/TTPA/{frame}/manifest.json' },
   },
+});
+// A terminal radar's frame: the TDWR dialect, and no dual-pol at all.
+const TDWR_MANIFEST = JSON.stringify({
+  site: 'TTPA', level: 3, time: FRAME,
+  bounds: [[26.8, -83.5], [28.8, -81.5]],
+  site_latlon: [27.86, -82.52],
+  built_at: new Date().toISOString(),
+  fields: Object.fromEntries(
+    ['tz0', 'tv0', 'tz1', 'tv1', 'tzl', 'ncr']
+      .map(f => [f, { label: f, unit: '', min: 0, max: 1 }])),
 });
 const MANIFEST = JSON.stringify({
   site: 'KTLX', level: 3, time: FRAME,
@@ -138,6 +149,8 @@ async function boot(piMode) {
             mesh:     { file: 'mesh.png', label: 'Hail Swaths',
                         bounds: [[20, -130], [55, -60]] },
           } }) });
+      if (url.includes('/l3/TTPA/') && url.includes('manifest.json'))
+        return route.fulfill({ contentType: 'application/json', body: TDWR_MANIFEST });
       if (url.includes('manifest.json'))
         return route.fulfill({ contentType: 'application/json', body: MANIFEST });
       if (url.endsWith('.png'))
@@ -181,8 +194,8 @@ console.log('\n1. a healthy Pi, seen from the page');
     toasts: window.__toasts,
   }));
   ok('the layer is on', st.on === true, String(st.on));
-  ok('the index lists both built radars',
-     st.sites.join(',') === 'KTLX,KFWS', st.sites.join(','));
+  ok('the index lists the built radars, terminal included',
+     st.sites.join(',') === 'KTLX,KFWS,TTPA', st.sites.join(','));
   ok('the stale lower-case saved site healed to the real name',
      st.site === 'KTLX', st.site);
   ok('one overlay is on the map', st.layers === 1, String(st.layers));
@@ -255,6 +268,24 @@ console.log('\n1. a healthy Pi, seen from the page');
     document.querySelectorAll('#sub-bubbles .tilt-chip')[0].onclick(new Event('x'));
   });
   await page.waitForTimeout(900);
+
+  // A terminal radar. Its frame holds tz0, not n0q, and per AtticRadar's
+  // tables tz0 IS base reflectivity, so the pill draws it without a single
+  // word of complaint, and the terminal wears the built ring like any radar.
+  await page.evaluate(() => { window.__toasts.length = 0;
+                              _nexradSiteMarkers['ttpa'].label.fire('click'); });
+  await page.waitForTimeout(1200);
+  const tdwr = await page.evaluate(() => ({
+    site: _prSite,
+    url: _prLayers[0] && _prLayers[0]._url,
+    toasts: window.__toasts,
+    ring: document.getElementById('nxlbl-ttpa').classList.contains('pi-built'),
+  }));
+  ok('a terminal pill draws its own dialect',
+     /\/l3\/TTPA\/20260817_0200\/tz0\.png$/.test(tdwr.url || ''), tdwr.url);
+  ok('silently, because tz0 IS reflectivity',
+     tdwr.toasts.length === 0, tdwr.toasts.join(' | '));
+  ok('and the terminal wears the green ring', tdwr.ring, String(tdwr.ring));
 
   // The severe overlays: two pills, each drawing one national image from the
   // Pi's MRMS build, on and off through the same dispatcher as every pill.

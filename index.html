@@ -12944,13 +12944,23 @@ async function _prDraw(base, lvl, idx) {
                             { cache: 'no-store' })
       .then(r => r.ok ? r.json() : null).catch(() => null);
     if (!man || !man.bounds) continue;
+    // The terminal radars speak their own Level 3 dialect: tz0 IS base
+    // reflectivity and tv0 IS base velocity, per AtticRadar's tables. When
+    // the NEXRAD spelling is absent but its TDWR twin is in the frame, the
+    // twin is the same product and draws without comment.
+    const TDWR_TWIN = { n0q: 'tz0', n1q: 'tz1', n0u: 'tv0', n1u: 'tv1' };
+    let product2 = product;
+    if (man.fields && !man.fields[product] && TDWR_TWIN[product] &&
+        man.fields[TDWR_TWIN[product]]) {
+      product2 = TDWR_TWIN[product];
+    }
     // A site may carry a different product than the default; take what it
     // has, and say so, because a picture of the wrong product with no word
     // about it reads as the right product looking strange.
-    const field = (man.fields && man.fields[product]) ? product
+    const field = (man.fields && man.fields[product2]) ? product2
                 : Object.keys(man.fields || {})[0];
     if (!field) continue;
-    if (field !== product && typeof showToast === 'function') {
+    if (field !== product2 && typeof showToast === 'function') {
       showToast(site + ' has no ' + (PR_PRODUCTS[_prProduct] || {}).label
               + ' in this frame yet, showing '
               + field.toUpperCase() + ' instead.', 3500);
@@ -32870,7 +32880,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "On computers the animation bar no longer stretches across the whole screen: it is a compact bar in the middle now, so it hides less of the map. Phones keep the full-width bar.";
+const APP_LATEST_UPDATE = "The terminal radars are wired up on both levels now: Level 2 decodes the airport radars live in your browser, and the Pi builds their Level 3 products, reflectivity and velocity tilts, long range, and composite. TTPA is on by default; add more with GWCFC_RADAR_SITES.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
