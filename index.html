@@ -13034,7 +13034,21 @@ async function _prEnable() {
     return;
   }
   _hdBase = base;
-  const got = await _prLoadIndex(base);
+  let got = await _prLoadIndex(base);
+  // A quick tunnel hands out a new address every time it restarts, and this
+  // page remembers the address for its whole session. So a failed index is
+  // first treated as a stale address: look it up fresh and try once more,
+  // rather than telling someone with a healthy Pi that it has built nothing.
+  if (!got) {
+    _hdBase = null;
+    const fresh = await _hdResolveBase();
+    if (fresh && fresh !== base) {
+      _hdBase = fresh;
+      got = await _prLoadIndex(fresh);
+    } else {
+      _hdBase = base;
+    }
+  }
   if (got) _prIndex = got.idx;
   if (!got) {
     if (typeof showToast === 'function') {
@@ -33691,7 +33705,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The leftover full-size tilt bubbles are gone, and station pills no longer vanish while a radar volume is loading.";
+const APP_LATEST_UPDATE = "When the Pi's tunnel address changes mid-session, the radar now looks up the new one itself instead of insisting nothing was built.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
