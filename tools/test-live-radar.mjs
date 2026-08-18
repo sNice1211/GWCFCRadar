@@ -141,6 +141,47 @@ console.log('\n2. Level 2 for a second terminal, on the other side of the countr
   await clearDraw();
 }
 
+console.log('\n2b. the menu offers what the site actually measures');
+{
+  // With a terminal selected, the row must hold its three real products and
+  // none of the dual-pol it has no hardware for. A finger selects a site by
+  // its pill, which records it in _l2Site; scene 2 loaded Phoenix directly,
+  // so record it here the way the pill would have.
+  await page.evaluate(() => { _l2Site = 'tphx'; toggleRadarL2Sub(); });
+  const tRow = await page.evaluate(() =>
+    [...document.querySelectorAll('#sub-bubbles .sub-bubble')]
+      .map(e => e.textContent.trim()));
+  ok('a terminal offers reflectivity, velocity and spectrum width',
+     ['Reflectivity', 'Velocity', 'Spectrum Width'].every(l =>
+       tRow.some(t => t.startsWith(l))), tRow.join(','));
+  ok('and none of the dual-pol it cannot measure',
+     !tRow.some(t => /Corr\. Coeff\.|Diff\. Refl\.|Spec\. Diff\. Phase/.test(t)),
+     tRow.join(','));
+
+  // Clicking a terminal pill while a dual-pol product is up must fall back to
+  // reflectivity rather than asking for the impossible.
+  const fell = await page.evaluate(() => {
+    currentProduct = 'cc';
+    _nexradSiteMarkers['ttpa'].label.fire('click');
+    return currentProduct;
+  });
+  ok('a dual-pol product falls back to reflectivity on a terminal',
+     fell === 'ref', String(fell));
+  await page.waitForFunction(
+    () => typeof _l3Overlay !== 'undefined' && _l3Overlay != null,
+    { timeout: 90000 }).catch(() => {});
+  await clearDraw();
+
+  // And a NEXRAD gets the full six back.
+  await page.evaluate(() => { _l2Site = 'ktlx'; toggleRadarL2Sub(); });
+  const kRow = await page.evaluate(() =>
+    [...document.querySelectorAll('#sub-bubbles .sub-bubble')]
+      .map(e => e.textContent.trim()));
+  ok('a NEXRAD offers all six products again',
+     ['Corr. Coeff.', 'Diff. Refl.', 'Spec. Diff. Phase'].every(l =>
+       kRow.some(t => t.startsWith(l))), kRow.join(','));
+}
+
 console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
 {
   // A plain NEXRAD nobody configured: this is the whole point of the fallback.
