@@ -51,6 +51,7 @@ def ok(name, cond, extra=""):
 
 
 received = []
+ambient_hits = []
 
 
 class FakeDiscord(http.server.BaseHTTPRequestHandler):
@@ -58,6 +59,22 @@ class FakeDiscord(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         received.append(json.loads(self.rfile.read(length).decode()))
         body = b'{"id":"1"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    # Doubles as the fake Ambient Weather endpoint for the /relay/ambient
+    # scenes: it records the query string (which is where the keys travel)
+    # and answers with one station.
+    def do_GET(self):
+        ambient_hits.append(self.path)
+        body = json.dumps([{
+            "info": {"name": "Test Station",
+                     "coords": {"coords": {"lat": 35.0, "lon": -97.0}}},
+            "lastData": {"tempf": 72, "dateutc": 1700000000000},
+        }]).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -91,6 +108,17 @@ def get(port, path):
         return e.code, b""
 
 
+def get_json(port, path):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=10) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.load(e)
+        except Exception:
+            return e.code, {}
+
+
 def main():
     home = tempfile.mkdtemp(prefix="relay-home-")
     wxdata = os.path.join(home, "wxdata")
@@ -102,7 +130,8 @@ def main():
     fake_port = fake.server_address[1]
     threading.Thread(target=fake.serve_forever, daemon=True).start()
 
-    env = {**os.environ, "HOME": home, "GWCFC_RELAY_ALLOW_LOCAL": "1"}
+    env = {**os.environ, "HOME": home, "GWCFC_RELAY_ALLOW_LOCAL": "1",
+           "GWCFC_AMBIENT_URL": f"http://127.0.0.1:{fake_port}/ambient"}
     port = 18321
     srv = subprocess.Popen([sys.executable, SERVE, str(port), wxdata],
                            env=env, stdout=subprocess.PIPE,
@@ -185,6 +214,24 @@ def main():
            and "discord.gg/s" not in e.get("description", ""), e.get("description", ""))
         ok("embed images and links do not survive",
            "image" not in e and "url" not in e, str(e.keys()))
+
+        print("\n5. the ambient door: keys stay home, answers get cached")
+        code, body = get_json(port, "/relay/ambient")
+        ok("unconfigured ambient relay says so with 503", code == 503, str(code))
+        with open(os.path.join(home, ".gwcfc_ambient.json"), "w") as f:
+            json.dump({"apiKey": "AAA", "applicationKey": "BBB"}, f)
+        code, body = get_json(port, "/relay/ambient")
+        ok("configured, it answers with the stations", code == 200
+           and isinstance(body, list) and body[0].get("info", {}).get("name") == "Test Station",
+           f"{code} {str(body)[:80]}")
+        hits_before = len(ambient_hits)
+        get_json(port, "/relay/ambient")
+        get_json(port, "/relay/ambient")
+        ok("repeat asks are served from the cache, one upstream call total",
+           len(ambient_hits) == hits_before, f"{len(ambient_hits)} vs {hits_before}")
+        q = ambient_hits[-1]
+        ok("the keys travelled Pi-to-AWN only, never to the page",
+           "apiKey=AAA" in q and "applicationKey=BBB" in q, q)
 
         print()
         print(f"{failed} FAILED, {passed} passed" if failed else f"all {passed} passed")

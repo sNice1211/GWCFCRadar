@@ -7981,12 +7981,11 @@ let currentProduct = 'ref', currentModel = 'gfs', currentModelVar = 'precip';
 
 // ── AMBIENT WEATHER NETWORK CREDENTIALS ─────────────────────────────
 // API docs: https://ambientweather.docs.apiary.io/
-// Endpoint: https://api.ambientweather.net/v1/devices?applicationKey=...&apiKey=...
-// BOTH keys are required. applicationKey = per-app (from developer portal),
-// apiKey = per-user (from your AWN account settings).
-// ⚠ Anyone who views this file's source can read these keys. Rotate if leaked.
-const AMBIENT_WEATHER_API_KEY         = '807d842f188e4d76bbba35960ef9449bb775e4a0f1ff4946a723e7a485554619'; // user-level
-const AMBIENT_WEATHER_APPLICATION_KEY = 'a8d10c794d6f4490b23cc708a8a42859c354a64c32c84436a0aae46dc839d0ad'; // app-level
+// Ambient Weather keys used to be pasted right here, with a comment warning
+// that anyone could read them. Anyone could, so they are gone: the keys now
+// live only on the Pi in ~/.gwcfc_ambient.json, and the page asks the Pi's
+// relay instead (see loadAmbientWeather). Rotate the old keys on your AWN
+// account page; the ones that were here are public knowledge forever.
 let smoothEnabled = false;
 
 // ── NWS REFLECTIVITY COLOR TABLES ──
@@ -10743,38 +10742,36 @@ function _wfoBackToOffice() {
 
 // ── AMBIENT WEATHER NETWORK (personal weather stations) ──
 // API docs: https://ambientweather.docs.apiary.io/
-// Keys live near the top of this file (AMBIENT_WEATHER_API_KEY / AMBIENT_WEATHER_APPLICATION_KEY).
+//
+// The account keys used to sit in this file, and the request was bounced
+// through public CORS proxies, which handed those keys to three strangers'
+// servers on every load. Both problems had the same fix: the keys live only
+// on the Pi now (~/.gwcfc_ambient.json), the page asks the Pi's relay
+// (GET /relay/ambient in pi/serve.py), and the relay caches the answer for
+// half a minute so a crowd of visitors costs one upstream call. The Pi has
+// no CORS problem, so the proxies are simply gone.
 let _ambientActive = false, _ambientLayer = null, _ambientTimer = null;
 
 async function loadAmbientWeather() {
-  if (!AMBIENT_WEATHER_APPLICATION_KEY) {
-    updateLoadStatus('Ambient Weather: paste an applicationKey into index.html first.');
-    setTimeout(() => updateLoadStatus(''), 5000);
-    return;
-  }
   updateLoadStatus('Loading Ambient Weather stations…');
-  const url = `https://api.ambientweather.net/v1/devices?applicationKey=${encodeURIComponent(AMBIENT_WEATHER_APPLICATION_KEY)}&apiKey=${encodeURIComponent(AMBIENT_WEATHER_API_KEY)}`;
-  const wrappers = [
-    u => u,
-    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-  ];
-  let data = null, rateLimited = false, lastBadStatus = null, lastBadBody = '';
-  for (const wrap of wrappers) {
-    try {
-      const r = await fetchWithTimeout(wrap(url), 10000);
-      if (r.status === 429) { rateLimited = true; break; }
-      if (!r.ok) {
-        lastBadStatus = r.status;
-        try { lastBadBody = (await r.text()).slice(0, 200); } catch(e) {}
-        console.debug(`[ambient] HTTP ${r.status} :: ${lastBadBody}`);
-        continue;
-      }
-      const txt = await r.text();
-      let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[ambient] non-JSON response'); continue; }
-      if (Array.isArray(d)) { data = d; break; }
-    } catch(e) { console.debug('[ambient] error:', e.message); }
+  let data = null, rateLimited = false, note = '';
+  try {
+    const base = _hdBase || await _hdResolveBase();
+    if (!base) throw new Error('no Pi address published');
+    _hdBase = base;
+    const r = await fetchWithTimeout(`${base}/relay/ambient`, 15000);
+    if (r.status === 429) {
+      rateLimited = true;
+    } else if (!r.ok) {
+      try { note = (await r.json()).error || ''; } catch (e) {}
+      console.debug(`[ambient] relay HTTP ${r.status} :: ${note}`);
+    } else {
+      const d = await r.json();
+      if (Array.isArray(d)) data = d;
+    }
+  } catch (e) {
+    note = 'could not reach the Pi relay';
+    console.debug('[ambient] error:', e.message);
   }
 
   if (_ambientLayer) { try { map.removeLayer(_ambientLayer); } catch(e){} _ambientLayer = null; }
@@ -10784,12 +10781,7 @@ async function loadAmbientWeather() {
     return;
   }
   if (!data) {
-    if (lastBadStatus === 401 || lastBadStatus === 403) {
-      console.warn('[ambient] auth rejected:', lastBadStatus, lastBadBody);
-      updateLoadStatus('Ambient Weather: keys rejected (check apiKey/applicationKey on your account page).');
-    } else {
-      updateLoadStatus('Ambient Weather data unavailable.');
-    }
+    updateLoadStatus('Ambient Weather: ' + (note || 'data unavailable.'));
     setTimeout(() => updateLoadStatus(''), 5000);
     return;
   }
