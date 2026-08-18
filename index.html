@@ -3723,7 +3723,15 @@ body {
 /* Header row (drag + title + close) and each control row below it */
 .sc-tb-header { display: flex; align-items: center; gap: 6px; }
 .sc-tb-header #stormcone-close { margin-left: auto; }
-.sc-tb-row { display: flex; align-items: center; gap: 6px; }
+/* wrap: the multi-point mode adds Finish and Undo Point to the button row,
+   and eight buttons overflow a fixed-width toolbar into a pile-up. */
+.sc-tb-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+/* The base .dtb-btn is a 30px icon square from the Draw toolbar; every
+   button here carries a text label, so they size to their words instead of
+   spilling them. */
+#stormcone-toolbar .dtb-btn {
+  width: auto; padding: 0 10px; font-size: 11px; white-space: nowrap;
+}
 /* Multi-cone list - same row/id/delete pattern as the Radius Tool's
    #rtb-list, so drawing several cones manages exactly like several radii:
    each gets its own colored id badge, is individually selectable to bring
@@ -3764,6 +3772,18 @@ body {
   text-align: center;
   padding: 5px 2px;
 }
+/* The draw-mode dropdown, dressed like the number inputs beside it */
+#sc-mode-sel {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 6px;
+  color: #fff;
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 5px 4px;
+  cursor: pointer;
+}
+#sc-mode-sel option { background: #1a1a22; color: #fff; }
 #sc-new-btn { width: auto; padding: 0 10px; }
 #sc-results-btn { width: auto; padding: 0 10px; font-size: 11px; }
 #stormcone-status {
@@ -19979,6 +19999,7 @@ function _clearListeners() {
   map.off('click',       _onTextClick);
   map.off('mousemove',   _onScMove);
   map.off('click',       _onScClick);
+  map.off('dblclick',    _onScDblClick);
   map.off('contextmenu', _onRightClick);
   // Clean up touch handlers for draw tool
   const mc = map.getContainer();
@@ -20261,7 +20282,11 @@ deactivateTool = function() {
   _scShowToolbar(false);
   _scDrawing = false;
   _scFirstPoint = null;
+  _scMultiPts = [];
   _scWarningShown = false;
+  // Double-click zoom was parked while the tool was active (the multi
+  // mode's finishing gesture is a double-click); hand it back.
+  try { map.doubleClickZoom.enable(); } catch (e) {}
   if (_eraserHoverActive) { map.off('mousemove', _dtbEraserHover); _eraserHoverActive = false; }
   _hideEraserCursor();
   _erasing = false;
@@ -20791,6 +20816,18 @@ let _scDotIndices = [];  // parallel to the dots currently rendered: which point
 let _scFirstPoint = null; // first clicked point for click-to-point mode
 let _scWarningShown = false; // track if mouse tracking warning shown
 
+// Two grammars of drawing, chosen in the toolbar's MODE dropdown and
+// remembered across visits:
+//   drag  - the original gesture: click, aim, click. CURVE, DOTS and OFFSET
+//           all apply, and each dot can carry its own curve.
+//   multi - click point after point after point; the path runs smoothly
+//           through every click and each click becomes a dot. Curve is not
+//           an input here at all (global or per dot): the points ARE the
+//           shape. Only OFFSET bends anything, and only the center line.
+let _scMode = 'drag';
+try { _scMode = localStorage.getItem('gwcfc_sc_mode') === 'multi' ? 'multi' : 'drag'; } catch (e) {}
+let _scMultiPts = [];   // points placed so far in an unfinished multi cone
+
 // User-customizable cone appearance. Independent of the CURVE/DOTS/OFFSET
 // geometry controls above - this only changes how the cone is drawn, not
 // its shape.
@@ -20834,8 +20871,15 @@ function _scInterpLatLng(a, b, f) {
 // Build a cone that follows the ACTUAL drawn path, so different sections can curve
 // differently. `path` is the array of latlngs the pointer travelled through.
 // `existingPointCurves` preserves per-point curvatures from previous builds.
-function _scBuildTrack(path, existing) {
+function _scBuildTrack(path, existing, mode) {
   if (!path || path.length === 0) return null;
+  // A multi-point cone rebuilt from its own track (offset change, per-dot
+  // speed edit...) must be rebuilt from its CLICKED points, not from the
+  // dense smoothed path, or every rebuild would re-smooth the smoothing.
+  if (!mode && existing && existing.mode === 'multi' && existing.srcPoints) {
+    return _scBuildMultiTrack(existing.srcPoints, existing);
+  }
+  const isMulti = mode === 'multi';
   const existingPointCurves = existing && existing.pointCurves;
   const existingPointCats   = existing && existing.pointCats;
   const existingPointSpeeds = existing && existing.pointSpeeds;
@@ -20893,8 +20937,10 @@ function _scBuildTrack(path, existing) {
     }
   }
 
-  // 1b) Apply global CURVE bulge (sine, anchored at both ends)
-  const bulgeMiles = (curve / 10) * distanceMiles * 0.6;
+  // 1b) Apply global CURVE bulge (sine, anchored at both ends).
+  // Never for a multi-point cone: its clicked points fully define the path,
+  // so curve is not an input there at all.
+  const bulgeMiles = isMulti ? 0 : (curve / 10) * distanceMiles * 0.6;
   if (bulgeMiles !== 0) {
     for (let i = 0; i <= N; i++) {
       const b = bulgeMiles * Math.sin(Math.PI * (i / N));
@@ -20902,8 +20948,9 @@ function _scBuildTrack(path, existing) {
     }
   }
 
-  // 1c) Apply per-point curvatures with smooth blending (independent from global CURVE)
-  if (pointCurves && pointCurves.length > 0) {
+  // 1c) Apply per-point curvatures with smooth blending (independent from
+  // global CURVE). Also banned for multi-point cones, same reason as 1b.
+  if (!isMulti && pointCurves && pointCurves.length > 0) {
     for (let i = 0; i <= N; i++) {
       const pCurve = pointCurves[i] || 0;
       if (pCurve !== 0) {
@@ -20957,7 +21004,55 @@ function _scBuildTrack(path, existing) {
   });
 
   return { start, end, heading, distanceMiles, capRadiusMiles, ring,
-           center, centerLine, leftEdges, rightEdges, path: pts, pointCurves, pointCats, pointSpeeds };
+           center, centerLine, leftEdges, rightEdges, path: pts,
+           pointCurves, pointCats, pointSpeeds,
+           mode: isMulti ? 'multi' : 'drag' };
+}
+
+// A smooth path through clicked points: Catmull-Rom, the classic
+// draw-through-the-dots spline. Each leg becomes 16 short segments, and the
+// curve passes exactly through every point you clicked - it rounds the
+// corners without moving the corners.
+function _scSmoothPath(pts) {
+  if (!pts || pts.length < 3) return (pts || []).slice();
+  const P = (i) => pts[Math.max(0, Math.min(pts.length - 1, i))];
+  const out = [];
+  const SEG = 16;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = P(i - 1), p1 = P(i), p2 = P(i + 1), p3 = P(i + 2);
+    for (let s = 0; s < SEG; s++) {
+      const t = s / SEG, t2 = t * t, t3 = t2 * t;
+      out.push(L.latLng(
+        0.5 * ((2 * p1.lat) + (-p0.lat + p2.lat) * t
+          + (2 * p0.lat - 5 * p1.lat + 4 * p2.lat - p3.lat) * t2
+          + (-p0.lat + 3 * p1.lat - 3 * p2.lat + p3.lat) * t3),
+        0.5 * ((2 * p1.lng) + (-p0.lng + p2.lng) * t
+          + (2 * p0.lng - 5 * p1.lng + 4 * p2.lng - p3.lng) * t2
+          + (-p0.lng + 3 * p1.lng - 3 * p2.lng + p3.lng) * t3)
+      ));
+    }
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+// A multi-point track: smooth the clicked points into a path, build the
+// cone along it, then remember the clicks themselves - both so rebuilds
+// start from them (see the delegation at the top of _scBuildTrack) and so
+// each click gets its dot, at the resampled index nearest to it.
+function _scBuildMultiTrack(srcPts, existing) {
+  const t = _scBuildTrack(_scSmoothPath(srcPts), existing, 'multi');
+  if (!t) return t;
+  t.srcPoints = srcPts.map(p => L.latLng(p.lat, p.lng));
+  t.dotIdx = srcPts.map(p => {
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < t.center.length; i++) {
+      const d = map.distance(p, t.center[i]);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  }).filter((v, i, a) => a.indexOf(v) === i);
+  return t;
 }
 
 // Cumulative travel time (hours) at every resampled index 0..SC_ARC_SEGMENTS
@@ -21010,6 +21105,111 @@ function _scGetSpeedMph() {
   return Number.isFinite(v) && v > 0 ? v : SC_DEFAULT_SPEED_MPH;
 }
 
+// ── DRAW MODE (drag vs multi-point) ─────────────────────────────────────
+function _scSetMode(mode) {
+  _scMode = mode === 'multi' ? 'multi' : 'drag';
+  try { localStorage.setItem('gwcfc_sc_mode', _scMode); } catch (e) {}
+  // A half-placed shape belongs to the grammar it was started in; changing
+  // grammar abandons it rather than guessing what the clicks now mean.
+  _scFirstPoint = null;
+  _scMultiPts = [];
+  if (activeTool === 'stormcone') _scSetStatus(_scModeHint());
+  _scSyncModeUi();
+}
+
+function _scModeHint() {
+  return _scMode === 'multi'
+    ? 'Click to place points. Double-click or Finish ends the cone.'
+    : 'Click first point to start.';
+}
+
+// The toolbar reflects the mode: CURVE and DOTS are drag-only ideas, the
+// Finish and Undo Point buttons are multi-only ones.
+function _scSyncModeUi() {
+  const multi = _scMode === 'multi';
+  const sel = document.getElementById('sc-mode-sel');
+  if (sel && sel.value !== _scMode) sel.value = _scMode;
+  [['sc-curve-input', multi], ['sc-dots-input', multi]].forEach(([id, dis]) => {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = dis; el.style.opacity = dis ? '0.35' : ''; }
+  });
+  ['sc-finish-btn', 'sc-undo-btn'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = multi ? '' : 'none';
+  });
+  _scSyncMultiBtns();
+}
+
+function _scSyncMultiBtns() {
+  const undo = document.getElementById('sc-undo-btn');
+  const fin  = document.getElementById('sc-finish-btn');
+  if (undo) { undo.disabled = !_scMultiPts.length;
+              undo.style.opacity = _scMultiPts.length ? '' : '0.35'; }
+  if (fin)  { fin.disabled = _scMultiPts.length < 2;
+              fin.style.opacity = _scMultiPts.length >= 2 ? '' : '0.35'; }
+}
+
+// One click, one point. The cone previews live from two points on.
+function _scMultiClick(latlng) {
+  _scMultiPts.push(latlng);
+  _scMultiPreview(null);
+  _scSyncMultiBtns();
+  _scSetStatus(`${_scMultiPts.length} point${_scMultiPts.length === 1 ? '' : 's'} placed. `
+    + 'Click to add more; double-click or Finish to end.');
+}
+
+// Rebuild the preview cone through the placed points, with the cursor as a
+// tentative next point when it is given.
+function _scMultiPreview(cursor) {
+  const pts = cursor ? [..._scMultiPts, cursor] : [..._scMultiPts];
+  if (pts.length < 2) {
+    // One point is not a cone yet. Starting a new placement replaces the
+    // previous cone, the same way redrawing does in drag mode.
+    _scTrack = null;
+    _scRenderCone();
+    return;
+  }
+  _scTrack = _scBuildMultiTrack(pts,
+    _scTrack && _scTrack.mode === 'multi' ? _scTrack : null);
+  _scRenderCone();
+}
+
+function _scMultiUndo() {
+  if (!_scMultiPts.length) return;
+  _scMultiPts.pop();
+  _scMultiPreview(null);
+  _scSyncMultiBtns();
+  _scSetStatus(_scMultiPts.length
+    ? `${_scMultiPts.length} point${_scMultiPts.length === 1 ? '' : 's'} placed. `
+      + 'Click to add more; double-click or Finish to end.'
+    : 'All points removed. Click to place the first point.');
+}
+
+function _scMultiFinish() {
+  if (_scMode !== 'multi' || _scMultiPts.length < 2) return;
+  _scTrack = _scBuildMultiTrack(_scMultiPts,
+    _scTrack && _scTrack.mode === 'multi' ? _scTrack : null);
+  _scMultiPts = [];
+  _scRenderCone();
+  _scFinishDrag();       // same commit path as drag: length check, id, results
+  _scSyncMultiBtns();
+  _scSetStatus('Cone finished. Click to start another, or use the toolbar.');
+}
+
+// Double-click finishes a multi cone. The browser fires click-click-dblclick
+// for one double-click, so two copies of the final point have already been
+// placed; one of them comes back off before finishing.
+function _onScDblClick(e) {
+  if (activeTool !== 'stormcone' || _scMode !== 'multi') return;
+  if (e.originalEvent) L.DomEvent.stop(e.originalEvent);
+  if (_scMultiPts.length >= 2) {
+    const a = _scMultiPts[_scMultiPts.length - 1];
+    const b = _scMultiPts[_scMultiPts.length - 2];
+    if (map.distance(a, b) < 30) _scMultiPts.pop();
+  }
+  _scMultiFinish();
+}
+
 function toggleStormConeTool() {
   if (activeTool === 'stormcone') { deactivateTool(); return; }
   deactivateTool();
@@ -21018,15 +21218,21 @@ function toggleStormConeTool() {
   _showHint('');
   document.getElementById('stormcone-toolbar')?.classList.add('visible');
   document.getElementById('stormcone-status')?.classList.add('visible');
-  _scSetStatus('Click first point to start.');
+  _scSetStatus(_scModeHint());
   _scFirstPoint = null;
+  _scMultiPts = [];
   _scWarningShown = false;
   map.dragging.disable();
+  // Double-click zoom would fire on the multi mode's finishing gesture and
+  // yank the map out from under the cone; parked while the tool is active.
+  try { map.doubleClickZoom.disable(); } catch (e) {}
   map.on('click', _onScClick);
+  map.on('dblclick', _onScDblClick);
   map.on('mousemove', _onScMove);
   map.on('contextmenu', _onRightClick);
   map.getContainer().addEventListener('touchstart', _onScTouchStart, { passive: false });
   map.getContainer().addEventListener('touchmove', _onScTouchMove, { passive: false });
+  _scSyncModeUi();
 }
 
 function _scSetStatus(msg) {
@@ -21714,15 +21920,22 @@ function _scRenderCone() {
   // Track Maker icon instead of a plain circle; every dot shows its running
   // time offset (+Nh) from the cone's start, computed with whatever
   // per-dot speed overrides are set upstream of it.
-  const dots = (typeof _scGetDots === 'function') ? _scGetDots() : 0;
+  // Which center-line indices get a dot. Drag mode spreads DOTS-many evenly;
+  // a multi-point cone puts one dot at every clicked point instead, which is
+  // why its DOTS input is switched off: the clicks are the dots.
   const path = _scTrack.centerLine;
-  if (dots > 0 && path && path.length > 1) {
+  let dotIdxList = [];
+  if (_scTrack.mode === 'multi') {
+    dotIdxList = _scTrack.dotIdx || [];
+  } else {
+    const dots = (typeof _scGetDots === 'function') ? _scGetDots() : 0;
+    const N0 = path ? path.length - 1 : 0;
+    for (let d = 1; d <= dots; d++) dotIdxList.push(Math.round((d / (dots + 1)) * N0));
+  }
+  if (dotIdxList.length && path && path.length > 1) {
     const markers = [];
-    const N = path.length - 1;
     const times = _scCumulativeTimes(_scTrack, _scGetSpeedMph());
-    for (let d = 1; d <= dots; d++) {
-      const t = d / (dots + 1);
-      const i = Math.round(t * N);
+    for (const i of dotIdxList) {
       const pt = path[i];
       if (!pt) continue;
       const selected = _scEditingPointIdx === i;
@@ -21818,18 +22031,22 @@ function _scRenderPointsPanel() {
     list.innerHTML = '<div class="sc-point-empty">Draw a cone with DOTS &gt; 0 to edit curve at each dot.</div>';
     return;
   }
+  // Curve is not an input on a multi-point cone, per dot or otherwise: the
+  // clicked points define the path. Icons and speed overrides still apply.
+  const noCurve = _scTrack.mode === 'multi';
   list.innerHTML = _scDotIndices.map((idx, n) => {
     const curve = (_scTrack.pointCurves && _scTrack.pointCurves[idx]) || 0;
     const cat   = (_scTrack.pointCats   && _scTrack.pointCats[idx])   || '';
     const speed = (_scTrack.pointSpeeds && _scTrack.pointSpeeds[idx]);
     const selected = _scEditingPointIdx === idx;
+    const curveHtml = noCurve ? '' : `
+          <span class="sc-point-curve">${curve > 0 ? '+' : ''}${curve}</span>
+          <input type="number" class="sc-point-input" min="-10" max="10" step="0.5" value="${curve}"
+            onclick="event.stopPropagation()" oninput="_scSetPointCurve(${idx}, this.value)">`;
     return `
       <div class="sc-point-row${selected ? ' selected' : ''}" onclick="_scOnDotClick(${idx})">
         <div class="sc-point-line1">
-          <span class="sc-point-label">Dot ${n + 1}</span>
-          <span class="sc-point-curve">${curve > 0 ? '+' : ''}${curve}</span>
-          <input type="number" class="sc-point-input" min="-10" max="10" step="0.5" value="${curve}"
-            onclick="event.stopPropagation()" oninput="_scSetPointCurve(${idx}, this.value)">
+          <span class="sc-point-label">${noCurve ? 'Point' : 'Dot'} ${n + 1}</span>${curveHtml}
         </div>
         <div class="sc-cat-grid">${_scCatButtonsHtml(idx, cat)}</div>
         <div class="sc-point-line2">
@@ -21864,6 +22081,7 @@ function _scOnDotClick(idx) {
 }
 function _scSetPointCurve(idx, value) {
   if (!_scTrack || !_scTrack.pointCurves) return;
+  if (_scTrack.mode === 'multi') return;   // no curve of any kind on multi cones
   const v = Number(value);
   const pointCurves = [...(_scTrack.pointCurves || [])];
   pointCurves[idx] = Number.isFinite(v) ? Math.max(-10, Math.min(10, v)) : 0;
@@ -21889,6 +22107,12 @@ function _scSetPointSpeed(idx, value) {
 }
 
 function _onScMove(e) {
+  if (_scMode === 'multi') {
+    // Live preview with the cursor as the tentative next point, so the cone
+    // is visible from the second position onward, before it is clicked.
+    if (_scMultiPts.length) _scMultiPreview(e.latlng);
+    return;
+  }
   if (!_scFirstPoint) return;
   if (_scDragPath.length < 2) {
     _scDragPath.push(e.latlng);
@@ -21902,6 +22126,8 @@ function _onScMove(e) {
 function _onScClick(e) {
   if (activeTool !== 'stormcone') return;
   e.originalEvent?.preventDefault?.();
+
+  if (_scMode === 'multi') { _scMultiClick(e.latlng); return; }
 
   if (!_scFirstPoint) {
     // First click - set start point
@@ -21931,6 +22157,10 @@ function _onScTouchStart(e) {
   const touch = e.touches[0];
   const containerPt = map.mouseEventToContainerPoint({ clientX: touch.clientX, clientY: touch.clientY });
   const latlng = map.containerPointToLatLng(containerPt);
+
+  // Multi-point on a phone: every tap is a point, the Finish button ends
+  // the cone (a double-tap is unreliable on touch screens).
+  if (_scMode === 'multi') { _scMultiClick(latlng); return; }
 
   if (!_scFirstPoint) {
     _scFirstPoint = latlng;
@@ -21986,6 +22216,9 @@ function _scOnSpeedChange() {
 function _scOnCurveChange() {
   // Curvature reshapes the cone, so rebuild geometry from the same drawn path.
   // Preserve per-point curvatures/categories/speeds so they don't get reset.
+  // A multi-point cone has no curve; its input is disabled, and this guard
+  // covers anything that pokes the value anyway.
+  if (_scTrack && _scTrack.mode === 'multi') return;
   if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path, _scTrack); _scRenderCone(); _scComputeAndShowResults(); }
 }
 
@@ -22239,8 +22472,10 @@ function _scNew() {
   _scCommitCurrent(); // previous cone stays on the map
   _scClosePanel();
   _scEditingPointIdx = null;
+  _scMultiPts = [];
   _scClosePointsPanel();
-  _scSetStatus('Click and drag on the map to draw a new storm cone.');
+  _scSetStatus(_scModeHint());
+  _scSyncMultiBtns();
   _scRebuildConeList();
 }
 
@@ -22306,6 +22541,10 @@ function _scSelectCone(id) {
   if (dotsEl)   dotsEl.value   = target.dots;
   if (offsetEl) offsetEl.value = target.offset;
   _scEditingPointIdx = null;
+  // The toolbar's rules follow the cone being edited: selecting a
+  // multi-point cone flips to multi mode (curve controls off), a drag cone
+  // flips back.
+  _scSetMode(target.track && target.track.mode === 'multi' ? 'multi' : 'drag');
   _scRenderCone();
   _scComputeAndShowResults();
   _scRebuildConeList();
@@ -33773,7 +34012,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "New in Settings: a radar value filter (show only echoes above the dBZ you pick) and custom radar colors (paint any product with your own five colors). Both run on the raw Level 2 and Level 3 data for every site and every product, and Level 3 site pictures got a big rendering fix along the way.";
+const APP_LATEST_UPDATE = "The Storm Cone tool now has two drawing modes: the classic Drag, and a new Multi-point mode where you click the path point by point. Multi-point runs the cone smoothly through every click, turns each click into a dot, and finishes with a double-click or the Finish button. Pick the mode in the cone toolbar's new MODE dropdown.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -35057,6 +35296,12 @@ document.addEventListener('DOMContentLoaded', () => {
     <button id="stormcone-close" onclick="deactivateTool()" title="Exit storm cone mode"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg></button>
   </div>
   <div class="sc-tb-row">
+    <label for="sc-mode-sel" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">MODE</label>
+    <select id="sc-mode-sel" onchange="_scSetMode(this.value)" title="Drag: click, aim, click. Multi-point: click each point of the path.">
+      <option value="drag">Drag</option>
+      <option value="multi">Multi-point</option>
+    </select>
+    <div class="dtb-sep"></div>
     <label for="sc-speed-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">MPH</label>
     <input type="number" id="sc-speed-input" min="1" step="1" value="35" oninput="_scOnSpeedChange()">
     <div class="dtb-sep"></div>
@@ -35070,6 +35315,8 @@ document.addEventListener('DOMContentLoaded', () => {
     <input type="number" id="sc-offset-input" min="-50" max="50" step="5" value="0" oninput="_scOnOffsetChange()" title="Storm center line offset (%)">
   </div>
   <div class="sc-tb-row">
+    <button class="dtb-btn" id="sc-finish-btn" onclick="_scMultiFinish()" style="display:none" title="Finish the multi-point cone with the points placed so far">&#10003; Finish</button>
+    <button class="dtb-btn" id="sc-undo-btn" onclick="_scMultiUndo()" style="display:none" title="Remove the most recent point">&#8617; Undo Point</button>
     <button class="dtb-btn" id="sc-style-btn" onclick="_scToggleStyle(event)" title="Cone colors &amp; opacity"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-palette></use></svg> Style</button>
     <button class="dtb-btn" id="sc-points-btn" onclick="_scTogglePoints(event)" title="Edit icon, curve, and speed at individual dots">〜 Points</button>
     <div class="dtb-sep"></div>
