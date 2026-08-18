@@ -94,8 +94,38 @@ def _post(url, payload):
         return json.load(r)
 
 
+AUTH_FILE = os.path.expanduser("~/.gwcfc_fb_auth.json")
+
+
 def sign_in():
-    """An anonymous account, which is all a write to this one document needs."""
+    """
+    The Pi's own account when one is configured, else anonymous.
+
+    Anonymous was the original scheme, and it is the weak half of a hijack:
+    ANYBODY can sign in anonymously with the public web key, and rules that
+    accept "any signed-in user" therefore accept the whole internet - anyone
+    could overwrite the published address and point every visitor's browser
+    at a server of their choosing. With ~/.gwcfc_fb_auth.json in place
+    ({"email": "...", "password": "..."}, a user created in the Firebase
+    console just for the Pi), the write is made as that account, and the
+    published rules can then refuse everyone else.
+    """
+    try:
+        with open(AUTH_FILE) as fh:
+            c = json.load(fh)
+    except (OSError, ValueError):
+        c = {}
+    if isinstance(c, dict) and c.get("email") and c.get("password"):
+        try:
+            r = _post(
+                "https://identitytoolkit.googleapis.com/v1/"
+                f"accounts:signInWithPassword?key={API_KEY}",
+                {"email": c["email"], "password": c["password"],
+                 "returnSecureToken": True})
+            return r["idToken"]
+        except urllib.error.HTTPError as e:
+            log(f"pi-account sign-in failed ({_detail(e)}), "
+                "falling back to anonymous")
     r = _post(
         f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}",
         {"returnSecureToken": True})

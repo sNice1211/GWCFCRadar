@@ -823,11 +823,12 @@ const client = new Client({
 // Changed from Discord with /status, behind a password, and remembered here so
 // a restart does not quietly put the old one back.
 //
-// The password comes from the environment first. This repository is public, so
-// the value written below is readable by anyone who looks: setting
-// STATUS_PASSWORD in services/bot/.env, which is not committed, is what makes
-// it actually secret. Until then the fallback keeps the command working.
-const STATUS_PASSWORD = process.env.STATUS_PASSWORD || 'GWCFCISSOSIGMA';
+// The password comes from the environment and NOWHERE else. This repository
+// is public: a fallback value written here would be a password anyone can
+// read, which is no password at all - and while one was written here, the
+// value was public knowledge. Set STATUS_PASSWORD in services/bot/.env
+// (never committed); until then the command answers that it is off.
+const STATUS_PASSWORD = process.env.STATUS_PASSWORD || '';
 const STATUS_FILE = new URL('./status.json', import.meta.url);
 
 const ACTIVITY_KINDS = {
@@ -839,8 +840,12 @@ const ACTIVITY_KINDS = {
 };
 
 // Compared byte for byte in constant time, so the answer cannot be found one
-// character at a time by timing the replies.
+// character at a time by timing the replies. No password set means the
+// command is OFF, never open: this repository is public, so a fallback
+// written here would be a password anyone can read, which is no password
+// at all (and exactly how the old fallback worked).
 function passwordOk(given) {
+  if (!STATUS_PASSWORD) return false;
   const a = Buffer.from(String(given || ''));
   const b = Buffer.from(STATUS_PASSWORD);
   return a.length === b.length && timingSafeEqual(a, b);
@@ -904,6 +909,10 @@ client.on(Events.InteractionCreate, async (i) => {
       // whole interaction, the typed password included, visible only to the
       // person who ran it. A public reply would print the password in chat.
       await i.deferReply({ ephemeral: true });
+      if (!STATUS_PASSWORD) {
+        return i.editReply('This command is switched off: no STATUS_PASSWORD '
+          + 'is set in services/bot/.env on the Pi. Set one and restart the bot.');
+      }
       if (!passwordOk(i.options.getString('password', true))) {
         console.warn(`status refused for ${i.user.tag}`);
         return i.editReply('Wrong password, so nothing changed.');
