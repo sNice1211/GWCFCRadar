@@ -18240,7 +18240,20 @@ function toggleRadarL2Sub() {
   // switches the volume. No second chooser in the menu.
   _radarSource = 'l2';
   if (typeof showNexradSites === 'function') showNexradSites();
-  RADAR_L2_BUBBLES.forEach(b => {
+  // A terminal radar carries no dual-pol hardware, so its menu offers what it
+  // measures and nothing more: reflectivity, velocity, spectrum width. The
+  // full six belong to the NEXRADs. Offering the missing three anyway meant a
+  // click, a wait, and an error popup, which reads as the radar being broken
+  // when it is the menu overpromising. The site on screen is the clicked
+  // pill when there was one, else whatever station last loaded, which is
+  // the same rule the pill highlight uses.
+  const _l2MenuSite = _l2Site
+    || (typeof _l3Station !== 'undefined' && _l3Station) || null;
+  const l2Products = (_l2MenuSite && typeof _isTdwrSite === 'function'
+                      && _isTdwrSite(_l2MenuSite))
+    ? RADAR_L2_BUBBLES.filter(b => ['ref', 'vel', 'sw'].includes(b.product))
+    : RADAR_L2_BUBBLES;
+  l2Products.forEach(b => {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (currentProduct === b.product ? ' active' : '');
     el.id = 'sub-' + b.id;
@@ -23848,6 +23861,15 @@ function _buildNexradSiteMarkers() {
         if (_l2Site !== s.id) { _l2Tilt = null; _l2TiltList = []; }
         _l2Site = s.id;
         try { localStorage.setItem('gwcfc_l2_site', s.id); } catch (e) {}
+        // Carrying a dual-pol product onto a terminal would ask it for a
+        // measurement it cannot make and end in an error popup. The product
+        // falls back to reflectivity, and the menu redraws to this site's
+        // real offerings.
+        if (typeof _isTdwrSite === 'function' && _isTdwrSite(s.id) &&
+            ['cc', 'zdr', 'kdp'].includes(currentProduct)) {
+          currentProduct = 'ref';
+        }
+        if (document.getElementById('sub-l2-ref')) toggleRadarL2Sub();
         loadL3Data(currentProduct || 'ref', s.id);
         _refreshNexradSiteStyles();
         return;
@@ -33085,7 +33107,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The storm model tracks (GFS, ICON, GEM spaghetti) cost a third of what they did, remember their answer for twenty minutes, and when the free weather API refuses them, the panel now says the API's own reason instead of showing an empty map.";
+const APP_LATEST_UPDATE = "Terminal (airport) radar menus now list only what those radars actually measure: reflectivity, velocity and spectrum width. Picking a dual-pol product then tapping a terminal falls back to reflectivity instead of erroring.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
