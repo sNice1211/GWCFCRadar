@@ -22877,6 +22877,10 @@ async function _s3VolTime(station, vol) {
   return bits.length >= 2 && /^\d+$/.test(bits[0]) ? bits[0] + bits[1] : '';
 }
 
+// One-shot hint set by the parse-retry below: skip the newest volume for this
+// station, because it just parsed to nothing.
+let _l2SkipNewest = null;
+
 async function _fetchVolumeDirect(stationId) {
   const station = stationId.toUpperCase();
   const dirs = await _s3Xml('prefix=' + station + '/&delimiter=/&max-keys=1000');
@@ -22914,7 +22918,9 @@ async function _fetchVolumeDirect(stationId) {
 
   // Newest first, stepping back past volumes that have only just started:
   // a couple of chunks is an antenna part way round, not a picture.
-  for (let back = 0; back < 4; back++) {
+  const startBack = _l2SkipNewest === station ? 1 : 0;
+  _l2SkipNewest = null;
+  for (let back = startBack; back < startBack + 4; back++) {
     const vol = vols[(at - back + vols.length) % vols.length];
     const x = await _s3Xml('prefix=' + station + '/' + vol + '/&max-keys=200');
     const entries = [...x.querySelectorAll('Contents')].map(c => ({
@@ -22996,9 +23002,17 @@ let _l2VolCache = { station: null, at: 0, buf: null };
 })();
 let _radarWorkerPending = null;  // { resolve, reject } for current request
 
+// Bumped by tools/build-radar-worker.sh to the bundle's own hash, so the page
+// and the decoder can never go out of step in a browser's cache: a new bundle
+// is a new URL, and a page from before the build keeps the URL its decoder
+// answers to. A mismatched pair is how "Parse failed" appears on one device
+// while the same click works everywhere else.
+var RADAR_WORKER_V = '26f87905';
+
 function _getRadarWebWorker() {
   if (_radarWebWorker) return _radarWebWorker;
-  var workerUrl = new URL('assets/radar_worker.bundle.js', location.href).href;
+  var workerUrl = new URL('assets/radar_worker.bundle.js?v=' + RADAR_WORKER_V,
+                          location.href).href;
   _radarWebWorker = new Worker(workerUrl);
   _radarWebWorker.onmessage = function(e) {
     var p = _radarWorkerPending; _radarWorkerPending = null;
@@ -23470,7 +23484,7 @@ async function loadL3Data(product, stationOverride) {
   }
 }
 
-async function _loadL3DataInner(product, stationOverride) {
+async function _loadL3DataInner(product, stationOverride, retried) {
   _disableL3();
   _l3Product = product;
 
@@ -23538,6 +23552,16 @@ async function _loadL3DataInner(product, stationOverride) {
     // A superseded request lost to a newer click on purpose; the newer one
     // owns the screen and a popup for the loser would be noise.
     if (e && e.message === 'superseded') return;
+    // A volume that parses to nothing was almost always caught mid-write: the
+    // feed had opened it and not yet put a whole sweep in. The previous
+    // volume is complete, so the fix is one silent retry a volume back, not a
+    // popup telling a person their radar is broken.
+    if (!retried && /No data found in file/i.test(e && e.message || '')) {
+      console.log('[L2] empty volume, retrying one back');
+      _l2VolCache = { station: null, at: 0, buf: null };
+      _l2SkipNewest = station.toUpperCase();
+      return _loadL3DataInner(product, station, true);
+    }
     console.error('[L2] Parse failed:', e);
     _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> <b>Parse failed</b><br>' + e.message);
     return;
@@ -33026,7 +33050,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Level 3 now works for every radar in the country: the Pi's own sites draw instantly, and every other NEXRAD and airport radar is decoded right here in your browser. Terminal radar pictures are also nearly three times sharper.";
+const APP_LATEST_UPDATE = "Two fixes for the Parse failed popup: a radar volume caught mid-write now retries the previous one silently instead of complaining, and the decoder can no longer go stale in your browser's cache after an update.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
