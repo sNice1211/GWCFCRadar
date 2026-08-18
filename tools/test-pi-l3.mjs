@@ -427,6 +427,39 @@ console.log('\n1b. the Inspector reads a Pi model chart into a number');
   await page.close();
 }
 
+console.log('\n1c. a value filter means the Pi paint steps aside for raw data');
+{
+  // A filter runs on numbers, and a pre-painted PNG has none left. With a
+  // reflectivity filter saved, opening the Pi radar must NOT paste the Pi's
+  // picture: it must go for the raw feed instead (which fails offline here,
+  // loudly and honestly), and clearing the filter must bring the Pi's own
+  // pictures straight back.
+  const { page } = await boot('up');
+  await page.evaluate(() => {
+    _fxFilter = { ref: { on: true, min: 40, max: 80 } }; _fxSave();
+  });
+  await page.evaluate(() => toggleRadarSub());
+  await page.evaluate(() => toggleRadarPiSub('l3'));
+  await page.waitForTimeout(2500);
+  const st = await page.evaluate(() => ({
+    layers: _prLayers.length, rerouted: _fxRerouted,
+    tried: window.__toasts.some(t => /N0B/.test(t)),
+  }));
+  ok('no pre-painted picture is pasted while the filter is on',
+     st.layers === 0, String(st.layers));
+  ok('the raw decode was attempted instead',
+     st.rerouted === true && st.tried, JSON.stringify(st));
+  const back = await page.evaluate(async () => {
+    _fxFilter = {}; _fxSave();
+    _radarFxApply();
+    await new Promise(r => setTimeout(r, 1500));
+    return { layers: _prLayers.length, rerouted: _fxRerouted };
+  });
+  ok('clearing the filter hands the screen back to the Pi pictures',
+     back.layers === 1 && back.rerouted === false, JSON.stringify(back));
+  await page.close();
+}
+
 console.log('\n2. a Pi that cannot be reached');
 {
   const { page } = await boot('down');
