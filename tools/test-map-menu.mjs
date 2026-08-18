@@ -267,6 +267,59 @@ console.log('\n8. no webhook secrets in the page, ever again');
   ok('and tells the sender it worked', /been sent/i.test(r.status), r.status);
 }
 
+console.log('\n8b. set as recenter, and set as load spot');
+{
+  const r = await page.evaluate(() => {
+    localStorage.removeItem('gwcfc_load_spot');
+    _recenterLat = null; _recenterLng = null;
+    // Open the menu and confirm both new items are offered.
+    map.fire('contextmenu', { latlng: L.latLng(41.5, -81.7),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    const text = document.getElementById('map-ctx-menu').textContent;
+
+    // Recenter: drops the session anchor at the exact point.
+    map.fire('contextmenu', { latlng: L.latLng(41.5, -81.7),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    _cmSetRecenter();
+    const anchor = { lat: _recenterLat, lng: _recenterLng };
+
+    // Load spot: saved to this device at whatever zoom the map is at. The
+    // headless map has no real container size, so it clamps zoom on its own;
+    // the test records the map's actual zoom rather than assuming a value.
+    const zoomAtSave = map.getZoom();
+    map.fire('contextmenu', { latlng: L.latLng(25.8, -80.2),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    _cmSetLoadSpot();
+    const saved = JSON.parse(localStorage.getItem('gwcfc_load_spot') || 'null');
+    return { text, anchor, saved, zoomAtSave };
+  });
+  ok('the menu offers both new items',
+     /Set as recenter/.test(r.text) && /Set as load spot/.test(r.text), r.text);
+  ok('set as recenter drops the anchor at the point',
+     Math.abs(r.anchor.lat - 41.5) < 0.001 && Math.abs(r.anchor.lng + 81.7) < 0.001,
+     JSON.stringify(r.anchor));
+  ok('set as load spot saves the point and current zoom to this device',
+     r.saved && Math.abs(r.saved.lat - 25.8) < 0.001 && r.saved.zoom === r.zoomAtSave,
+     JSON.stringify(r.saved) + ' vs zoom ' + r.zoomAtSave);
+
+  // On the next load, _applyLoadSpot must hand the saved values to setView.
+  // Spying on setView avoids the headless map's own clamping muddying the
+  // check: what matters is the code asks for the saved spot.
+  const asked = await page.evaluate(() => {
+    const spot = JSON.parse(localStorage.getItem('gwcfc_load_spot'));
+    let call = null;
+    const real = map.setView;
+    map.setView = function (ll, z) { call = { lat: ll[0] ?? ll.lat, lng: ll[1] ?? ll.lng, z }; return real.apply(this, arguments); };
+    _applyLoadSpot();
+    map.setView = real;
+    return { call, spot };
+  });
+  ok('the map is told to open at the saved load spot',
+     asked.call && Math.abs(asked.call.lat - 25.8) < 0.001
+     && Math.abs(asked.call.lng + 80.2) < 0.001 && asked.call.z === asked.spot.zoom,
+     JSON.stringify(asked.call));
+}
+
 console.log('\n9. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
