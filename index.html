@@ -19318,6 +19318,9 @@ async function init() {
       try { _ovApplyMapOrder(); } catch(e) { console.warn('overlay order:', e); }
       try { updateLegend('ref');  } catch(e) { console.warn('legend:', e); }
       try { renderSubBubbles('regular'); } catch(e) { console.warn('sub-bubbles:', e); }
+      // Open where the user last saved a load spot. Before the ready queue,
+      // so a URL view (which applies from that queue) still overrides it.
+      try { _applyLoadSpot(); } catch(e) { console.warn('load spot:', e); }
     }
   }
   if (_mapOK) _watchBasemap();
@@ -22739,6 +22742,8 @@ function _cmOpen(e) {
     <div class="cm-item${_cmAlertList.length ? '' : ' cm-dim'}" onclick="_cmShowAlerts()">${ic('siren')} Alerts here (${_cmAlertList.length})</div>
     <div class="cm-item" onclick="_cmInspectHere()">${ic('search')} Inspect values here</div>
     <div class="cm-item" onclick="_cmRadiusHere()">${ic('target')} 50 mi radius here</div>
+    <div class="cm-item" onclick="_cmSetRecenter()">${ic('compass')} Set as recenter</div>
+    <div class="cm-item" onclick="_cmSetLoadSpot()">${ic('flag')} Set as load spot</div>
     <div class="cm-item" onclick="_cmZoomHere()">${ic('fullscreen')} Zoom in here</div>`;
   _cmEl.classList.add('open');
   // At the pointer, but never off the screen.
@@ -22873,6 +22878,61 @@ function _cmZoomHere() {
   _cmClose();
   if (!ll) return;
   map.flyTo(ll, Math.min(map.getZoom() + 2, 15));
+}
+
+// Two different "keep this place" ideas, on purpose:
+//
+//  Recenter is a leash for THIS session. It drops an anchor here and the
+//  floating "Tap to recenter" button appears whenever you wander off screen,
+//  so panning around a storm always has a one-tap way back. It is not saved;
+//  it is scaffolding for the session you are in.
+//
+//  Load spot is where the map OPENS. It is remembered on this device (and on
+//  your account too when you are signed in), so the next visit starts looking
+//  exactly here, at this zoom, instead of the middle of the country.
+function _cmSetRecenter() {
+  const ll = _cmLatLng;
+  _cmClose();
+  if (!ll || typeof _setRecenterLocation !== 'function') return;
+  _setRecenterLocation(ll.lat, ll.lng);
+}
+
+const LOAD_SPOT_KEY = 'gwcfc_load_spot';
+function _cmSetLoadSpot() {
+  const ll = _cmLatLng;
+  _cmClose();
+  if (!ll) return;
+  const spot = { lat: ll.lat, lng: ll.lng, zoom: map.getZoom() };
+  try { localStorage.setItem(LOAD_SPOT_KEY, JSON.stringify(spot)); } catch (e) {}
+  // Signed in, it also rides along on the account so every device agrees.
+  // Reusing homeRegion means the existing "load my region on sign-in" path
+  // picks it up with no second mechanism to keep in step.
+  if (typeof _currentUser !== 'undefined' && _currentUser && typeof _fbDb !== 'undefined' && _fbDb) {
+    try {
+      _fbDb.collection('users').doc(_currentUser.uid).set({
+        homeRegion: spot,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true }).catch(() => {});
+    } catch (e) {}
+  }
+  if (typeof showToast === 'function') {
+    showToast(`<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-flag></use></svg> `
+      + `Load spot set. The map will open here next time.`, 2800);
+  }
+}
+
+// Where the map opens, when a spot has been saved on this device. Runs during
+// init, before the ready queue, so an explicit ?lat/lon in the URL still wins
+// (it applies from that queue, after this) and a signed-in account's saved
+// region still applies on sign-in.
+function _applyLoadSpot() {
+  let spot = null;
+  try { spot = JSON.parse(localStorage.getItem(LOAD_SPOT_KEY) || 'null'); } catch (e) {}
+  if (!spot || typeof spot.lat !== 'number' || typeof spot.lng !== 'number') return;
+  try {
+    map.setView([spot.lat, spot.lng],
+                typeof spot.zoom === 'number' ? spot.zoom : map.getZoom());
+  } catch (e) { console.warn('load spot:', e); }
 }
 
 (function _cmInit() {
@@ -28901,8 +28961,27 @@ async function openForecastModal(city) {
       `&hourly=weather_code,temperature_2m,apparent_temperature,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m,relative_humidity_2m,dew_point_2m,surface_pressure,cloud_cover,visibility` +
       `&current=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,relative_humidity_2m,apparent_temperature,dew_point_2m,surface_pressure,cloud_cover,visibility,uv_index,precipitation` +
       `&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto&forecast_days=7`;
-    const res  = await fetch(url);
-    const data = await res.json();
+    // Try Open-Meteo directly, then through the same public CORS proxies the
+    // rest of the page falls back to for keyless public feeds. A blocked
+    // network or an IP that has hit the free tier's limit is exactly what a
+    // different egress fixes, and none of this carries a secret.
+    // Open-Meteo answers a refusal with {error:true, reason:...}; that reason
+    // is surfaced rather than swallowed into a blank card.
+    const _fcWrap = (typeof EAS_PROXIES !== 'undefined' && EAS_PROXIES.length)
+      ? EAS_PROXIES : [u => u];
+    let data = null, lastReason = '';
+    for (const wrap of _fcWrap) {
+      try {
+        const res = await fetch(wrap(url));
+        const d = await res.json().catch(() => null);
+        if (res.ok && d && !d.error && d.current) { data = d; break; }
+        lastReason = (d && d.reason) ? d.reason
+          : `the weather service answered HTTP ${res.status}`;
+      } catch (err) {
+        lastReason = 'the weather service could not be reached';
+      }
+    }
+    if (!data) throw new Error(lastReason || 'no forecast returned');
     const cw   = data.current;
     const dd   = data.daily;
     const hh   = data.hourly;
@@ -29062,7 +29141,10 @@ async function openForecastModal(city) {
     html += '</div>';
     body.innerHTML = html;
   } catch(e) {
-    body.innerHTML = '<div class="forecast-loading">Failed to load forecast. Please try again.</div>';
+    console.warn('forecast modal:', e);
+    const why = (e && e.message) ? String(e.message) : 'the weather service could not be reached';
+    body.innerHTML = '<div class="forecast-loading">Could not load this forecast: '
+      + _escapeHtml(why) + '</div>';
   }
 }
 
@@ -34379,7 +34461,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Security lockdown: the Discord spam hole is closed. Chat and feedback now go through a locked-down relay on the Pi instead of carrying webhook addresses in the page, the relay strips mass pings and invite links no matter what it is sent, and the bot's status command no longer has a public fallback password.";
+const APP_LATEST_UPDATE = "Right-click the map for two new options: Set as recenter (a one-tap button to jump back here while you pan around) and Set as load spot (the map opens here next visit). Also: forecast dots now say exactly why a forecast could not load instead of a blank error, and retry through a backup route.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
