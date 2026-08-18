@@ -63,13 +63,30 @@ if (!chatChannel) {
 const API = 'https://discord.com/api/v10';
 const HEADERS = { Authorization: `Bot ${TOKEN}`, 'Content-Type': 'application/json' };
 
+// 401 and 403 are different problems and pointing at the wrong one wastes
+// a person's time in the middle of an incident: 401 means Discord rejected
+// the TOKEN itself (stale after a reset, or pasted with quotes/spaces),
+// 403 means the token is fine but the bot lacks Manage Webhooks there.
+function explainAuth(status) {
+  if (status === 401) {
+    return 'HTTP 401: the DISCORD_TOKEN in services/bot/.env is not valid. '
+      + 'If you reset the token in the Developer Portal, paste the NEW one '
+      + 'into .env (no quotes, no spaces) and run this again.';
+  }
+  if (status === 403) {
+    return 'HTTP 403: the token works but the bot lacks the Manage Webhooks '
+      + 'permission in that channel. Grant it, then run this again.';
+  }
+  return null;
+}
+
 async function killCompromised() {
   const r = await fetch(`${API}/webhooks/${COMPROMISED_WEBHOOK_ID}`,
                         { method: 'DELETE', headers: HEADERS });
   if (r.ok) console.log('Deleted the compromised webhook. Its leaked URL is now dead.');
   else if (r.status === 404) console.log('The compromised webhook is already gone. Good.');
-  else console.warn(`Could not delete the compromised webhook (HTTP ${r.status}). `
-                  + 'Delete it by hand: Server Settings -> Integrations -> Webhooks.');
+  else console.warn(`Could not delete the compromised webhook (${explainAuth(r.status) || 'HTTP ' + r.status}). `
+                  + 'It can also be deleted by hand: Server Settings -> Integrations -> Webhooks.');
 }
 
 async function mint(channelId, name) {
@@ -79,8 +96,9 @@ async function mint(channelId, name) {
   });
   if (!r.ok) {
     const body = await r.text().catch(() => '');
-    throw new Error(`creating "${name}" in channel ${channelId} failed: HTTP ${r.status} ${body.slice(0, 200)}\n`
-      + 'The bot needs the Manage Webhooks permission in that channel.');
+    const why = explainAuth(r.status)
+      || `HTTP ${r.status} ${body.slice(0, 200)}`;
+    throw new Error(`creating "${name}" in channel ${channelId} failed: ${why}`);
   }
   const w = await r.json();
   if (!w.id || !w.token) throw new Error(`Discord returned no token for "${name}"`);
