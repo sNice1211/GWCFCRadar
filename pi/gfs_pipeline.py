@@ -1425,7 +1425,19 @@ def fetch_hour_files(m, date_str, cyc, fhr, path):
     return True
 
 
-ECMWF_BASE = "https://data.ecmwf.int/forecasts"
+# Two doors to the same files. ECMWF publishes its open data on its own host
+# and mirrors it to AWS Open Data with identical paths. Both are tried in
+# order, because a host that is slow, down, or unreachable from one network
+# otherwise reads as the model quietly never existing, which is exactly what
+# "nothing built for this model yet" looks like from the panel.
+ECMWF_BASES = (
+    "https://data.ecmwf.int/forecasts",
+    "https://ecmwf-forecasts.s3.eu-central-1.amazonaws.com",
+)
+# The host that answered last, tried first next time. A dead first host costs
+# a round of retries to discover; without this a 41 hour run pays that round
+# 41 times, which is minutes of sleeping at a problem already diagnosed.
+_ecmwf_host_hint = [None]
 
 # What to take from ECMWF, by its own parameter names. Everything not listed is
 # skipped without downloading it, which is the point: the whole file is around
@@ -1434,7 +1446,7 @@ ECMWF_PARAMS = {"2t", "2d", "msl", "10u", "10v", "tp", "tcwv", "sst"}
 ECMWF_SHEAR_PARAMS = {"u", "v"}
 
 
-def ecmwf_paths(m, date_str, cyc, fhr):
+def ecmwf_paths(m, date_str, cyc, fhr, host=None):
     """
     The forecast file and the index beside it.
 
@@ -1451,25 +1463,32 @@ def ecmwf_paths(m, date_str, cyc, fhr):
     model = m.get("ecmwf_model", "ifs")
     stream = m.get("ecmwf_stream", "oper")
     kind = m.get("ecmwf_type", "fc")
-    base = (f"{ECMWF_BASE}/{date_str}/{cyc}z/{model}/0p25/{stream}/"
+    host = host or ECMWF_BASES[0]
+    base = (f"{host}/{date_str}/{cyc}z/{model}/0p25/{stream}/"
             f"{date_str}{cyc}0000-{fhr}h-{stream}-{kind}")
     grib = base + ".grib2"
     return grib, [base + ".index", grib + ".index"]
 
 
 def ecmwf_index(m, date_str, cyc, fhr, timeout=REQUEST_TIMEOUT):
-    """The first index that answers, with its text and status codes tried."""
+    """The first index that answers, its text, the codes tried, and which
+    host it answered on, so the data fetch goes through the same door."""
     codes = []
-    for url in ecmwf_paths(m, date_str, cyc, fhr)[1]:
-        try:
-            r = http_get(url, timeout=timeout)
-        except requests.RequestException as e:
-            codes.append((url, str(e)))
-            continue
-        codes.append((url, r.status_code))
-        if r.status_code == 200 and "{" in r.text[:200]:
-            return url, r.text, codes
-    return None, None, codes
+    hosts = list(ECMWF_BASES)
+    if _ecmwf_host_hint[0] in hosts:
+        hosts.insert(0, hosts.pop(hosts.index(_ecmwf_host_hint[0])))
+    for host in hosts:
+        for url in ecmwf_paths(m, date_str, cyc, fhr, host)[1]:
+            try:
+                r = http_get(url, timeout=timeout)
+            except requests.RequestException as e:
+                codes.append((url, str(e)))
+                continue
+            codes.append((url, r.status_code))
+            if r.status_code == 200 and "{" in r.text[:200]:
+                _ecmwf_host_hint[0] = host
+                return url, r.text, codes, host
+    return None, None, codes, None
 
 
 def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
@@ -1487,8 +1506,8 @@ def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
     small requests over one connection cost more in round trips than the few
     wasted bytes between them.
     """
-    grib_url = ecmwf_paths(m, date_str, cyc, fhr)[0]
-    _url, text, codes = ecmwf_index(m, date_str, cyc, fhr)
+    _url, text, codes, host = ecmwf_index(m, date_str, cyc, fhr)
+    grib_url = ecmwf_paths(m, date_str, cyc, fhr, host)[0]
     if not text:
         log(f"    f{fhr:03d}: no index ("
             + ", ".join(f"{c}" for _u, c in codes) + ")")
