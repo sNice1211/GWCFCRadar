@@ -3784,6 +3784,56 @@ body {
   cursor: pointer;
 }
 #sc-mode-sel option { background: #1a1a22; color: #fff; }
+
+/* ── RIGHT-CLICK MAP MENU ──
+   A small dark menu at the pointer, in the app's own dress: what is HERE,
+   at the exact spot under the finger, without hunting through the layer
+   menus for it. */
+#map-ctx-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 208px;
+  background: rgba(12, 16, 24, 0.97);
+  border: 1px solid rgba(0, 140, 186, 0.45);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  padding: 4px;
+  display: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.85);
+  user-select: none;
+}
+#map-ctx-menu.open { display: block; }
+#map-ctx-menu .cm-title {
+  padding: 6px 10px 5px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--accent2, #33c7f0);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 3px;
+  white-space: nowrap;
+}
+#map-ctx-menu .cm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#map-ctx-menu .cm-item:hover { background: rgba(0, 140, 186, 0.22); color: #fff; }
+#map-ctx-menu .cm-item .svgi { flex-shrink: 0; opacity: 0.75; }
+#map-ctx-menu .cm-item.cm-dim { opacity: 0.45; }
+.cm-alert-row {
+  padding: 5px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 700;
+}
+.cm-alert-row:hover { background: rgba(255, 255, 255, 0.1); }
+.cm-alert-sub { font-size: 10px; opacity: 0.65; font-weight: 400; }
 #sc-new-btn { width: auto; padding: 0 10px; }
 #sc-results-btn { width: auto; padding: 0 10px; font-size: 11px; }
 #stormcone-status {
@@ -22570,6 +22620,252 @@ function _scDeleteCone(id) {
 }
 
 
+// ── RIGHT-CLICK MAP MENU ──────────────────────────────────────────────────
+// Right-click (or long-press) anywhere on the bare map and a small menu
+// answers the question that click is really asking: what is HERE? Copy the
+// exact coordinates, jump to the nearest radar with its products open, open
+// the nearest forecast dot, read the active alerts covering this spot, park
+// the Inspector on it, ring it with a radius, or just zoom in. While a
+// drawing tool is active, right-click keeps its old job (cancel the tool)
+// and this menu stays out of the way.
+let _cmEl = null;          // the menu element, built once
+let _cmLatLng = null;      // where the right-click landed
+let _cmAlertList = [];     // alerts under that point, for the popup rows
+let _cmLastCopied = null;  // last copied text - also how the tests check it
+
+function _cmMiles(aLat, aLng, bLat, bLng) {
+  const rad = Math.PI / 180, R = 3958.8;
+  const dLat = (bLat - aLat) * rad, dLng = (bLng - aLng) * rad;
+  const h = Math.sin(dLat / 2) ** 2
+          + Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+function _cmNearestStation(lat, lng) {
+  let best = null, bestMi = Infinity;
+  (typeof NEXRAD_STATIONS !== 'undefined' ? NEXRAD_STATIONS : []).forEach(s => {
+    const mi = _cmMiles(lat, lng, s.lat, s.lon);
+    if (mi < bestMi) { bestMi = mi; best = s; }
+  });
+  return best ? { ...best, miles: Math.round(bestMi) } : null;
+}
+
+function _cmNearestCity(lat, lng) {
+  let best = null, bestMi = Infinity;
+  (typeof CITIES !== 'undefined' ? CITIES : []).forEach(c => {
+    const mi = _cmMiles(lat, lng, c.lat, c.lon);
+    if (mi < bestMi) { bestMi = mi; best = c; }
+  });
+  return best ? { city: best, miles: Math.round(bestMi) } : null;
+}
+
+// Point-in-ring for GeoJSON coordinates ([lng, lat] pairs).
+function _cmPtInRing(lat, lng, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    if (((yi > lat) !== (yj > lat))
+        && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+
+// Every loaded alert whose polygon covers this point. Uses the same feature
+// list the alert layer itself was drawn from, so the answer here and the
+// colors on the map can never disagree.
+function _cmAlertsAt(lat, lng) {
+  const feats = (typeof _lastAlertFeatures !== 'undefined' && _lastAlertFeatures) || [];
+  return feats.filter(f => {
+    const g = f.geometry;
+    if (!g || !g.coordinates) return false;
+    const polys = g.type === 'Polygon' ? [g.coordinates]
+                : g.type === 'MultiPolygon' ? g.coordinates : [];
+    return polys.some(rings => rings && rings.length
+                      && _cmPtInRing(lat, lng, rings[0]));
+  });
+}
+
+function _cmClose() {
+  if (_cmEl) _cmEl.classList.remove('open');
+}
+
+function _cmOpen(e) {
+  // A drawing tool owns right-click while it is active (it cancels the
+  // tool); the menu is for the bare map.
+  if (typeof activeTool !== 'undefined' && activeTool) return;
+  if (e.originalEvent) L.DomEvent.preventDefault(e.originalEvent);
+  _cmLatLng = e.latlng;
+  if (!_cmEl) {
+    _cmEl = document.createElement('div');
+    _cmEl.id = 'map-ctx-menu';
+    document.body.appendChild(_cmEl);
+  }
+  const lat = e.latlng.lat.toFixed(4), lng = e.latlng.lng.toFixed(4);
+  const st = _cmNearestStation(e.latlng.lat, e.latlng.lng);
+  const nc = _cmNearestCity(e.latlng.lat, e.latlng.lng);
+  _cmAlertList = _cmAlertsAt(e.latlng.lat, e.latlng.lng);
+  const ic = (name) => `<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-${name}></use></svg>`;
+  _cmEl.innerHTML = `
+    <div class="cm-title">${lat}, ${lng}</div>
+    <div class="cm-item" onclick="_cmCopyCoords()">${ic('copy')} Copy coordinates</div>
+    ${st ? `<div class="cm-item" onclick="_cmGoRadar()">${ic('antenna')} Radar: ${st.id.toUpperCase()} &middot; ${st.miles} mi</div>` : ''}
+    ${nc ? `<div class="cm-item" onclick="_cmGoForecast()">${ic('cloud-sun')} Forecast: ${nc.city.name.split(',')[0]} &middot; ${nc.miles} mi</div>` : ''}
+    <div class="cm-item${_cmAlertList.length ? '' : ' cm-dim'}" onclick="_cmShowAlerts()">${ic('siren')} Alerts here (${_cmAlertList.length})</div>
+    <div class="cm-item" onclick="_cmInspectHere()">${ic('search')} Inspect values here</div>
+    <div class="cm-item" onclick="_cmRadiusHere()">${ic('target')} 50 mi radius here</div>
+    <div class="cm-item" onclick="_cmZoomHere()">${ic('fullscreen')} Zoom in here</div>`;
+  _cmEl.classList.add('open');
+  // At the pointer, but never off the screen.
+  const ox = e.originalEvent ? e.originalEvent.clientX : window.innerWidth / 2;
+  const oy = e.originalEvent ? e.originalEvent.clientY : window.innerHeight / 2;
+  const w = _cmEl.offsetWidth || 220, h = _cmEl.offsetHeight || 260;
+  _cmEl.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, ox)) + 'px';
+  _cmEl.style.top  = Math.max(6, Math.min(window.innerHeight - h - 6, oy)) + 'px';
+}
+
+function _cmCopyCoords() {
+  if (!_cmLatLng) { _cmClose(); return; }
+  const text = `${_cmLatLng.lat.toFixed(4)}, ${_cmLatLng.lng.toFixed(4)}`;
+  _cmLastCopied = text;
+  _cmClose();
+  const done = () => { if (typeof showToast === 'function') showToast('Copied: ' + text, 2500); };
+  try {
+    navigator.clipboard.writeText(text).then(done).catch(() => _cmCopyFallback(text, done));
+  } catch (err) {
+    _cmCopyFallback(text, done);
+  }
+}
+// The old-school copy, for browsers that gate the clipboard API (the PS5
+// browser among them): a temporary textarea, select, execCommand.
+function _cmCopyFallback(text, done) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    done();
+  } catch (err) {
+    if (typeof showToast === 'function') showToast('Could not copy on this browser. Coordinates: ' + text, 5000);
+  }
+}
+
+// Fly to the nearest radar and put its products on screen: the radar menu's
+// Level 2 row, decoded from the raw feed, exactly as if its site pill had
+// been tapped.
+function _cmGoRadar() {
+  const ll = _cmLatLng;
+  _cmClose();
+  if (!ll) return;
+  const s = _cmNearestStation(ll.lat, ll.lng);
+  if (!s) return;
+  map.flyTo([s.lat, s.lon], Math.max(map.getZoom(), 8));
+  if (typeof _isTdwrSite === 'function' && _isTdwrSite(s.id)
+      && ['cc', 'zdr', 'kdp'].includes(currentProduct)) {
+    currentProduct = 'ref';
+  }
+  toggleRadarSub();
+  toggleRadarL2Sub();
+  loadL3Data(currentProduct || 'ref', s.id);
+}
+
+function _cmGoForecast() {
+  const ll = _cmLatLng;
+  _cmClose();
+  if (!ll) return;
+  const nc = _cmNearestCity(ll.lat, ll.lng);
+  if (!nc) return;
+  map.flyTo([nc.city.lat, nc.city.lon], Math.max(map.getZoom(), 9));
+  // The dot itself should be visible where the panel says it is looking.
+  if (typeof activeLayers !== 'undefined' && !activeLayers.forecasts
+      && typeof toggleForecastDots === 'function') toggleForecastDots();
+  if (typeof openForecastModal === 'function') openForecastModal(nc.city);
+}
+
+function _cmShowAlerts() {
+  const ll = _cmLatLng;
+  _cmClose();
+  if (!ll) return;
+  let html;
+  if (!_cmAlertList.length) {
+    const loaded = (typeof _lastAlertFeatures !== 'undefined' && _lastAlertFeatures
+                    && _lastAlertFeatures.length);
+    html = `<div style="font-family:var(--mono);font-size:11px;">`
+         + (loaded ? 'No active alerts at this spot.'
+                   : 'Alerts have not loaded yet - turn on Alert Polygons or try again in a moment.')
+         + '</div>';
+  } else {
+    html = `<div style="font-family:var(--mono);font-size:11px;">`
+      + `<b>${_cmAlertList.length} active alert${_cmAlertList.length === 1 ? '' : 's'} here</b>`
+      + _cmAlertList.map((f, i) => {
+          const p = f.properties || {};
+          const ev = p.event || 'Alert';
+          const until = p.ends || p.expires;
+          const untilTxt = until ? ` <span class="cm-alert-sub">until ${new Date(until).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>` : '';
+          return `<div class="cm-alert-row" style="color:${_alertColorFor(ev)}" onclick="_cmFocusAlert(${i})">${ev}${untilTxt}</div>`;
+        }).join('')
+      + '</div>';
+  }
+  L.popup({ maxWidth: 300, autoPan: true })
+    .setLatLng(ll).setContent(html).openOn(map);
+}
+
+function _cmFocusAlert(i) {
+  const f = _cmAlertList[i];
+  if (!f) return;
+  const p = f.properties || {};
+  const fid = p.id || p['@id'] || f.id;
+  if (fid && typeof _focusAlertById === 'function') {
+    try { _focusAlertById(fid); } catch (e) {}
+  }
+}
+
+function _cmInspectHere() {
+  const ll = _cmLatLng;
+  _cmClose();
+  if (!ll) return;
+  // The Inspector reads whatever sits under the center crosshair, so the
+  // spot is brought to the center and the crosshair switched on.
+  map.panTo(ll);
+  if (typeof _inspEnabled !== 'undefined' && !_inspEnabled
+      && typeof toggleInspector === 'function') toggleInspector();
+}
+
+function _cmRadiusHere() {
+  const ll = _cmLatLng;
+  _cmClose();
+  if (!ll) return;
+  // The Radius tool's own placement flow, handed the point directly.
+  startRadiusTool();
+  map.fire('click', { latlng: ll });
+}
+
+function _cmZoomHere() {
+  const ll = _cmLatLng;
+  _cmClose();
+  if (!ll) return;
+  map.flyTo(ll, Math.min(map.getZoom() + 2, 15));
+}
+
+(function _cmInit() {
+  // The map is built by initMap() a moment after this script parses, so the
+  // menu arms itself by checking back rather than assuming.
+  const arm = () => {
+    if (typeof map === 'undefined' || !map) { setTimeout(arm, 300); return; }
+    map.on('contextmenu', _cmOpen);
+    map.on('movestart zoomstart', _cmClose);
+  };
+  arm();
+  document.addEventListener('mousedown', (e) => {
+    if (_cmEl && _cmEl.classList.contains('open')
+        && !e.target.closest('#map-ctx-menu')) _cmClose();
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') _cmClose(); });
+})();
+
 // ── COLOR PICKER MODAL ──
 const DCM_PRESETS = [
   '#ff0000','#00ccff','#0000ff','#00ff00',
@@ -34012,7 +34308,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The Storm Cone tool now has two drawing modes: the classic Drag, and a new Multi-point mode where you click the path point by point. Multi-point runs the cone smoothly through every click, turns each click into a dot, and finishes with a double-click or the Finish button. Pick the mode in the cone toolbar's new MODE dropdown.";
+const APP_LATEST_UPDATE = "Right-click (or long-press) anywhere on the map for a new quick menu: copy the exact coordinates, jump to the nearest radar with its products open, open the nearest forecast dot, list the alerts covering that spot, inspect values there, drop a 50 mile radius, or zoom in.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
