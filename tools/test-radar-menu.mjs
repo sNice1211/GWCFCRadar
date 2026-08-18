@@ -173,6 +173,53 @@ const normal = await row();
  'Storm Accum.', '1-Hr Accum.'].forEach(p =>
   ok('still offers ' + p, normal.includes(p), normal.join(',')));
 
+console.log('\n8b. every bubble in every row has words behind its little i');
+{
+  // Coverage first: every id offered by any sub or sub-sub row must have an
+  // entry in LAYER_DESCRIPTIONS, or its info button silently never renders.
+  const missing = await page.evaluate(() => {
+    const out = [];
+    const need = (id) => { if (!LAYER_DESCRIPTIONS[id]) out.push(id); };
+    BASE_BUBBLES.forEach(b => need(b.id));
+    RADAR_SOURCE_BUBBLES.forEach(b => need(b.id));
+    RADAR_L2_BUBBLES.forEach(b => need(b.id));
+    RADAR_PI_BUBBLES.forEach(b => need(b.id));
+    RADAR_SUB_BUBBLES.forEach(b => need(b.id));
+    MODELS_SUB_BUBBLES.forEach(b => need(b.id));
+    GOES_PRODUCTS.forEach(p => need(p.id));
+    WAVES_SUB_BUBBLES.forEach(b => need(b.id));
+    AIR_SUB_BUBBLES.forEach(b => need(b.id));
+    WIND_SUB_BUBBLES.forEach(b => need(b.id));
+    TEMPERATURE_SUB_BUBBLES.forEach(b => need(b.id));
+    PRESSURE_SUB_BUBBLES.forEach(b => need(b.id));
+    return out;
+  });
+  ok('every bubble id across every row has a description',
+     missing.length === 0, missing.join(','));
+
+  // Then the DOM: rendered rows actually wear the button. Back bubbles and
+  // notices are not products, so they are the only ones allowed to go bare.
+  const rows = await page.evaluate(() => {
+    const count = () => {
+      const subs = [...document.querySelectorAll('#sub-bubbles .sub-bubble')];
+      const prods = subs.filter(el => !/^\s*Back/.test(el.textContent));
+      return { prods: prods.length,
+               infos: prods.filter(el => el.querySelector('.ov-info-btn')).length };
+    };
+    const out = {};
+    toggleRadarSub();       out.source = count();
+    toggleRadarL2Sub();     out.l2 = count();
+    toggleRadarNormalSub(); out.normal = count();
+    toggleModelsSub();      out.models = count();
+    toggleWavesSub();       out.waves = count();
+    return out;
+  });
+  for (const [name, r] of Object.entries(rows)) {
+    ok(`the ${name} row: all ${r.prods} product bubbles carry the info button`,
+       r.prods > 0 && r.infos === r.prods, JSON.stringify(r));
+  }
+}
+
 console.log('\n9. nothing threw along the way');
 ok('no uncaught errors at all', errors.length === 0, errors.join(' | '));
 
