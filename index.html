@@ -11539,6 +11539,119 @@ const HD_FIELDS = [
   { id: 'surge', label: 'Storm Surge',    unit: 'm' },
 ];
 
+// What each chart's colors MEAN, for the Inspector tool. The Pi paints a
+// value into one of 256 colors from a named ramp across a fixed per-field
+// range, and that code can be run backwards: sample a pixel, find which of
+// the 256 colors it is, step back to the number. The scale a field was
+// painted with rides inside the manifest now ("scale": {lo, hi, ramp},
+// written by pi/gfs_pipeline.py); these tables are the fallback for runs
+// built before the Pi said, and they mirror RAMPS and FIELDS in
+// pi/gfs_pipeline.py - if a ramp or range changes there, change it here too.
+const HD_INSP_RAMPS = {
+  temp:    [[0,[12,12,80]],[0.25,[0,150,220]],[0.45,[60,200,140]],
+            [0.6,[240,230,90]],[0.8,[230,110,40]],[1,[150,20,20]]],
+  viridis: [[0,[68,1,84]],[0.25,[59,82,139]],[0.5,[33,145,140]],
+            [0.75,[94,201,98]],[1,[253,231,37]]],
+  heat:    [[0,[0,0,0]],[0.3,[140,0,90]],[0.6,[240,90,40]],
+            [0.85,[250,200,60]],[1,[255,255,220]]],
+  radar:   [[0,[4,233,231]],[0.25,[1,159,244]],[0.4,[3,0,244]],
+            [0.55,[2,253,2]],[0.7,[253,248,2]],[0.85,[253,139,0]],
+            [0.95,[253,0,0]],[1,[188,0,188]]],
+  precip:  [[0,[200,240,200]],[0.25,[60,190,110]],[0.5,[40,140,220]],
+            [0.75,[140,60,200]],[1,[230,60,120]]],
+  wind:    [[0,[230,245,255]],[0.3,[90,180,230]],[0.6,[60,200,120]],
+            [0.8,[245,200,70]],[1,[220,60,50]]],
+  spread:  [[0,[240,248,255]],[0.25,[150,200,235]],[0.5,[120,140,220]],
+            [0.75,[150,80,190]],[1,[120,20,90]]],
+  moisture:[[0,[120,90,50]],[0.3,[200,190,130]],[0.5,[90,190,120]],
+            [0.7,[40,140,210]],[0.87,[90,60,200]],[1,[230,90,200]]],
+  shear:   [[0,[200,30,60]],[0.18,[240,140,40]],[0.35,[240,225,120]],
+            [0.55,[120,200,150]],[0.8,[70,120,180]],[1,[30,40,80]]],
+  sst:     [[0,[20,20,90]],[0.35,[30,110,190]],[0.55,[60,180,170]],
+            [0.62,[250,250,180]],[0.75,[245,160,60]],[1,[170,20,30]]],
+};
+const HD_INSP_SCALES = {
+  t2m:   { ramp: 'temp',     lo: -40, hi: 45 },
+  d2m:   { ramp: 'temp',     lo: -40, hi: 30 },
+  mslp:  { ramp: 'viridis',  lo: 960, hi: 1050 },
+  cape:  { ramp: 'heat',     lo: 0,   hi: 5000 },
+  refc:  { ramp: 'radar',    lo: -10, hi: 75 },
+  apcp:  { ramp: 'precip',   lo: 0,   hi: 50 },
+  wind:  { ramp: 'wind',     lo: 0,   hi: 80 },
+  gust:  { ramp: 'wind',     lo: 0,   hi: 120 },
+  pwat:  { ramp: 'moisture', lo: 0,   hi: 80 },
+  shear: { ramp: 'shear',    lo: 0,   hi: 60 },
+  sst:   { ramp: 'sst',      lo: 16,  hi: 34 },
+  swh:   { ramp: 'viridis',  lo: 0,   hi: 12 },
+  perpw: { ramp: 'heat',     lo: 0,   hi: 20 },
+  ozone: { ramp: 'heat',     lo: 0,   hi: 120 },
+  pm25:  { ramp: 'heat',     lo: 0,   hi: 150 },
+  surge: { ramp: 'precip',   lo: 0,   hi: 4 },
+};
+// GEFS spread paints the same field names on its own scale: spread is a
+// distance between ensemble members, never negative and small.
+const HD_INSP_SPREAD = {
+  t2m:  { ramp: 'spread', lo: 0, hi: 12 },
+  d2m:  { ramp: 'spread', lo: 0, hi: 12 },
+  mslp: { ramp: 'spread', lo: 0, hi: 12 },
+  wind: { ramp: 'spread', lo: 0, hi: 25 },
+  apcp: { ramp: 'spread', lo: 0, hi: 25 },
+};
+
+// The same 256-entry table the Pi builds from the stops, built the same way,
+// cached per ramp.
+const _hdInspLuts = {};
+function _hdInspLut(name) {
+  if (_hdInspLuts[name]) return _hdInspLuts[name];
+  const stops = HD_INSP_RAMPS[name];
+  if (!stops) return null;
+  const lut = [];
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    for (let j = 1; j < stops.length; j++) {
+      const [p0, c0] = stops[j - 1], [p1, c1] = stops[j];
+      if (t <= p1 || j === stops.length - 1) {
+        let f = p1 === p0 ? 0 : (t - p0) / (p1 - p0);
+        f = Math.min(Math.max(f, 0), 1);
+        lut.push([Math.round(c0[0] + (c1[0] - c0[0]) * f),
+                  Math.round(c0[1] + (c1[1] - c0[1]) * f),
+                  Math.round(c0[2] + (c1[2] - c0[2]) * f)]);
+        break;
+      }
+    }
+  }
+  return (_hdInspLuts[name] = lut);
+}
+
+// A sampled color back to the number it was painted from. Returns
+// { value, idx } or null when the color is not from this ramp at all
+// (a basemap pixel bleeding through, a label, anything). The 256 steps
+// mean the answer is quantized to (hi-lo)/255, hence the "about" sign
+// on the readout.
+function _hdColorToValue(scale, r, g, b) {
+  const lut = scale && _hdInspLut(scale.ramp);
+  if (!lut) return null;
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < 256; i++) {
+    const c = lut[i];
+    const d = (r - c[0]) * (r - c[0]) + (g - c[1]) * (g - c[1])
+            + (b - c[2]) * (b - c[2]);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  if (best < 0 || bestD > 4000) return null;
+  return { value: scale.lo + (best / 255) * (scale.hi - scale.lo), idx: best };
+}
+
+// Which scale the chart on screen was painted with: the manifest's own word
+// for it when the Pi wrote one, else the mirrored tables above (with the
+// GEFS-spread special case, whose charts reuse field names on another scale).
+function _hdInspScale() {
+  const meta = _hdManifest && _hdManifest.fields && _hdManifest.fields[_hdField];
+  if (meta && meta.scale && meta.scale.ramp) return meta.scale;
+  if (_hdModel === 'gefsspr') return HD_INSP_SPREAD[_hdField] || null;
+  return HD_INSP_SCALES[_hdField] || null;
+}
+
 let _hdOn = false;
 let _hdBase = null;        // where the Pi is answering
 let _hdManifest = null;
@@ -11807,8 +11920,13 @@ function _hdShow() {
   // Swap rather than stack. Adding without removing leaves the old picture
   // painted underneath with nothing pointing at it, which is both a smear and
   // a leak, and is exactly the bug the ensemble frames had.
+  // crossOrigin matters: the Pi's server sends Access-Control-Allow-Origin
+  // on everything, and asking for the image anonymously is what lets the
+  // Inspector read its pixels back without tainting the canvas. Without it
+  // the picture draws the same but every pixel read throws.
   const next = L.imageOverlay(url, _hdManifest.bounds,
-    { opacity: 0.72, interactive: false, pane: 'radarPane' });
+    { opacity: 0.72, interactive: false, pane: 'radarPane',
+      crossOrigin: 'anonymous' });
   // Swap only once the replacement is actually up, so scrubbing does not
   // flash the basemap between frames. Both outcomes have to drop the old one:
   // waiting purely on success means a missing frame leaves the previous image
@@ -21213,6 +21331,70 @@ function _inspModelsRow(cx, cy) {
   return row;
 }
 
+// ── Inspector: the Pi's own models ───────────────────────────────────────
+// The Pi paints every model chart the same way: value -> position on a fixed
+// per-field scale -> one of 256 colors from a named ramp. That is a code, not
+// just a picture, and a code can be read backwards: sample the pixel under
+// the crosshair, find which of the 256 ramp colors it is, and step back to
+// the number it stood for. So unlike the third-party Run Models imagery
+// (best effort, see above), every single Pi model - GFS, ECMWF, HRRR, NAM,
+// the waves, the air quality, all of them - gets a real reading here. The
+// scale tables and the color-to-value inversion live beside HD_FIELDS in the
+// Pi-models block, where the offline suite exercises them.
+
+// One pixel out of the model overlay's own image. Simpler than the tile
+// scanners above because an imageOverlay is exactly one <img>.
+function _inspReadOverlayPixel(img, cx, cy) {
+  if (!img || !img.complete || !img.naturalWidth) return null;
+  const rect = img.getBoundingClientRect();
+  if (cx < rect.left || cx > rect.right || cy < rect.top || cy > rect.bottom) return null;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    let x = Math.round((cx - rect.left) / rect.width * img.naturalWidth);
+    let y = Math.round((cy - rect.top) / rect.height * img.naturalHeight);
+    x = Math.max(0, Math.min(canvas.width - 1, x));
+    y = Math.max(0, Math.min(canvas.height - 1, y));
+    const d = ctx.getImageData(x, y, 1, 1).data;
+    if (d[3] < 10) return { transparent: true };
+    return { r: d[0], g: d[1], b: d[2] };
+  } catch (e) {
+    return { tainted: true };
+  }
+}
+
+function _inspHdRow(cx, cy) {
+  const spec = HD_FIELDS.find(f => f.id === _hdField) || {};
+  const label = spec.label || 'Model';
+  const img = _hdLayer && _hdLayer.getElement ? _hdLayer.getElement() : null;
+  const s = _inspReadOverlayPixel(img, cx, cy);
+  if (s && s.tainted) return { label, value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
+  if (!s) return { label, value: 'No data', color: 'rgba(120,120,120,0.5)' };
+  const scale = _hdInspScale();
+  if (s.transparent) {
+    // Precipitation and reflectivity fade their bottom pixels out on purpose:
+    // transparent there means "nothing falling", not "no chart".
+    const none = scale && (scale.ramp === 'precip' || scale.ramp === 'radar');
+    return none ? { label, value: 'None', color: 'rgba(120,120,120,0.35)' }
+                : { label, value: 'No data', color: 'rgba(120,120,120,0.35)' };
+  }
+  const color = `rgb(${s.r},${s.g},${s.b})`;
+  if (!scale) return { label, value: 'Color', unit: color, color };
+  const hit = _hdColorToValue(scale, s.r, s.g, s.b);
+  if (!hit) return { label, value: 'No data', color };
+  const step = (scale.hi - scale.lo) / 255;
+  let value = hit.value.toFixed(step >= 1 ? 0 : 1);
+  // The ends of the ramp are clamps, not readings: the color for the top of
+  // the scale is also the color of everything beyond it.
+  if (hit.idx === 255) value = '≥' + value;
+  else if (hit.idx === 0) value = '≤' + value;
+  else value = '≈' + value;
+  return { label, value, unit: spec.unit || '', color };
+}
+
 // Waves/Air read the EXACT interpolated value from the same grid the color
 // map was painted from (cached when it loaded), not a guessed-from-pixel
 // color, since we already have the real numbers for these two layers.
@@ -21315,6 +21497,7 @@ function _inspUpdate() {
   if (typeof pressureActive !== 'undefined' && pressureActive)       rows.push(_inspPressureRow(center));
   if (_sevOverlayLayer)                                               rows.push(_inspSevEnsRow(center));
   if (_iemModelLayer)                                                 rows.push(_inspModelsRow(cx, cy));
+  if (typeof _hdOn !== 'undefined' && _hdOn && _hdLayer)              rows.push(_inspHdRow(cx, cy));
 
   if (!rows.length) { _inspRenderRows([{ label: '', value: 'No layers active', color: 'rgba(120,120,120,0.5)' }]); return; }
   _inspRenderRows(rows);
@@ -33107,7 +33290,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Terminal (airport) radar menus now list only what those radars actually measure: reflectivity, velocity and spectrum width. Picking a dual-pol product then tapping a terminal falls back to reflectivity instead of erroring.";
+const APP_LATEST_UPDATE = "The Inspector tool now reads real numbers off every forecast model chart: GFS, ECMWF, HRRR, NAM, waves, air quality, all of them. Pan the crosshair over a model layer and it shows the actual value there, like 20 C or 45 kt, not just a color.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

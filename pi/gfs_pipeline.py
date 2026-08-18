@@ -2551,6 +2551,7 @@ def build_model(name, m, region="conus"):
 
     built = {}
     ranges = {}
+    scales = {}
     ok = 0
     # Filled in by the crop, for sources that send the whole world. The box
     # asked for and the box that comes back are not identical: a grid has a
@@ -2596,6 +2597,12 @@ def build_model(name, m, region="conus"):
                         spec["range"] = m["ranges"][key]
                     if m.get("ramp"):
                         spec["ramp"] = m["ramp"]
+                # The scale the picture was painted with, recorded so the
+                # site's Inspector can turn a pixel color back into the
+                # number it stood for. min/max below are what the data did;
+                # this is what the colors mean, which is not the same thing.
+                scales[key] = {"lo": spec["range"][0], "hi": spec["range"][1],
+                               "ramp": spec["ramp"]}
                 lo, hi = render_png(vals, lats, spec,
                                     os.path.join(run_dir, f"{key}_f{fhr:03d}.png"))
                 built.setdefault(key, []).append(fhr)
@@ -2620,6 +2627,7 @@ def build_model(name, m, region="conus"):
         "hours": hours,
         "fields": {k: {"hours": v,
                        "min": round(ranges[k][0], 2), "max": round(ranges[k][1], 2),
+                       "scale": scales.get(k),
                        "pattern": f"{k}_f{{fhr:03d}}.png"}
                    for k, v in built.items()},
         "seconds": round(time.time() - t0, 1),

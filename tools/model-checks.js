@@ -284,6 +284,63 @@ function ok(name, cond, extra) {
   _cycDisable();
   await _spagCycGenesis('cumulative');
 
+  // The Inspector reads a Pi model chart by turning the pixel color back
+  // into the number it was painted from. That inversion is pure math, so it
+  // is checked here without a canvas: paint a known value into a color with
+  // the same tables the Pi uses, hand the color back, expect the value.
+  console.log('\n21c. the Inspector reads the Pi model colors back into numbers');
+  {
+    const hdModelWas = typeof _hdModel !== 'undefined' ? _hdModel : null;
+    const hdManifestWas = typeof _hdManifest !== 'undefined' ? _hdManifest : null;
+    const hdFieldWas = typeof _hdField !== 'undefined' ? _hdField : null;
+
+    ok('every field the panel offers has a scale and a buildable ramp',
+       HD_FIELDS.every(f => HD_INSP_SCALES[f.id]
+                         && _hdInspLut(HD_INSP_SCALES[f.id].ramp)),
+       HD_FIELDS.filter(f => !HD_INSP_SCALES[f.id]
+                          || !_hdInspLut(HD_INSP_SCALES[f.id].ramp))
+                .map(f => f.id).join(','));
+
+    // 20 C on the temperature scale (-40..45) sits at index 180 of 255.
+    // Painting it and reading it back must land within one color step.
+    const tScale = HD_INSP_SCALES.t2m;
+    const tIdx = Math.round((20 - tScale.lo) / (tScale.hi - tScale.lo) * 255);
+    const tCol = _hdInspLut('temp')[tIdx];
+    const tHit = _hdColorToValue(tScale, tCol[0], tCol[1], tCol[2]);
+    ok('a painted 20 C reads back as 20 C',
+       tHit && Math.abs(tHit.value - 20) <= (tScale.hi - tScale.lo) / 255,
+       tHit && tHit.value);
+
+    // A mid-gray basemap pixel is not on any ramp and must be refused, not
+    // read as the nearest weather.
+    ok('a basemap gray is refused rather than misread',
+       _hdColorToValue(tScale, 128, 128, 128) === null,
+       JSON.stringify(_hdColorToValue(tScale, 128, 128, 128)));
+
+    // The top of a ramp is a clamp: its color also stands for everything
+    // beyond the scale, and the caller needs to know it hit the end.
+    const wScale = HD_INSP_SCALES.wind;
+    const wTop = _hdInspLut('wind')[255];
+    const wHit = _hdColorToValue(wScale, wTop[0], wTop[1], wTop[2]);
+    ok('the top of the scale reports itself as the top',
+       wHit && wHit.idx === 255, wHit && wHit.idx);
+
+    // Which scale applies: the manifest's own word wins, GEFS spread falls
+    // back to its special table, everything else to the field's default.
+    _hdField = 't2m';
+    _hdModel = 'gefsspr';
+    _hdManifest = { fields: { t2m: {} } };
+    const sprd = _hdInspScale();
+    ok('GEFS spread reads on the spread scale, not the temperature scale',
+       sprd && sprd.ramp === 'spread' && sprd.lo === 0 && sprd.hi === 12,
+       JSON.stringify(sprd));
+    _hdManifest = { fields: { t2m: { scale: { lo: -10, hi: 10, ramp: 'temp' } } } };
+    const own = _hdInspScale();
+    ok('a manifest that names its own scale is believed over the tables',
+       own && own.lo === -10 && own.hi === 10, JSON.stringify(own));
+
+    _hdModel = hdModelWas; _hdManifest = hdManifestWas; _hdField = hdFieldWas;
+  }
 
   console.log('\n22. Pi radar, drawn from the newest volume');
   _prClear();
