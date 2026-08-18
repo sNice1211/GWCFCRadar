@@ -108,6 +108,17 @@ const clearDraw = () => page.evaluate(() => {
   try { _disableL3(); } catch (e) {}
   _prBucketSite = null;
 });
+// An overlay existing is not a picture: the canvas can be fully transparent
+// and the overlay still "draws". Counting painted pixels is what actually
+// proves a product rendered - a blank Level 3 canvas hid behind the weaker
+// check for a while.
+const opaque = () => page.evaluate(() => {
+  if (typeof _l3Canvas === 'undefined' || !_l3Canvas) return -1;
+  const d = _l3Canvas.getContext('2d').getImageData(0, 0, 1000, 1000).data;
+  let n = 0;
+  for (let i = 3; i < d.length; i += 4) if (d[i] > 10) n++;
+  return n;
+});
 
 console.log('\n1. Level 2, decoded here, for a terminal radar');
 {
@@ -123,6 +134,8 @@ console.log('\n1. Level 2, decoded here, for a terminal radar');
   ok('a terminal radar draws reflectivity from the live feed', drew, JSON.stringify(st));
   ok('and it is a decoded picture, not a fetched image',
      drew && /^data:image/.test(st.url || ''), st.url);
+  ok('with real painted pixels on the canvas', await opaque() > 0,
+     String(await opaque()));
   ok('the station it decoded is the terminal', st.station === 'ttpa', st.station);
   ok('and the volume carried its elevations', st.tilts > 1, String(st.tilts));
   await clearDraw();
@@ -196,6 +209,8 @@ console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
                                           on: _prOn }));
   ok('an unconfigured NEXRAD draws its Level 3 reflectivity', drew,
      JSON.stringify(st));
+  ok('with real painted pixels, not an invisible overlay',
+     await opaque() > 0, String(await opaque()));
   ok('and the page knows it is browser decoded', st.site === 'KABR', st.site);
   await clearDraw();
 
@@ -203,6 +218,8 @@ console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
   await page.evaluate(() => { _prTilt = 1; return _l3BucketShow('TMCO'); });
   ok('a terminal draws its Level 3 in the TDWR dialect', await waitForDraw(),
      'no overlay');
+  ok('and its pixels are painted too', await opaque() > 0,
+     String(await opaque()));
   await clearDraw();
 
   // TJUA: the one WSR-88D whose id starts with T, which the code used to read
@@ -222,6 +239,37 @@ console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
                               return _l3BucketShow('KTLX'); });
   ok('velocity at tilt 2 draws from its own product code',
      await waitForDraw(), 'no overlay');
+  ok('velocity paints pixels too', await opaque() > 0, String(await opaque()));
+  // Knots at both levels: after normalization no Level 3 velocity should
+  // read like m/s AND the mesh should carry plausible knot speeds.
+  const velMax = await page.evaluate(() => {
+    let m = 0;
+    for (let i = 8; i < _lastMeshData.length; i += 9) {
+      const v = _lastMeshData[i];
+      if (v === v && Math.abs(v) > m) m = Math.abs(v);
+    }
+    return +m.toFixed(1);
+  });
+  ok('and its speeds are in knots (fastest gate under 250 kt)',
+     velMax > 0 && velMax < 250, String(velMax));
+  await clearDraw();
+
+  // Echo tops, the newest product with a raw feed: EET decodes here and the
+  // topped flag comes off, so every height is a real kilofeet number.
+  await page.evaluate(() => { _prProduct = 'echotops'; _prTilt = 1;
+                              return _l3BucketShow('KTLX'); });
+  ok('echo tops draw from the EET feed', await waitForDraw(), 'no overlay');
+  ok('echo tops paint pixels', await opaque() > 0, String(await opaque()));
+  const etMax = await page.evaluate(() => {
+    let m = -1;
+    for (let i = 8; i < _lastMeshData.length; i += 9) {
+      const v = _lastMeshData[i];
+      if (v === v && v > m) m = v;
+    }
+    return m;
+  });
+  ok('and every height is an honest kilofeet value (under 80)',
+     etMax >= 0 && etMax < 80, String(etMax));
   await clearDraw();
 
   // And a product the terminals genuinely do not publish must say so rather
@@ -238,6 +286,53 @@ console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
   });
   ok('a product a terminal does not carry is explained, not faked',
      said.some(t => /not published/i.test(t)), said.join(' | '));
+  await clearDraw();
+}
+
+console.log('\n3b. the value filter and custom colors, on live data');
+{
+  // Real weather from the live bucket, then the user's rules over it: a
+  // filter floor must strictly shrink the painted area, an impossible floor
+  // must empty it, and a one-color palette must paint exactly that color.
+  await page.evaluate(() => { _prProduct = 'reflectivity'; _prTilt = 1;
+                              return _l3BucketShow('KABR'); });
+  ok('live reflectivity is up for the rules to work on', await waitForDraw(),
+     'no overlay');
+  const r = await page.evaluate(() => {
+    const count = () => {
+      const d = _l3Canvas.getContext('2d').getImageData(0, 0, 1000, 1000).data;
+      let n = 0;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 10) n++;
+      return n;
+    };
+    const all = count();
+    _fxFilter = { ref: { on: true, min: 20, max: 80 } }; _fxSave();
+    _radarFxApply();
+    const strong = count();
+    _fxFilter = { ref: { on: true, min: 79, max: 80 } }; _fxSave();
+    _radarFxApply();
+    const none = count();
+    _fxFilter = {}; _fxColors = { ref: { on: true,
+      stops: ['#ff0000', '#ff0000', '#ff0000', '#ff0000', '#ff0000'] } };
+    _fxSave(); _radarFxApply();
+    // find one painted pixel and read its color
+    const d = _l3Canvas.getContext('2d').getImageData(0, 0, 1000, 1000).data;
+    let px = null;
+    for (let i = 3; i < d.length; i += 4) {
+      if (d[i] > 10) { px = [d[i - 3], d[i - 2], d[i - 1]]; break; }
+    }
+    _fxColors = {}; _fxSave(); _radarFxApply();
+    const back = count();
+    return { all, strong, none, px, back };
+  });
+  ok('a 20 dBZ floor strictly shrinks the live picture',
+     r.strong < r.all && r.all > 0, r.strong + ' of ' + r.all);
+  ok('an impossible floor empties it', r.none === 0, String(r.none));
+  ok('a one-color palette paints exactly that color on live echoes',
+     r.px && r.px[0] === 255 && r.px[1] === 0 && r.px[2] === 0,
+     JSON.stringify(r.px));
+  ok('clearing the rules restores the whole picture', r.back === r.all,
+     r.back + ' vs ' + r.all);
   await clearDraw();
 }
 

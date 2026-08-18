@@ -13057,6 +13057,23 @@ async function _prDraw(base, lvl, idx) {
   const all = Object.keys(idx.sites || {});
   if (!all.length) return;
   if (!_prSite || !idx.sites[_prSite]) _prSite = all[0];
+  // The raw-data settings. A value filter or custom colors only work on
+  // numbers this page decodes itself; a pre-painted picture from the Pi has
+  // no numbers left in it, and a filter cannot subtract paint. So while
+  // either is switched on for the product being shown, the site's raw feed
+  // is decoded here instead: the Level 2 chunks for a Level 2 picture, the
+  // Level 3 bucket for a Level 3 one. When the settings are cleared the Pi's
+  // faster pre-built pictures come back (see _radarFxApply).
+  if (typeof _fxWantsRaw === 'function' && _fxWantsRaw(lvl)) {
+    _fxRerouted = true;
+    if (lvl === 'l2') {
+      const l2p = (PR_PRODUCTS[_prProduct] || {}).l2 || 'ref';
+      loadL3Data(l2p, _prSite.toLowerCase());
+    } else {
+      _l3BucketShow(_prSite);
+    }
+    return;
+  }
   const only = { [_prSite]: idx.sites[_prSite] };
   for (const [site, meta] of Object.entries(only)) {
     const frame = meta.frames[meta.frames.length - 1];    // newest
@@ -13204,8 +13221,7 @@ const PR_BUCKET = {
   diffrefl:     { k: ['N0X'] },
   kdp:          { k: ['N0K'] },
   hydroclass:   { k: ['N0H'] },
-  composite:    { k: ['NCR'], t: ['NCR'] },
-  vil:          { k: ['DVL'] },
+  echotops:     { k: ['EET'] },
 };
 
 // Which site the browser is currently decoding, or null when the picture on
@@ -13261,9 +13277,17 @@ async function _l3BucketShow(site) {
   const label = (PR_PRODUCTS[product] || {}).label || product;
   if (!code) {
     if (typeof showToast === 'function') {
-      showToast(`${label} is not published for ${String(site).toUpperCase()}. `
-              + 'The terminal radars carry no dual-pol, and the higher tilts '
-              + 'stop where the Weather Service stops writing them.', 4500);
+      // Two honest reasons, said apart: some products have no raw Level 3
+      // file at all (they only exist as pictures the Pi pre-renders), and
+      // some sites simply do not publish this one.
+      if (!PR_BUCKET[product]) {
+        showToast(`${label} has no raw Level 3 feed to decode here; it is `
+                + 'built by the Pi for the radars the Pi covers.', 4500);
+      } else {
+        showToast(`${label} is not published for ${String(site).toUpperCase()}. `
+                + 'The terminal radars carry no dual-pol, and the higher tilts '
+                + 'stop where the Weather Service stops writing them.', 4500);
+      }
     }
     return;
   }
@@ -13282,6 +13306,9 @@ async function _l3BucketShow(site) {
     // The worker reads any product name it does not recognise as Level 2 with
     // the Level 3 parser, which is exactly what these files are.
     const result = await _workerProcess(buf, code);
+    // Velocity to knots, echo tops out of their +150 "topped" flag: one
+    // honest scale before anything downstream reads a number.
+    _l3MeshNormalize(result.meshData, code);
     _disableL3();                   // clear the previous browser-drawn picture
     _renderMesh(result, code.toLowerCase(), site);
   } catch (e) {
@@ -21060,7 +21087,13 @@ function _scClosePanel() {
 let _inspEnabled = false;
 let _inspEl = null, _inspLabelEl = null, _inspRafPending = false, _inspInterval = null;
 let _inspLastRows = [];
-const INSP_UNITS = { ref: 'dBZ', vel: 'mph', cc: '', zdr: 'dB', kdp: '°/km', sw: 'm/s' };
+// Units come from the product FAMILY, so a Level 3 bucket code ('n0b') and
+// its Level 2 sibling ('ref') read the same. Velocity is in knots at both
+// levels now (the decoders normalize it), which also retires a real bug
+// here: the old readout multiplied knots by the m/s-to-mph factor and
+// reported winds 15% too fast.
+const INSP_UNITS = { ref: 'dBZ', vel: 'kt', cc: '', zdr: 'dB', kdp: '°/km',
+                     sw: 'm/s', hc: '', et: 'kft' };
 
 function _inspQuadContains(mesh, k, lon, lat) {
   let inside = false;
@@ -21086,7 +21119,15 @@ function _inspFindMeshValue(lon, lat) {
 }
 
 function _inspFormatValue(product, value) {
-  if (product === 'vel') return (value * 2.23694).toFixed(2); // m/s -> mph
+  var fam = typeof _meshFamily === 'function' ? _meshFamily(product) : product;
+  if (fam === 'vel') return value.toFixed(0);   // knots, whole numbers
+  if (fam === 'hc') {
+    // The classifier's answer is a category, not a quantity.
+    var cls = typeof HC_CLASSES !== 'undefined'
+      && HC_CLASSES[Math.round(value / 10) * 10];
+    return cls || String(Math.round(value));
+  }
+  if (fam === 'et') return value.toFixed(0);
   return value.toFixed(2);
 }
 
@@ -21212,13 +21253,17 @@ function _inspSampleColorFrom(container, cx, cy) {
 }
 
 function _inspRadarRow(center, cx, cy) {
-  // 1) Exact values from the raw mesh (L3 canvas products: CC / ZDR)
+  // 1) Exact values from the raw mesh: every product this page decodes
+  // itself, Level 2 or Level 3, whatever code delivered it. If the mesh
+  // overlay is on the map, the mesh IS the radar picture being looked at.
   const meshOk = _lastMeshData && _lastMeshProduct
-    && currentProduct === _lastMeshProduct && _l3Overlay && map.hasLayer(_l3Overlay);
+    && _l3Overlay && map.hasLayer(_l3Overlay);
   if (meshOk) {
     const value = _inspFindMeshValue(center.lng, center.lat);
     if (value == null || value !== value) return { label: 'Radar', value: 'No data', color: 'rgba(120,120,120,0.5)' };
-    const unit = INSP_UNITS[_lastMeshProduct] || '';
+    const fam = typeof _meshFamily === 'function'
+      ? _meshFamily(_lastMeshProduct) : _lastMeshProduct;
+    const unit = INSP_UNITS[fam] || '';
     const color = _meshColorFn(_lastMeshProduct)(value) || 'rgba(120,120,120,0.5)';
     return { label: 'Radar', value: _inspFormatValue(_lastMeshProduct, value), unit, color };
   }
@@ -21488,7 +21533,13 @@ function _inspUpdate() {
   const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;
 
   const rows = [];
-  if (typeof activeLayers !== 'undefined' && activeLayers.nexrad)    rows.push(_inspRadarRow(center, cx, cy));
+  // The radar row belongs whenever radar is on screen: the mosaic layer, a
+  // mesh this page decoded (which may be up under the Pi radar pills with
+  // the mosaic off), or the Pi's own pictures in the radar pane.
+  const _radarUp = (typeof activeLayers !== 'undefined' && activeLayers.nexrad)
+    || (typeof _l3Overlay !== 'undefined' && _l3Overlay && map.hasLayer(_l3Overlay))
+    || (typeof _prOn !== 'undefined' && _prOn);
+  if (_radarUp)                                                      rows.push(_inspRadarRow(center, cx, cy));
   if (typeof activeLayers !== 'undefined' && activeLayers.satellite) rows.push(_inspSatelliteRow(cx, cy));
   if (typeof wavesActive !== 'undefined' && wavesActive)             rows.push(_inspWavesRow(center));
   if (typeof airActive !== 'undefined' && airActive)                 rows.push(_inspAirRow(center));
@@ -23195,6 +23246,7 @@ let _l3Station  = null;
 let _l3Overlay  = null;   // L.imageOverlay on the map
 let _l3Canvas   = null;   // offscreen HTMLCanvasElement
 let _lastMeshData = null, _lastMeshBounds = null, _lastMeshProduct = null;
+let _lastMeshResult = null, _lastMeshStation = null;
 
 // ── Radar Web Worker (assets/radar_worker.bundle.js parses L2 binary) ──
 let _radarWebWorker   = null;
@@ -23818,10 +23870,14 @@ function _renderMesh(result, product, station) {
   }
 
   // Keep the raw value mesh around so the Inspector tool can read real
-  // dBZ/velocity/etc values at a point, not just the rendered color.
+  // dBZ/velocity/etc values at a point, not just the rendered color, and the
+  // whole result so a settings change (filter, custom colors) can repaint
+  // this same data without downloading or decoding anything again.
   _lastMeshData = meshData;
   _lastMeshBounds = bounds;
   _lastMeshProduct = product;
+  _lastMeshResult = result;
+  _lastMeshStation = station;
 
   var minLon = bounds[0], minLat = bounds[1], maxLon = bounds[2], maxLat = bounds[3];
   var lonRange = maxLon - minLon;
@@ -23836,11 +23892,18 @@ function _renderMesh(result, product, station) {
   var colorFn = _meshColorFn(product);
   var STRIDE = 9;
 
+  // The value filter, on the raw numbers before any color exists. This is
+  // the only place it needs to live: every decoded radar picture, Level 2 or
+  // Level 3, NEXRAD or terminal, passes through this loop.
+  var _fxFam = _meshFamily(product);
+  var _fxRange = _fxFilterFor(_fxFam);
+
   // Batch polygons by quantized value to minimize fill() calls
   var buckets = {};
   for (var i = 0; i < meshData.length; i += STRIDE) {
     var v = meshData[i + 8];
     if (v !== v) continue; // NaN = range fold
+    if (_fxRange && (v < _fxRange.min || v > _fxRange.max)) continue;
     var qk = Math.round(v * 4); // quantize to 0.25 units
     if (!buckets[qk]) buckets[qk] = { repV: v, start: i, indices: [i] };
     else buckets[qk].indices.push(i);
@@ -23881,33 +23944,175 @@ function _renderMesh(result, product, station) {
   _refreshNexradSiteStyles();
 }
 
+// ── PRODUCT FAMILIES, THE VALUE FILTER, AND CUSTOM COLORS ─────────────────
+// Every radar picture this page decodes itself arrives here as raw numbers,
+// and every one of those numbers belongs to a family: dBZ is dBZ whether it
+// came from a Level 2 volume ('ref'), a Level 3 tilt ('n0b'), a terminal's
+// dialect ('tz0'), or a higher cut ('n2b'). The family is what a color
+// scale, a value filter, and a unit label all attach to. The renderer used
+// to switch on the exact product string, so every Level 3 bucket code fell
+// through to "no color" and the whole product painted an empty picture.
+function _meshFamily(product) {
+  var p = String(product || '').toLowerCase();
+  if (p === 'ref' || p === 'ncr' || p === 'tzl'
+      || /^n\d[qb]$/.test(p) || /^tz\d$/.test(p)) return 'ref';
+  if (p === 'vel' || /^n\d[ug]$/.test(p) || /^tv\d$/.test(p)) return 'vel';
+  if (p === 'sw') return 'sw';
+  if (p === 'cc'  || /^n\dc$/.test(p)) return 'cc';
+  if (p === 'zdr' || /^n\dx$/.test(p)) return 'zdr';
+  if (p === 'kdp' || /^n\dk$/.test(p)) return 'kdp';
+  if (/^n\dh$/.test(p)) return 'hc';
+  if (p === 'eet') return 'et';
+  return null;
+}
+
+// What each family measures, over what range, and what to call it. The range
+// is the whole scale a filter or a custom palette spans, not what today's
+// weather happens to reach. Velocity is in knots at both levels: Level 2 is
+// converted by the decoder, Level 3 arrives in m/s and is converted the
+// moment it lands (see _l3MeshNormalize), so one filter number means one
+// speed everywhere.
+const RADAR_FAMS = {
+  ref: { label: 'Reflectivity',      unit: 'dBZ',  min: -30, max: 80,  step: 1 },
+  vel: { label: 'Velocity',          unit: 'kt',   min: -100, max: 100, step: 1 },
+  sw:  { label: 'Spectrum Width',    unit: 'm/s',  min: 0,   max: 15,  step: 0.5 },
+  cc:  { label: 'Corr. Coeff.',      unit: '',     min: 0,   max: 1.05, step: 0.01 },
+  zdr: { label: 'Diff. Refl.',       unit: 'dB',   min: -8,  max: 8,   step: 0.1 },
+  kdp: { label: 'Spec. Diff. Phase', unit: '°/km', min: 0,   max: 8,   step: 0.1 },
+  hc:  { label: 'Hydro. Class.',     unit: '',     min: 0,   max: 160, step: 10 },
+  et:  { label: 'Echo Tops',         unit: 'kft',  min: 0,   max: 70,  step: 1 },
+};
+
+// The hydrometeor classifier speaks in codes of ten: what the radar thinks
+// is actually up there, from bugs to hail.
+const HC_CLASSES = {
+  10: 'Biological', 20: 'Ground Clutter', 30: 'Ice Crystals', 40: 'Dry Snow',
+  50: 'Wet Snow', 60: 'Light Rain', 70: 'Heavy Rain', 80: 'Big Drops',
+  90: 'Graupel', 100: 'Hail', 110: 'Large Hail', 140: 'Unknown',
+  150: 'Range Folded',
+};
+const HC_COLORS = {
+  10: '#8a8f98', 20: '#565b63', 30: '#9cd2fd', 40: '#3b82f6', 50: '#6366f1',
+  60: '#22c55e', 70: '#15803d', 80: '#eab308', 90: '#f97316', 100: '#ef4444',
+  110: '#b91c1c', 140: '#a855f7', 150: '#4b5563',
+};
+
+// The user's own rules, one entry per family, remembered across visits.
+// _fxFilter: { fam: { on, min, max } }  - hide values outside [min, max]
+// _fxColors: { fam: { on, stops } }     - paint the family with these five
+//                                         colors, low to high
+const FX_FILTER_KEY = 'gwcfc_radar_filter';
+const FX_COLORS_KEY = 'gwcfc_radar_colors';
+function _fxLoad(key) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || '{}');
+    return (raw && typeof raw === 'object') ? raw : {};
+  } catch (e) { return {}; }
+}
+let _fxFilter = _fxLoad(FX_FILTER_KEY);
+let _fxColors = _fxLoad(FX_COLORS_KEY);
+function _fxSave() {
+  try {
+    localStorage.setItem(FX_FILTER_KEY, JSON.stringify(_fxFilter));
+    localStorage.setItem(FX_COLORS_KEY, JSON.stringify(_fxColors));
+  } catch (e) {}
+}
+
+function _fxFilterFor(fam) {
+  var f = fam && _fxFilter[fam];
+  if (!f || !f.on) return null;
+  var min = Number(f.min), max = Number(f.max);
+  if (!isFinite(min) || !isFinite(max)) return null;
+  return { min: Math.min(min, max), max: Math.max(min, max) };
+}
+function _fxPaletteFor(fam) {
+  var c = fam && _fxColors[fam];
+  if (!c || !c.on || !Array.isArray(c.stops)) return null;
+  var ok = c.stops.length >= 2 && c.stops.every(function (s) {
+    return /^#[0-9a-f]{6}$/i.test(String(s));
+  });
+  return ok ? c.stops : null;
+}
+function _fxActiveFor(fam) {
+  return !!(_fxFilterFor(fam) || _fxPaletteFor(fam));
+}
+
+function _fxHexToRgb(hex) {
+  return [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16),
+          parseInt(hex.slice(5, 7), 16)];
+}
+
+// A palette of stops becomes a function of the raw value: where the value
+// sits in the family's range picks the spot along the user's colors.
+function _fxGradientFn(fam, stops) {
+  var d = RADAR_FAMS[fam];
+  var rgbs = stops.map(_fxHexToRgb);
+  return function (v) {
+    var t = (v - d.min) / (d.max - d.min);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    var x = t * (rgbs.length - 1);
+    var i = Math.floor(x); if (i >= rgbs.length - 1) i = rgbs.length - 2;
+    var f = x - i;
+    var a = rgbs[i], b = rgbs[i + 1];
+    return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * f) + ','
+                  + Math.round(a[1] + (b[1] - a[1]) * f) + ','
+                  + Math.round(a[2] + (b[2] - a[2]) * f) + ')';
+  };
+}
+
+// One scale for one quantity, whichever product code delivered it. Custom
+// colors, when the user has set them for this family, replace the built-in
+// scale entirely - including the built-in "too weak to show" cutoffs, so a
+// palette can deliberately reveal the weak returns the default hides.
 function _meshColorFn(product) {
-  if (product === 'cc') return function(v) {
+  var fam = _meshFamily(product);
+  var pal = _fxPaletteFor(fam);
+  if (pal) {
+    if (fam === 'hc') {
+      // Classes are steps, not a slope, but the user's colors still apply:
+      // each class takes its spot along the chosen run of colors.
+      var grad = _fxGradientFn(fam, pal);
+      return function (v) { return grad(v); };
+    }
+    return _fxGradientFn(fam, pal);
+  }
+  if (fam === 'cc') return function(v) {
     var t = v / 1.05; t = t < 0 ? 0 : t > 1 ? 1 : t;
     return _ccColor(t);
   };
-  if (product === 'zdr') return function(v) {
+  if (fam === 'zdr') return function(v) {
     var t = (v + 8) / 16; t = t < 0 ? 0 : t > 1 ? 1 : t;
     return _zdrColor(t);
   };
-  if (product === 'kdp') return function(v) {
+  if (fam === 'kdp') return function(v) {
     if (v == null) return null;
     var t = v / 8; t = t < 0 ? 0 : t > 1 ? 1 : t;
     if (t < 0.1) return null; // near-zero KDP isn't meaningful to shade
     return 'hsl(' + Math.round(120 - t * 120) + ',85%,45%)'; // green (light rain) -> red (heavy rain)
   };
-  if (product === 'sw') return function(v) {
+  if (fam === 'sw') return function(v) {
     if (v == null) return null;
     var t = v / 15; t = t < 0 ? 0 : t > 1 ? 1 : t;
     return 'hsl(' + Math.round(60 - t * 60) + ',80%,45%)'; // yellow (calm) -> red (turbulent)
   };
-  if (product === 'vel') return function(v) {
-    var t = (v + 35) / 70; t = t < 0 ? 0 : t > 1 ? 1 : t;
+  if (fam === 'vel') return function(v) {
+    // Knots at both levels. The scale reaches 70 kt before it saturates,
+    // which is a violent storm's inbound jet, not a stiff breeze.
+    var t = (v + 70) / 140; t = t < 0 ? 0 : t > 1 ? 1 : t;
     if (t > 0.46 && t < 0.54) return null;
     var h = t < 0.5 ? Math.round(240 - t * 120) : Math.round(60 - (t - 0.5) * 120);
     return 'hsl(' + h + ',90%,45%)';
   };
-  if (product === 'ref') return function(v) {
+  if (fam === 'hc') return function(v) {
+    return HC_COLORS[Math.round(v / 10) * 10] || null;
+  };
+  if (fam === 'et') return function(v) {
+    if (v == null || v <= 0) return null;
+    var t = v / 60; t = t > 1 ? 1 : t;
+    // Low tops cool blue, the tall overshooting ones hot red.
+    return 'hsl(' + Math.round(220 - t * 220) + ',80%,50%)';
+  };
+  if (fam === 'ref') return function(v) {
     if (v < 5) return null;
     var t = (v - 5) / 70; if (t > 1) t = 1;
     if (t < 0.2)  return 'hsl(' + Math.round(210 - t * 50) + ',70%,' + Math.round(45 + t * 20) + '%)';
@@ -23916,6 +24121,213 @@ function _meshColorFn(product) {
     return 'hsl(' + Math.round(10 * (1 - t)) + ',100%,45%)';
   };
   return function() { return null; };
+}
+
+// Level 3 speaks two accents this page evens out the moment a decode lands:
+// its velocity products arrive in m/s where Level 2 is decoded to knots, and
+// enhanced echo tops mark a storm the beam could not see over ("topped") by
+// adding 150 to the height. One pass here and every consumer downstream -
+// the filter, the palettes, the Inspector - reads a single honest scale.
+function _l3MeshNormalize(meshData, code) {
+  if (!meshData || !meshData.length) return;
+  var c = String(code || '').toLowerCase();
+  var fam = _meshFamily(c);
+  if (fam === 'vel') {
+    for (var i = 8; i < meshData.length; i += 9) {
+      var v = meshData[i];
+      if (v === v) meshData[i] = v * 1.94384; // m/s -> kt
+    }
+  } else if (fam === 'et') {
+    for (var j = 8; j < meshData.length; j += 9) {
+      var w = meshData[j];
+      if (w === w && w >= 150) meshData[j] = w - 150; // topped flag off
+    }
+  }
+}
+
+// True while the Pi's pre-painted pictures have been set aside for a raw
+// browser decode, so clearing the settings knows to hand the screen back.
+let _fxRerouted = false;
+
+// Should the Pi radar layer decode raw instead of pasting the Pi's picture?
+// Only when a filter or custom colors are on for the product being shown,
+// and only when a raw path for it actually exists: the Level 2 chunks carry
+// ref and vel, the Level 3 bucket carries what PR_BUCKET lists. A product
+// with no raw feed (VIL, composite, the precip totals) keeps the Pi's paint,
+// which the Settings panel says out loud.
+function _fxWantsRaw(lvl) {
+  if (typeof _fxActiveFor !== 'function') return false;
+  if (lvl === 'l2') {
+    var l2p = (PR_PRODUCTS[_prProduct] || {}).l2;
+    if (!l2p) return false;
+    return _fxActiveFor(_meshFamily(l2p));
+  }
+  var code = _l3BucketCode(_prSite || '', _prProduct, _prTilt);
+  if (!code) return false;
+  return _fxActiveFor(_meshFamily(code.toLowerCase()));
+}
+
+// A settings change lands here: repaint what is on screen under the new
+// rules, and move the Pi layer between its pre-built pictures and the raw
+// decode as the rules now require. Cheap on purpose - the mesh is repainted
+// from memory, nothing is downloaded again.
+function _radarFxApply() {
+  if (_lastMeshResult && _l3Overlay && typeof map !== 'undefined'
+      && map.hasLayer(_l3Overlay)) {
+    _renderMesh(_lastMeshResult, _lastMeshProduct, _lastMeshStation || '');
+  }
+  if (typeof _prOn === 'undefined' || !_prOn || !_prIndex) return;
+  var lvl = _prDrawnLvl || 'l3';
+  if (!_prBucketSite) {
+    var wants = _fxWantsRaw(lvl);
+    if (wants && !_fxRerouted) {
+      // Pi paint is up and the rules now demand raw: redraw, which reroutes.
+      _prDraw(_hdBase, lvl, _prIndex);
+    } else if (!wants && _fxRerouted) {
+      // The rules cleared while a Level 2 raw decode held the screen.
+      _fxRerouted = false;
+      if (typeof _disableL3 === 'function') try { _disableL3(); } catch (e) {}
+      _prDraw(_hdBase, lvl, _prIndex);
+    }
+  } else if (_fxRerouted && !_fxWantsRaw('l3')) {
+    // A Pi-built site was moved to the bucket decode for the filter; the
+    // filter is gone, so the Pi's own pictures come back.
+    _fxRerouted = false;
+    _prBucketSite = null;
+    if (typeof _disableL3 === 'function') try { _disableL3(); } catch (e) {}
+    _prDraw(_hdBase, lvl, _prIndex);
+  }
+}
+
+// ── The Settings panel's Radar Data controls ──────────────────────────────
+// One product picker drives every control below it; each family remembers
+// its own filter and its own colors. The starting palettes are sensible
+// suggestions in each family's own visual language, there to be overwritten.
+let _fxUiFam = 'ref';
+const FX_DEFAULT_STOPS = {
+  ref: ['#04e9e7', '#019ff4', '#02fd02', '#fdf802', '#fd0000'],
+  vel: ['#00c000', '#80ff80', '#1c1c1c', '#ff8080', '#d00000'],
+  sw:  ['#ffe000', '#ffb000', '#ff7000', '#ff3000', '#d00000'],
+  cc:  ['#303080', '#4060c0', '#40c0a0', '#e0e040', '#c03030'],
+  zdr: ['#3040a0', '#40a0e0', '#40d060', '#e0d040', '#d04040'],
+  kdp: ['#30a030', '#80c040', '#e0e040', '#e08030', '#d03030'],
+  hc:  ['#8a8f98', '#3b82f6', '#22c55e', '#f97316', '#ef4444'],
+  et:  ['#3050d0', '#30b0d0', '#30d060', '#e0c030', '#e03030'],
+};
+
+function _fxEnsure(fam) {
+  if (!_fxFilter[fam]) {
+    _fxFilter[fam] = { on: false, min: RADAR_FAMS[fam].min,
+                       max: RADAR_FAMS[fam].max };
+  }
+  if (!_fxColors[fam] || !Array.isArray(_fxColors[fam].stops)
+      || _fxColors[fam].stops.length !== 5) {
+    _fxColors[fam] = { on: !!(_fxColors[fam] && _fxColors[fam].on),
+                       stops: FX_DEFAULT_STOPS[fam].slice() };
+  }
+}
+
+// Save immediately, repaint shortly: a slider fires dozens of times in one
+// drag, and repainting a few hundred thousand quads on every tick would make
+// the drag itself stutter.
+let _fxApplyTimer = null;
+function _fxTouch() {
+  _fxSave();
+  if (_fxApplyTimer) clearTimeout(_fxApplyTimer);
+  _fxApplyTimer = setTimeout(function () {
+    _fxApplyTimer = null;
+    _radarFxApply();
+  }, 250);
+}
+
+function _fxUiSync() {
+  var sel = document.getElementById('lqm-fx-fam');
+  if (!sel) return;
+  if (!sel.options.length) {
+    Object.keys(RADAR_FAMS).forEach(function (id) {
+      var d = RADAR_FAMS[id];
+      var o = document.createElement('option');
+      o.value = id;
+      o.textContent = d.label + (d.unit ? ' (' + d.unit + ')' : '');
+      sel.appendChild(o);
+    });
+  }
+  sel.value = _fxUiFam;
+  var d = RADAR_FAMS[_fxUiFam];
+  var f = _fxFilter[_fxUiFam] || {};
+  var c = _fxColors[_fxUiFam] || {};
+  var mn = document.getElementById('lqm-fx-min');
+  var mx = document.getElementById('lqm-fx-max');
+  [mn, mx].forEach(function (el) {
+    el.min = d.min; el.max = d.max; el.step = d.step;
+  });
+  mn.value = (f.min != null) ? f.min : d.min;
+  mx.value = (f.max != null) ? f.max : d.max;
+  document.getElementById('lqm-fx-filter-on').checked = !!f.on;
+  document.getElementById('lqm-fx-colors-on').checked = !!c.on;
+  var stops = (Array.isArray(c.stops) && c.stops.length === 5)
+    ? c.stops : FX_DEFAULT_STOPS[_fxUiFam];
+  for (var i = 0; i < 5; i++) {
+    var inp = document.getElementById('lqm-fx-c' + i);
+    if (inp) inp.value = stops[i];
+  }
+  _fxUiLabels();
+}
+
+function _fxUiLabels() {
+  var d = RADAR_FAMS[_fxUiFam];
+  var fmt = function (v) {
+    return (d.step < 1 ? (+v).toFixed(2).replace(/\.?0+$/, '')
+                       : String(Math.round(+v)))
+         + (d.unit ? ' ' + d.unit : '');
+  };
+  var mnv = document.getElementById('lqm-fx-min-val');
+  var mxv = document.getElementById('lqm-fx-max-val');
+  if (mnv) mnv.textContent = fmt(document.getElementById('lqm-fx-min').value);
+  if (mxv) mxv.textContent = fmt(document.getElementById('lqm-fx-max').value);
+}
+
+function _fxUiPick(fam) {
+  if (!RADAR_FAMS[fam]) return;
+  _fxUiFam = fam;
+  _fxUiSync();
+}
+function _fxUiFilterOn(on) {
+  _fxEnsure(_fxUiFam);
+  var f = _fxFilter[_fxUiFam];
+  f.on = !!on;
+  f.min = +document.getElementById('lqm-fx-min').value;
+  f.max = +document.getElementById('lqm-fx-max').value;
+  _fxTouch();
+}
+function _fxUiMin(v) {
+  _fxEnsure(_fxUiFam);
+  _fxFilter[_fxUiFam].min = +v;
+  _fxUiLabels();
+  if (_fxFilter[_fxUiFam].on) _fxTouch(); else _fxSave();
+}
+function _fxUiMax(v) {
+  _fxEnsure(_fxUiFam);
+  _fxFilter[_fxUiFam].max = +v;
+  _fxUiLabels();
+  if (_fxFilter[_fxUiFam].on) _fxTouch(); else _fxSave();
+}
+function _fxUiColorsOn(on) {
+  _fxEnsure(_fxUiFam);
+  _fxColors[_fxUiFam].on = !!on;
+  _fxTouch();
+}
+function _fxUiColor(i, v) {
+  _fxEnsure(_fxUiFam);
+  _fxColors[_fxUiFam].stops[i] = v;
+  if (_fxColors[_fxUiFam].on) _fxTouch(); else _fxSave();
+}
+function _fxUiReset() {
+  delete _fxFilter[_fxUiFam];
+  delete _fxColors[_fxUiFam];
+  _fxSave();
+  _fxUiSync();
+  _radarFxApply();
 }
 
 async function loadDualPolData(product, stationOverride = null) {
@@ -28460,6 +28872,67 @@ function selectProduct(p) {
     </div>
   </div>
 
+  <!-- ─── RADAR DATA: the value filter and custom colors, raw data only ─── -->
+  <div class="lqm-settings-group">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Radar Data</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Product</span>
+      <select id="lqm-fx-fam" class="lqm-settings-select" onchange="_fxUiPick(this.value)"></select>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Value Filter</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-fx-filter-on" onchange="_fxUiFilterOn(this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Show From</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-fx-min" class="lqm-slider" oninput="_fxUiMin(this.value)">
+        <span id="lqm-fx-min-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:48px;"></span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Show Up To</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-fx-max" class="lqm-slider" oninput="_fxUiMax(this.value)">
+        <span id="lqm-fx-max-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:48px;"></span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Custom Colors</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-fx-colors-on" onchange="_fxUiColorsOn(this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Weak to Strong</span>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <input type="color" id="lqm-fx-c0" oninput="_fxUiColor(0,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+        <input type="color" id="lqm-fx-c1" oninput="_fxUiColor(1,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+        <input type="color" id="lqm-fx-c2" oninput="_fxUiColor(2,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+        <input type="color" id="lqm-fx-c3" oninput="_fxUiColor(3,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+        <input type="color" id="lqm-fx-c4" oninput="_fxUiColor(4,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Back to Normal</span>
+      <button id="lqm-fx-reset" onclick="_fxUiReset()" style="font-family:var(--mono);font-size:9px;color:var(--accent2);background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);border-radius:6px;padding:3px 10px;cursor:pointer;">Reset</button>
+    </div>
+    <div style="font-size:9px;opacity:.65;line-height:1.45;padding:2px 4px 0;">
+      These rules run on the raw radar numbers, Level 2 and Level 3, for every
+      site. The filter hides returns outside the range you set; the colors
+      repaint the product from your five picks, weakest to strongest. While
+      either is on, site pictures are decoded in your browser from the raw
+      feed so the rule applies to real values, not to paint. VIL, composite
+      and the precip totals have no raw feed here and keep their built look.
+    </div>
+  </div>
+
   <!-- ─── LAYER OPACITY ─── -->
   <div class="lqm-settings-group">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Layer Opacity</div>
@@ -30334,6 +30807,16 @@ function lqmOpenSettings() {
   if (bcRow) bcRow.style.display = _locMarker ? '' : 'none';
   const bcCb = document.getElementById('lqm-set-breadcrumb');
   if (bcCb) bcCb.checked = _gpsBreadcrumbOn;
+  // The Radar Data controls (value filter + custom colors) reflect their
+  // saved state, and start on the family of whatever radar is showing.
+  if (typeof _fxUiSync === 'function') {
+    try {
+      const fam = typeof _meshFamily === 'function'
+        && _lastMeshProduct && _meshFamily(_lastMeshProduct);
+      if (fam && RADAR_FAMS[fam]) _fxUiFam = fam;
+      _fxUiSync();
+    } catch (e) {}
+  }
 }
 function lqmCloseSettings() {
   const el = document.getElementById('lqm-settings-overlay');
@@ -33290,7 +33773,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The Inspector tool now reads real numbers off every forecast model chart: GFS, ECMWF, HRRR, NAM, waves, air quality, all of them. Pan the crosshair over a model layer and it shows the actual value there, like 20 C or 45 kt, not just a color.";
+const APP_LATEST_UPDATE = "New in Settings: a radar value filter (show only echoes above the dBZ you pick) and custom radar colors (paint any product with your own five colors). Both run on the raw Level 2 and Level 3 data for every site and every product, and Level 3 site pictures got a big rendering fix along the way.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
