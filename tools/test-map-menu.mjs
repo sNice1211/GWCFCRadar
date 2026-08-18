@@ -1,0 +1,236 @@
+#!/usr/bin/env node
+/*
+ * The right-click map menu, driven in a real browser with real Leaflet and
+ * no network.
+ *
+ *     node tools/test-map-menu.mjs
+ *
+ * Right-click on the bare map opens a small menu about that exact spot:
+ * copy the coordinates, jump to the nearest radar with its products open,
+ * open the nearest forecast dot, list the alerts covering the point, park
+ * the Inspector there, ring it with a radius, zoom in. While a drawing tool
+ * is active, right-click keeps its old job (cancel the tool) and the menu
+ * must stay out of the way.
+ */
+
+import { readFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+let chromium;
+try {
+  ({ chromium } = await import('playwright'));
+} catch {
+  console.log('playwright is not installed, skipping. npm i playwright');
+  process.exit(0);
+}
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const LEAFLET = process.env.LEAFLET_DIST || '/tmp/node_modules/leaflet/dist';
+
+let pass = 0, fail = 0;
+const ok = (name, cond, extra) => {
+  if (cond) { pass++; console.log('  ok   ' + name); }
+  else { fail++; console.log('  FAIL ' + name + (extra ? '  <' + extra + '>' : '')); }
+};
+
+const browser = await chromium.launch({
+  executablePath: process.env.CHROME_PATH
+    || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+  args: ['--allow-file-access-from-files'],
+});
+const page = await browser.newPage();
+const errors = [];
+page.on('pageerror', e => errors.push(e.message));
+await page.route('**://**', route => {
+  const url = route.request().url();
+  if (url.startsWith('file://')) return route.continue();
+  if (url.includes('leaflet') && url.endsWith('.js'))
+    return route.fulfill({ contentType: 'application/javascript',
+      body: readFileSync(join(LEAFLET, 'leaflet.js'), 'utf8') });
+  if (url.includes('leaflet') && url.endsWith('.css'))
+    return route.fulfill({ contentType: 'text/css',
+      body: readFileSync(join(LEAFLET, 'leaflet.css'), 'utf8') });
+  return route.abort();
+});
+await page.goto('file://' + join(ROOT, 'index.html'),
+                { waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(3500);
+
+// A right-click, the way Leaflet delivers one.
+const rclick = (lat, lng) => page.evaluate(([lat, lng]) =>
+  map.fire('contextmenu', { latlng: L.latLng(lat, lng),
+    originalEvent: { clientX: 400, clientY: 300, preventDefault() {},
+                     stopPropagation() {} } }), [lat, lng]);
+const menuOpen = () => page.evaluate(() => {
+  const el = document.getElementById('map-ctx-menu');
+  return !!(el && el.classList.contains('open'));
+});
+const menuText = () => page.evaluate(() =>
+  document.getElementById('map-ctx-menu')?.textContent || '');
+
+console.log('\n1. right-click on the bare map opens the menu');
+{
+  ok('the page boots clean', errors.length === 0, errors[0]);
+  // Near Oklahoma City: nearest radar must come out KTLX.
+  await rclick(35.3, -97.3);
+  ok('the menu opens', await menuOpen(), 'not open');
+  const t = await menuText();
+  ok('titled with the exact coordinates', /35\.3000, -97\.3000/.test(t), t);
+  ok('offers copy, radar, forecast, alerts, inspect, radius, zoom',
+     /Copy coordinates/.test(t) && /Radar: KTLX/.test(t)
+     && /Forecast: /.test(t) && /Alerts here \(0\)/.test(t)
+     && /Inspect values here/.test(t) && /50 mi radius here/.test(t)
+     && /Zoom in here/.test(t), t);
+}
+
+console.log('\n2. copy coordinates');
+{
+  const copied = await page.evaluate(() => { _cmCopyCoords(); return _cmLastCopied; });
+  ok('the exact spot lands on the clipboard', copied === '35.3000, -97.3000',
+     String(copied));
+  ok('and the menu closed itself', !(await menuOpen()), 'still open');
+}
+
+console.log('\n3. jump to the nearest radar with products open');
+{
+  const r = await page.evaluate(async () => {
+    window.__radarCall = null;
+    window.loadL3Data = async (p, s) => { window.__radarCall = { p, s }; };
+    map.fire('contextmenu', { latlng: L.latLng(35.3, -97.3),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    _cmGoRadar();
+    await new Promise(res => setTimeout(res, 1500));
+    return {
+      call: window.__radarCall,
+      center: map.getCenter(),
+      row: [...document.querySelectorAll('#sub-bubbles .sub-bubble')]
+        .map(e => e.textContent.trim()).join(','),
+    };
+  });
+  ok('the nearest site is asked for its raw Level 2',
+     r.call && r.call.s === 'ktlx', JSON.stringify(r.call));
+  ok('the map flew to the radar',
+     Math.abs(r.center.lat - 35.33) < 0.2 && Math.abs(r.center.lng + 97.28) < 0.2,
+     JSON.stringify(r.center));
+  ok('and the radar product row is on screen',
+     /Reflectivity/.test(r.row) && /Velocity/.test(r.row), r.row);
+}
+
+console.log('\n4. jump to the nearest forecast dot');
+{
+  const r = await page.evaluate(async () => {
+    window.__fcCity = null;
+    window.openForecastModal = (c) => { window.__fcCity = c; };
+    activeLayers.forecasts = false;
+    map.fire('contextmenu', { latlng: L.latLng(35.47, -97.52),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    _cmGoForecast();
+    await new Promise(res => setTimeout(res, 1200));
+    return { city: window.__fcCity && window.__fcCity.name,
+             dotsOn: !!activeLayers.forecasts,
+             dist: window.__fcCity
+               ? map.distance(L.latLng(35.47, -97.52),
+                              L.latLng(window.__fcCity.lat, window.__fcCity.lon)) / 1609
+               : null };
+  });
+  ok('the nearest city\'s forecast opens', !!r.city && r.dist < 25,
+     r.city + ' at ' + (r.dist && r.dist.toFixed(1)) + ' mi');
+  ok('the forecast dots layer switches on to show it', r.dotsOn,
+     String(r.dotsOn));
+}
+
+console.log('\n5. alerts at the point');
+{
+  const r = await page.evaluate(() => {
+    // One warning covering the point, one far away: only the first counts.
+    _lastAlertFeatures = [
+      { id: 'a1', properties: { id: 'a1', event: 'Tornado Warning',
+                                expires: new Date(Date.now() + 3600000).toISOString() },
+        geometry: { type: 'Polygon',
+          coordinates: [[[-98, 35], [-96, 35], [-96, 36], [-98, 36], [-98, 35]]] } },
+      { id: 'a2', properties: { id: 'a2', event: 'Flood Warning' },
+        geometry: { type: 'Polygon',
+          coordinates: [[[-80, 25], [-79, 25], [-79, 26], [-80, 26], [-80, 25]]] } },
+    ];
+    map.fire('contextmenu', { latlng: L.latLng(35.3, -97.3),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    const label = document.getElementById('map-ctx-menu').textContent;
+    window.__focused = null;
+    window._focusAlertById = (id) => { window.__focused = id; };
+    _cmShowAlerts();
+    const pop = document.querySelector('.leaflet-popup-content');
+    const popText = pop ? pop.textContent : '';
+    _cmFocusAlert(0);
+    return { label, popText, focused: window.__focused };
+  });
+  ok('the menu counts the alerts covering the spot',
+     /Alerts here \(1\)/.test(r.label), r.label);
+  ok('the popup lists the warning by name, not the far one',
+     /Tornado Warning/.test(r.popText) && !/Flood Warning/.test(r.popText),
+     r.popText);
+  ok('tapping a row focuses that alert on the map', r.focused === 'a1',
+     String(r.focused));
+}
+
+console.log('\n6. inspector, radius, and zoom');
+{
+  const r = await page.evaluate(async () => {
+    map.fire('contextmenu', { latlng: L.latLng(34.0, -95.0),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    _cmInspectHere();
+    const insp = _inspEnabled;
+    if (_inspEnabled) toggleInspector();
+
+    map.fire('contextmenu', { latlng: L.latLng(34.5, -95.5),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    _cmRadiusHere();
+    const rad = _radii.length && { lat: _radii[0].lat, lng: _radii[0].lng,
+                                   miles: _radii[0].miles };
+
+    const zBefore = map.getZoom();
+    map.fire('contextmenu', { latlng: L.latLng(34.5, -95.5),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    _cmZoomHere();
+    await new Promise(res => setTimeout(res, 1500));
+    return { insp, rad, zBefore, zAfter: map.getZoom() };
+  });
+  ok('Inspect here switches the Inspector on', r.insp === true, String(r.insp));
+  ok('Radius here drops a 50 mile circle at the point',
+     r.rad && r.rad.miles === 50 && Math.abs(r.rad.lat - 34.5) < 0.001,
+     JSON.stringify(r.rad));
+  ok('Zoom in here zooms in', r.zAfter > r.zBefore,
+     r.zBefore + ' -> ' + r.zAfter);
+}
+
+console.log('\n7. the menu respects the tools and knows when to leave');
+{
+  const r = await page.evaluate(() => {
+    toggleStormConeTool();       // a tool now owns right-click
+    map.fire('contextmenu', { latlng: L.latLng(35, -97),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    const during = document.getElementById('map-ctx-menu')
+      .classList.contains('open');
+    deactivateTool();
+    map.fire('contextmenu', { latlng: L.latLng(35, -97),
+      originalEvent: { clientX: 400, clientY: 300, preventDefault() {} } });
+    const after = document.getElementById('map-ctx-menu')
+      .classList.contains('open');
+    map.fire('movestart');
+    const afterMove = document.getElementById('map-ctx-menu')
+      .classList.contains('open');
+    return { during, after, afterMove };
+  });
+  ok('no menu while a drawing tool is active', r.during === false,
+     String(r.during));
+  ok('the menu is back once the tool is gone', r.after === true,
+     String(r.after));
+  ok('panning the map closes it', r.afterMove === false, String(r.afterMove));
+}
+
+console.log('\n8. nothing threw along the way');
+ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+
+await browser.close();
+console.log(fail ? `\n${fail} FAILED, ${pass} passed` : `\nall ${pass} passed`);
+process.exit(fail ? 1 : 0);
