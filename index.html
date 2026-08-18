@@ -30772,21 +30772,37 @@ async function _relayPost(kind, payload) {
     if (!base) throw new Error('no Pi address published yet, so there is nowhere to send it');
     _hdBase = base;
   }
+  const send = (to) => fetch(`${to}/relay/${kind}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
   let r;
   try {
-    r = await fetch(`${base}/relay/${kind}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    r = await send(base);
   } catch (e) {
-    // A thrown fetch never reached the Pi at all: the tunnel is down, the
-    // published address is stale, or this network blocks it. Naming the
-    // host is what turns this from a mystery into a thing to check.
-    let host = base;
-    try { host = new URL(base).host; } catch (err) {}
-    throw new Error(`could not reach the Pi at ${host}. The tunnel may be down `
-                  + 'or blocked on this network.');
+    // A thrown fetch never reached the Pi at all. The usual cause is not
+    // that the Pi is off but that the address moved: a quick tunnel hands
+    // out a new one every restart, and this page may have been open since
+    // before that happened. So the address is looked up again and tried
+    // once more before giving up, which turns the common case into a
+    // message that simply sends on the second try.
+    let fresh = null;
+    try { fresh = await _hdResolveBase(); } catch (err) {}
+    if (fresh && fresh !== base) {
+      _hdBase = fresh;
+      try {
+        r = await send(fresh);
+      } catch (err) {
+        r = null;
+      }
+    }
+    if (!r) {
+      let host = base;
+      try { host = new URL(base).host; } catch (err) {}
+      throw new Error(`could not reach the Pi at ${host}. The tunnel may be down `
+                    + 'or blocked on this network.');
+    }
   }
   if (!r.ok) {
     let reason = 'HTTP ' + r.status;

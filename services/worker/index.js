@@ -122,9 +122,23 @@ async function streamAndTruncate(url) {
   return combined.slice(0, lastGoodPos).buffer;
 }
 
+// wrangler.toml declares ALLOWED_ORIGIN, and this used to ignore it and
+// answer '*' regardless, so a setting that reads like a restriction was
+// decorative. It is honoured now: with ALLOWED_ORIGIN set, only that site
+// may read the answer from a browser; unset, it stays open, which is the
+// old behaviour and fine for public NOAA data.
+//
+// Worth being clear about the limit of this: CORS is a rule browsers keep,
+// not a lock. It stops another WEBSITE from using this worker on its
+// visitors' behalf; it cannot stop a script calling the URL directly. The
+// station allowlist and the 5 MB stream cap are what bound the cost.
+// This worker uses the older addEventListener('fetch') style, where the
+// vars from wrangler.toml arrive as globals rather than on an env object.
 function corsHeaders() {
   var h = {};
-  h['Access-Control-Allow-Origin'] = '*';
+  var allowed = (typeof ALLOWED_ORIGIN !== 'undefined' && ALLOWED_ORIGIN) || '';
+  h['Access-Control-Allow-Origin'] = allowed || '*';
+  if (allowed) h['Vary'] = 'Origin';
   h['Access-Control-Allow-Methods'] = 'GET, OPTIONS';
   h['Access-Control-Allow-Headers'] = 'Content-Type';
   return h;
