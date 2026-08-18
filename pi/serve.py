@@ -13,7 +13,9 @@ log to explain it.
     python3 pi/serve.py            # port 8080, serving ~/wxdata
     python3 pi/serve.py 9000 /srv  # or say where
 
-Reads are read-only as before. The ONLY writes accepted are two relay doors,
+Reads are read-only as before, with one read-side relay door
+(GET /relay/ambient, which fetches the owner's Ambient Weather stations with
+keys kept on the Pi). The ONLY writes accepted are two relay doors,
 POST /relay/chat and POST /relay/feedback, which forward a message to a
 Discord webhook. The webhook URLs used to be written INTO the public page,
 and to Discord a webhook URL is the entire credential: anyone who reads it
@@ -47,6 +49,23 @@ RELAY_MAX_BYTES = 8192
 RELAY_MIN_GAP_S = 2.0
 
 _relay_last = {}  # sender ip -> monotonic time of the last accepted post
+
+# The Ambient Weather account keys, same rule as the webhooks: on the Pi,
+# outside the served tree, never in the page or the repo. The upstream
+# answer is cached briefly so a whole crowd of visitors with the layer on
+# costs one call against AWN's one-request-per-second allowance.
+#     ~/.gwcfc_ambient.json    {"apiKey": "...", "applicationKey": "..."}
+AMBIENT_FILE = os.path.expanduser("~/.gwcfc_ambient.json")
+AMBIENT_CACHE_S = 30.0
+_ambient_cache = {"at": -AMBIENT_CACHE_S, "body": None}
+
+
+def ambient_upstream():
+    """The real AWN endpoint, or a loopback stand-in for the test suite."""
+    if (os.environ.get("GWCFC_RELAY_ALLOW_LOCAL") == "1"
+            and os.environ.get("GWCFC_AMBIENT_URL", "").startswith("http://127.0.0.1:")):
+        return os.environ["GWCFC_AMBIENT_URL"]
+    return "https://api.ambientweather.net/v1/devices"
 
 
 def load_webhooks():
@@ -132,6 +151,59 @@ class CORSHandler(SimpleHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.end_headers()
+
+    # One read-side relay door; every other GET is plain file serving.
+    def do_GET(self):
+        if self.path.split("?")[0] == "/relay/ambient":
+            self._relay_ambient()
+            return
+        super().do_GET()
+
+    def _relay_ambient(self):
+        now = time.monotonic()
+        if _ambient_cache["body"] is not None and now - _ambient_cache["at"] < AMBIENT_CACHE_S:
+            self._reply_raw(200, _ambient_cache["body"])
+            return
+        try:
+            with open(AMBIENT_FILE) as fh:
+                c = json.load(fh)
+        except (OSError, ValueError):
+            c = {}
+        api = c.get("apiKey") if isinstance(c, dict) else None
+        app = c.get("applicationKey") if isinstance(c, dict) else None
+        if not api or not app:
+            self._reply_json(503, {"error": "ambient relay not configured on the "
+                                            "Pi. Put the keys in ~/.gwcfc_ambient.json"})
+            return
+        from urllib.parse import quote
+        url = (f"{ambient_upstream()}?applicationKey={quote(str(app))}"
+               f"&apiKey={quote(str(api))}")
+        req = urllib.request.Request(url, headers={"User-Agent": "gwcfc-relay"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                body = r.read(1024 * 1024)
+        except urllib.error.HTTPError as e:
+            # 429 passes through so the page can say "rate limited" honestly;
+            # anything else is summarized rather than parroted.
+            code = 429 if e.code == 429 else 502
+            self._reply_json(code, {"error": f"Ambient Weather answered HTTP {e.code}"})
+            return
+        except Exception:
+            self._reply_json(502, {"error": "could not reach Ambient Weather"})
+            return
+        _ambient_cache["at"] = now
+        _ambient_cache["body"] = body
+        self._reply_raw(200, body)
+
+    def _reply_raw(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except OSError:
+            pass
 
     def _reply_json(self, code, obj):
         body = json.dumps(obj).encode("utf-8")
