@@ -30753,11 +30753,30 @@ function _aiExtractActions(reply) {
 // Both halves land in one collection, so everybody sees one conversation in
 // order regardless of which side it came from.
 //
-// About the webhook URL being here in the page: anyone can read it and post to
-// that channel. That is already true of the feedback webhook below and is the
-// unavoidable cost of having no server. It can only ever post to this one
-// channel, and if it gets abused, delete it in Discord and paste in a new one.
-const CHAT_DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1536447010092224553/MckjWCKVY3-xc7lqNByqw9WloXZtcTN1ttMagQP50SUJY3CW-06tzJoX1rfE3a6y2nXY';
+// The webhook URL used to be written right here in the page, on the theory
+// that it could only post to one channel. That was the hole: to Discord the
+// URL is the ENTIRE credential, a spammer read it out of the page source and
+// posted @everyone garbage through it. No webhook URL lives in this page any
+// more. The page posts to the Pi's relay (pi/serve.py, /relay/chat and
+// /relay/feedback), the URLs live only on the Pi in ~/.gwcfc_webhooks.json
+// outside the served folder, and the relay strips mass pings and rate limits
+// no matter what it is handed.
+async function _relayPost(kind, payload) {
+  const base = _hdBase || await _hdResolveBase();
+  if (!base) throw new Error('the Pi relay is unreachable');
+  _hdBase = base;
+  const r = await fetch(`${base}/relay/${kind}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) {
+    let reason = 'HTTP ' + r.status;
+    try { reason = (await r.json()).error || reason; } catch (e) {}
+    throw new Error(reason);
+  }
+  return r;
+}
 const CHAT_LIMIT = 80;           // messages kept on screen
 const CHAT_MIN_GAP_MS = 1500;    // one message per person per 1.5s
 
@@ -31042,25 +31061,18 @@ async function chatToggleVoiceMsg() {
   capTimer = setTimeout(() => _chatRecStop && _chatRecStop(), CHAT_VOICE_MAX_SEC * 1000);
 }
 
-// Posting to Discord is deliberately not awaited by the map write: if Discord
-// is unreachable the message must still appear on the map.
+// Posting to Discord is deliberately not awaited by the map write: if the
+// relay is unreachable the message must still appear on the map.
 async function _chatPostToDiscord(name, text) {
-  if (!CHAT_DISCORD_WEBHOOK_URL) return;
   try {
-    await fetch(CHAT_DISCORD_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        // username puts the sender's name on the Discord post, so the channel
-        // reads as people talking rather than one bot repeating everyone.
-        username: `${name} (radar)`.slice(0, 80),
-        content: text.slice(0, 1900),
-        // Nobody gets pinged by a relayed message, whatever it contains.
-        allowed_mentions: { parse: [] }
-      })
+    await _relayPost('chat', {
+      // username puts the sender's name on the Discord post, so the channel
+      // reads as people talking rather than one bot repeating everyone.
+      username: `${name} (radar)`.slice(0, 80),
+      content: text.slice(0, 1900),
     });
   } catch (e) {
-    console.warn('chat -> Discord webhook:', e);
+    console.warn('chat -> Discord relay:', e);
   }
 }
 
@@ -34341,7 +34353,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Every product bubble in every menu now has a little i info button: the radar source row, all the Level 2 and Pi radar products, the Models row, and more. Tap the i to get a plain-English explanation of what that product actually shows.";
+const APP_LATEST_UPDATE = "Security lockdown: the Discord spam hole is closed. Chat and feedback now go through a locked-down relay on the Pi instead of carrying webhook addresses in the page, the relay strips mass pings and invite links no matter what it is sent, and the bot's status command no longer has a public fallback password.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -37607,21 +37619,16 @@ function closeCredits() {
 </div>
 <script>
 // ════════════════════════════════════════════════════════════
-//  FEEDBACK - posts straight to a Discord channel via webhook
+//  FEEDBACK - relayed to Discord through the Pi
 // ════════════════════════════════════════════════════════════
-// Discord webhook the feedback form posts to.
-//
-// This is a public page, so this URL ships in the page source and in the repo.
-// Anyone who reads either can post to the channel, and Discord treats the URL
-// itself as the only credential. It cannot be scoped or rate limited per user.
-// If it gets abused, delete the webhook in Discord and make a new one: that
-// instantly invalidates this URL.
-//
-// The durable fix is to move it behind one of the Cloudflare Workers this
-// project already runs, have the page POST to the worker, and keep the webhook
-// in the worker's secrets. Only the worker URL would then be public, and it can
-// rate limit. Left inline for now because that is what was asked for.
-const FEEDBACK_DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1536447010092224553/MckjWCKVY3-xc7lqNByqw9WloXZtcTN1ttMagQP50SUJY3CW-06tzJoX1rfE3a6y2nXY';
+// The webhook URL used to sit right here, and this comment used to explain
+// why that was risky. It was: the URL is the entire credential, someone read
+// it out of the page and spammed the channel through it. No webhook URL
+// ships in this page any more. Feedback posts to the Pi's relay
+// (pi/serve.py, /relay/feedback), the URL lives only on the Pi in
+// ~/.gwcfc_webhooks.json outside the served folder, and the relay rebuilds
+// the message from a whitelist of fields, strips mass pings and invite
+// links, and rate limits, whatever it is handed.
 
 let _fbType = 'Bug';
 
@@ -37654,11 +37661,6 @@ async function _fbSubmit() {
   const contact = document.getElementById('feedback-contact').value.trim();
   if (!text) { _fbSetStatus('Write something first.', 'err'); return; }
 
-  if (!FEEDBACK_DISCORD_WEBHOOK_URL) {
-    _fbSetStatus("Feedback isn't connected yet - the developer still needs to add a Discord webhook.", 'info');
-    return;
-  }
-
   const btn = document.getElementById('feedback-submit-btn');
   btn.disabled = true;
   _fbSetStatus('Sending…', 'info');
@@ -37667,20 +37669,15 @@ async function _fbSubmit() {
   const typeColor = { Bug: 0xe74c3c, Idea: 0xf1c40f, Question: 0x3498db, Other: 0x9b59b6 }[_fbType] || 0x008cba;
 
   try {
-    const res = await fetch(FEEDBACK_DISCORD_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        embeds: [{
-          title: `${typeEmoji} ${_fbType} - GWCFC Radar Feedback`,
-          description: text,
-          color: typeColor,
-          fields: contact ? [{ name: 'Contact', value: contact, inline: true }] : [],
-          timestamp: new Date().toISOString(),
-        }],
-      }),
+    await _relayPost('feedback', {
+      embeds: [{
+        title: `${typeEmoji} ${_fbType} - GWCFC Radar Feedback`,
+        description: text,
+        color: typeColor,
+        fields: contact ? [{ name: 'Contact', value: contact, inline: true }] : [],
+        timestamp: new Date().toISOString(),
+      }],
     });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
     _fbSetStatus("Thanks! That's been sent.", 'ok');
     document.getElementById('feedback-text').value = '';
     document.getElementById('feedback-contact').value = '';

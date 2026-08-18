@@ -228,7 +228,46 @@ console.log('\n7. the menu respects the tools and knows when to leave');
   ok('panning the map closes it', r.afterMove === false, String(r.afterMove));
 }
 
-console.log('\n8. nothing threw along the way');
+console.log('\n8. no webhook secrets in the page, ever again');
+{
+  // The spam attack started with a Discord webhook URL sitting in this very
+  // file: to Discord the URL is the whole credential. This check fails the
+  // suite the moment anyone pastes one back in.
+  const src = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  ok('index.html contains no Discord webhook URL',
+     !/discord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d/.test(src),
+     'a webhook URL is in the page source');
+
+  // And the feedback form posts through the Pi relay instead.
+  const r = await page.evaluate(async () => {
+    window.__relayHits = [];
+    const real = window.fetch;
+    window.fetch = async (u, opts) => {
+      if (String(u).includes('/relay/')) {
+        window.__relayHits.push({ url: String(u), body: JSON.parse(opts.body) });
+        return new Response('{"ok":true}', { status: 200 });
+      }
+      return real(u, opts);
+    };
+    _hdBase = 'https://fake-pi.test';
+    document.getElementById('feedback-text').value = 'test note';
+    document.getElementById('feedback-contact').value = 'me@example.com';
+    await _fbSubmit();
+    window.fetch = real;
+    return { hits: window.__relayHits,
+             status: document.getElementById('feedback-status').textContent };
+  });
+  ok('feedback posts to the Pi relay, not to Discord',
+     r.hits.length === 1 && r.hits[0].url === 'https://fake-pi.test/relay/feedback',
+     JSON.stringify(r.hits.map(h => h.url)));
+  ok('with the embed the relay expects',
+     r.hits[0] && r.hits[0].body.embeds
+     && r.hits[0].body.embeds[0].description === 'test note',
+     JSON.stringify(r.hits[0] && r.hits[0].body));
+  ok('and tells the sender it worked', /been sent/i.test(r.status), r.status);
+}
+
+console.log('\n9. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 await browser.close();

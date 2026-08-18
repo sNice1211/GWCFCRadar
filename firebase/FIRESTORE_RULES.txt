@@ -262,14 +262,32 @@ service cloud.firestore {
     // reads it.
     //
     // Anyone may read it: it is a public address for public forecast files.
-    // Writing needs a signed-in client, which the Pi does anonymously, exactly
-    // as the chat bridge does. The value is fenced to an https address of
-    // sensible length so the field cannot be used as free storage, and only
-    // these two keys may exist.
+    //
+    // Writing is another matter. This used to accept ANY signed-in client,
+    // and anonymous sign-in counts as signed in, so in practice the whole
+    // internet could overwrite the Pi's address and point every visitor's
+    // browser at a server of their choosing. Now only the Pi's own account
+    // (and the owner) may write it.
+    //
+    // SETUP, once:
+    //   1. Firebase console -> Authentication -> Users -> Add user.
+    //      Email: pi-publisher@gwcfc-radar.local  (or any address you like)
+    //      Password: something long and random.
+    //   2. On the Pi:  nano ~/.gwcfc_fb_auth.json  and put in:
+    //      {"email": "pi-publisher@gwcfc-radar.local", "password": "..."}
+    //      then:  chmod 600 ~/.gwcfc_fb_auth.json
+    //   3. If you chose a different email, change it below to match.
+    //   4. Publish these rules.
+    function isPiPublisher() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == 'pi-publisher@gwcfc-radar.local';
+    }
+
     match /piEndpoint/{which} {
       allow read: if true;
 
-      allow create, update: if isSignedIn()
+      allow create, update: if (isPiPublisher() || isOwner())
         && request.resource.data.keys().hasOnly(['url', 'at'])
         && request.resource.data.url is string
         && request.resource.data.url.size() < 200
