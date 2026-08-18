@@ -71,6 +71,10 @@ const MANIFEST = JSON.stringify({
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAC' +
   'hwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+// A model chart with a known value painted into it, generated in the browser
+// by scene 1b out of the page's own ramp tables, then served back by the
+// route below. Starts as the blank PNG until the scene fills it in.
+let modelPng = null;
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra) => {
@@ -149,6 +153,27 @@ async function boot(piMode) {
             mesh:     { file: 'mesh.png', label: 'Hail Swaths',
                         bounds: [[20, -130], [55, -60]] },
           } }) });
+      // The models half of the Pi, enough for the Inspector scene: one model,
+      // one field, one hour. The ACAO header is what pi/serve.py really
+      // sends, and it is what lets the page read the image's pixels back.
+      if (url.includes('models/latest.json'))
+        return route.fulfill({ contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify({ updated: new Date().toISOString(), models: {
+            gfs: { label: 'GFS', res: '0.25 deg', run: '20260817_00',
+                   path: 'gfs/conus/20260817_00/manifest.json' } } }) });
+      if (url.includes('models/gfs/conus/20260817_00/manifest.json'))
+        return route.fulfill({ contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify({ model: 'gfs', label: 'GFS', res: '0.25 deg',
+            run: '20260817_00', bounds: [[25, -110], [45, -85]], hours: [0],
+            fields: { t2m: { hours: [0], min: -5, max: 35,
+                             scale: { lo: -40, hi: 45, ramp: 'temp' },
+                             pattern: 't2m_f{fhr:03d}.png' } } }) });
+      if (url.includes('t2m_f000.png'))
+        return route.fulfill({ contentType: 'image/png',
+          headers: { 'access-control-allow-origin': '*' },
+          body: modelPng || PNG });
       if (url.includes('/l3/TTPA/') && url.includes('manifest.json'))
         return route.fulfill({ contentType: 'application/json', body: TDWR_MANIFEST });
       if (url.includes('manifest.json'))
@@ -354,6 +379,49 @@ console.log('\n1. a healthy Pi, seen from the page');
   ok('tapping a tag dims every other line', focus.dimmed, JSON.stringify(focus));
   ok('and brightens its own', focus.lifted, JSON.stringify(focus));
   ok('tapping again restores the tangle', focus.restored, JSON.stringify(focus));
+
+  ok('nothing threw along the way', errors.length === 0, errors.join(' | '));
+  await page.close();
+}
+
+console.log('\n1b. the Inspector reads a Pi model chart into a number');
+{
+  const { page, errors } = await boot('up');
+
+  // Paint the chart the way the Pi would: 20 C on the temperature scale
+  // lands on entry 180 of the 256-color temp ramp. The page's own tables
+  // pick the color, so the scene cannot drift from the code it tests.
+  const dataUrl = await page.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 8; c.height = 8;
+    const col = _hdInspLut('temp')[180];
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+    ctx.fillRect(0, 0, 8, 8);
+    return c.toDataURL('image/png');
+  });
+  modelPng = Buffer.from(dataUrl.split(',')[1], 'base64');
+
+  await page.evaluate(() => _hdEnable());
+  const up = await page.waitForFunction(() => {
+    const img = typeof _hdLayer !== 'undefined' && _hdLayer
+      && _hdLayer.getElement && _hdLayer.getElement();
+    return !!(img && img.complete && img.naturalWidth);
+  }, { timeout: 20000 }).then(() => true).catch(() => false);
+  ok('the model chart draws from the fake Pi', up, 'overlay never loaded');
+
+  // Park the crosshair inside the chart and switch the Inspector on.
+  await page.evaluate(() => { map.setView([35, -97], 5); toggleInspector(); });
+  const rows = await page.waitForFunction(() =>
+    typeof _inspLastRows !== 'undefined'
+    && _inspLastRows.some(r => r.label === 'Temperature')
+    && JSON.stringify(_inspLastRows), { timeout: 15000 })
+    .then(h => JSON.parse(String(h))).catch(() => []);
+  const t = rows.find ? rows.find(r => r.label === 'Temperature') : null;
+  ok('the Inspector shows a row for the model field',
+     !!t, JSON.stringify(rows));
+  ok('and the pixel color reads back as the number it was painted from',
+     t && t.value === '≈20.0' && t.unit === '°C', t && (t.value + ' ' + t.unit));
 
   ok('nothing threw along the way', errors.length === 0, errors.join(' | '));
   await page.close();
