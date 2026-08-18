@@ -30762,14 +30762,32 @@ function _aiExtractActions(reply) {
 // outside the served folder, and the relay strips mass pings and rate limits
 // no matter what it is handed.
 async function _relayPost(kind, payload) {
-  const base = _hdBase || await _hdResolveBase();
-  if (!base) throw new Error('the Pi relay is unreachable');
-  _hdBase = base;
-  const r = await fetch(`${base}/relay/${kind}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  // The address is looked up fresh when it is not already known: a quick
+  // tunnel hands out a new one on every restart, and posting to the address
+  // from an hour ago fails in a way that looks like the message being
+  // rejected rather than the road having moved.
+  let base = _hdBase;
+  if (!base) {
+    base = await _hdResolveBase();
+    if (!base) throw new Error('no Pi address published yet, so there is nowhere to send it');
+    _hdBase = base;
+  }
+  let r;
+  try {
+    r = await fetch(`${base}/relay/${kind}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    // A thrown fetch never reached the Pi at all: the tunnel is down, the
+    // published address is stale, or this network blocks it. Naming the
+    // host is what turns this from a mystery into a thing to check.
+    let host = base;
+    try { host = new URL(base).host; } catch (err) {}
+    throw new Error(`could not reach the Pi at ${host}. The tunnel may be down `
+                  + 'or blocked on this network.');
+  }
   if (!r.ok) {
     let reason = 'HTTP ' + r.status;
     try { reason = (await r.json()).error || reason; } catch (e) {}
@@ -37684,8 +37702,13 @@ async function _fbSubmit() {
     _fbUpdateCount();
     setTimeout(closeFeedback, 1600);
   } catch (e) {
+    // The reason, not a shrug. "Could not send right now" is the same
+    // sentence whether the Pi is off, the tunnel moved, a network blocks
+    // it, or the relay refused the message, and telling those apart from
+    // the outside is impossible without saying which one happened.
     console.warn('Feedback send failed:', e);
-    _fbSetStatus('Could not send right now - try again in a bit.', 'err');
+    const why = (e && e.message) ? String(e.message) : 'unknown error';
+    _fbSetStatus('Could not send: ' + why, 'err');
   } finally {
     btn.disabled = false;
   }
