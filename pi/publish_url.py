@@ -51,22 +51,66 @@ def log(m):
     print(f"[publish] {m}", flush=True)
 
 
+def answers(url, timeout=8):
+    """
+    Does this address actually reach the file server behind the tunnel?
+
+    Any answer at all proves the address is live and pointed at something:
+    a 404 is the server saying "not that file", which still means the road
+    goes through. Only a refused or timed out connection is a dead address.
+    """
+    try:
+        req = urllib.request.Request(url.rstrip("/") + "/models/latest.json",
+                                     method="GET")
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
 def current_url(path=None):
     """
-    The address the tunnel is on now.
+    The address the tunnel is on now, proven rather than assumed.
 
     The path is resolved when called rather than defaulted at import, so the
     log location is one thing rather than a copy frozen at load time.
 
-    The log is append-only across restarts, so the last match is the live one
-    and every earlier match is an address that no longer answers.
+    The log is append-only, so the newest match is USUALLY the live one, and
+    that is where this used to stop. A quick tunnel breaks that assumption
+    in the worst way: it reconnects on its own and writes another address,
+    and a second later the one that was newest a moment ago is dead. Reading
+    the last line published a dead address over a working one and the site
+    lost the Pi while the tunnel sat there running.
+
+    So the candidates are walked newest first and the first one that
+    actually answers is the answer. If none answer, nothing is published,
+    because a published address that does not work is worse than leaving
+    the previous one alone.
     """
     try:
         with open(path or TUNNEL_LOG, errors="ignore") as f:
             found = URL_RE.findall(f.read())
-        return found[-1] if found else None
     except OSError:
         return None
+    if not found:
+        return None
+    # Newest first, without repeats, and only a handful: a long-lived log
+    # can hold dozens of retired addresses and none of them are worth a
+    # network round trip.
+    seen, ordered = set(), []
+    for u in reversed(found):
+        if u not in seen:
+            seen.add(u)
+            ordered.append(u)
+    for u in ordered[:6]:
+        if answers(u):
+            if u != ordered[0]:
+                log(f"the newest address in the log is dead, using {u}")
+            return u
+    log("no address in the log answers, so nothing is published")
+    return None
 
 
 def _detail(e):
