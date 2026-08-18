@@ -19650,12 +19650,22 @@ const SPAG_MODELS = [
   { id: 'icon_seamless', label: 'ICON', color: '#66ff66' },
   { id: 'gem_global',    label: 'GEM',  color: '#ffb300' },
 ];
-const SPAG_GRID_COLS = 12, SPAG_GRID_ROWS = 12;
+// 8x8, not the 12x12 this started at. The ensemble API bills per location
+// and per member, so a 144 point grid times three models times thirty-odd
+// members burned the whole free daily allowance in a handful of panel opens,
+// after which every track quietly vanished. 64 points at 2.6 degree spacing
+// trace a pressure minimum across an 18 degree box just as legibly.
+const SPAG_GRID_COLS = 8, SPAG_GRID_ROWS = 8;
 const SPAG_GRID_SPAN_DEG = 18; // ± around the storm's current position
 const SPAG_STEP_HOURS = 6;
 const SPAG_FRAME_COUNT = 9; // 0..48h
 let _spagModelTrackLayers = [];
 let _spagLoadToken = 0;
+// A traced track is good for a while: the run behind it refreshes every six
+// hours, and every reopen of the panel was re-buying the same answer from a
+// metered API. Keyed by storm position and model.
+const _spagMemo = new Map();
+const SPAG_MEMO_TTL = 20 * 60 * 1000;
 
 function _clearSpagModelTracks() {
   _spagModelTrackLayers.forEach(l => { try { map.removeLayer(l); } catch(e){} });
@@ -19666,6 +19676,11 @@ async function _spagLoadStormTracks() {
   const token = ++_spagLoadToken;
   _clearSpagModelTracks();
   if (!_tropActiveStorms.length) return;
+  // Why nothing drew, when nothing draws. A metered API that has run out for
+  // the day answers every request with an error body, and swallowing that
+  // into console.warn made the whole feature read as broken with no clue.
+  const failures = [];
+  let drewAny = false;
 
   for (const storm of _tropActiveStorms) {
     if (!isFinite(storm.lat) || !isFinite(storm.lon)) continue;
@@ -19678,17 +19693,27 @@ async function _spagLoadStormTracks() {
     const totalHours = (SPAG_FRAME_COUNT - 1) * SPAG_STEP_HOURS;
     const forecastDays = Math.ceil((totalHours + 1) / 24) + 1;
     await Promise.all(SPAG_MODELS.map(async model => {
+      const memoKey = `${storm.lat.toFixed(1)},${storm.lon.toFixed(1)}|${model.id}`;
+      const memo = _spagMemo.get(memoKey);
       let loc;
-      try {
+      if (memo && Date.now() - memo.at < SPAG_MEMO_TTL) {
+        loc = memo.loc;
+      } else try {
         const url = `https://ensemble-api.open-meteo.com/v1/ensemble?latitude=${pts.map(p=>p.lat.toFixed(2)).join(',')}` +
           `&longitude=${pts.map(p=>p.lng.toFixed(2)).join(',')}&hourly=surface_pressure&models=${model.id}` +
           `&forecast_days=${forecastDays}`;
         const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+        const data = await r.json().catch(() => null);
+        // The API's own refusal names its reason (a spent daily allowance,
+        // most often), and that reason is the diagnosis, so it is kept.
+        if (data && data.error) throw new Error(data.reason || 'API refused');
         if (!r.ok) throw new Error('HTTP ' + r.status);
-        const data = await r.json();
         loc = Array.isArray(data) ? data : [data];
+        _spagMemo.set(memoKey, { at: Date.now(), loc });
+        if (_spagMemo.size > 24) _spagMemo.delete(_spagMemo.keys().next().value);
       } catch(e) {
         console.warn(`Spaghetti track (${model.label}) fetch failed:`, e);
+        failures.push(`${model.label}: ${e.message || e}`);
         return;
       }
       if (token !== _spagLoadToken) return;
@@ -19709,7 +19734,8 @@ async function _spagLoadStormTracks() {
         });
         if (bestIdx >= 0) track.push(pts[bestIdx]);
       }
-      if (track.length < 2) return;
+      if (track.length < 2) { failures.push(`${model.label}: no usable data`); return; }
+      drewAny = true;
 
       const latlngs = track.map(p => [p.lat, p.lng]);
       // Black casing underneath (weight+2), colored line on top - same
@@ -19725,6 +19751,15 @@ async function _spagLoadStormTracks() {
       const tag = L.marker(last, { icon: tagIcon, interactive: false, zIndexOffset: 960 }).addTo(map);
       _spagModelTrackLayers.push(casing, colored, tag);
     }));
+  }
+
+  // Silence was the old failure mode. When not one model drew and at least
+  // one said why, the first reason goes in the panel, because "Minutely API
+  // request limit exceeded" is an answer and an empty map is not.
+  if (!drewAny && failures.length && token === _spagLoadToken) {
+    const el = document.getElementById('trop-storm-status');
+    if (el) el.textContent = 'Model tracks unavailable: ' + failures[0]
+      + (failures.length > 1 ? ` (and ${failures.length - 1} more)` : '');
   }
 }
 
@@ -33050,7 +33085,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The ECMWF models (IFS and AIFS) can now fetch from ECMWF's official AWS mirror when the main server is unreachable, so a network problem no longer reads as nothing built for this model.";
+const APP_LATEST_UPDATE = "The storm model tracks (GFS, ICON, GEM spaghetti) cost a third of what they did, remember their answer for twenty minutes, and when the free weather API refuses them, the panel now says the API's own reason instead of showing an empty map.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
