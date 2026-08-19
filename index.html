@@ -151,7 +151,7 @@ button, input, select, textarea { font-family: 'Comfortaa', sans-serif; font-wei
 
 /* Mono elements stay at normal weight - bold numbers look bad */
 #anim-time, #eas-panel-count, #eas-panel-title, #trop-frame-lbl, #sev-frame-lbl,
-.cp-dms, .dp-coord, .eas-loading, .eas-meta, .eas-type-badge, .layer-badge,
+.dp-coord, .eas-loading, .eas-meta, .eas-type-badge, .layer-badge,
 .load-status, .ov-label, .radar-pal-label, .sb-title,
 .trop-model-err, .trop-mtab, .trop-run-lbl, .trop-stab, .tt-group-label,
 .ap-desc, .ap-meta-val, .ap-counties, .ap-timeline-labels, .load-logo-sub,
@@ -851,62 +851,6 @@ body {
 .prod-btn:hover { color: var(--text); border-color: var(--accent); }
 .prod-btn.active { color: var(--accent2); border-color: var(--accent2); background: rgba(0,140,186,0.15); }
 
-/* ── COORD DOUBLE-CLICK POPUP ── */
-.coord-popup .leaflet-popup-content-wrapper {
-  background: rgb(6,12,20);
-  border: 1px solid rgba(0,140,186,0.45);
-  border-radius: 10px;
-  color: #fff;
-  box-shadow: 0 4px 28px rgba(0,0,0,0.7), 0 0 16px rgba(0,140,186,0.12);
-  padding: 0;
-}
-.coord-popup .leaflet-popup-tip { background: rgb(6,12,20); }
-.coord-popup .leaflet-popup-content { margin: 0; }
-.coord-popup-inner { padding: 11px 14px; min-width: 210px; }
-.cp-title {
-  font-family: var(--display);
-  font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
-  color: var(--accent2);
-  margin-bottom: 8px;
-}
-.cp-row {
-  display: flex; justify-content: space-between; align-items: center;
-  font-family: var(--mono); font-size: 11px;
-  color: rgba(255,255,255,0.5);
-  padding: 2px 0;
-  gap: 12px;
-}
-.cp-row b { color: #fff; font-weight: 600; }
-.cp-dms {
-  font-family: var(--mono); font-size: 10px;
-  color: rgba(180,210,255,0.55);
-  margin-top: 6px; padding-top: 6px;
-  border-top: 1px solid rgba(255,255,255,0.07);
-  line-height: 1.7;
-}
-.cp-actions {
-  display: flex; gap: 6px; margin-top: 9px;
-}
-.cp-copy {
-  background: rgba(0,140,186,0.1);
-  border: 1px solid rgba(0,140,186,0.3);
-  color: var(--accent2);
-  font-family: var(--mono); font-size: 9px; letter-spacing: 1px;
-  padding: 5px 10px; border-radius: 5px;
-  cursor: pointer; flex: 1;
-  transition: background 0.15s;
-}
-.cp-copy:hover { background: rgba(0,140,186,0.22); }
-.cp-recenter-set {
-  background: rgba(255,153,0,0.12);
-  border: 1px solid rgba(255,153,0,0.35);
-  color: #ff9900;
-  font-family: var(--mono); font-size: 9px; letter-spacing: 1px;
-  padding: 5px 10px; border-radius: 5px;
-  cursor: pointer; flex: 1;
-  transition: background 0.15s;
-}
-.cp-recenter-set:hover { background: rgba(255,153,0,0.25); }
 
 /* ── DATA CLICK POPUP ── */
 .data-popup .leaflet-popup-content-wrapper {
@@ -8199,39 +8143,6 @@ function initMap() {
   });
   map.on('moveend', _applyRadarPolyMask);
 
-  // Double-click → lat/lon popup
-  map.on('dblclick', function(e) {
-    const { lat, lng } = e.latlng;
-    const latDMS = _toDMS(lat, true);
-    const lonDMS = _toDMS(lng, false);
-    const decStr = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-    const copyId = 'cp-' + Date.now();
-    const rctId  = 'rc-' + Date.now();
-    const html = `<div class="coord-popup-inner">
-      <div class="cp-title"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> Coordinates</div>
-      <div class="cp-row"><span>Latitude</span><b>${lat >= 0 ? '+' : ''}${lat.toFixed(5)}°</b></div>
-      <div class="cp-row"><span>Longitude</span><b>${lng >= 0 ? '+' : ''}${lng.toFixed(5)}°</b></div>
-      <div class="cp-dms">${latDMS}<br>${lonDMS}</div>
-      <div class="cp-actions">
-        <button class="cp-copy" id="${copyId}"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-copy></use></svg> Copy coords</button>
-        <button class="cp-recenter-set" id="${rctId}"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-target></use></svg> Set recenter</button>
-      </div>
-    </div>`;
-    L.popup({ className: 'coord-popup', maxWidth: 280, autoPan: true })
-      .setLatLng(e.latlng)
-      .setContent(html)
-      .openOn(map);
-    setTimeout(() => {
-      const copyBtn = document.getElementById(copyId);
-      if (copyBtn) copyBtn.onclick = () => {
-        navigator.clipboard.writeText(decStr).catch(() => {});
-        copyBtn.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-check></use></svg> Copied!';
-        setTimeout(() => { copyBtn.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-copy></use></svg> Copy coords'; }, 1800);
-      };
-      const rctBtn = document.getElementById(rctId);
-      if (rctBtn) rctBtn.onclick = () => _setRecenterLocation(lat, lng);
-    }, 50);
-  });
 
   map.on('moveend', _updateRecenterBtn);
   _initGraticule();
@@ -8258,17 +8169,6 @@ function recenterMap() {
   if (_recenterLat == null) return;
   map.setView([_recenterLat, _recenterLng], map.getZoom(), { animate: true });
 }
-// ── COORD HELPERS ──
-function _toDMS(dec, isLat) {
-  const abs = Math.abs(dec);
-  const deg = Math.floor(abs);
-  const minFull = (abs - deg) * 60;
-  const min = Math.floor(minFull);
-  const sec = ((minFull - min) * 60).toFixed(2);
-  const dir = isLat ? (dec >= 0 ? 'N' : 'S') : (dec >= 0 ? 'E' : 'W');
-  return `${deg}° ${String(min).padStart(2,'0')}' ${String(sec).padStart(5,'0')}" ${dir}`;
-}
-
 // ── LAT/LON GRATICULE ──
 function _initGraticule() {
   const canvas = document.createElement('canvas');
@@ -34661,7 +34561,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The left menu now stays in one clean column on phones and scrolls when it is long, instead of spilling a second column over the map. The Surface Obs layer has been removed.";
+const APP_LATEST_UPDATE = "Double-clicking the map now just zooms in like any map, instead of opening the coordinates popup.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
