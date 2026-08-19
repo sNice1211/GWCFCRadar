@@ -23633,7 +23633,10 @@ function _rafTick(ts) {
   const interval = Math.max(50, 600 / animSpeed);
   if (ts - _rafLastTs >= interval) {
     _rafLastTs = ts;
-    if (activeLayers.satellite && goesFrames.length) {
+    if (_l2LoopActive()) {
+      const n = _l2Loop.frames.length;
+      _l2LoopShow((_l2Loop.idx + dir + n) % n);
+    } else if (activeLayers.satellite && goesFrames.length) {
       goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
       showGoesFrame(goesCurrentFrame);
     } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') {
@@ -23673,6 +23676,7 @@ function _stopRAF() {
 // In composite mode we check radar frames; in single-site/vel/sat modes those have their own
 // ready state and we just allow play (their loaders handle the wait).
 function _animationReady() {
+  if (_l2LoopActive()) return true;
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
   if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') return _dpFrames.length > 0;
@@ -23725,7 +23729,10 @@ function setAnimSpeed(val) {
 function cycleSpeed() {} // kept for compat
 
 function stepFrame(dir) {
-  if (activeLayers.satellite && goesFrames.length) {
+  if (_l2LoopActive()) {
+    const n = _l2Loop.frames.length;
+    _l2LoopShow((_l2Loop.idx + dir + n) % n);
+  } else if (activeLayers.satellite && goesFrames.length) {
     goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
     showGoesFrame(goesCurrentFrame);
   } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') {
@@ -23746,7 +23753,8 @@ function stepFrame(dir) {
   }
 }
 function seekFrame(idx) {
-  if (activeLayers.satellite && goesFrames.length) showGoesFrame(idx);
+  if (_l2LoopActive()) _l2LoopShow(idx);
+  else if (activeLayers.satellite && goesFrames.length) showGoesFrame(idx);
   else if (currentProduct === 'vel') showVelFrame(idx);
   else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') showDpFrame(idx);
   else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) _showSingleSiteRefFrame(idx);
@@ -23845,42 +23853,89 @@ async function _fetchVolumeDirect(stationId) {
   _l2SkipNewest = null;
   for (let back = startBack; back < startBack + 4; back++) {
     const vol = vols[(at - back + vols.length) % vols.length];
-    const x = await _s3Xml('prefix=' + station + '/' + vol + '/&max-keys=200');
-    const entries = [...x.querySelectorAll('Contents')].map(c => ({
-      key: c.querySelector('Key').textContent,
-      size: parseInt(c.querySelector('Size')?.textContent || '0', 10),
-    })).sort((a, b) => a.key < b.key ? -1 : 1);
-    if (entries.length < 8 || !entries[0].key.endsWith('-001-S')) continue;
-    // Chunks are whole records, so any prefix of them is a valid file. The
-    // listing carries every chunk's size, so the ones under the cap are
-    // chosen before a byte moves: the low sweeps live at the front, and a
-    // phone does not want the whole volume.
-    const wanted = [];
-    let planned = 0;
-    for (const e of entries) {
-      wanted.push(e.key);
-      planned += e.size;
-      if (planned > L2_DIRECT_CAP) break;
-    }
-    const responses = await Promise.all(wanted.map(k =>
-      fetch(L2_CHUNKS_BUCKET + '/' + k, { signal: _abortSignal(30000) })));
-    const parts = [];
-    let total = 0;
-    for (const r of responses) {
-      if (!r.ok) break;
-      const b = await r.arrayBuffer();
-      parts.push(b);
-      total += b.byteLength;
-    }
-    if (total < 100000) continue;
-    const out = new Uint8Array(total);
-    let off = 0;
-    for (const b of parts) { out.set(new Uint8Array(b), off); off += b.byteLength; }
-    console.log('[L2] direct: ' + station + ' vol ' + vol + ', '
-              + parts.length + ' chunks, ' + total + ' bytes');
-    return out.buffer;
+    const buf = await _assembleVolume(station, vol);
+    if (buf) return buf;
   }
   throw new Error('no complete volume for ' + station);
+}
+
+// Assemble one volume's low sweeps into a decodable buffer, or null when the
+// volume is not yet complete. Split out of _fetchVolumeDirect so playback can
+// pull several recent volumes with the same, proven logic.
+async function _assembleVolume(station, vol) {
+  const x = await _s3Xml('prefix=' + station + '/' + vol + '/&max-keys=200');
+  const entries = [...x.querySelectorAll('Contents')].map(c => ({
+    key: c.querySelector('Key').textContent,
+    size: parseInt(c.querySelector('Size')?.textContent || '0', 10),
+  })).sort((a, b) => a.key < b.key ? -1 : 1);
+  if (entries.length < 8 || !entries[0].key.endsWith('-001-S')) return null;
+  // Chunks are whole records, so any prefix of them is a valid file. The
+  // listing carries every chunk's size, so the ones under the cap are chosen
+  // before a byte moves: the low sweeps live at the front.
+  const wanted = [];
+  let planned = 0;
+  for (const e of entries) {
+    wanted.push(e.key);
+    planned += e.size;
+    if (planned > L2_DIRECT_CAP) break;
+  }
+  const responses = await Promise.all(wanted.map(k =>
+    fetch(L2_CHUNKS_BUCKET + '/' + k, { signal: _abortSignal(30000) })));
+  const parts = [];
+  let total = 0;
+  for (const r of responses) {
+    if (!r.ok) break;
+    const b = await r.arrayBuffer();
+    parts.push(b);
+    total += b.byteLength;
+  }
+  if (total < 100000) return null;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const b of parts) { out.set(new Uint8Array(b), off); off += b.byteLength; }
+  return out.buffer;
+}
+
+// The newest `n` COMPLETE volumes for a station, newest first, for playback.
+// Enumerates the volume directories once, finds the newest (handling the
+// number rollover exactly as _fetchVolumeDirect does), then assembles back
+// from there, skipping any that are still being written. Returns an array of
+// ArrayBuffers, which may be shorter than n near the start of a feed.
+async function _fetchRecentVolumes(station, n) {
+  station = station.toUpperCase();
+  const dirs = await _s3Xml('prefix=' + station + '/&delimiter=/&max-keys=1000');
+  const vols = [...dirs.querySelectorAll('CommonPrefixes > Prefix')]
+    .map(p => p.textContent.replace(/\/$/, '').split('/').pop())
+    .filter(v => /^\d+$/.test(v))
+    .sort((a, b) => a - b);
+  if (!vols.length) return [];
+  let at = vols.length - 1;
+  const last = await _s3VolTime(station, vols[at]).catch(() => '');
+  const ageMin = (() => {
+    const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(last || '');
+    if (!m) return Infinity;
+    return (Date.now() - Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5])) / 60000;
+  })();
+  const first = ageMin < 12 ? '' : await _s3VolTime(station, vols[0]).catch(() => '');
+  if (first && last && first > last) {
+    let lo = 0, hi = vols.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      const t = await _s3VolTime(station, vols[mid]).catch(() => '');
+      if (t && t >= first) lo = mid; else hi = mid - 1;
+    }
+    at = lo;
+  }
+  const out = [];
+  // Walk back through the volumes, keeping the first n complete ones. The +6
+  // gives room to skip a couple of half-written or empty volumes without
+  // coming up short.
+  for (let back = 0; back < n + 6 && out.length < n; back++) {
+    const vol = vols[(at - back + vols.length) % vols.length];
+    const buf = await _assembleVolume(station, vol).catch(() => null);
+    if (buf) out.push(buf);
+  }
+  return out;
 }
 let _l3Product  = null;
 let _l3Station  = null;
@@ -24394,8 +24449,107 @@ function _disableL3() {
   if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} _l3Overlay = null; }
   if (typeof _syncNexradSites === 'function') try { _syncNexradSites(); } catch (e) {}
   _l3Canvas = null; _l3Product = null; _l3Station = null;
+  _l2LoopReset();
   const at = document.getElementById('anim-time');
   if (at) at.textContent = '';
+}
+
+// ── SINGLE-SITE RAW PLAYBACK ──────────────────────────────────────────────
+// The single-site radar decoded here shows one live frame. This loops it: a
+// handful of recent volumes decoded in the browser, so the last ~half hour of
+// one radar can be scrubbed and played, all from raw data. The frame count is
+// small on purpose - each frame is a full volume download and decode, and the
+// target is a PS5 browser with little memory to spare. Frames are kept only as
+// finished PNG data URLs (one overlay, swapped), never as a pile of live
+// canvases.
+const L2_LOOP_MAX = 5;           // newest + up to four older
+let _l2Loop = { frames: [], idx: 0, station: null, product: null,
+                building: false, token: 0 };
+
+function _l2LoopActive() {
+  return _l2Loop.frames.length > 1
+    && typeof _l3Overlay !== 'undefined' && _l3Overlay
+    && typeof map !== 'undefined' && map.hasLayer(_l3Overlay);
+}
+
+function _l2LoopReset() {
+  // Bumping the token invalidates any build still decoding in the background.
+  _l2Loop = { frames: [], idx: 0, station: null, product: null,
+              building: false, token: (_l2Loop ? _l2Loop.token + 1 : 1) };
+}
+
+// Kick off building the loop after the live frame is already on screen. Only
+// the raw browser-decoded single-site products loop; the mosaic and the
+// dual-pol image products have their own frame systems. `curImg` is the frame
+// already drawn (its data URL + bounds), which becomes the newest loop frame
+// without decoding it twice.
+async function _l2LoopBuild(product, station, curImg) {
+  if (!curImg || !curImg.url) return;
+  const token = ++_l2Loop.token;
+  _l2Loop.frames = [{ url: curImg.url, bounds: curImg.leafletBounds,
+                      time: curImg.timeIso ? Date.parse(curImg.timeIso) : Date.now() }];
+  _l2Loop.idx = 0;
+  _l2Loop.station = station;
+  _l2Loop.product = product;
+  _l2Loop.building = true;
+  try {
+    const bufs = await _fetchRecentVolumes(station, L2_LOOP_MAX);
+    if (token !== _l2Loop.token) return;          // superseded by a newer draw
+    const layerMap = { cc: 'CC', zdr: 'ZDR', vel: 'VEL', ref: 'REF', kdp: 'KDP', sw: 'SW' };
+    const layer = layerMap[product] || product.toUpperCase();
+    // bufs[0] is the newest, already drawn as frame 0; decode the older ones.
+    for (let i = 1; i < bufs.length; i++) {
+      if (token !== _l2Loop.token) return;
+      let result;
+      try { result = await _workerProcess(bufs[i], layer); }
+      catch (e) { continue; }
+      if (token !== _l2Loop.token) return;
+      const img = _meshToImage(result, product);
+      if (!img) continue;
+      const t = (result.metadata && result.metadata.timeIso)
+        ? Date.parse(result.metadata.timeIso) : (_l2Loop.frames[0].time - i * 300000);
+      _l2Loop.frames.push({ url: img.url, bounds: img.leafletBounds, time: t });
+      _l2LoopSyncTimeline();
+    }
+  } catch (e) {
+    console.warn('[L2 loop] build:', e);
+  } finally {
+    if (token === _l2Loop.token) { _l2Loop.building = false; _l2LoopSyncTimeline(); }
+  }
+}
+
+// Frames arrive newest-first; the timeline reads oldest-left, newest-right, so
+// the frames are ordered oldest to newest for display and the slider is sized
+// to match. The live frame stays selected as the newest.
+function _l2LoopSyncTimeline() {
+  if (!_l2LoopActive()) return;
+  _l2Loop.frames.sort((a, b) => a.time - b.time);
+  _l2Loop.idx = _l2Loop.frames.length - 1;
+  const tl = document.getElementById('timeline');
+  if (tl) { tl.max = _l2Loop.frames.length - 1; tl.value = _l2Loop.idx; }
+  if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+  if (typeof buildTimelineLabels === 'function') { /* labels use radarFrames; skip for loop */ }
+}
+
+// Show one loop frame by swapping the single overlay's image, which is far
+// lighter than holding a layer per frame.
+function _l2LoopShow(idx) {
+  const f = _l2Loop.frames;
+  if (!f.length || !_l3Overlay) return;
+  idx = Math.max(0, Math.min(f.length - 1, idx));
+  _l2Loop.idx = idx;
+  try {
+    _l3Overlay.setUrl(f[idx].url);
+    if (f[idx].bounds) _l3Overlay.setBounds(f[idx].bounds);
+  } catch (e) {}
+  const tl = document.getElementById('timeline');
+  if (tl && +tl.value !== idx) tl.value = idx;
+  const at = document.getElementById('anim-time');
+  if (at && _l2Loop.station) {
+    at.textContent = _fmtHHMM(new Date(f[idx].time)) + ' · '
+      + _l2Loop.station.toUpperCase() + ' '
+      + (_MESH_LABELS[_l2Loop.product] || _l2Loop.product);
+  }
 }
 
 async function loadL3Data(product, stationOverride) {
@@ -24491,34 +24645,30 @@ async function _loadL3DataInner(product, stationOverride, retried) {
     return;
   }
 
-  _renderMesh(result, product, station);
+  var img = _renderMesh(result, product, station);
   var meta = result && result.metadata;
   if (meta && Array.isArray(meta.availableElevations)) {
     _l2TiltList = meta.availableElevations;
     _l2Tilt = meta.elevationNumber || _l2Tilt;
     if (document.getElementById('sub-l2-ref')) toggleRadarL2Sub();
   }
+  // Build the raw playback loop for this site in the background, so the play
+  // button and timeline can scrub the last few volumes. The live frame is
+  // already up; the older frames fill in behind it.
+  if (img && typeof _l2LoopBuild === 'function') {
+    _l2LoopBuild(product, station, img);
+  }
 }
 
-function _renderMesh(result, product, station) {
+// Paint one decoded volume into a PNG, and nothing else: no globals touched,
+// no layer added, no map changed. This is the pure half of _renderMesh, split
+// out so playback can decode older volumes into images in the background
+// without disturbing the frame on screen. Returns { url, canvas, bounds,
+// leafletBounds, timeIso } or null when there is nothing to draw.
+function _meshToImage(result, product) {
   var meshData = result.meshData;
   var bounds   = result.bounds;
-  var metadata = result.metadata;
-
-  if (!meshData || !bounds || meshData.length === 0) {
-    _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> No data returned for ' + product.toUpperCase());
-    return;
-  }
-
-  // Keep the raw value mesh around so the Inspector tool can read real
-  // dBZ/velocity/etc values at a point, not just the rendered color, and the
-  // whole result so a settings change (filter, custom colors) can repaint
-  // this same data without downloading or decoding anything again.
-  _lastMeshData = meshData;
-  _lastMeshBounds = bounds;
-  _lastMeshProduct = product;
-  _lastMeshResult = result;
-  _lastMeshStation = station;
+  if (!meshData || !bounds || meshData.length === 0) return null;
 
   var minLon = bounds[0], minLat = bounds[1], maxLon = bounds[2], maxLat = bounds[3];
   var lonRange = maxLon - minLon;
@@ -24532,21 +24682,15 @@ function _renderMesh(result, product, station) {
 
   var colorFn = _meshColorFn(product);
   var STRIDE = 9;
+  var _fxRange = _fxFilterFor(_meshFamily(product));
 
-  // The value filter, on the raw numbers before any color exists. This is
-  // the only place it needs to live: every decoded radar picture, Level 2 or
-  // Level 3, NEXRAD or terminal, passes through this loop.
-  var _fxFam = _meshFamily(product);
-  var _fxRange = _fxFilterFor(_fxFam);
-
-  // Batch polygons by quantized value to minimize fill() calls
   var buckets = {};
   for (var i = 0; i < meshData.length; i += STRIDE) {
     var v = meshData[i + 8];
     if (v !== v) continue; // NaN = range fold
     if (_fxRange && (v < _fxRange.min || v > _fxRange.max)) continue;
-    var qk = Math.round(v * 4); // quantize to 0.25 units
-    if (!buckets[qk]) buckets[qk] = { repV: v, start: i, indices: [i] };
+    var qk = Math.round(v * 4);
+    if (!buckets[qk]) buckets[qk] = { repV: v, indices: [i] };
     else buckets[qk].indices.push(i);
   }
 
@@ -24569,20 +24713,46 @@ function _renderMesh(result, product, station) {
     ctx.fill();
   }
 
-  _l3Canvas = canvas;
+  var meta = result.metadata;
+  return {
+    url: canvas.toDataURL('image/png'),
+    canvas: canvas,
+    bounds: bounds,
+    leafletBounds: [[minLat, minLon], [maxLat, maxLon]],
+    timeIso: (meta && meta.timeIso) || null,
+  };
+}
 
-  var leafletBounds = [[minLat, minLon], [maxLat, maxLon]];
-  var imgUrl = canvas.toDataURL('image/png');
+const _MESH_LABELS = { cc: 'Corr. Coeff.', zdr: 'Diff. Refl.', vel: 'Velocity',
+  ref: 'Reflectivity', kdp: 'Spec. Diff. Phase', sw: 'Spectrum Width' };
+
+function _renderMesh(result, product, station) {
+  var img = _meshToImage(result, product);
+  if (!img) {
+    _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> No data returned for ' + product.toUpperCase());
+    return;
+  }
+
+  // Keep the raw value mesh around so the Inspector tool can read real
+  // dBZ/velocity/etc values at a point, not just the rendered color, and the
+  // whole result so a settings change (filter, custom colors) can repaint
+  // this same data without downloading or decoding anything again.
+  _lastMeshData = result.meshData;
+  _lastMeshBounds = result.bounds;
+  _lastMeshProduct = product;
+  _lastMeshResult = result;
+  _lastMeshStation = station;
+  _l3Canvas = img.canvas;
+
   if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} }
-  _l3Overlay = L.imageOverlay(imgUrl, leafletBounds, { opacity: radarOpacity, zIndex: 10, pane: 'radarPane' }).addTo(map);
+  _l3Overlay = L.imageOverlay(img.url, img.leafletBounds, { opacity: radarOpacity, zIndex: 10, pane: 'radarPane' }).addTo(map);
 
-  var timeIso = metadata && metadata.timeIso;
-  var d = timeIso ? new Date(timeIso) : new Date();
+  var d = img.timeIso ? new Date(img.timeIso) : new Date();
   var at = document.getElementById('anim-time');
-  var labels = { cc: 'Corr. Coeff.', zdr: 'Diff. Refl.', vel: 'Velocity', ref: 'Reflectivity', kdp: 'Spec. Diff. Phase', sw: 'Spectrum Width' };
-  if (at) at.textContent = _fmtHHMM(d) + ' · ' + station.toUpperCase() + ' ' + (labels[product] || product);
+  if (at) at.textContent = _fmtHHMM(d) + ' · ' + station.toUpperCase() + ' ' + (_MESH_LABELS[product] || product);
 
   _refreshNexradSiteStyles();
+  return img;
 }
 
 // ── PRODUCT FAMILIES, THE VALUE FILTER, AND CUSTOM COLORS ─────────────────
@@ -34490,7 +34660,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed: the left-side layer buttons (Radar, Satellite, Wind, and the rest) no longer get cut off on a sideways phone or a TV/PS5 screen. They now wrap into a second column so every one stays visible.";
+const APP_LATEST_UPDATE = "Radar playback: single-site radar now loops. When you open a radar site, the last few raw volumes decode behind the live frame, so the play button and timeline scrub back through the recent scans, all from raw data. Busy radars get about 5 frames, quieter ones fewer.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

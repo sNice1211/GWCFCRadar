@@ -147,6 +147,42 @@ console.log('\n1. Level 2, decoded here, for a terminal radar');
   await clearDraw();
 }
 
+console.log('\n1c. the single-site raw playback loop builds from live volumes');
+{
+  // A busy NEXRAD, which keeps several recent volumes in the streaming
+  // bucket. Draw it, then wait for the loop to decode the older ones behind
+  // the live frame.
+  await page.evaluate(() => loadL3Data('ref', 'ktlx'));
+  const drew = await waitForDraw();
+  ok('the live frame draws', drew, 'no overlay');
+  const built = await page.waitForFunction(
+    () => typeof _l2Loop !== 'undefined' && _l2Loop.frames.length > 1,
+    { timeout: 90000 }).then(() => true).catch(() => false);
+  const st = await page.evaluate(() => ({
+    frames: _l2Loop.frames.length,
+    active: _l2LoopActive(),
+    ready: _animationReady(),
+    ordered: _l2Loop.frames.every((f, i, a) => i === 0 || a[i - 1].time <= f.time),
+    distinct: new Set(_l2Loop.frames.map(f => f.url)).size,
+  }));
+  ok('the loop builds more than one frame from raw volumes', built,
+     JSON.stringify(st));
+  ok('every frame is a distinct decoded picture',
+     st.distinct === st.frames && st.frames > 1, JSON.stringify(st));
+  ok('frames are ordered oldest to newest', st.ordered, JSON.stringify(st));
+  ok('and the play controls come alive', st.active && st.ready,
+     JSON.stringify(st));
+  // Scrubbing swaps the one overlay to an older frame's image.
+  const scrub = await page.evaluate(() => {
+    const before = _l3Overlay._url;
+    seekFrame(0);
+    return { changed: _l3Overlay._url !== before, idx: _l2Loop.idx };
+  });
+  ok('scrubbing to the oldest frame swaps the picture',
+     scrub.changed && scrub.idx === 0, JSON.stringify(scrub));
+  await clearDraw();
+}
+
 console.log('\n2. Level 2 for a second terminal, on the other side of the country');
 {
   await page.evaluate(() => loadL3Data('ref', 'tphx'));

@@ -344,6 +344,57 @@ console.log('\n8c. the mosaic loop length control');
   ok('choosing a length is remembered', r.saved === '360', r.saved);
 }
 
+console.log('\n8d. single-site raw playback dispatch');
+{
+  // The decode is exercised live elsewhere; here we prove the loop OWNS the
+  // timeline and play controls once it has frames, with fake frames so no
+  // network is needed. A real image overlay is put on the map so
+  // _l2LoopActive() sees what it checks for.
+  const r = await page.evaluate(() => {
+    const px = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    _disableL3();
+    _l3Station = 'ktlx'; _l3Product = 'ref';
+    _l3Overlay = L.imageOverlay(px, [[33, -99], [37, -95]],
+      { pane: 'radarPane' }).addTo(map);
+    // Three fake frames, deliberately out of time order to prove the sync
+    // sorts them oldest-first.
+    const t0 = Date.now();
+    _l2Loop = { frames: [
+      { url: px + '#c', bounds: [[33,-99],[37,-95]], time: t0 },
+      { url: px + '#a', bounds: [[33,-99],[37,-95]], time: t0 - 600000 },
+      { url: px + '#b', bounds: [[33,-99],[37,-95]], time: t0 - 300000 },
+    ], idx: 0, station: 'ktlx', product: 'ref', building: false, token: 5 };
+    _l2LoopSyncTimeline();
+    const active = _l2LoopActive();
+    const ready = _animationReady();
+    const orderedNewestSelected = _l2Loop.idx === 2
+      && _l2Loop.frames[0].time < _l2Loop.frames[2].time;
+    // Scrub to the oldest and confirm the one overlay swapped its image.
+    seekFrame(0);
+    const seekUrl = _l3Overlay._url;
+    // Step forward one and confirm it advances by one frame.
+    stepFrame(1);
+    const stepIdx = _l2Loop.idx;
+    return { active, ready, orderedNewestSelected, seekUrl, stepIdx,
+             tlMax: +document.getElementById('timeline').max };
+  });
+  ok('the loop reports active and playable once it has frames',
+     r.active === true && r.ready === true, JSON.stringify(r));
+  ok('frames are sorted oldest-first with the newest selected',
+     r.orderedNewestSelected === true, String(r.orderedNewestSelected));
+  ok('the timeline is sized to the frame count', r.tlMax === 2, String(r.tlMax));
+  ok('scrubbing swaps the single overlay to that frame image',
+     /#a$/.test(r.seekUrl), r.seekUrl && r.seekUrl.slice(-20));
+  ok('stepping advances exactly one frame', r.stepIdx === 1, String(r.stepIdx));
+  // And clearing the radar tears the loop down.
+  const cleared = await page.evaluate(() => {
+    _disableL3();
+    return { frames: _l2Loop.frames.length, active: _l2LoopActive() };
+  });
+  ok('disabling the radar clears the loop',
+     cleared.frames === 0 && cleared.active === false, JSON.stringify(cleared));
+}
+
 console.log('\n9. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
