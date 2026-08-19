@@ -395,6 +395,42 @@ console.log('\n8d. single-site raw playback dispatch');
      cleared.frames === 0 && cleared.active === false, JSON.stringify(cleared));
 }
 
+console.log('\n8e. following a moving tunnel address');
+{
+  // The page reads the published address every few seconds and re-points the
+  // Pi features when it changes. We stub the fetch so no network is needed and
+  // prove: a new address is adopted, an unchanged one is a no-op, and a junk
+  // value is refused rather than blindly stored.
+  const r = await page.evaluate(async () => {
+    const start = 'https://old-pi.test';
+    _hdSetBase(start);
+    // Reassign the global function binding _hdPollAddress resolves against.
+    let handedOut = 'https://new-pi.test';
+    _hdFetchPublished = async () => handedOut;
+
+    await _hdPollAddress();
+    const afterChange = _hdBase;
+
+    // Same address again: nothing should move.
+    const changedSame = _hdApplyNewBase('https://new-pi.test');
+    const afterSame = _hdBase;
+
+    // A junk value must be refused, leaving the good address in place.
+    const changedJunk = _hdApplyNewBase('not-a-url');
+    const afterJunk = _hdBase;
+
+    return { afterChange, changedSame, afterSame, changedJunk, afterJunk };
+  });
+  ok('a new published address is adopted without a reload',
+     r.afterChange === 'https://new-pi.test', r.afterChange);
+  ok('an unchanged address is a no-op',
+     r.changedSame === false && r.afterSame === 'https://new-pi.test',
+     JSON.stringify(r));
+  ok('a malformed address is refused, keeping the good one',
+     r.changedJunk === false && r.afterJunk === 'https://new-pi.test',
+     JSON.stringify(r));
+}
+
 console.log('\n9. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
