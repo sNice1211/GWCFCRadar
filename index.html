@@ -11806,6 +11806,73 @@ function _hdSetBase(url) {
   if (_hdOn) { _hdDisable(); _hdEnable(); }
 }
 
+// ── FOLLOW A MOVING TUNNEL ────────────────────────────────────────────────
+// A quick tunnel hands out a new address every time it restarts, and it can
+// restart on its own after a network blip. The Pi republishes the new one,
+// but the page had already cached the old one and went on asking a dead
+// address until a reload. So the page now watches the published address and
+// follows it: a small read every few seconds while the tab is on screen, and
+// the moment the address changes, every Pi-backed feature is re-pointed at
+// the new one without a reload.
+const HD_WATCH_MS = 5000;
+let _hdWatchTimer = null;
+let _hdWatchBusy = false;
+
+// Just the published address, or null. Unlike _hdResolveBase this reads only
+// the shared document and never falls back to a saved value, so "unchanged"
+// means the Pi really is still there, not that a stale copy was substituted.
+async function _hdFetchPublished() {
+  try {
+    const r = await fetch(
+      'https://firestore.googleapis.com/v1/projects/gwcfc-radar/databases/(default)' +
+      '/documents/piEndpoint/models', { cache: 'no-store' });
+    if (!r.ok) return null;
+    const doc = await r.json();
+    const url = doc && doc.fields && doc.fields.url && doc.fields.url.stringValue;
+    return url ? String(url).replace(/\/+$/, '') : null;
+  } catch (e) { return null; }
+}
+
+// Re-point everything that depends on the Pi at a new address. Reuses
+// _hdSetBase for the model layer's own cache-clear and refresh, then redraws
+// the Pi radar if it is on, so a moved tunnel heals in place.
+function _hdApplyNewBase(fresh) {
+  const prev = _hdBase;
+  if (!fresh || fresh === prev || !/^https?:\/\//.test(fresh)) return false;
+  console.log('[Pi] address changed:', prev || '(none)', '->', fresh);
+  _hdSetBase(fresh);              // updates _hdBase, clears model caches, refreshes HD
+  _prIndex = null;
+  if (typeof _prOn !== 'undefined' && _prOn && !_prBucketSite
+      && typeof _prEnable === 'function') {
+    try { _prClear(); _prEnable(); } catch (e) {}
+  }
+  if (prev && typeof showToast === 'function') {
+    showToast('The Pi moved; reconnected to its new address.', 2500);
+  }
+  return true;
+}
+
+async function _hdPollAddress() {
+  if (_hdWatchBusy || (typeof document !== 'undefined' && document.hidden)) return;
+  _hdWatchBusy = true;
+  try {
+    const fresh = await _hdFetchPublished();
+    if (fresh) _hdApplyNewBase(fresh);
+  } finally { _hdWatchBusy = false; }
+}
+
+function _hdStartAddressWatch() {
+  if (_hdWatchTimer) return;
+  _hdWatchTimer = setInterval(_hdPollAddress, HD_WATCH_MS);
+  // Catch up immediately when the tab comes back, rather than waiting out the
+  // interval on a page that was backgrounded while the tunnel moved.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) _hdPollAddress();
+    });
+  }
+}
+
 async function _hdLoadIndex() {
   // The query parameter, not just no-store. no-store is a promise the browser
   // keeps and nothing else does: the Pi answers through a tunnel, and anything
@@ -19392,6 +19459,11 @@ async function init() {
   setInterval(() => { try { loadAlerts(); } catch(e){} }, 60000);
   setInterval(() => { try { loadNEXRAD(); } catch(e){} }, 300000);
   loadSurfaceAnalysis().catch(e => console.warn('Fronts init:', e));
+
+  // Start following the Pi's published address. A quick tunnel can hand out a
+  // new hostname after any restart; this polls the published value every few
+  // seconds and re-points every Pi feature the moment it changes, no reload.
+  try { _hdStartAddressWatch(); } catch(e) { console.warn('Pi watch:', e); }
 }
 
 
@@ -34660,7 +34732,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Radar playback: single-site radar now loops. When you open a radar site, the last few raw volumes decode behind the live frame, so the play button and timeline scrub back through the recent scans, all from raw data. Busy radars get about 5 frames, quieter ones fewer.";
+const APP_LATEST_UPDATE = "The page now follows the Pi automatically. Its home address can change when the tunnel restarts, so the page rechecks the published address every few seconds and reconnects the moment it moves, no reload needed. If you had the Pi's models or radar on, they heal in place.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
