@@ -7977,6 +7977,14 @@ let goesLayer = null;
 let alertsLayer = null, spcLayer = null, lightningMarkers = [];
 let radarFrames = [], currentFrame = 0, playing = false, playTimer = null;
 let animSpeed = 1.5, radarOpacity = 0.85;
+// How many minutes of the national mosaic the loop reaches back, at the
+// mosaic's own 5-minute cadence. Remembered across visits. Capped on iOS
+// where a long tile pool is a memory problem sooner.
+let _loopLenMin = 60;
+try {
+  const _ll = parseInt(localStorage.getItem('gwcfc_loop_len') || '60', 10);
+  if ([60, 180, 360].includes(_ll)) _loopLenMin = _ll;
+} catch (e) {}
 let currentProduct = 'ref', currentModel = 'gfs', currentModelVar = 'precip';
 
 // ── AMBIENT WEATHER NETWORK CREDENTIALS ─────────────────────────────
@@ -8340,10 +8348,18 @@ function _generateL3Frames(count) {
 }
 
 
+// Frames the loop should hold: the chosen length divided by the 5-minute
+// cadence. iOS is capped tighter, since a long pool of tiles is where its
+// memory gives out first.
+function _loopFrameCount() {
+  const cap = _isIOS ? 24 : 80;
+  return Math.max(4, Math.min(cap, Math.round(_loopLenMin / 5)));
+}
+
 async function loadNEXRAD() {
   updateLoadStatus('Loading radar…');
   try {
-    const frames = _generateL3Frames(_isIOS ? 8 : 12);
+    const frames = _generateL3Frames(_loopFrameCount());
     console.log(`[Radar] NOAA L3 (IEM computed): ${frames.length} frames`);
     radarFrames = frames;
     lastPastIdx = radarFrames.length - 1;
@@ -29481,6 +29497,14 @@ function selectProduct(p) {
       </div>
     </div>
     <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Loop Length</span>
+      <select id="lqm-set-looplen" class="lqm-settings-select" onchange="lqmSetLoopLength(this.value)">
+        <option value="60">1 hour</option>
+        <option value="180">3 hours</option>
+        <option value="360">6 hours</option>
+      </select>
+    </div>
+    <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Radar Opacity</span>
       <div style="display:flex;align-items:center;gap:6px;">
         <input type="range" id="lqm-set-opacity" min="20" max="100" value="85" step="5"
@@ -34461,7 +34485,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Right-click the map for two new options: Set as recenter (a one-tap button to jump back here while you pan around) and Set as load spot (the map opens here next visit). Also: forecast dots now say exactly why a forecast could not load instead of a blank error, and retry through a backup route.";
+const APP_LATEST_UPDATE = "Time travel, part one: Settings now has a Loop Length control for the radar. Scrub the national mosaic back 1, 3, or 6 hours instead of just the last hour. Single-site raw-radar looping is coming next.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -34784,6 +34808,32 @@ function lqmSetLoopSpeed(val) {
   animSpeed = 0.5 + (val - 1) * 0.625;
 }
 
+// How far back the mosaic loop reaches. Changing it rebuilds the frame set
+// and reloads the tiles; a longer loop is more history to scrub but more
+// tiles to hold, which is why the count is capped per device in
+// _loopFrameCount. Only the national mosaic is affected; the single-site
+// decode paths run their own frames.
+function lqmSetLoopLength(val) {
+  const mins = parseInt(val, 10);
+  if (![60, 180, 360].includes(mins)) return;
+  _loopLenMin = mins;
+  try { localStorage.setItem('gwcfc_loop_len', String(mins)); } catch (e) {}
+  const wasPlaying = playing;
+  if (wasPlaying && typeof togglePlay === 'function') { try { togglePlay(); } catch (e) {} }
+  // Rebuild only when the mosaic is what is showing; the single-site and
+  // dual-pol products own the timeline then and must not be yanked out.
+  const mosaicShowing = typeof activeLayers !== 'undefined' && activeLayers.nexrad
+    && !(typeof _prOn !== 'undefined' && _prOn)
+    && ['ref', undefined, null, ''].includes(currentProduct);
+  if (mosaicShowing && typeof loadNEXRAD === 'function') {
+    loadNEXRAD();
+    if (typeof showToast === 'function') {
+      showToast('Loop now reaches back ' + (mins >= 60 ? (mins / 60) + ' hour' + (mins > 60 ? 's' : '') : mins + ' min')
+        + '. Older frames fill in as their tiles load.', 3000);
+    }
+  }
+}
+
 function lqmSetAlertOpacity(val) {
   document.getElementById('lqm-alertopacity-val').textContent = val + '%';
   try { localStorage.setItem('lqm_alertopacity', val); } catch(e){}
@@ -34940,6 +34990,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (op) { const el=document.getElementById('lqm-set-opacity'); if(el){el.value=op;lqmSetRadarOpacity(op);} }
     const ls = localStorage.getItem('lqm_loopspeed');
     if (ls) { const el=document.getElementById('lqm-set-loopspeed'); if(el){el.value=ls;lqmSetLoopSpeed(ls);} }
+    // The loop-length select reflects the saved reach without rebuilding.
+    { const el = document.getElementById('lqm-set-looplen'); if (el) el.value = String(_loopLenMin); }
     const ao = localStorage.getItem('lqm_alertopacity');
     if (ao) { const el=document.getElementById('lqm-set-alertopacity'); if(el){el.value=ao;lqmSetAlertOpacity(ao);} }
     const wps = localStorage.getItem('lqm_windptspeed');

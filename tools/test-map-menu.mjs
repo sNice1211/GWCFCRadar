@@ -320,6 +320,30 @@ console.log('\n8b. set as recenter, and set as load spot');
      JSON.stringify(asked.call));
 }
 
+console.log('\n8c. the mosaic loop length control');
+{
+  const r = await page.evaluate(() => {
+    // Frame count scales with the chosen reach, at the 5-minute cadence.
+    _loopLenMin = 60;  const c1 = _loopFrameCount();
+    _loopLenMin = 180; const c3 = _loopFrameCount();
+    _loopLenMin = 360; const c6 = _loopFrameCount();
+    // The generator makes exactly that many, oldest-first, 5 min apart.
+    const f = _generateL3Frames(c3);
+    const gap = f.length > 1 ? (f[1].time - f[0].time) : 0;
+    // The setter persists the choice.
+    lqmSetLoopLength('360');
+    const saved = localStorage.getItem('gwcfc_loop_len');
+    _loopLenMin = 60;
+    return { c1, c3, c6, made: f.length, gap, saved };
+  });
+  ok('one hour is 12 frames', r.c1 === 12, String(r.c1));
+  ok('three hours is 36 frames', r.c3 === 36, String(r.c3));
+  ok('six hours is 72 frames', r.c6 === 72, String(r.c6));
+  ok('the generator makes exactly that many, 5 minutes apart',
+     r.made === 36 && r.gap === 300, r.made + ' gap ' + r.gap);
+  ok('choosing a length is remembered', r.saved === '360', r.saved);
+}
+
 console.log('\n9. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
