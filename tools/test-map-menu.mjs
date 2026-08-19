@@ -431,6 +431,83 @@ console.log('\n8e. following a moving tunnel address');
      JSON.stringify(r));
 }
 
+console.log('\n8f. surface obs: Pi file decoded, colored, switched, drawn');
+{
+  // The Pi's compact file, decoded and drawn with no network. We prove the
+  // decode fills the right fields, that switching the variable re-colors from
+  // the same cache, and that a variable a station cannot answer thins it out.
+  const r = await page.evaluate(() => {
+    map.setView([37, -96], 5);
+    const doc = {
+      updated: 'now', count: 4,
+      cols: ['id','name','lat','lon','tC','dC','wdir','wkt','gkt','pmb','rh','vis','sky'],
+      obs: [
+        // temp + wind + dew, rh left null so it must be computed
+        ['KAAA','Alpha',37.0,-96.0, 30, 20, 180, 12, 18, 1012.0, null, 10, 'BKN'],
+        // explicit rh, no pressure
+        ['KBBB','Bravo', 36.0,-95.0, 25, 15, 90,  6, null, null,   40, 10, 'SCT'],
+        // pressure only: no temp, no wind
+        ['KCCC','Charlie',38.0,-97.0, null, null, null, null, null, 1020.0, null, 9, 'OVC'],
+        // wind only
+        ['KDDD','Delta',35.5,-96.5, null, null, 270, 20, 30, null, null, 10, 'CLR'],
+      ],
+    };
+    const rows = _decodePiObs(doc);
+    const aaa = rows.find(s => s.id === 'KAAA');
+    const decodeOk = rows.length === 4 && aaa && aaa.tC === 30 && aaa.wkt === 12
+      && aaa.gkt === 18 && aaa.rh != null && aaa.rh >= 50 && aaa.rh <= 60;
+
+    // Turn the layer on by hand and draw temperature.
+    _metarActive = true; _metarData = rows; _metarVar = 'temp';
+    _renderMetar();
+    const tempCount = _metarLayer ? _metarLayer.getLayers().length : 0;
+
+    // Switch to pressure: only the two stations reporting pressure remain.
+    _metarVar = 'pressure';
+    _renderMetar();
+    const presCount = _metarLayer ? _metarLayer.getLayers().length : 0;
+
+    // A station with no pressure has no pressure cell; one with pressure does.
+    _metarVar = 'pressure';
+    const noCell = _obsCellFor(rows.find(s => s.id === 'KDDD')) === null;
+    const yesCell = !!_obsCellFor(rows.find(s => s.id === 'KCCC'));
+
+    _metarStop();
+    const cleared = !_metarLayer;
+    return { decodeOk, tempCount, presCount, noCell, yesCell, cleared };
+  });
+  ok('the Pi file decodes with rh filled in when it was missing',
+     r.decodeOk === true, JSON.stringify(r));
+  ok('temperature view draws only the two stations that report temperature',
+     r.tempCount === 2, String(r.tempCount));
+  ok('pressure view thins to just the two that report pressure',
+     r.presCount === 2, String(r.presCount));
+  ok('a station without the chosen variable yields no dot',
+     r.noCell === true && r.yesCell === true, JSON.stringify(r));
+  ok('turning it off tears the layer down', r.cleared === true, String(r.cleared));
+}
+
+console.log('\n8g. the Surface Obs bubble and its sub-bubbles');
+{
+  const r = await page.evaluate(() => {
+    renderSubBubbles('regular');
+    const main = [...document.querySelectorAll('#sub-bubbles .sub-bubble-main')]
+      .map(e => e.textContent.replace(/\s+/g, ' ').trim());
+    const hasObs = main.some(t => /Surface Obs/.test(t));
+    toggleObsSub();
+    const subs = [...document.querySelectorAll('#sub-bubbles .sub-bubble')]
+      .map(e => e.textContent.replace(/\s+/g, ' ').trim());
+    const infoBtns = document.querySelectorAll('#sub-bubbles .sub-bubble .info-btn, #sub-bubbles .sub-bubble [data-info]').length;
+    return { hasObs, subs, infoBtns };
+  });
+  ok('the left menu offers a Surface Obs bubble', r.hasObs === true, r.subs && r.subs.join('|'));
+  ok('its row lists the readings you can color by',
+     /Temperature/.test(r.subs.join(',')) && /Dew Point/.test(r.subs.join(','))
+     && /Wind/.test(r.subs.join(',')) && /Gusts/.test(r.subs.join(','))
+     && /Humidity/.test(r.subs.join(',')) && /Pressure/.test(r.subs.join(',')),
+     r.subs.join('|'));
+}
+
 console.log('\n9. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 

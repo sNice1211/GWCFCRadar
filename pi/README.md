@@ -32,6 +32,7 @@ prints the address to give the site. Safe to run again if a step fails.
     gwcfc-models    builds the model images, hourly
     gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
     gwcfc-cyclones  DeepMind cyclone tracks and genesis, every three hours
+    gwcfc-obs       decodes surface observations (METAR), every five minutes
     gwcfc-serve     serves them with the header that makes them readable
     gwcfc-tunnel    gives them a public HTTPS address
     gwcfc-publish   tells the site where the tunnel is
