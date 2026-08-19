@@ -89,8 +89,13 @@ TDWR_SITES = [
     "TTUL",
 ]
 
-# How many past volumes to keep, which is what the animation scrubs through.
-KEEP_FRAMES = 12
+# How far back to keep past volumes, which is what the animation scrubs
+# through. Age rather than a frame count: a count assumes perfect five-minute
+# cadence, and a Pi that fell behind or a site that briefly stopped answering
+# would then report a "day" of history that was actually much less. Pruning by
+# wall-clock age keeps whatever genuinely happened in the window, however
+# unevenly spaced, and self-corrects once building resumes.
+KEEP_HOURS = float(os.environ.get("GWCFC_RADAR_KEEP_HOURS", "24"))
 
 # Level 2 products, as MetPy names the moments inside the file.
 L2_PRODUCTS = {
@@ -709,16 +714,27 @@ def render(data, lat, lon, spec, out_path):
 
 # ── Housekeeping ────────────────────────────────────────────────────────────
 
-def prune(site_dir, keep=KEEP_FRAMES):
-    """Keep the newest few frames of one site and drop the rest."""
+def prune(site_dir, hours=KEEP_HOURS):
+    """Drop frames older than the retention window; keep everything inside it.
+
+    A frame's own directory name IS its timestamp (%Y%m%d_%H%M%S), so no
+    extra bookkeeping is needed to know its age. A name that fails to parse
+    is left alone rather than guessed about and deleted.
+    """
     if not os.path.isdir(site_dir):
         return
-    frames = sorted(d for d in os.listdir(site_dir)
-                    if os.path.isdir(os.path.join(site_dir, d))
-                    and d[0].isdigit())
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     import shutil
-    for old in frames[:-keep] if len(frames) > keep else []:
-        shutil.rmtree(os.path.join(site_dir, old), ignore_errors=True)
+    for d in os.listdir(site_dir):
+        full = os.path.join(site_dir, d)
+        if not (os.path.isdir(full) and d and d[0].isdigit()):
+            continue
+        try:
+            stamp = datetime.strptime(d, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if stamp < cutoff:
+            shutil.rmtree(full, ignore_errors=True)
 
 
 # ── Building ────────────────────────────────────────────────────────────────
