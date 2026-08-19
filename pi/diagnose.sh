@@ -78,7 +78,15 @@ for u in gwcfc-serve gwcfc-tunnel gwcfc-publish gwcfc-models.timer; do
 done
 
 hdr "5. The address"
-URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$HOME/tunnel.log" 2>/dev/null | tail -1)
+# A pinned permanent address (named tunnel) outranks the quick-tunnel log:
+# the log keeps old quick URLs forever, and once the named tunnel is running
+# those are dead ends that made this script test the wrong thing.
+if [ -s "$HOME/.gwcfc-pinned-url" ]; then
+  URL=$(tr -d '[:space:]' < "$HOME/.gwcfc-pinned-url")
+  good "permanent address (pinned): $URL"
+else
+  URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$HOME/tunnel.log" 2>/dev/null | tail -1)
+fi
 if [ -n "$URL" ]; then
   good "tunnel: $URL"
   PUB=$(curl -s --max-time 20 "https://firestore.googleapis.com/v1/projects/gwcfc-radar/databases/(default)/documents/piEndpoint/models" \
