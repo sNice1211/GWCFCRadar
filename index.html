@@ -283,6 +283,8 @@ body {
   transform: scale(1);
   width: 50px;
   height: 50px;
+  outline: 2px solid #e8b800;
+  outline-offset: 3px;
 }
 .topbar-tab[data-tab="regular"].active  { background: rgba(133,0,0,0.92); border-color: #aa0000; box-shadow: 0 0 14px rgba(170,0,0,0.55); }
 .topbar-tab[data-tab="models"].active   { background: rgba(60,0,160,0.85); border-color: #aa80ff; box-shadow: 0 0 14px rgba(120,60,255,0.55); }
@@ -1801,17 +1803,25 @@ body {
      on this same left edge and a long open product list (e.g. every GOES
      satellite channel) needs to stop above it, not run through it. */
   max-height: calc(100vh - var(--menu-clearance, 120px) - 175px);
-  /* Wrap into a second column instead of hiding buttons. On a short or
-     landscape screen (a phone sideways, a TV, the PS5) the column used to
-     run past the bottom of its capped height and the last buttons - Wind,
-     Temperature, Pressure, Models - vanished below the fold, reachable only
-     by a scroll nobody could see. Wrapping keeps every button on screen; the
-     max-width allows the second column the wrap needs. */
-  flex-wrap: wrap;
-  max-width: 384px;
+  /* ONE column, always. This used to flex-wrap into a second column when the
+     list outgrew its height, but on phones that second column marched right
+     into the map and covered it. Now the list stays in a single column and
+     scrolls inside its capped height instead; the styled scrollbar below is
+     what makes "there is more down here" visible. */
+  flex-wrap: nowrap;
+  /* The historic one-column cap. Panels that stack to the right of this
+     column (overlay-panel-stack at left 220px) assume it; a bubble whose
+     label plus chips outgrows it wraps the chips inside the bubble. */
+  max-width: 190px;
   overflow-y: auto;
   overflow-x: hidden;
 }
+/* The visible hint that the column scrolls: a slim gold thumb instead of the
+   invisible default that made overflow look like missing buttons. */
+#sub-bubbles::-webkit-scrollbar { width: 4px; }
+#sub-bubbles::-webkit-scrollbar-thumb { background: rgba(255,215,0,0.45); border-radius: 2px; }
+#sub-bubbles::-webkit-scrollbar-track { background: transparent; }
+#sub-bubbles { scrollbar-width: thin; scrollbar-color: rgba(255,215,0,0.45) transparent; }
 .sub-bubble {
   display: flex;
   align-items: center;
@@ -13730,7 +13740,6 @@ function _applyRadarPolyMask() {
 // Re-run all active layers so they re-render filtered
 function _applyPolyFilterNow() {
   if (alertsLayer || activeLayers.tornado || activeLayers.tstm || activeLayers.flood) loadAlerts(true);
-  if (_metarActive)           _loadMetarTemp();
   if (activeLayers.forecasts && cityMarkersLayer) _polyFilterCityMarkers();
   if (activeLayers.spc1)      loadSPCOutlook(1);
   if (activeLayers.spc2)      loadSPCOutlook(2);
@@ -14000,318 +14009,6 @@ function _showPolyFilterPopup(center) {
 
 // ── TEMPERATURE LAYERS ────────────────────────────────────────────────────
 // ── TEMP STATE ──
-// ══════════════════════════════════════════════════════════════════════════
-// SURFACE OBSERVATIONS (METAR) - Pi-encoded, browser just draws
-// ──────────────────────────────────────────────────────────────────────────
-// Every airport and automated station reports the surface conditions in a
-// standard code called METAR: temperature, dew point, wind, gust, pressure,
-// visibility, sky. The raw feed is a government product from NOAA/NWS. The Pi
-// fetches it, decodes it, and republishes ONE compact file the browser reads,
-// exactly the same shape as the radar and model pipelines: all the work is
-// done on the Pi, and the page only paints dots.
-//
-//   ${base}/obs/latest.json
-//     { updated, count, cols:[...], obs:[[...],[...]] }
-//
-// One fetch holds every station, so switching which variable colors the dots
-// (temperature, dew point, wind, gust, humidity, pressure) is instant - no
-// re-download, just a re-paint. Panning re-paints from that same cache too,
-// thinned to what is on screen so a console browser is never asked to draw
-// thousands of markers at once. If the Pi is unreachable, it falls back to
-// NOAA's public ArcGIS METAR service so the layer still works.
-
-let _metarLayer    = null;
-let _metarActive   = false;
-let _metarTimer    = null;
-let _metarDebounce = null;
-let _metarAbort    = null;
-let _metarVar      = 'temp';   // which variable colors the dots
-let _metarData     = null;     // normalized stations from the last good fetch
-let _metarFetchedAt = 0;       // ms epoch of that fetch
-let _metarSource   = '';       // 'pi' or 'awc', shown in the popup footer
-
-// NOAA's public METAR service, the fallback when the Pi cannot be reached.
-const OBS_ARCGIS_URL =
-  'https://services9.arcgis.com/RHVPKKiFTONKtxq3/arcgis/rest/services/' +
-  'NOAA_METAR_current_wind_speed_direction_v1/FeatureServer/0/query' +
-  '?where=1%3D1&outFields=*&f=geojson&resultRecordCount=9999';
-
-function _numOrNull(v) {
-  if (v == null || v === '') return null;
-  const n = +v;
-  return Number.isFinite(n) ? n : null;
-}
-
-// Relative humidity from temperature and dew point, both in °C (Magnus). The
-// Pi usually sends rh directly; this fills it in when it did not.
-function _rhFrom(tC, dC) {
-  if (tC == null || dC == null) return null;
-  const es = t => 6.112 * Math.exp((17.62 * t) / (243.12 + t));
-  const rh = 100 * es(dC) / es(tC);
-  return Math.max(0, Math.min(100, Math.round(rh)));
-}
-
-// Humidity color: dry browns up through humid blues.
-function _rhColor(rh) {
-  return _colorScale(rh, [[0,[190,140,60]],[25,[210,190,110]],[45,[228,222,150]],
-    [60,[150,205,140]],[75,[70,180,155]],[90,[45,140,205]],[100,[40,90,195]]]);
-}
-// Pressure color: low is stormy purple, ~1013 hPa is neutral white, high is
-// fair-weather warm.
-function _presColor(mb) {
-  return _colorScale(mb, [[965,[150,20,95]],[985,[120,60,195]],[1000,[80,120,210]],
-    [1013,[232,236,236]],[1025,[240,200,80]],[1040,[240,120,40]],[1055,[200,40,30]]]);
-}
-
-// The Pi's compact file -> a plain array of station objects. Reads columns by
-// name so the Pi can reorder or add them without breaking the page.
-function _decodePiObs(j) {
-  if (!j || !Array.isArray(j.obs) || !Array.isArray(j.cols)) return null;
-  const ci = {};
-  j.cols.forEach((c, i) => { ci[c] = i; });
-  if (ci.lat == null || ci.lon == null) return null;
-  const out = [];
-  for (const row of j.obs) {
-    if (!Array.isArray(row)) continue;
-    const g = k => (ci[k] != null ? row[ci[k]] : null);
-    const lat = _numOrNull(g('lat')), lon = _numOrNull(g('lon'));
-    if (lat == null || lon == null) continue;
-    const tC = _numOrNull(g('tC')), dC = _numOrNull(g('dC'));
-    const rh = _numOrNull(g('rh'));
-    out.push({
-      id: g('id') || '', name: g('name') || g('id') || '',
-      lat, lon, tC, dC,
-      wdir: _numOrNull(g('wdir')), wkt: _numOrNull(g('wkt')), gkt: _numOrNull(g('gkt')),
-      pmb: _numOrNull(g('pmb')),
-      rh: rh != null ? rh : _rhFrom(tC, dC),
-      vismi: _numOrNull(g('vis')), sky: g('sky') || null,
-    });
-  }
-  return out;
-}
-
-// NOAA's ArcGIS GeoJSON -> the same station objects (the fallback source).
-function _decodeArcgisObs(geojson) {
-  const feats = (geojson && geojson.features) || [];
-  const out = [];
-  for (const feat of feats) {
-    const p = feat.properties || {};
-    const c = feat.geometry && feat.geometry.coordinates;
-    if (!c) continue;
-    const lon = _numOrNull(c[0]), lat = _numOrNull(c[1]);
-    if (lat == null || lon == null) continue;
-    const tF = _numOrNull(p.TEMP), dF = _numOrNull(p.DEW_POINT);
-    const tC = tF != null ? (tF - 32) * 5 / 9 : null;
-    const dC = dF != null ? (dF - 32) * 5 / 9 : null;
-    const rh = _numOrNull(p.R_HUMIDITY);
-    out.push({
-      id: p.ICAO || '', name: p.STATION_NAME || p.ICAO || '',
-      lat, lon, tC, dC,
-      wdir: _numOrNull(p.WIND_DIRECT), wkt: _numOrNull(p.WIND_SPEED), gkt: _numOrNull(p.WIND_GUST),
-      pmb: _numOrNull(p.SLP) || _numOrNull(p.ALTIMETER),
-      rh: rh != null ? rh : _rhFrom(tC, dC),
-      vismi: _numOrNull(p.VISIBILITY), sky: p.SKY_CONDTN || null,
-    });
-  }
-  return out;
-}
-
-// Fetch the observations: the Pi first, NOAA second. Caches the result for a
-// minute so a re-render (variable switch, pan) does not re-hit the network.
-async function _loadMetarTemp(force) {
-  if (!_metarActive) return;
-  if (!force && _metarData && Date.now() - _metarFetchedAt < 60000) { _renderMetar(); return; }
-
-  // The Pi.
-  try {
-    const base = _hdBase || (typeof _hdResolveBase === 'function' ? await _hdResolveBase() : null);
-    if (base) {
-      const r = await fetch(`${base}/obs/latest.json?t=${Date.now()}`, { cache: 'no-store' });
-      if (r.ok) {
-        const rows = _decodePiObs(await r.json());
-        if (rows && rows.length) {
-          _metarData = rows; _metarSource = 'pi'; _metarFetchedAt = Date.now();
-          _renderMetar();
-          return;
-        }
-      }
-    }
-  } catch (e) { /* fall through to NOAA */ }
-
-  // NOAA's public service.
-  try {
-    if (_metarAbort) { try { _metarAbort.abort(); } catch (e) {} }
-    _metarAbort = new AbortController();
-    const res = await fetch(OBS_ARCGIS_URL, { signal: _metarAbort.signal });
-    if (res.ok) {
-      const rows = _decodeArcgisObs(await res.json());
-      if (rows && rows.length) {
-        _metarData = rows; _metarSource = 'awc'; _metarFetchedAt = Date.now();
-        _renderMetar();
-        return;
-      }
-    }
-  } catch (e) {
-    if (e.name !== 'AbortError') console.warn('[obs] no source reachable:', e.message);
-  }
-}
-
-// Keep only about `cap` stations by dropping any that would land in an already
-// used cell of a coarse grid over the view. Thinning by space, not by list
-// order, keeps the map evenly covered instead of clumped.
-function _obsThin(list, cap, bounds) {
-  if (list.length <= cap) return list;
-  const sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
-  const latSpan = Math.max(0.0001, ne.lat - sw.lat);
-  const lonSpan = Math.max(0.0001, ne.lng - sw.lng);
-  const cells = Math.max(1, Math.floor(Math.sqrt(cap)));
-  const seen = new Set();
-  const out = [];
-  for (const s of list) {
-    const gy = Math.floor((s.lat - sw.lat) / latSpan * cells);
-    const gx = Math.floor((s.lon - sw.lng) / lonSpan * cells);
-    const key = gy * (cells + 1) + gx;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(s);
-  }
-  return out;
-}
-
-// What the dot shows and what color it is, for the variable in view. Returns
-// null when this station has nothing to say about that variable, so a pressure
-// view is not littered with stations that never report pressure.
-function _obsCellFor(s) {
-  const tF = s.tC != null ? Math.round(s.tC * 9 / 5 + 32) : null;
-  const dF = s.dC != null ? Math.round(s.dC * 9 / 5 + 32) : null;
-  const wKph = s.wkt != null ? s.wkt * 1.852 : null;
-  const gKph = s.gkt != null ? s.gkt * 1.852 : null;
-  switch (_metarVar) {
-    case 'dewpoint': return dF == null ? null : { big: dF + '°', small: s.dC != null ? Math.round(s.dC) + '°C' : '', rgb: tempToColor(dF) };
-    case 'wind':     return s.wkt == null ? null : { big: String(Math.round(s.wkt)), small: 'kt', rgb: _windColor(wKph) };
-    case 'gust':     return s.gkt == null ? null : { big: String(Math.round(s.gkt)), small: 'kt', rgb: _windColor(gKph) };
-    case 'humidity': return s.rh == null ? null : { big: Math.round(s.rh) + '%', small: '', rgb: _rhColor(s.rh) };
-    case 'pressure': return s.pmb == null ? null : { big: String(Math.round(((s.pmb % 1000) + 1000) % 1000)), small: 'mb', rgb: _presColor(s.pmb) };
-    default:         return tF == null ? null : { big: tF + '°', small: s.tC != null ? Math.round(s.tC) + '°C' : '', rgb: tempToColor(tF) };
-  }
-}
-
-function _obsPopupHtml(s) {
-  const tF = s.tC != null ? Math.round(s.tC * 9 / 5 + 32) : null;
-  const dF = s.dC != null ? Math.round(s.dC * 9 / 5 + 32) : null;
-  const rows = [];
-  if (tF != null || dF != null || s.rh != null) {
-    rows.push('<div class="dp-section">Temperature</div>');
-    if (tF != null) rows.push(`<div class="dp-row"><span>Air Temp</span><b>${fmtTemp(tF)}</b></div>`);
-    if (dF != null) rows.push(`<div class="dp-row"><span>Dew Point</span><b>${fmtTemp(dF)}</b></div>`);
-    if (s.rh != null) rows.push(`<div class="dp-row"><span>Humidity</span><b>${Math.round(s.rh)}%</b></div>`);
-  }
-  if (s.wkt != null || s.gkt != null || s.wdir != null) {
-    rows.push('<div class="dp-section">Wind</div>');
-    if (s.wkt != null) rows.push(`<div class="dp-row"><span>Speed</span><b>${fmtSpeed(s.wkt * 1.15078)}</b></div>`);
-    if (s.gkt != null) rows.push(`<div class="dp-row"><span>Gust</span><b>${fmtSpeed(s.gkt * 1.15078)}</b></div>`);
-    rows.push(`<div class="dp-row"><span>Direction</span><b>${s.wdir != null ? s.wdir + '° (' + _degToCompass(s.wdir) + ')' : 'Variable'}</b></div>`);
-  }
-  if (s.pmb != null || s.vismi != null || s.sky) {
-    rows.push('<div class="dp-section">Conditions</div>');
-    if (s.pmb != null) rows.push(`<div class="dp-row"><span>Pressure</span><b>${fmtPressure(s.pmb)}</b></div>`);
-    if (s.vismi != null) rows.push(`<div class="dp-row"><span>Visibility</span><b>${fmtDist(s.vismi)}</b></div>`);
-    if (s.sky) rows.push(`<div class="dp-row"><span>Sky</span><b>${s.sky}</b></div>`);
-  }
-  rows.push('<div class="dp-section">Location</div>');
-  rows.push(`<div class="dp-row"><span>Coords</span><b>${s.lat.toFixed(2)}°, ${s.lon.toFixed(2)}°</b></div>`);
-  const via = _metarSource === 'awc' ? 'NOAA (Pi offline)' : 'your Pi';
-  rows.push(`<div class="dp-row"><span>Source</span><b>${via}</b></div>`);
-  return `<div class="data-popup-inner" style="--dp-accent:#ff7043">
-      <div class="dp-header">
-        <span class="dp-header-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg></span>
-        <span class="dp-header-label">${s.name || s.id}</span>
-        <span class="dp-header-sub">${s.id}</span>
-      </div>
-      <div class="dp-body">${rows.join('')}</div>
-    </div>`;
-}
-
-function _obsMarker(s, cell) {
-  const [r, g, b] = cell.rgb;
-  const col = `rgb(${r},${g},${b})`;
-  // The wind barb (a small triangle) always shows when there is wind, whatever
-  // variable colors the dot, because direction is context you always want.
-  // WIND_DIRECT is where the wind comes FROM, so it points TO (dir + 180).
-  const windKph = s.wkt != null ? s.wkt * 1.852 : null;
-  const [wr, wg, wb] = windKph != null ? _windColor(windKph) : [180, 180, 180];
-  const windCol = `rgb(${wr},${wg},${wb})`;
-  const windDirTo = (s.wdir != null && s.wkt != null) ? Math.round((s.wdir + 180) % 360) : null;
-  const bigSize = cell.big.length > 3 ? 9 : 11;
-  const svg = `<svg width="70" height="70" viewBox="-35 -35 70 70" xmlns="http://www.w3.org/2000/svg" style="cursor:pointer;overflow:visible">
-      ${windDirTo != null ? `<g transform="rotate(${windDirTo})">
-        <path d="M 0,-33 L 6,-22 Q 0,-19 -6,-22 Z" fill="${windCol}" stroke="rgba(0,0,0,0.3)" stroke-width="1" stroke-linejoin="round"/>
-      </g>` : ''}
-      <circle cx="0" cy="0" r="20" fill="${col}" stroke="rgba(0,0,0,0.55)" stroke-width="2"/>
-      <text x="0" y="${cell.small ? -3 : 1}" text-anchor="middle" dominant-baseline="middle" font-family="Comfortaa,sans-serif" font-size="${bigSize}" font-weight="bold" fill="#000">${cell.big}</text>
-      ${cell.small ? `<text x="0" y="8" text-anchor="middle" dominant-baseline="middle" font-family="Comfortaa,sans-serif" font-size="7" fill="rgba(0,0,0,0.65)">${cell.small}</text>` : ''}
-    </svg>`;
-  const icon = L.divIcon({ className: '', iconSize: [70, 70], iconAnchor: [35, 35], html: svg });
-  return L.marker([s.lat, s.lon], { icon, pane: _ovMarkerPane('metar-stations'), zIndexOffset: 300 })
-    .bindPopup(_obsPopupHtml(s), { className: 'data-popup', maxWidth: 250 });
-}
-
-// Draw the cached stations for the current variable, thinned to what is on
-// screen. Called on a variable switch and on pan, both cheap because they
-// reuse _metarData.
-function _renderMetar() {
-  if (!_metarActive || !_metarData) return;
-  if (!_metarLayer) _metarLayer = L.layerGroup().addTo(map);
-  else _metarLayer.clearLayers();
-
-  const bounds = map.getBounds().pad(0.2);
-  let inView = [];
-  for (const s of _metarData) {
-    if (!bounds.contains([s.lat, s.lon])) continue;
-    if (typeof _ptInPolyUnion === 'function' && !_ptInPolyUnion(s.lat, s.lon)) continue;
-    if (!_obsCellFor(s)) continue;   // nothing to show for this variable
-    inView.push(s);
-  }
-  const OBS_CAP = 700;               // as many as a console browser draws smoothly
-  inView = _obsThin(inView, OBS_CAP, bounds);
-  for (const s of inView) {
-    const cell = _obsCellFor(s);
-    if (cell) _obsMarker(s, cell).addTo(_metarLayer);
-  }
-}
-
-// Turn the layer on/off. Split out so both the left-menu bubble and the
-// overlay pill share one path.
-function _metarStart() {
-  _metarActive = true;
-  _loadMetarTemp();
-  // Re-paint on pan (from cache, no refetch); refetch on a timer.
-  const deb = () => { clearTimeout(_metarDebounce); _metarDebounce = setTimeout(_renderMetar, 250); };
-  map.on('moveend zoomend', deb);
-  map._metarMoveHandler = deb;
-  clearInterval(_metarTimer);
-  _metarTimer = setInterval(() => _loadMetarTemp(true), 5 * 60 * 1000);
-}
-function _metarStop() {
-  _metarActive = false;
-  if (map._metarMoveHandler) { map.off('moveend zoomend', map._metarMoveHandler); map._metarMoveHandler = null; }
-  clearTimeout(_metarDebounce);
-  clearInterval(_metarTimer); _metarTimer = null;
-  if (_metarLayer) { map.removeLayer(_metarLayer); _metarLayer = null; }
-}
-function _syncObsPill() {
-  const pill = document.getElementById('op-metar-stations');
-  if (pill) pill.classList.toggle('active', _metarActive);
-  const sb = document.getElementById('sub-obs');
-  if (sb) sb.classList.toggle('active', _metarActive);
-}
-
-// The overlay pill: a plain on/off that leaves the variable where it was.
-function toggleStations() {
-  if (_metarActive) _metarStop(); else _metarStart();
-  _syncObsPill();
-  if (typeof _syncParentBubble === 'function') { try { _syncParentBubble('obs'); } catch (e) {} }
-}
 
 // ── Temp colour scale (°F) ──
 function tempToColor(f) {
@@ -14414,7 +14111,6 @@ function fmtDist(miles, opts) {
 // Re-render whatever unit-aware layers are currently active so a change in
 // Settings shows up immediately instead of on next reload.
 function _refreshUnitDisplays() {
-  if (_metarActive && typeof _loadMetarTemp === 'function') _loadMetarTemp();
   if (_ambientActive && typeof loadAmbientWeather === 'function') loadAmbientWeather();
   if (_gpsHudOn && typeof _lastGpsPos !== 'undefined' && _lastGpsPos && typeof _updateGpsHud === 'function') _updateGpsHud(_lastGpsPos);
   if (typeof _tornadoTracksActive !== 'undefined' && _tornadoTracksActive && typeof loadTornadoTracks === 'function') loadTornadoTracks();
@@ -14517,61 +14213,6 @@ function _degToCompass(deg) {
   return dirs[((Math.round(deg / 45) % 8) + 8) % 8];
 }
 
-// toggleTempSub no longer used - Stations is now a direct METAR toggle
-function toggleTempSub() {}
-
-// ── SURFACE OBS SUB-BUBBLES ─────────────────────────────────────────────────
-// The left-menu "Surface Obs" bubble opens this row. Each entry picks which
-// measured reading colors the station dots; the data is the same one Pi file
-// underneath, so switching is instant. Tapping the reading already showing
-// turns the whole layer off, matching how Wind/Temperature/Pressure behave.
-// Inline SVGs (not the SB_ICON_* consts) because those are declared further
-// down the file: referencing them here would read a const before it is
-// initialized and take the whole script down.
-const OBS_SUB_BUBBLES = [
-  { id: 'obs-temp',     var: 'temp',     icon: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a2 2 0 0 0-2 2v9.5a4 4 0 1 0 4 0V5a2 2 0 0 0-2-2z"/><circle cx="12" cy="17.5" r="2" fill="currentColor" stroke="none"/></svg>', label: 'Temperature' },
-  { id: 'obs-dewpoint', var: 'dewpoint', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-drop></use></svg>', label: 'Dew Point' },
-  { id: 'obs-wind',     var: 'wind',     icon: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 7h15a3 3 0 1 0-2.5-4.6"/><path d="M2 12h18a3 3 0 1 1-2.5 4.6"/><path d="M2 17h12"/></svg>', label: 'Wind' },
-  { id: 'obs-gust',     var: 'gust',     icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>', label: 'Gusts' },
-  { id: 'obs-humidity', var: 'humidity', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-drop></use></svg>', label: 'Humidity' },
-  { id: 'obs-pressure', var: 'pressure', icon: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18a8 8 0 1 1 16 0"/><line x1="12" y1="18" x2="16" y2="12"/><circle cx="12" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="4" y1="18" x2="2.5" y2="18"/><line x1="20" y1="18" x2="21.5" y2="18"/></svg>', label: 'Pressure' },
-];
-
-function toggleObsSub() {
-  const wrap = document.getElementById('sub-bubbles');
-  wrap.innerHTML = '';
-  const back = document.createElement('div');
-  back.className = 'sub-bubble';
-  back.innerHTML = `<span class="sb-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(180deg)><use href=#ic-arrow></use></svg></span><span class="sb-label">Back</span>`;
-  back.onclick = () => { _syncParentBubble('obs'); renderSubBubbles('regular'); };
-  wrap.appendChild(back);
-  OBS_SUB_BUBBLES.forEach(b => {
-    const el = document.createElement('div');
-    el.className = 'sub-bubble' + (_metarActive && _metarVar === b.var ? ' active' : '');
-    el.id = 'sub-' + b.id;
-    el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
-    el.onclick = () => {
-      if (_metarActive && _metarVar === b.var) {
-        // Tapping the reading already on turns the layer off.
-        _metarStop();
-        el.classList.remove('active');
-        _syncObsPill();
-        _syncParentBubble('obs');
-        return;
-      }
-      OBS_SUB_BUBBLES.forEach(x => { const xe = document.getElementById('sub-' + x.id); if (xe) xe.classList.remove('active'); });
-      el.classList.add('active');
-      _metarVar = b.var;
-      if (!_metarActive) _metarStart();   // first pick turns it on and fetches
-      else _renderMetar();                // already on: just recolor, no refetch
-      _syncObsPill();
-      _syncParentBubble('obs');
-    };
-    if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
-    wrap.appendChild(el);
-  });
-  wrap.style.display = 'flex';
-}
 
 // SST (Sea Surface Temperature): the rendering layers this used to drive were
 // dead (never reachable from any button) and have been removed. These flags
@@ -16731,14 +16372,6 @@ const LAYER_DESCRIPTIONS = {
   'pi-vil':        'Vertically Integrated Liquid: all the water the radar sees in the whole column above each point, added up. High VIL means a storm holding a lot of water aloft, and very high values often flag hail.',
   'pi-echotops':   'Echo Tops: how tall each storm is, in thousands of feet. Taller storms have stronger updrafts, and tops pushing 50 to 60 kft usually mean severe weather.',
   'pi-composite':  'Composite Reflectivity: the strongest echo found at ANY height above each point, not just the lowest scan. Good for catching hail cores and elevated storms the base scan looks under.',
-  // Surface observations (METAR), built on the Pi.
-  obs:            'Live surface observations from every airport and automated station: the real temperature, dew point, wind, gust, humidity, and pressure being measured on the ground right now. The raw METAR feed is decoded on your Pi and served as one small file, so switching which reading colors the dots is instant. Tap a reading below to pick one. Each dot carries a wind arrow, and tapping it shows the full report. Falls back to NOAA if the Pi is offline.',
-  'obs-temp':     'Color each station by its measured air temperature (°F/°C), on the same scale as the Temperature map. This is a real thermometer reading at that spot, not a model estimate.',
-  'obs-dewpoint': 'Color each station by its dew point, the truest measure of how humid it feels. Above ~65°F is muggy, above ~70°F is oppressive.',
-  'obs-wind':     'Color each station by its sustained wind speed. The arrow on every dot shows which way the wind is blowing toward.',
-  'obs-gust':     'Color each station by its peak wind gust. Only stations currently reporting a gust show up, so this thins to where the wind is actually gusty.',
-  'obs-humidity': 'Color each station by relative humidity, from dry browns to humid blues. Computed from the measured temperature and dew point.',
-  'obs-pressure': 'Color each station by its sea-level barometric pressure. Low (purple) is stormy, around 1013 mb is neutral, high (warm) is fair weather. The number is the last three digits, the way a station plot writes it.',
 };
 
 // The Level 2 row and the Pi radar row offer the same physics under their
@@ -16769,7 +16402,6 @@ const SB_ICON_TEMP = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none
 const SB_ICON_PRESSURE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18a8 8 0 1 1 16 0"/><line x1="12" y1="18" x2="16" y2="12"/><circle cx="12" cy="18" r="1.3" fill="currentColor" stroke="none"/><line x1="4" y1="18" x2="2.5" y2="18"/><line x1="20" y1="18" x2="21.5" y2="18"/></svg>';
 const SB_ICON_MODELS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="20" x2="5" y2="13"/><line x1="12" y1="20" x2="12" y2="8"/><line x1="19" y1="20" x2="19" y2="4"/><line x1="2" y1="20" x2="22" y2="20"/></svg>';
 // A station plot: a reading in the middle with the wind pointing out of it.
-const SB_ICON_OBS = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="13" r="4"/><path d="M11 9V3"/><path d="M11 3l3 2"/></svg>';
 
 const BASE_BUBBLES = [
   { id: 'radar',       icon: SB_ICON_RADAR,     label: 'Radar',       action: () => toggleRadarSub() },
@@ -16779,7 +16411,6 @@ const BASE_BUBBLES = [
   { id: 'wind',        icon: SB_ICON_WIND,      label: 'Wind',        action: () => toggleWindSub() },
   { id: 'temperature', icon: SB_ICON_TEMP,      label: 'Temperature', action: () => toggleTemperatureSub() },
   { id: 'pressure',    icon: SB_ICON_PRESSURE,  label: 'Pressure',    action: () => togglePressureSub() },
-  { id: 'obs',         icon: SB_ICON_OBS,       label: 'Surface Obs', action: () => toggleObsSub() },
   { id: 'models',      icon: SB_ICON_MODELS,    label: 'Models',      action: () => toggleModelsSub() },
 ];
 
@@ -16815,7 +16446,6 @@ function _getBubbleActive(id) {
   if (id === 'wind')        return !!windActive;
   if (id === 'temperature') return !!temperatureActive;
   if (id === 'pressure')    return !!pressureActive;
-  if (id === 'obs')         return !!_metarActive;
   if (id === 'models')      return _runModelsPanelIsOpen() || !!_hdOn || _spaghettiModelsPanelIsOpen() || _sndPanelIsOpen();
   return !!activeBubbles[id];
 }
@@ -16945,10 +16575,6 @@ function toggleOverlayPill(id) {
     if (pill) pill.classList.toggle('active', _surfaceOn);
     if (_surfaceOn) loadSurfaceAnalysis();
     else clearSurfaceAnalysis();
-  } else if (id === 'metar-stations') {
-    toggleStations();
-    const pill = document.getElementById('op-metar-stations');
-    if (pill) pill.classList.toggle('active', !!_metarActive);
   } else if (id === 'spotters') {
     _spottersActive = !_spottersActive;
     const pill = document.getElementById('op-spotters');
@@ -32565,11 +32191,6 @@ function lqmSetTZ(tz) {
       <p class="fc-body">Point forecast dots, colored by temperature. Click any dot for temperature, wind, precipitation chance, and conditions at that spot. On by default.</p>
     </div>
     <div class="feature-card">
-      <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg></div>
-      <div class="fc-title">METAR STATIONS</div>
-      <p class="fc-body">Surface observation markers from airport/station METAR reports, actual measured wind, temperature, and sky conditions rather than a forecast.</p>
-    </div>
-    <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wave></use></svg></div>
       <div class="fc-title">SURFACE ANALYSIS</div>
       <p class="fc-body">The WPC surface analysis, cold fronts (blue), warm fronts (red), stationary/occluded fronts, plus high/low pressure centers. On by default.</p>
@@ -35040,7 +34661,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Big speed pass: the app now opens instantly on repeat visits (the page, map library and fonts are kept on your device), radar and map tiles decode off the main thread so panning stays smooth, alert polygons draw on one fast canvas instead of hundreds of shapes, and slow networks show the map sooner instead of holding the loading screen.";
+const APP_LATEST_UPDATE = "The left menu now stays in one clean column on phones and scrolls when it is long, instead of spilling a second column over the map. The Surface Obs layer has been removed.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -35131,7 +34752,6 @@ const RADAR_CATALOG = [
   { icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-bar></use></svg>', label:'SPC Day 1 Outlook',type:'LAYER',  action:()=>switchTab('severe'),     kw:['day1','spc day 1','outlook','categorical'] },
   { icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-snow></use></svg>', label:'Ice Accumulation', type:'LAYER',  action:()=>switchTab('ice'),        kw:['ice accum','freezing rain','sleet'] },
   // Wind & Pressure
-  { icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg>', label:'Stations',            type:'OVERLAY',action:()=>toggleStations(),        kw:['stations','metar','temp','temperature','wind','hot','cold','degree'] },
   // NWR
   { icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-radio></use></svg>', label:'NWR Stations',       type:'OVERLAY',action:()=>toggleOverlayPill('radio'), kw:['nwr','noaa weather radio','transmitter','162','wx radio'] },
   // Alerts
@@ -36470,9 +36090,6 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill active" id="op-forecasts" data-ovid="forecasts" title="Weather Forecasts - point forecast dots">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('forecasts')">Weather Forecasts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-metar-stations" data-ovid="metar-stations" title="METAR Stations - surface observations">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('metar-stations')">METAR Stations</span><span class="ov-drag" title="Drag to reorder">⠿</span>
-    </div>
     <div class="ov-pill active" id="op-fronts" data-ovid="fronts" title="WPC Surface Analysis - fronts, highs, lows">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('fronts')">Surface Analysis</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -37490,7 +37107,6 @@ const OV_DESCRIPTIONS = {
   'cloudcam':         'Upload a photo of the sky or storm damage near you, or browse photos other users have shared.',
   'radio':            'NOAA Weather Radio station locations, the stations that broadcast weather alerts over the radio.',
   'forecasts':        'Short-term forecast dots placed across the map.',
-  'metar-stations':   'Airport weather stations, showing current temperature, wind, and sky conditions.',
   'fronts':           "Fronts, high pressure, and low pressure systems, the same map you'd see on a TV weather forecast.",
   'spotters':         'Live positions of trained storm spotters.',
   'spotter-reports':  'Reports from storm spotters currently in the field.',
