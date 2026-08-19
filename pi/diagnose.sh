@@ -135,6 +135,38 @@ if [ -n "$URL" ]; then
   fi
 fi
 
+hdr "8. The chat/feedback webhook relay"
+# The page's chat and feedback posts go to serve.py's relay doors, which
+# forward to Discord webhooks kept in ~/.gwcfc_webhooks.json. An EMPTY message
+# is refused before anything is sent to Discord, so posting one probes the
+# whole door safely: 400 means the webhook is configured and the door works,
+# 503 means the webhook file is missing or unreadable.
+if [ -s "$HOME/.gwcfc_webhooks.json" ]; then
+  good "webhook file exists"
+  python3 -c "
+import json
+d=json.load(open('$HOME/.gwcfc_webhooks.json'))
+for k,v in sorted(d.items()):
+    ok='looks right' if str(v).startswith('https://discord.com/api/webhooks/') else 'NOT a discord webhook url'
+    print(f'        {k}: {ok}')
+" 2>/dev/null || bad "but it is not valid JSON"
+else
+  bad "no ~/.gwcfc_webhooks.json, so chat and feedback cannot reach Discord"
+  note 'create it:  {"chat": "https://discord.com/api/webhooks/...",'
+  note '            "feedback": "https://discord.com/api/webhooks/..."}'
+fi
+for WHERE in "http://localhost:$PORT" "$URL"; do
+  [ -n "$WHERE" ] || continue
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST \
+         -H 'Content-Type: application/json' -d '{"content":""}' \
+         "$WHERE/relay/chat" 2>/dev/null)
+  case "$CODE" in
+    400) good "$WHERE : the relay door works (400 = empty message refused, as designed)" ;;
+    503) bad  "$WHERE : the relay answers but no webhook is configured (503)" ;;
+    *)   bad  "$WHERE : the relay answered $CODE" ;;
+  esac
+done
+
 echo
 echo "=============================================================="
 echo "Send all of this back."

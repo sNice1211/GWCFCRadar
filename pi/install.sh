@@ -9,7 +9,6 @@
 #   gwcfc-models    builds the model images, hourly
 #   gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
 #   gwcfc-cyclones  fetches the DeepMind cyclone runs
-#   gwcfc-obs       decodes surface observations (METAR), every five minutes
 #   gwcfc-serve     serves them with the header that makes them readable
 #   gwcfc-tunnel    gives them a public HTTPS address
 #   gwcfc-publish   tells the site that address, so nobody has to paste it
@@ -84,21 +83,27 @@ PY
 } || warn "something above is missing; the parts that need it will not build"
 
 # ── 3. cloudflared ──────────────────────────────────────────────────────────
+# Always refreshed to the latest release, not just installed once. Cloudflare
+# retires old client versions on the quick-tunnel edge: a stale binary still
+# registers a tunnel and prints a URL, but the edge answers 404 for it, which
+# looks exactly like a broken server and cost hours to trace. The binary is
+# outside apt's care, so this script is the only thing that will ever update it.
 say "Tunnel client"
-if ! command -v cloudflared >/dev/null 2>&1; then
-  ARCH=$(dpkg --print-architecture)
-  case "$ARCH" in
-    arm64) CF=cloudflared-linux-arm64 ;;
-    armhf) CF=cloudflared-linux-arm ;;
-    *)     CF=cloudflared-linux-amd64 ;;
-  esac
-  curl -fsSL -o /tmp/cloudflared \
-    "https://github.com/cloudflare/cloudflared/releases/latest/download/$CF"
+ARCH=$(dpkg --print-architecture)
+case "$ARCH" in
+  arm64) CF=cloudflared-linux-arm64 ;;
+  armhf) CF=cloudflared-linux-arm ;;
+  *)     CF=cloudflared-linux-amd64 ;;
+esac
+if curl -fsSL -o /tmp/cloudflared \
+    "https://github.com/cloudflare/cloudflared/releases/latest/download/$CF"; then
   chmod +x /tmp/cloudflared
   sudo mv /tmp/cloudflared /usr/local/bin/cloudflared
-  ok "installed for $ARCH"
+  ok "latest release installed for $ARCH ($(/usr/local/bin/cloudflared --version 2>/dev/null | head -1))"
+elif command -v cloudflared >/dev/null 2>&1; then
+  warn "could not fetch the latest cloudflared; keeping the one already installed"
 else
-  ok "already installed"
+  warn "could not fetch cloudflared and none is installed; the tunnel will not start"
 fi
 
 mkdir -p "$DATA/models" "$UNITS"
@@ -170,7 +175,10 @@ After=gwcfc-serve.service
 Wants=gwcfc-serve.service
 
 [Service]
-ExecStart=/usr/local/bin/cloudflared tunnel --url http://localhost:$PORT
+# --protocol http2 on purpose. The default (quic, over UDP) kept dying on this
+# network with "failed to run the datagram handler" every minute or two, and
+# every death rolled a new random URL. http2 runs over plain TCP and holds.
+ExecStart=/usr/local/bin/cloudflared tunnel --protocol http2 --url http://localhost:$PORT
 Restart=always
 RestartSec=10
 StandardOutput=append:$HOME/tunnel.log
@@ -264,32 +272,6 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-# Surface observations (METAR). One small request holds every station, decoded
-# to a single file the page reads, so this is light and runs on the radar's own
-# five-minute clock: airport reports update about that often.
-cat > "$UNITS/gwcfc-obs.service" <<EOF
-[Unit]
-Description=Decode surface observations (METAR) into one file
-
-[Service]
-Type=oneshot
-ExecStart=$VENV/bin/python $REPO/pi/obs_pipeline.py
-TimeoutStartSec=180
-Nice=12
-EOF
-
-cat > "$UNITS/gwcfc-obs.timer" <<'EOF'
-[Unit]
-Description=Surface observations every five minutes
-
-[Timer]
-OnCalendar=*:0/5
-Persistent=false
-
-[Install]
-WantedBy=timers.target
-EOF
-
 # Keeping itself current. Without this the Pi runs whatever was cloned until
 # somebody remembers to pull, which is how it ends up an hour of debugging away
 # from a bug that was fixed days ago.
@@ -343,14 +325,14 @@ systemctl --user restart gwcfc-tunnel.service      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
 systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
-systemctl --user enable --now gwcfc-obs.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
 systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1
 systemctl --user restart gwcfc-publish.service     >/dev/null 2>&1
-# A first run right away so observations are on the map without waiting out the
-# first five-minute tick.
-systemctl --user start --no-block gwcfc-obs.service >/dev/null 2>&1
-ok "serve, tunnel, publish, models, radar, cyclones, obs and self-update are running"
+# The obs (METAR) service was removed from the app; clean it off any Pi that
+# still has it, so a dead timer does not keep firing a script that is gone.
+systemctl --user disable --now gwcfc-obs.timer gwcfc-obs.service >/dev/null 2>&1 || true
+rm -f "$UNITS/gwcfc-obs.service" "$UNITS/gwcfc-obs.timer"
+ok "serve, tunnel, publish, models, radar, cyclones and self-update are running"
 
 # ── 5. the address ──────────────────────────────────────────────────────────
 say "Public address"
