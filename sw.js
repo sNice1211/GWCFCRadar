@@ -1,6 +1,7 @@
-// GWCFCRadar Service Worker - radar tile cache + background alert notifications
-const CACHE       = 'gwcfc-v18';
-const NOTIF_CACHE = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
+// GWCFCRadar Service Worker - radar tile cache + app shell + background alert notifications
+const CACHE        = 'gwcfc-v19';
+const STATIC_CACHE = 'gwcfc-static-v1'; // app shell + CDN libraries + fonts
+const NOTIF_CACHE  = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
 const IEM_L3_RE = /\/cache\/tile\.py\/1\.0\.0\/nexrad-n0q-\d{12}\//;
@@ -43,6 +44,31 @@ const TTL_MS = {
   'opengeo.ncep.noaa.gov':     2 * 3600 * 1000,
 };
 
+// Libraries and fonts. These are versioned files that never change under
+// their URL, so after the first visit they come off disk instead of the
+// network - and Leaflet is the render-blocking one, so this is the
+// difference between the page painting instantly and waiting on a CDN.
+const STATIC_HOSTS = new Set([
+  'cdn.jsdelivr.net',
+  'fonts.googleapis.com',
+  'fonts.gstatic.com',
+]);
+const STATIC_TTL_MS = 30 * 24 * 3600 * 1000;
+
+// The page itself: network first so a deploy always lands, with the cached
+// copy as the fallback when the network is slow or gone. The race means a
+// bad connection costs at most SHELL_TIMEOUT_MS before the app opens from
+// cache; the fetch keeps running in the background and refreshes the copy.
+const SHELL_TIMEOUT_MS = 3500;
+
+// The tile cache grows a few hundred KB per radar frame per pan. Left alone
+// it balloons until cache.match itself gets slow, so it is trimmed back to
+// the newest entries once it passes the cap. Checked once every 25 writes
+// because the keys() walk is the expensive part, not the writes.
+const TILE_CACHE_MAX  = 900;
+const TILE_CACHE_TRIM = 700;
+let _putsSincePrune = 0;
+
 // ── Home location + GPS coords (sent from page via postMessage) ──
 let _swLocation = null;
 let _swCoords   = null;   // { lat, lon } for rain detection
@@ -55,7 +81,8 @@ self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(
   caches.keys()
     .then(keys => Promise.all(
-      keys.filter(k => k !== CACHE && k !== NOTIF_CACHE).map(k => caches.delete(k))
+      keys.filter(k => k !== CACHE && k !== NOTIF_CACHE && k !== STATIC_CACHE)
+        .map(k => caches.delete(k))
     ))
     .then(() => clients.claim())
 ));
@@ -120,11 +147,25 @@ self.addEventListener('notificationclick', e => {
   );
 });
 
-// ── Fetch: radar tile cache-first ───────────────────────────
+// ── Fetch: app shell, static libraries, radar tiles ─────────
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   let url;
   try { url = new URL(e.request.url); } catch { return; }
+
+  // Opening the app: fresh when the network answers quickly, cached copy
+  // when it does not. This is what makes a repeat visit on hotel wifi feel
+  // instant instead of re-downloading the whole page.
+  if (e.request.mode === 'navigate' && url.origin === self.location.origin) {
+    e.respondWith(shellNetworkFirst(e.request));
+    return;
+  }
+
+  if (STATIC_HOSTS.has(url.hostname)) {
+    e.respondWith(cacheFirst(e.request, STATIC_TTL_MS, STATIC_CACHE));
+    return;
+  }
+
   if (!CACHE_HOSTS.has(url.hostname)) return;
 
   let ttl;
@@ -135,11 +176,37 @@ self.addEventListener('fetch', e => {
   } else {
     ttl = TTL_MS[url.hostname] ?? 10 * 60 * 1000;
   }
-  e.respondWith(cacheFirst(e.request, ttl));
+  e.respondWith(cacheFirst(e.request, ttl, CACHE));
 });
 
-async function cacheFirst(req, ttl) {
-  const cache = await caches.open(CACHE);
+// One fixed key for the shell, whatever the navigation URL's query string
+// says: /?focus_alert=... and / are the same page and must share one copy.
+function _shellKey() { return self.registration.scope; }
+
+async function shellNetworkFirst(req) {
+  const cache = await caches.open(STATIC_CACHE);
+  // The fetch always runs to completion so the cached copy stays current
+  // even when the race below has already answered from cache.
+  const netP = fetch(req).then(res => {
+    if (res && res.ok) { try { cache.put(_shellKey(), res.clone()); } catch (e) {} }
+    return res;
+  });
+  let timer;
+  const raced = await Promise.race([
+    netP.catch(() => 'net-error'),
+    new Promise(res => { timer = setTimeout(() => res('timeout'), SHELL_TIMEOUT_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (raced !== 'timeout' && raced !== 'net-error' && raced) return raced;
+  const hit = await cache.match(_shellKey());
+  if (hit) return hit;
+  // Nothing cached yet: give the slow network its full chance rather than
+  // failing a first-ever visit at the timeout.
+  try { return await netP; } catch { return new Response('offline', { status: 503 }); }
+}
+
+async function cacheFirst(req, ttl, cacheName) {
+  const cache = await caches.open(cacheName);
   const hit   = await cache.match(req);
   if (hit) {
     const age = Date.now() - +(hit.headers.get('x-sw-ts') ?? 0);
@@ -153,12 +220,31 @@ async function cacheFirst(req, ttl) {
       hdrs.set('x-sw-ts', String(Date.now()));
       const stored = new Response(buf, { status: res.status, headers: hdrs });
       cache.put(req, stored.clone());
+      if (cacheName === CACHE) _maybePruneTiles(cache);
       return stored;
     }
     return res;
   } catch {
     return hit ?? new Response('', { status: 503 });
   }
+}
+
+// Drop the oldest tiles once the cache passes its cap. Oldest by the same
+// x-sw-ts stamp cacheFirst writes, so eviction order is true fetch order.
+async function _maybePruneTiles(cache) {
+  if (++_putsSincePrune < 25) return;
+  _putsSincePrune = 0;
+  try {
+    const keys = await cache.keys();
+    if (keys.length <= TILE_CACHE_MAX) return;
+    const stamped = await Promise.all(keys.map(async k => {
+      const r = await cache.match(k);
+      return { k, ts: +((r && r.headers.get('x-sw-ts')) || 0) };
+    }));
+    stamped.sort((a, b) => a.ts - b.ts);
+    const drop = stamped.slice(0, stamped.length - TILE_CACHE_TRIM);
+    await Promise.all(drop.map(d => cache.delete(d.k)));
+  } catch (e) { /* a failed prune costs nothing but disk */ }
 }
 
 // ── Severity maps (mirrored from page JS) ────────────────────

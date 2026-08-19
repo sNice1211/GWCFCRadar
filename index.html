@@ -55,18 +55,27 @@ if ('serviceWorker' in navigator) {
 // Removes #loading after 10 s no matter what (CDN down, JS error, window.load never fires).
 setTimeout(function(){var e=document.getElementById('loading');if(e){e.style.transition='none';e.style.opacity='0';e.style.display='none';try{e.parentNode.removeChild(e);}catch(_){}}},30000);
 </script>
-<!-- Critical: needed before first paint -->
+<!-- Critical: needed before first paint. jsdelivr is FIRST because Leaflet's
+     script tag below is render-blocking: until that file arrives nothing
+     paints, so its connection should be warming before the parser reaches it. -->
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link rel="preconnect" href="https://api.maptiler.com">
 <link rel="preconnect" href="https://mesonet.agron.iastate.edu">
 <link rel="preconnect" href="https://geo.weather.gc.ca">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <!-- Secondary: used almost always -->
 <link rel="preconnect" href="https://api.weather.gov">
+<!-- The Pi's address lives in Firestore and is read during boot, so warming
+     this connection shaves a round trip off every Pi feature's first load. -->
+<link rel="preconnect" href="https://firestore.googleapis.com">
 <!-- Less-critical: DNS only -->
 <link rel="dns-prefetch" href="https://opengeo.ncep.noaa.gov">
 <link rel="dns-prefetch" href="https://api.open-meteo.com">
 <link rel="dns-prefetch" href="https://marine-api.open-meteo.com">
 <link rel="dns-prefetch" href="https://www.spc.noaa.gov">
+<link rel="dns-prefetch" href="https://unidata-nexrad-level2-chunks.s3.amazonaws.com">
+<link rel="dns-prefetch" href="https://unidata-nexrad-level3.s3.amazonaws.com">
+<link rel="dns-prefetch" href="https://services9.arcgis.com">
 
 
 <!-- Leaflet -->
@@ -8129,6 +8138,9 @@ function initMap() {
     });
     // A tile arriving means the service recovered, so let it earn its retries back.
     layer.on('load', () => { _mtErrors = 0; _mtRetries = 0; });
+    // Decode basemap tiles off the main thread: a fast pan lands a burst of
+    // tiles at once, and synchronous decodes are what turn that into a hitch.
+    layer.on('tileloadstart', e => { e.tile.decoding = 'async'; });
   });
 
   mapTileLayers = { dark: cartoDark, light: cartoLight, satellite, topo };
@@ -8540,6 +8552,7 @@ function _switchSlotToWms(i) {
     keepBuffer: _isIOS ? 1 : 2, updateWhenIdle: _isIOS, updateWhenZooming: false,
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
+  l.on('tileloadstart', (e) => { e.tile.decoding = 'async'; });
   l.on('tileload', (e) => {
     e.tile.style.imageRendering = smoothEnabled ? 'auto' : 'pixelated';
   });
@@ -8590,11 +8603,14 @@ function _ensureNexradLayer(i) {
     attribution: 'Radar: NOAA NEXRAD N0Q via Iowa Mesonet',
   });
 
-  // Priority checked dynamically so seeked frames always get high priority
+  // Priority checked dynamically so seeked frames always get high priority.
+  // decoding='async' keeps the PNG decode off the main thread, so a burst of
+  // arriving tiles cannot stutter a pan or the animation.
   const _origCT = l.createTile.bind(l);
   l.createTile = function(coords, done) {
     const tile = _origCT(coords, done);
     tile.fetchPriority = (i === currentFrame) ? 'high' : 'low';
+    tile.decoding = 'async';
     return tile;
   };
 
@@ -9169,9 +9185,12 @@ function loadAlerts(forceRender) {
 async function _doLoadAlerts(forceRender) {
   updateLoadStatus('Intercepting severe weather alerts…');
   try {
+    // priority:'low' keeps these multi-megabyte JSON bodies out of the way of
+    // the radar and basemap tiles during the first seconds of a load. Browsers
+    // that do not know the field ignore it.
     const [activeRes, pastRes] = await Promise.all([
-      fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert', { signal: _abortSignal(15000) }),
-      fetch('https://api.weather.gov/alerts?status=actual&message_type=alert&severity=Extreme,Severe,Moderate&limit=100', { signal: _abortSignal(15000) })
+      fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert', { signal: _abortSignal(15000), priority: 'low' }),
+      fetch('https://api.weather.gov/alerts?status=actual&message_type=alert&severity=Extreme,Severe,Moderate&limit=100', { signal: _abortSignal(15000), priority: 'low' })
     ]);
     const [activeData, pastData] = await Promise.all([activeRes.json(), pastRes.json()]);
     const activeFeatures = activeData.features || [];
@@ -9352,6 +9371,21 @@ function _focusAlertById(id) {
 let _alertFlashRAF = null;
 let _alertNewLayers = [];   // { layer, fillLayer, color, until }
 
+// One shared canvas renderer for every alert shape. The default is SVG: one
+// DOM node per polygon, and a big outbreak means many hundreds of them, each
+// re-laid-out on every pan and zoom - that is the stutter people feel when
+// warnings are everywhere. A canvas renderer draws all of them into a single
+// element, so panning moves one thing instead of a forest. Click popups and
+// setStyle both work the same on canvas, which _focusAlertById and the flash
+// loops depend on.
+let _alertsCanvasR = null;
+function _alertsCanvas() {
+  if (!_alertsCanvasR) {
+    _alertsCanvasR = L.canvas({ pane: 'alertsPane', padding: 0.3 });
+  }
+  return _alertsCanvasR;
+}
+
 // Some NWS alerts (mostly advisories issued by county/zone rather than an
 // exact drawn polygon) come back with geometry: null - properties.geocode.UGC
 // lists the affected zone codes instead. Without this, those alerts show up
@@ -9437,7 +9471,10 @@ function _destFromBearing(lat, lon, brgDeg, distNm){
 
 function renderAlerts(features) {
   _lastAlertFeatures = features;
-  if (_alertFlashRAF) { cancelAnimationFrame(_alertFlashRAF); _alertFlashRAF = null; }
+  // The id is a setTimeout handle now (the flash tick is throttled), so it is
+  // cleared with clearTimeout; cancelAnimationFrame on a timeout id is a no-op
+  // and left the old loop running against removed layers.
+  if (_alertFlashRAF) { clearTimeout(_alertFlashRAF); _alertFlashRAF = null; }
   _alertNewLayers = [];
   if (alertsLayer) { map.removeLayer(alertsLayer); alertsLayer = null; }
 
@@ -9473,7 +9510,7 @@ function renderAlerts(features) {
 
   // Black casing layer (drawn first, sits beneath the colored outlines).
   const casing = L.geoJSON({ type: 'FeatureCollection', features: filtered }, {
-    pane: 'alertsPane', interactive: false,
+    pane: 'alertsPane', interactive: false, renderer: _alertsCanvas(),
     style: f => ({ color: '#000000', weight: _alertThicknessFor(f.properties.event) + 2, fill: false, opacity: 1 })
   });
 
@@ -9485,7 +9522,7 @@ function renderAlerts(features) {
   // A notification tapped before this batch loaded parked its id; now it exists.
   if (_pendingFocusAlertId) setTimeout(() => _focusAlertById(_pendingFocusAlertId), 0);
   const main = L.geoJSON({ type: 'FeatureCollection', features: filtered }, {
-    pane: 'alertsPane',
+    pane: 'alertsPane', renderer: _alertsCanvas(),
     style: f => {
       const ev = f.properties.event || '', color = _alertColorFor(ev);
       return { color, weight: _alertThicknessFor(ev), fillColor: color, fillOpacity: 0.4, opacity: 1 };
@@ -9526,9 +9563,9 @@ function renderAlerts(features) {
     mot.points.forEach(pt => {
       if (!isFinite(pt.lat) || !isFinite(pt.lon)) return;
       const [eLat, eLon] = _destFromBearing(pt.lat, pt.lon, mot.direction, distNm);
-      L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', color:'#000', weight:5, interactive:false }).addTo(motion);
-      L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', color, weight:2, interactive:false }).addTo(motion);
-      L.circleMarker([pt.lat, pt.lon], { pane:'alertsPane', radius:3, color:'#000', weight:1.5, fillColor:color, fillOpacity:1, interactive:false }).addTo(motion);
+      L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', renderer:_alertsCanvas(), color:'#000', weight:5, interactive:false }).addTo(motion);
+      L.polyline([[pt.lat, pt.lon], [eLat, eLon]], { pane:'alertsPane', renderer:_alertsCanvas(), color, weight:2, interactive:false }).addTo(motion);
+      L.circleMarker([pt.lat, pt.lon], { pane:'alertsPane', renderer:_alertsCanvas(), radius:3, color:'#000', weight:1.5, fillColor:color, fillOpacity:1, interactive:false }).addTo(motion);
       L.marker([eLat, eLon], { pane:'alertsPane', interactive:false, icon: L.divIcon({ className:'', html:`<div style="color:${color};text-shadow:0 0 2px #000,0 0 2px #000;font-size:15px;line-height:1;transform:rotate(${mot.direction}deg)"><svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(-90deg)><use href=#ic-arrow></use></svg></div>`, iconSize:[16,16], iconAnchor:[8,8] }) }).addTo(motion);
     });
   });
@@ -9539,6 +9576,10 @@ function renderAlerts(features) {
   if (_ap) _ap.style.display = alertsLayerVisible ? '' : 'none';
 
   // Flash newly-issued alerts (pulse toward white) for their first minute.
+  // Throttled to ~15fps: the pulse is a slow one-second sine, so restyling at
+  // a full 60fps was four times the repaint work for a wave the eye cannot
+  // tell apart. On the shared canvas each restyle repaints every alert, which
+  // makes the cheap tick matter even more.
   if (_alertNewLayers.length) {
     const start = Date.now();
     const tick = () => {
@@ -9550,7 +9591,7 @@ function renderAlerts(features) {
       if (!_alertNewLayers.length) { _alertFlashRAF = null; return; }
       const phase = Math.sin(((now - start) % 1000) / 1000 * Math.PI * 2) * 0.5 + 0.5;
       _alertNewLayers.forEach(({ layer, color }) => { const c = _lerpColor(color, '#ffffff', phase); try { layer.setStyle({ color:c, fillColor:c }); } catch(e){} });
-      _alertFlashRAF = requestAnimationFrame(tick);
+      _alertFlashRAF = setTimeout(() => requestAnimationFrame(tick), 66);
     };
     tick();
   }
@@ -19699,7 +19740,11 @@ async function init() {
       const poll = () => {
         if (_radarFramesReady > 0) { resolve(); return; }
         staleMs += 150;
-        if (staleMs >= 8000) { resolve(); return; }
+        // 5s cap, down from 8: on a network this slow the radar is not close,
+        // and holding the whole app hostage to it makes everything feel
+        // broken. The tiles keep loading behind the map and fade in when
+        // ready; showing the map sooner IS the faster experience.
+        if (staleMs >= 5000) { resolve(); return; }
         updateLoadStatus(`Loading radar…`);
         setTimeout(poll, 150);
       };
@@ -34995,7 +35040,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "New Surface Obs layer in the left menu: live temperature, dew point, wind, gusts, humidity and pressure from every airport and station, decoded on your Pi. Pick which reading colors the dots and it switches instantly, each dot has a wind arrow, and tapping one shows the full report. Falls back to NOAA if the Pi is offline.";
+const APP_LATEST_UPDATE = "Big speed pass: the app now opens instantly on repeat visits (the page, map library and fonts are kept on your device), radar and map tiles decode off the main thread so panning stays smooth, alert polygons draw on one fast canvas instead of hundreds of shapes, and slow networks show the map sooner instead of holding the loading screen.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
