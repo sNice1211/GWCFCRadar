@@ -9896,6 +9896,12 @@ async function loadMesoDisc() {
   ];
   updateLoadStatus('Loading SPC Mesoscale Discussions…');
   let data = null;
+  // Whether any source ever answered with valid, well-formed GeoJSON, even
+  // an empty one - kept separately from `data` so "every source is really
+  // just quiet right now" and "every source failed outright" still read
+  // differently in the status line once the loop below only accepts a
+  // source that actually has something in it.
+  let sawEmptyOk = false;
   const wrappers = [
     u => u,
     u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
@@ -9909,13 +9915,21 @@ async function loadMesoDisc() {
         if (!r.ok) { console.debug(`[meso] ${r.status} ${url.slice(0,90)}`); continue; }
         const txt = await r.text();
         let d; try { d = JSON.parse(txt); } catch(e) { console.debug('[meso] non-JSON', url.slice(0,90)); continue; }
-        if (d?.features !== undefined) { data = d; break outer; }
+        // Same acceptance rule as loadWPCOutlook/loadFireWxOutlook: a
+        // response that parsed but came back with zero features is not a
+        // win, it is the primary URL answering hollow. Accepting it here
+        // used to stop the loop right there, so the two other mirrors
+        // (mesonet.agron.iastate.edu, spc.noaa.gov) never got a turn even
+        // when they actually had the active MCDs the first one missed.
+        if (d?.features?.length) { data = d; break outer; }
+        if (d?.features !== undefined) sawEmptyOk = true;
+        console.debug('[meso] parsed OK but no features ::', url.slice(0,90));
       } catch(e) { console.debug('[meso] error:', e.message); }
     }
   }
   if (_mesoLayer) { try { map.removeLayer(_mesoLayer); } catch(e){} _mesoLayer = null; }
   if (!data || !Array.isArray(data.features) || !data.features.length) {
-    updateLoadStatus(data ? 'No active Mesoscale Discussions.' : 'Meso discussion data unavailable.');
+    updateLoadStatus((data || sawEmptyOk) ? 'No active Mesoscale Discussions.' : 'Meso discussion data unavailable.');
     setTimeout(() => updateLoadStatus(''), 4000);
     return;
   }
@@ -19106,8 +19120,33 @@ function toggleFullscreen() {
 
 // ── LOAD STATUS ──
 function updateLoadStatus(msg) {
-  const el = document.getElementById('load-status');
-  if (el) el.textContent = msg;
+  // #load-status starts life inside the boot loading screen and is removed
+  // from the DOM along with it once loading finishes (_actuallyDismiss).
+  // Every one of this function's 90-odd callers - WPC, mesoscale
+  // discussions, tornado tracks, wildfires, storm reports, ambient
+  // weather, and a dozen more - keeps calling it long after that, to
+  // report exactly the "no active X" / "X unavailable" text a person
+  // needs to see when a layer comes up empty or a source fails. Without a
+  // surviving element every one of those calls was writing to nothing: no
+  // error, just silence, which reads exactly like the feature not
+  // working at all. Lazily creating a replacement, the same way showToast
+  // makes its own element, fixes every caller at once with no other line
+  // in the app needing to change.
+  let el = document.getElementById('load-status');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'load-status';
+    el.style.cssText =
+      'position:fixed;top:8px;left:50%;transform:translateX(-50%);' +
+      'background:rgba(8,12,16,0.92);border:1px solid rgba(0,140,186,0.35);' +
+      'color:var(--accent2);font-family:var(--mono);font-size:11px;' +
+      'letter-spacing:1px;text-transform:uppercase;padding:6px 14px;' +
+      'border-radius:8px;z-index:9999;pointer-events:none;white-space:nowrap;' +
+      'max-width:90vw;overflow:hidden;text-overflow:ellipsis;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.display = msg ? '' : 'none';
 }
 
 // ── FUN FACTS (real GWCFCRadar app features) ──
@@ -34730,7 +34769,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed: NWS alert polygons were silently blocking clicks on NWR stations and other map markers underneath them. Stations are clickable again.";
+const APP_LATEST_UPDATE = "Fixed: Mesoscale Discussions now fall through to backup sources instead of giving up early, and every overlay's status messages (loading/unavailable/none active) actually show up again after the app finishes loading.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -37188,6 +37227,8 @@ const OV_DESCRIPTIONS = {
   'tornado-tracks':   'Surveyed tornado damage paths, rated by EF scale, from the last 60 days.',
   'wildfires':        'Active large wildfires, updated in the last 48 hours, with acres burned and location.',
   'ambient-weather':  'Personal weather stations from the Ambient Weather Network, showing live temperature, wind, rain, and pressure.',
+  'rotation':         'Where NEXRAD has detected storm rotation over the last hour (MRMS Rotation Tracks), decoded on your Pi. A trail means a mesocyclone passed through, not necessarily that a tornado touched down.',
+  'hail':             'The largest estimated hail size over the last hour at each point (MRMS MESH: Maximum Estimated Size of Hail), decoded on your Pi.',
   'storm-centers':    "Triangles marking storms radar has flagged as rotating (red, possible tornado) or hail-producing (green), straight from NEXRAD's automated detection.",
   'traffic-cameras':  'Live state DOT traffic camera feeds (Kansas, Maryland, Oregon, Kentucky, Iowa, South Dakota) - tap a dot for a live or recently-refreshed still image.',
   'wfo-offices':      "Dots for every NWS Weather Forecast Office. Tap one to see that office's currently active alerts and its recent text products (forecasts, discussions, statements).",
