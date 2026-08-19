@@ -8678,6 +8678,12 @@ function updateFrameLabel(idx) {
 }
 
 function showFrame(idx) {
+  // The Pi Radar picker sets currentProduct to its own product keys
+  // (reflectivity, corrcoeff, ...), which match none of the checks below and
+  // would otherwise fall through to painting the national mosaic underneath
+  // whatever the Pi is showing. _prLoopShow is what actually owns the screen
+  // here; this function has nothing to do.
+  if (_prLoopActive()) return;
   if (currentProduct === 'vel' || currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') return;
   if (currentProduct === 'ref' && _refStation) {
     // Single-site is active (or loading). Never show composite behind it.
@@ -13025,6 +13031,7 @@ function _cycDisable() {
 
 let _prOn = false;
 let _prLayers = [];           // one image overlay per site currently on the map
+let _prOverlay = null;        // the same overlay, swapped in place as frames scrub
 let _prTimer = null;
 
 // What can be asked for. A product is named once, in the words a person would
@@ -13083,6 +13090,154 @@ try {
   if (tl >= 1 && tl <= 4) _prTilt = tl;
 } catch (e) {}
 
+// ── PLAYBACK: scrub through the Pi's own frame history ─────────────────────
+// pi/radar_pipeline.py keeps every frame it built within a rolling age
+// window (24h by default) rather than a fixed count, and idx.sites[site]
+// already lists every stamp it has - this turns that list into a real
+// timeline instead of only ever drawing the newest one. Manifests are
+// fetched lazily and cached: opening the loop never means downloading a
+// day of JSON up front, and a finished historical frame never changes, so
+// once fetched it is never asked for again.
+let _prLoop = { frames: [], idx: -1, site: null, lvl: null, cache: new Map() };
+let _prLoopLenH = 3;   // hours of history offered; 1/3/6/12/24
+try {
+  const v = parseFloat(localStorage.getItem('gwcfc_pr_looplen'));
+  if ([1, 3, 6, 12, 24].includes(v)) _prLoopLenH = v;
+} catch (e) {}
+
+function _prLoopActive() {
+  return _prOn && !_prBucketSite && _prLoop.frames.length > 1;
+}
+
+// pi/radar_pipeline.py names a frame's folder its own timestamp,
+// 20260819_143000, which is also the one place that time exists - nothing
+// else carries it, so every scrub position is read straight off the name.
+function _prStampToMs(stamp) {
+  const m = /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/.exec(stamp || '');
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : 0;
+}
+
+// Rebuilds the scrubbable frame list for the current site/level from the
+// index the Pi just answered with, windowed to the chosen loop length.
+// `followLive`: jump to the newest frame regardless of where the scrub bar
+// was (used when the user was already watching live, or just changed the
+// loop length); otherwise the same real frame is kept in view across a
+// product-only change or a periodic refresh, so switching from
+// Reflectivity to Velocity - or the 5-minute auto-refresh landing - never
+// yanks the picture back to now out from under someone looking at 3am.
+function _prLoopBuild(meta, lvl, followLive) {
+  const all = meta.frames || [];
+  const newest = all[all.length - 1];
+  let stamps = all;
+  if (newest) {
+    const cutoff = _prStampToMs(newest) - _prLoopLenH * 3600000;
+    stamps = all.filter(s => _prStampToMs(s) >= cutoff);
+  }
+  const prevStamp = (_prLoop.site === _prSite && _prLoop.lvl === lvl && _prLoop.frames.length)
+    ? _prLoop.frames[_prLoop.idx] : null;
+  _prLoop.frames = stamps;
+  _prLoop.site = _prSite;
+  _prLoop.lvl = lvl;
+  _prLoop.idx = (!followLive && prevStamp && stamps.includes(prevStamp))
+    ? stamps.indexOf(prevStamp) : stamps.length - 1;
+}
+
+// One frame, drawn onto the single reusable overlay rather than a fresh
+// layer per scrub. `live` both skips the cache (the newest frame's JSON can
+// still be mid-write moments after the Pi announces it) and allows the
+// missing-field toast, which stays off while scrubbing/playing through
+// history so stepping across ten frames does not stack ten toasts.
+async function _prShowFrame(base, lvl, meta, stamp, live) {
+  const manPath = meta.path.replace('{frame}', stamp);
+  const cacheKey = `${meta.path}|${stamp}`;
+  let man = live ? null : _prLoop.cache.get(cacheKey);
+  if (!man) {
+    man = await fetch(`${base}/radar/${manPath}${live ? '?t=' + Date.now() : ''}`,
+                      { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null).catch(() => null);
+    if (man) _prLoop.cache.set(cacheKey, man);
+  }
+  if (!man || !man.bounds) return false;
+
+  let product = (PR_PRODUCTS[_prProduct] || PR_PRODUCTS.reflectivity)[lvl];
+  const cuts = (PR_PRODUCTS[_prProduct] || {}).l3Tilts;
+  if (lvl === 'l3' && cuts) product = cuts[Math.min(Math.max(_prTilt, 1), cuts.length) - 1];
+
+  // Terminal radars speak their own Level 3 dialect: tz0 IS base
+  // reflectivity and tv0 IS base velocity, per AtticRadar's tables.
+  const TDWR_TWIN = { n0q: 'tz0', n1q: 'tz1', n0u: 'tv0', n1u: 'tv1' };
+  let product2 = product;
+  if (man.fields && !man.fields[product] && TDWR_TWIN[product]
+      && man.fields[TDWR_TWIN[product]]) {
+    product2 = TDWR_TWIN[product];
+  }
+  const field = (man.fields && man.fields[product2]) ? product2
+              : Object.keys(man.fields || {})[0];
+  if (!field) return false;
+  if (live && field !== product2 && typeof showToast === 'function') {
+    showToast(_prSite + ' has no ' + (PR_PRODUCTS[_prProduct] || {}).label
+            + ' in this frame yet, showing ' + field.toUpperCase() + ' instead.', 3500);
+  }
+
+  const url = `${base}/radar/${lvl}/${_prSite}/${stamp}/${field}.png`;
+  if (!_prOverlay) {
+    _prOverlay = L.imageOverlay(url, man.bounds,
+      { opacity: 0.78, interactive: false, pane: 'radarPane' });
+    _prOverlay.addTo(map);
+    _prLayers = [_prOverlay];
+  } else {
+    _prOverlay.setUrl(url);
+    _prOverlay.setBounds(man.bounds);
+  }
+  return true;
+}
+
+// Reflects the current scrub position onto the shared timeline slider and
+// the anim-time readout, exactly as the browser-decoded L2 loop and the
+// national mosaic already do, so one control bar genuinely serves all three.
+function _prLoopSyncTimeline() {
+  const tl = document.getElementById('timeline');
+  if (tl) { tl.max = Math.max(0, _prLoop.frames.length - 1); tl.value = _prLoop.idx; }
+  if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+  const at = document.getElementById('anim-time');
+  if (at && _prLoop.frames.length && _prSite) {
+    const ms = _prStampToMs(_prLoop.frames[_prLoop.idx]);
+    const past = _prLoop.idx < _prLoop.frames.length - 1;
+    at.textContent = (ms ? _fmtHHMM(new Date(ms)) + ' · ' : '')
+      + _prSite.toUpperCase() + ' '
+      + ((PR_PRODUCTS[_prProduct] || {}).label || _prProduct)
+      + (past ? ' (past)' : '');
+  }
+}
+
+// Scrub to one position in the current loop - what the shared timeline
+// slider, play button and step buttons all end up calling.
+async function _prLoopShow(loopIdx) {
+  const n = _prLoop.frames.length;
+  if (!n) return;
+  loopIdx = Math.max(0, Math.min(n - 1, loopIdx));
+  _prLoop.idx = loopIdx;
+  const meta = _prIndex && _prIndex.sites && _prIndex.sites[_prSite];
+  if (!meta || !_hdBase) return;
+  const stamp = _prLoop.frames[loopIdx];
+  await _prShowFrame(_hdBase, _prDrawnLvl, meta, stamp, loopIdx === n - 1);
+  _prLoopSyncTimeline();
+}
+
+// The loop-length control in Settings. Re-windows from the frames already
+// on hand - no re-fetch of the index, since the Pi's own answer already
+// carried everything up to its full retention window.
+function _prSetLoopLen(hours) {
+  _prLoopLenH = parseFloat(hours) || 3;
+  try { localStorage.setItem('gwcfc_pr_looplen', String(_prLoopLenH)); } catch (e) {}
+  const meta = _prOn && _prIndex && _prIndex.sites && _prIndex.sites[_prSite];
+  if (!meta) return;
+  _prLoopBuild(meta, _prDrawnLvl, true);
+  const stamp = _prLoop.frames[_prLoop.idx];
+  if (stamp && _hdBase) _prShowFrame(_hdBase, _prDrawnLvl, meta, stamp, true);
+  _prLoopSyncTimeline();
+}
+
 async function _prSetSite(id) {
   _prSite = id;
   try { localStorage.setItem('gwcfc_pr_site', id); } catch (e) {}
@@ -13135,22 +13290,16 @@ async function _prLoadIndex(base) {
 }
 
 function _prClear() {
-  if (_prTimer) { clearInterval(_prTimer); _prTimer = null; }
   _prLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
   _prLayers = [];
+  _prOverlay = null;
 }
 
-// The newest frame of every site, drawn at once, so a national picture is the
-// sum of the sites that are switched on rather than one radar at a time.
+// One site's picture, drawn from whichever frame is currently in the
+// scrub position (the newest one, unless the loop has been played or
+// dragged back into history).
 async function _prDraw(base, lvl, idx) {
   _prClear();
-  // The chosen product in this level's own spelling, at the chosen tilt when
-  // this level publishes the cuts separately.
-  let product = (PR_PRODUCTS[_prProduct] || PR_PRODUCTS.reflectivity)[lvl];
-  const cuts = (PR_PRODUCTS[_prProduct] || {}).l3Tilts;
-  if (lvl === 'l3' && cuts) {
-    product = cuts[Math.min(Math.max(_prTilt, 1), cuts.length) - 1];
-  }
   _prDrawnLvl = lvl;
   // One site. If the remembered one is not in this run, the first the Pi has
   // is used rather than drawing nothing, and _prSite is moved to match so the
@@ -13164,7 +13313,10 @@ async function _prDraw(base, lvl, idx) {
   // either is switched on for the product being shown, the site's raw feed
   // is decoded here instead: the Level 2 chunks for a Level 2 picture, the
   // Level 3 bucket for a Level 3 one. When the settings are cleared the Pi's
-  // faster pre-built pictures come back (see _radarFxApply).
+  // faster pre-built pictures come back (see _radarFxApply). Neither raw
+  // path carries more than a handful of minutes of history (a volume is a
+  // multi-megabyte download to decode), so the day-long scrub is a property
+  // of the Pi's own pre-built pictures specifically.
   if (typeof _fxWantsRaw === 'function' && _fxWantsRaw(lvl)) {
     _fxRerouted = true;
     if (lvl === 'l2') {
@@ -13175,44 +13327,21 @@ async function _prDraw(base, lvl, idx) {
     }
     return;
   }
-  const only = { [_prSite]: idx.sites[_prSite] };
-  for (const [site, meta] of Object.entries(only)) {
-    const frame = meta.frames[meta.frames.length - 1];    // newest
-    const manPath = meta.path.replace('{frame}', frame);
-    const man = await fetch(`${base}/radar/${manPath}?t=${Date.now()}`,
-                            { cache: 'no-store' })
-      .then(r => r.ok ? r.json() : null).catch(() => null);
-    if (!man || !man.bounds) continue;
-    // The terminal radars speak their own Level 3 dialect: tz0 IS base
-    // reflectivity and tv0 IS base velocity, per AtticRadar's tables. When
-    // the NEXRAD spelling is absent but its TDWR twin is in the frame, the
-    // twin is the same product and draws without comment.
-    const TDWR_TWIN = { n0q: 'tz0', n1q: 'tz1', n0u: 'tv0', n1u: 'tv1' };
-    let product2 = product;
-    if (man.fields && !man.fields[product] && TDWR_TWIN[product] &&
-        man.fields[TDWR_TWIN[product]]) {
-      product2 = TDWR_TWIN[product];
-    }
-    // A site may carry a different product than the default; take what it
-    // has, and say so, because a picture of the wrong product with no word
-    // about it reads as the right product looking strange.
-    const field = (man.fields && man.fields[product2]) ? product2
-                : Object.keys(man.fields || {})[0];
-    if (!field) continue;
-    if (field !== product2 && typeof showToast === 'function') {
-      showToast(site + ' has no ' + (PR_PRODUCTS[_prProduct] || {}).label
-              + ' in this frame yet, showing '
-              + field.toUpperCase() + ' instead.', 3500);
-    }
-    const url = `${base}/radar/${lvl}/${site}/${frame}/${field}.png`;
-    const img = L.imageOverlay(url, man.bounds,
-      { opacity: 0.78, interactive: false, pane: 'radarPane' });
-    img.addTo(map);
-    _prLayers.push(img);
-  }
+  const meta = idx.sites[_prSite];
+  _prLoopBuild(meta, lvl, false);
+  if (!_prLoop.frames.length) return;
+  await _prShowFrame(base, lvl, meta, _prLoop.frames[_prLoop.idx],
+                     _prLoop.idx === _prLoop.frames.length - 1);
+  _prLoopSyncTimeline();
 }
 
 async function _prEnable() {
+  // Re-enabling (a site/level/product change all call back through here)
+  // must not leave the previous timer running alongside a new one - that
+  // used to be _prClear's job, but _prClear now runs on every scrub too,
+  // and clearing the interval from inside its own tick killed auto-refresh
+  // after exactly one cycle.
+  if (_prTimer) { clearInterval(_prTimer); _prTimer = null; }
   _prOn = true;
   const base = _hdBase || await _hdResolveBase();
   if (!base) {
@@ -13274,16 +13403,26 @@ async function _prEnable() {
     // A browser-decoded site owns the screen; redrawing the Pi's sites over it
     // would swap the picture out from under whoever is looking at it.
     if (_prBucketSite) return;
+    // Whether to follow the new newest frame or hold still is decided before
+    // the frame list is rebuilt, since rebuilding is what moves _prLoop.idx.
+    const wasLive = _prLoop.idx === _prLoop.frames.length - 1;
     const fresh = await _prLoadIndex(_hdBase);
-    if (fresh && fresh.idx) {
-      _prIndex = fresh.idx;
-      await _prDraw(_hdBase, fresh.lvl, fresh.idx);
-    }
+    if (!fresh || !fresh.idx) return;
+    _prIndex = fresh.idx;
+    const meta = fresh.idx.sites && fresh.idx.sites[_prSite];
+    if (!meta) { await _prDraw(_hdBase, fresh.lvl, fresh.idx); return; }
+    _prDrawnLvl = fresh.lvl;
+    _prLoopBuild(meta, fresh.lvl, wasLive);
+    const stamp = _prLoop.frames[_prLoop.idx];
+    if (stamp) await _prShowFrame(_hdBase, fresh.lvl, meta, stamp,
+                                  _prLoop.idx === _prLoop.frames.length - 1);
+    _prLoopSyncTimeline();
   }, 5 * 60 * 1000);
 }
 
 function _prDisable() {
   _prOn = false;
+  if (_prTimer) { clearInterval(_prTimer); _prTimer = null; }
   // Only a picture Level 3 drew itself. _disableL3 owns the overlay Level 2
   // draws as well, and this function is called on the way into the Level 2
   // row, so clearing it unconditionally threw away the volume Level 2 had
@@ -13295,6 +13434,7 @@ function _prDisable() {
   _prBucketSite = null;
   if (typeof _syncNexradSites === 'function') try { _syncNexradSites(); } catch (e) {}
   _prClear();
+  _prLoop = { frames: [], idx: -1, site: null, lvl: null, cache: new Map() };
 }
 
 // ── LEVEL 3 FOR EVERY RADAR IN THE COUNTRY, DECODED HERE ───────────────────
@@ -23542,6 +23682,9 @@ function _rafTick(ts) {
     if (_l2LoopActive()) {
       const n = _l2Loop.frames.length;
       _l2LoopShow((_l2Loop.idx + dir + n) % n);
+    } else if (_prLoopActive()) {
+      const n = _prLoop.frames.length;
+      _prLoopShow((_prLoop.idx + dir + n) % n);
     } else if (activeLayers.satellite && goesFrames.length) {
       goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
       showGoesFrame(goesCurrentFrame);
@@ -23583,6 +23726,7 @@ function _stopRAF() {
 // ready state and we just allow play (their loaders handle the wait).
 function _animationReady() {
   if (_l2LoopActive()) return true;
+  if (_prLoopActive()) return true;
   if (activeLayers.satellite && goesFrames.length) return true;
   if (currentProduct === 'vel') return true;
   if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') return _dpFrames.length > 0;
@@ -23638,6 +23782,9 @@ function stepFrame(dir) {
   if (_l2LoopActive()) {
     const n = _l2Loop.frames.length;
     _l2LoopShow((_l2Loop.idx + dir + n) % n);
+  } else if (_prLoopActive()) {
+    const n = _prLoop.frames.length;
+    _prLoopShow((_prLoop.idx + dir + n) % n);
   } else if (activeLayers.satellite && goesFrames.length) {
     goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
     showGoesFrame(goesCurrentFrame);
@@ -23660,6 +23807,7 @@ function stepFrame(dir) {
 }
 function seekFrame(idx) {
   if (_l2LoopActive()) _l2LoopShow(idx);
+  else if (_prLoopActive()) _prLoopShow(idx);
   else if (activeLayers.satellite && goesFrames.length) showGoesFrame(idx);
   else if (currentProduct === 'vel') showVelFrame(idx);
   else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') showDpFrame(idx);
@@ -29586,6 +29734,16 @@ function selectProduct(p) {
       </select>
     </div>
     <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Pi Radar Loop Length</span>
+      <select id="lqm-set-pr-looplen" class="lqm-settings-select" onchange="_prSetLoopLen(this.value)">
+        <option value="1">1 hour</option>
+        <option value="3">3 hours</option>
+        <option value="6">6 hours</option>
+        <option value="12">12 hours</option>
+        <option value="24">24 hours</option>
+      </select>
+    </div>
+    <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Radar Opacity</span>
       <div style="display:flex;align-items:center;gap:6px;">
         <input type="range" id="lqm-set-opacity" min="20" max="100" value="85" step="5"
@@ -34561,7 +34719,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Double-clicking the map now just zooms in like any map, instead of opening the coordinates popup.";
+const APP_LATEST_UPDATE = "Pi Radar (every Level 2 and Level 3 product) can now be scrubbed and played back up to a full day, not just the newest frame.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -35067,6 +35225,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (ls) { const el=document.getElementById('lqm-set-loopspeed'); if(el){el.value=ls;lqmSetLoopSpeed(ls);} }
     // The loop-length select reflects the saved reach without rebuilding.
     { const el = document.getElementById('lqm-set-looplen'); if (el) el.value = String(_loopLenMin); }
+    { const el = document.getElementById('lqm-set-pr-looplen'); if (el) el.value = String(_prLoopLenH); }
     const ao = localStorage.getItem('lqm_alertopacity');
     if (ao) { const el=document.getElementById('lqm-set-alertopacity'); if(el){el.value=ao;lqmSetAlertOpacity(ao);} }
     const wps = localStorage.getItem('lqm_windptspeed');

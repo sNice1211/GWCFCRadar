@@ -38,11 +38,17 @@ const LEAFLET = process.env.LEAFLET_DIST || '/tmp/node_modules/leaflet/dist';
 
 const PI = 'https://fake-pi.test';
 const FRAME = '20260817_0200';
+// KTLX carries three kept frames, oldest to newest, exactly the shape
+// pi/radar_pipeline.py's age-based retention produces - this is what makes
+// scene 1d a real test of scrubbing rather than always landing on the one
+// frame every other scene expects.
+const FRAME_OLD = '20260817_0150';
+const FRAME_MID = '20260817_0155';
 const INDEX_L3 = JSON.stringify({
   level: 3,
   updated: new Date().toISOString(),
   sites: {
-    KTLX: { frames: [FRAME], path: 'l3/KTLX/{frame}/manifest.json' },
+    KTLX: { frames: [FRAME_OLD, FRAME_MID, FRAME], path: 'l3/KTLX/{frame}/manifest.json' },
     KFWS: { frames: [FRAME], path: 'l3/KFWS/{frame}/manifest.json' },
     TTPA: { frames: [FRAME], path: 'l3/TTPA/{frame}/manifest.json' },
   },
@@ -176,8 +182,15 @@ async function boot(piMode) {
           body: modelPng || PNG });
       if (url.includes('/l3/TTPA/') && url.includes('manifest.json'))
         return route.fulfill({ contentType: 'application/json', body: TDWR_MANIFEST });
-      if (url.includes('manifest.json'))
-        return route.fulfill({ contentType: 'application/json', body: MANIFEST });
+      if (url.includes('manifest.json')) {
+        // Stamped with whichever frame was actually asked for, so scrubbing
+        // to an older frame is provably drawing that frame and not silently
+        // reusing the newest one's manifest.
+        const m = url.match(/\/l3\/[A-Z]+\/([0-9_]+)\/manifest\.json/);
+        const body = JSON.parse(MANIFEST);
+        if (m) body.time = m[1];
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+      }
       if (url.endsWith('.png'))
         return route.fulfill({ contentType: 'image/png', body: PNG });
       return route.fulfill({ status: 404, body: 'nope' });
@@ -457,6 +470,78 @@ console.log('\n1c. a value filter means the Pi paint steps aside for raw data');
   });
   ok('clearing the filter hands the screen back to the Pi pictures',
      back.layers === 1 && back.rerouted === false, JSON.stringify(back));
+  await page.close();
+}
+
+console.log('\n1d. scrubbing through the Pi\'s own frame history');
+{
+  const { page } = await boot('up');
+  await page.evaluate(() => toggleRadarSub());
+  await page.evaluate(() => toggleRadarPiSub('l3'));
+  await page.waitForTimeout(1500);
+
+  const initial = await page.evaluate(() => ({
+    frames: _prLoop.frames.slice(),
+    idx: _prLoop.idx,
+    active: _prLoopActive(),
+    ready: _animationReady(),
+    url: _prLayers[0] && _prLayers[0]._url,
+  }));
+  ok('every kept frame is offered, oldest to newest',
+     JSON.stringify(initial.frames) === JSON.stringify([FRAME_OLD, FRAME_MID, FRAME]),
+     initial.frames.join(','));
+  ok('opens on the newest frame', initial.idx === 2, String(initial.idx));
+  ok('the loop is what the shared play controls see',
+     initial.active === true && initial.ready === true, JSON.stringify(initial));
+  ok('drawn from the newest frame', (initial.url || '').includes(FRAME),
+     initial.url);
+
+  // seekFrame is what the timeline slider's oninput calls.
+  await page.evaluate(() => seekFrame(0));
+  await page.waitForTimeout(500);
+  const scrubbed = await page.evaluate(() => ({
+    idx: _prLoop.idx,
+    url: _prLayers[0] && _prLayers[0]._url,
+    time: document.getElementById('anim-time').textContent,
+  }));
+  ok('seekFrame(0) moves to the oldest kept frame',
+     scrubbed.idx === 0 && (scrubbed.url || '').includes(FRAME_OLD),
+     JSON.stringify(scrubbed));
+  ok('the readout marks it as not live',
+     /\(past\)/.test(scrubbed.time), scrubbed.time);
+
+  // stepFrame is what the animation tick and the step buttons call - it must
+  // move this same loop rather than falling through to the national mosaic,
+  // which is what happened before this loop existed at all.
+  await page.evaluate(() => stepFrame(1));
+  await page.waitForTimeout(500);
+  const stepped = await page.evaluate(() => ({
+    idx: _prLoop.idx, url: _prLayers[0] && _prLayers[0]._url,
+  }));
+  ok('stepFrame advances exactly one frame within the Pi loop',
+     stepped.idx === 1 && (stepped.url || '').includes(FRAME_MID),
+     JSON.stringify(stepped));
+
+  // The Pi answers with a new frame while the view is scrubbed into history:
+  // the position must hold, not jump to the new newest out from under
+  // someone looking at an hour-old cell.
+  const held = await page.evaluate(() => {
+    _prIndex.sites.KTLX.frames.push('20260817_0205');
+    _prLoopBuild(_prIndex.sites.KTLX, 'l3', false);
+    return { count: _prLoop.frames.length, stamp: _prLoop.frames[_prLoop.idx] };
+  });
+  ok('a new frame arriving does not yank a scrubbed view back to live',
+     held.count === 4 && held.stamp === FRAME_MID, JSON.stringify(held));
+
+  // But the same arrival DOES advance a view that was already live -
+  // "watching live" should keep meaning that after every refresh.
+  const followed = await page.evaluate(() => {
+    _prLoopBuild(_prIndex.sites.KTLX, 'l3', true);   // followLive, as the
+    return _prLoop.frames[_prLoop.idx];              // 5-minute timer passes
+  });                                                  // when it was live
+  ok('a view that was live follows the newest frame forward',
+     followed === '20260817_0205', followed);
+
   await page.close();
 }
 
