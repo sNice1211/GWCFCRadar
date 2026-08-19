@@ -508,6 +508,43 @@ console.log('\n8g. the Surface Obs bubble and its sub-bubbles');
      r.subs.join('|'));
 }
 
+console.log('\n8h. the performance pass: canvas alerts, warmed connections');
+{
+  const r = await page.evaluate(async () => {
+    // The shared alerts renderer must be one canvas in the alerts pane.
+    const ren = _alertsCanvas();
+    const isCanvas = ren instanceof L.Canvas;
+    const samePane = ren.options.pane === 'alertsPane';
+    const sameAgain = _alertsCanvas() === ren;
+
+    // A polygon drawn through it must still be clickable, because the alert
+    // popups ride on exactly that.
+    let clicked = false;
+    const poly = L.polygon([[35, -98], [36, -98], [36, -97], [35, -97]], {
+      pane: 'alertsPane', renderer: ren, color: '#f00',
+    }).addTo(map).on('click', () => { clicked = true; });
+    map.setView([35.5, -97.5], 7);
+    await new Promise(res => setTimeout(res, 250));
+    poly.fire('click');
+    const canvasInPane = !!map.getPane('alertsPane').querySelector('canvas');
+    map.removeLayer(poly);
+
+    // The connection warm-ups that shave the first paint.
+    const links = [...document.querySelectorAll('link[rel="preconnect"], link[rel="dns-prefetch"]')]
+      .map(l => l.href);
+    const hasJsdelivr = links.some(h => h.includes('cdn.jsdelivr.net'));
+    const hasFirestore = links.some(h => h.includes('firestore.googleapis.com'));
+
+    return { isCanvas, samePane, sameAgain, clicked, canvasInPane, hasJsdelivr, hasFirestore };
+  });
+  ok('alerts share one canvas renderer in their own pane',
+     r.isCanvas && r.samePane && r.sameAgain, JSON.stringify(r));
+  ok('a canvas-drawn polygon still answers clicks',
+     r.clicked === true && r.canvasInPane === true, JSON.stringify(r));
+  ok('the render-blocking CDN and the Pi lookup are preconnected',
+     r.hasJsdelivr && r.hasFirestore, JSON.stringify(r));
+}
+
 console.log('\n9. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
