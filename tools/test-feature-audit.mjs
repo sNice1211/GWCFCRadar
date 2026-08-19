@@ -79,6 +79,17 @@ console.log('   block clicks meant for markers underneath it');
       .map(e => e.dataset.ovid));
   ok('the overlay list itself is not empty', ids.length > 0, String(ids.length));
 
+  // _ovInjectInfoButtons only adds the (i) button when OV_DESCRIPTIONS has
+  // an entry for that pill's id - a pill silently missing one (as rotation
+  // and hail both did) looks identical to every other pill except for the
+  // one thing that would have told a person what it draws.
+  const missingInfo = await page.evaluate(() =>
+    [...document.querySelectorAll('.ov-pill[data-ovid]')]
+      .filter(p => !p.querySelector('.ov-info-btn'))
+      .map(p => p.dataset.ovid));
+  ok('every overlay pill carries an info button', missingInfo.length === 0,
+     missingInfo.join(', '));
+
   // The one check that generalizes the alerts fix: after every overlay has
   // had a turn being switched on, does any <canvas> pane in the whole
   // stack sit at or above the z-index of any marker pane? A canvas swallows
