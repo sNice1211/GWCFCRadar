@@ -8107,9 +8107,20 @@ function initMap() {
       .observe(document.getElementById('map'));
   }
 
-  // Dedicated pane for alert polygons so we can hide them independently
+  // Dedicated pane for alert polygons so we can hide them independently.
+  // Fixed low, and never reassigned: alert polygons render through one
+  // shared <canvas> (_alertsCanvas), and unlike Leaflet's default SVG
+  // panes - where a click only ever lands on an actual drawn shape - a
+  // <canvas> element captures every pointer event across its FULL
+  // rectangle (the whole map viewport) the instant one alert has ever been
+  // drawn on it, whether or not a shape sits under the cursor. At 450 that
+  // canvas sat above every other overlay's marker pane, which is why NWR
+  // stations (and anything else with a clickable marker) went dead the
+  // moment alerts loaded, which is by default. Every other overlay still
+  // uses ordinary SVG, so this is the one pane that has to stay below the
+  // marker floor (see _ovMarkerPane/_ovApplyMapOrder) no matter what.
   map.createPane('alertsPane');
-  map.getPane('alertsPane').style.zIndex = 450;
+  map.getPane('alertsPane').style.zIndex = 403;
   map.getPane('alertsPane').style.pointerEvents = 'auto';
 
   try { map.getContainer().addEventListener('touchstart', ()=>{}, {passive:true}); } catch(e){}
@@ -34719,7 +34730,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Pi Radar (every Level 2 and Level 3 product) can now be scrubbed and played back up to a full day, not just the newest frame.";
+const APP_LATEST_UPDATE = "Fixed: NWS alert polygons were silently blocking clicks on NWR stations and other map markers underneath them. Stations are clickable again.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -37390,8 +37401,11 @@ function _ovApplyMapOrder(){
     if (pane) pane.style.zIndex = String(z);
     const mpane=map.getPane('ovp-'+id+'-m');
     if (mpane) mpane.style.zIndex = String(z + 1);
-    // alertsPane is the dedicated pane for NWS alert polygons - keep it in sync
-    if (id==='alerts'){ const ap=map.getPane('alertsPane'); if(ap) ap.style.zIndex=String(z); }
+    // alertsPane is deliberately NOT kept in sync with the reorderable list
+    // here any more: it is a <canvas> pane (see the comment at its
+    // createPane call), and letting its z climb this high - which it always
+    // did while "alerts" sat first in the default order - is what made every
+    // marker pane below it in the stack unclickable. It stays pinned low.
     // The particle layers draw to their own canvas rather than a Leaflet pane,
     // but the canvas is a sibling of the panes in the same container, so the
     // same number puts it in the same stack.

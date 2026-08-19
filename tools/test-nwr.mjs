@@ -181,6 +181,58 @@ console.log('\n1. turning the layer on plots the station');
   await page.close();
 }
 
+console.log('\n3b. the SAME check with alerts loaded, the way it ships by default');
+{
+  // alertsPane draws through one shared <canvas>, and unlike every other
+  // overlay's ordinary SVG pane - where a click only ever lands on an
+  // actual drawn shape - a <canvas> element captures every pointer event
+  // across its FULL rectangle (the whole map viewport) the instant one
+  // shape has ever been drawn on it, whether or not anything is under the
+  // cursor. Alerts ship on by default and sort first in the overlay list,
+  // so this is not a corner case: it is what a fresh page actually does.
+  const { page } = await boot('up');
+  await page.evaluate(() => {
+    const ren = _alertsCanvas();
+    L.polygon([[30, -100], [45, -100], [45, -60], [30, -60]],
+      { pane: 'alertsPane', renderer: ren, color: '#f00' }).addTo(map);
+  });
+  await page.evaluate(() => toggleOverlayPill('radio'));
+  await page.waitForTimeout(2000);
+
+  const before = await page.evaluate(() =>
+    !!document.querySelector('.leaflet-popup'));
+  await page.evaluate(() => {
+    const marker = Object.values(_nwrLayer._layers)[0];
+    marker.fire('click');
+  });
+  await page.waitForTimeout(400);
+  const after = await page.evaluate(() => ({
+    open: !!document.querySelector('.leaflet-popup'),
+  }));
+  ok('no popup before the click', before === false, String(before));
+  ok('the popup still opens with an alert polygon loaded',
+     after.open === true, String(after.open));
+
+  const geom = await page.evaluate(() => {
+    const marker = Object.values(_nwrLayer._layers)[0];
+    const el = marker.getElement();
+    const r = el.getBoundingClientRect();
+    const topEl = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return {
+      hitsMarker: !!(topEl && el.contains(topEl)),
+      topElTag: topEl ? topEl.tagName : null,
+      alertsZ: getComputedStyle(map.getPane('alertsPane')).zIndex,
+      radioMarkerZ: getComputedStyle(map.getPane('ovp-radio-m')).zIndex,
+    };
+  });
+  ok('a real click still lands on the marker, not the alerts canvas',
+     geom.hitsMarker === true, JSON.stringify(geom));
+  ok('the alerts pane sits below the radio marker pane',
+     Number(geom.alertsZ) < Number(geom.radioMarkerZ), JSON.stringify(geom));
+
+  await page.close();
+}
+
 console.log('\n4. every external source unreachable still says so honestly');
 {
   const { page } = await boot('down');
