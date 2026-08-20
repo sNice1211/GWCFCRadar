@@ -8,6 +8,7 @@
 #
 #   gwcfc-models    builds the model images, hourly
 #   gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
+#   gwcfc-sat       builds the GOES RGB composites, every ten minutes
 #   gwcfc-cyclones  fetches the DeepMind cyclone runs
 #   gwcfc-serve     serves them with the header that makes them readable
 #   gwcfc-tunnel    gives them a public HTTPS address
@@ -66,12 +67,19 @@ if ! "$VENV/bin/python" -c "import metpy" >/dev/null 2>&1; then
   "$VENV/bin/pip" install --quiet metpy || \
     warn "MetPy would not install; radar will not build until it does"
 fi
+# netCDF4 reads the raw GOES band files. Only the satellite composites need it,
+# so a failure here is a warning and not the end of the install: everything
+# else on this Pi carries on building without it.
+if ! "$VENV/bin/python" -c "import netCDF4" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet netCDF4 || \
+    warn "netCDF4 would not install; satellite composites will not build"
+fi
 # Braced and forgiven, because set -e would otherwise abandon the whole install
 # over one optional module.
 { "$VENV/bin/python" - <<'PY'
 import sys
 mods = {}
-for m in ("eccodes", "numpy", "PIL", "requests", "metpy"):
+for m in ("eccodes", "numpy", "PIL", "requests", "metpy", "netCDF4"):
     try:
         __import__(m); mods[m] = "ok"
     except Exception as e:
@@ -246,6 +254,37 @@ Persistent=false
 WantedBy=timers.target
 EOF
 
+# The satellite composites. Ten minutes rather than five because CONUS only
+# scans every five and the mesoscale boxes, which scan every minute, are not
+# worth a download that often on a home connection. A leading dash so one
+# satellite being unreachable does not report the whole unit as failed.
+cat > "$UNITS/gwcfc-sat.service" <<EOF
+[Unit]
+Description=Build GOES RGB composites from raw ABI bands
+
+[Service]
+Type=oneshot
+# Full Disk is deliberately absent: it is ten times the size of CONUS and is
+# built by hand with --sector fulldisk when it is actually wanted.
+ExecStart=-$VENV/bin/python $REPO/pi/satellite_pipeline.py
+TimeoutStartSec=1800
+Nice=15
+EOF
+
+cat > "$UNITS/gwcfc-sat.timer" <<'EOF'
+[Unit]
+Description=Satellite composites every ten minutes
+
+[Timer]
+# Offset from the radar timer so the two big downloads do not collide on a
+# single home connection.
+OnCalendar=*:2/10
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat > "$UNITS/gwcfc-cyclones.service" <<EOF
 [Unit]
 Description=Fetch DeepMind cyclone tracks and genesis fields
@@ -324,6 +363,7 @@ systemctl --user enable  gwcfc-tunnel.service      >/dev/null 2>&1
 systemctl --user restart gwcfc-tunnel.service      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
 systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
+systemctl --user enable --now gwcfc-sat.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
 systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1

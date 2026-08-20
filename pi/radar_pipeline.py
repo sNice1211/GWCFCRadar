@@ -30,6 +30,7 @@ Output lands in ~/wxdata/radar/ and is served by the same serve.py as the
 models, so nothing else has to change.
 """
 
+import json
 import os
 import re
 import sys
@@ -924,18 +925,150 @@ def write_index(level, sites):
 # published every two minutes, covering the whole CONUS at 1 km: where storms
 # have rotated over the last hour, and the largest hail they have produced.
 MRMS_BASE = "https://mrms.ncep.noaa.gov/data/2D"
+# ── The MRMS catalogue ──────────────────────────────────────────────────────
+# Every entry is one national grid published at a fixed address, so adding a
+# product is a dict entry and nothing else: build_mrms below reads, shrinks,
+# colours and writes whatever is listed here. A path that turns out to be
+# wrong costs one logged line and is skipped, exactly like the Level 3 list,
+# which is what makes it safe to carry a broad catalogue rather than only the
+# handful anyone has hand-checked.
+#
+# "every" is the wanted cadence in minutes. The radar timer fires every five,
+# so 5 means every pass and 60 means roughly hourly; _mrms_due below turns
+# that into an actual decision, and backs a product off on its own when it
+# keeps failing or keeps costing too much time.
+#
+# "signed" marks the products where a negative value is real data rather than
+# MRMS's missing/no-coverage marker. Temperature is the obvious one, and
+# treating -3 C as "no coverage" would erase half a winter map.
 MRMS_PRODUCTS = {
-    # Azimuthal shear leaves a trail where a mesocyclone travelled. The floor
-    # hides the weak-shear speckle that covers every map, so what remains
-    # drawn is rotation worth looking at.
-    "rotation": {"path": "RotationTrackML60min", "label": "Rotation Tracks",
+    # ── Rotation: where a mesocyclone travelled. The floor hides the weak
+    # shear speckle covering every map, so what stays drawn is worth looking
+    # at. Mid level is the classic; low level is nearer the ground and so
+    # nearer the question everyone is actually asking.
+    "rotation": {"path": "RotationTrackML60min", "label": "Rotation Tracks 60m",
                  "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
-                 "floor": 0.003},
-    # MESH is the algorithm's largest hail over the hour, in millimetres.
-    # 6 mm is under pea size, the smallest worth drawing at all.
-    "mesh":     {"path": "MESH_Max_60min", "label": "Hail Swaths",
+                 "floor": 0.003, "every": 5},
+    "rotation30": {"path": "RotationTrackML30min", "label": "Rotation Tracks 30m",
+                   "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
+                   "floor": 0.003, "every": 5},
+    "rotation120": {"path": "RotationTrackML120min", "label": "Rotation Tracks 2h",
+                    "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
+                    "floor": 0.003, "every": 15},
+    "rotation1440": {"path": "RotationTrackML1440min", "label": "Rotation Tracks 24h",
+                     "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
+                     "floor": 0.003, "every": 60},
+    "rotationll60": {"path": "RotationTrackLL60min", "label": "Low-Level Rotation 60m",
+                     "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
+                     "floor": 0.003, "every": 5},
+    "rotationll30": {"path": "RotationTrackLL30min", "label": "Low-Level Rotation 30m",
+                     "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
+                     "floor": 0.003, "every": 5},
+    # ── Hail. MESH is the algorithm's largest hail, in millimetres; 6 mm is
+    # under pea size, the smallest worth drawing at all.
+    "mesh":     {"path": "MESH_Max_60min", "label": "Hail Swaths 60m",
                  "unit": "mm", "range": (0, 100), "ramp": "radar",
-                 "floor": 6.0},
+                 "floor": 6.0, "every": 5},
+    "meshnow":  {"path": "MESH", "label": "Hail (current)",
+                 "unit": "mm", "range": (0, 100), "ramp": "radar",
+                 "floor": 6.0, "every": 5},
+    "mesh30":   {"path": "MESH_Max_30min", "label": "Hail Swaths 30m",
+                 "unit": "mm", "range": (0, 100), "ramp": "radar",
+                 "floor": 6.0, "every": 5},
+    "mesh120":  {"path": "MESH_Max_120min", "label": "Hail Swaths 2h",
+                 "unit": "mm", "range": (0, 100), "ramp": "radar",
+                 "floor": 6.0, "every": 15},
+    "mesh1440": {"path": "MESH_Max_1440min", "label": "Hail Swaths 24h",
+                 "unit": "mm", "range": (0, 100), "ramp": "radar",
+                 "floor": 6.0, "every": 60},
+    "posh":     {"path": "POSH", "label": "Prob. of Severe Hail",
+                 "unit": "%", "range": (0, 100), "ramp": "heat",
+                 "floor": 5.0, "every": 5},
+    "shi":      {"path": "SHI", "label": "Severe Hail Index",
+                 "unit": "", "range": (0, 200), "ramp": "heat",
+                 "floor": 5.0, "every": 5},
+    # ── The national radar picture, merged from every site.
+    "composite": {"path": "MergedReflectivityQCComposite",
+                  "label": "Composite Reflectivity", "unit": "dBZ",
+                  "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
+    "lowalt":    {"path": "MergedReflectivityAtLowestAltitude",
+                  "label": "Reflectivity, Lowest Altitude", "unit": "dBZ",
+                  "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
+    "hsr":       {"path": "SeamlessHSR", "label": "Hybrid Scan Reflectivity",
+                  "unit": "dBZ", "range": (-10, 75), "ramp": "radar",
+                  "floor": 5.0, "every": 5},
+    # ── How tall the storms are, and how much they hold aloft.
+    "echotop18": {"path": "EchoTop_18", "label": "Echo Top 18 dBZ",
+                  "unit": "km", "range": (0, 20), "ramp": "viridis",
+                  "floor": 0.5, "every": 5},
+    "echotop30": {"path": "EchoTop_30", "label": "Echo Top 30 dBZ",
+                  "unit": "km", "range": (0, 20), "ramp": "viridis",
+                  "floor": 0.5, "every": 15},
+    "echotop50": {"path": "EchoTop_50", "label": "Echo Top 50 dBZ",
+                  "unit": "km", "range": (0, 20), "ramp": "viridis",
+                  "floor": 0.5, "every": 5},
+    "echotop60": {"path": "EchoTop_60", "label": "Echo Top 60 dBZ",
+                  "unit": "km", "range": (0, 20), "ramp": "viridis",
+                  "floor": 0.5, "every": 15},
+    "vil":       {"path": "VIL", "label": "Vertically Integrated Liquid",
+                  "unit": "kg/m2", "range": (0, 80), "ramp": "heat",
+                  "floor": 0.5, "every": 5},
+    "vii":       {"path": "VII", "label": "Vertically Integrated Ice",
+                  "unit": "kg/m2", "range": (0, 50), "ramp": "heat",
+                  "floor": 0.5, "every": 5},
+    # ── What is falling, and how hard.
+    "preciprate": {"path": "PrecipRate", "label": "Precip Rate",
+                   "unit": "mm/hr", "range": (0, 50), "ramp": "precip",
+                   "floor": 0.2, "every": 5},
+    "preciptype": {"path": "PrecipFlag", "label": "Precip Type",
+                   "unit": "", "range": (0, 10), "ramp": "viridis",
+                   "floor": 0.5, "every": 5},
+    # ── Rainfall totals. Slow moving by nature, so slow lanes.
+    "qpe01": {"path": "RadarOnly_QPE_01H", "label": "Rainfall 1 hr",
+              "unit": "mm", "range": (0, 50), "ramp": "precip",
+              "floor": 0.3, "every": 15},
+    "qpe03": {"path": "RadarOnly_QPE_03H", "label": "Rainfall 3 hr",
+              "unit": "mm", "range": (0, 100), "ramp": "precip",
+              "floor": 0.5, "every": 30},
+    "qpe06": {"path": "RadarOnly_QPE_06H", "label": "Rainfall 6 hr",
+              "unit": "mm", "range": (0, 150), "ramp": "precip",
+              "floor": 0.5, "every": 30},
+    "qpe12": {"path": "RadarOnly_QPE_12H", "label": "Rainfall 12 hr",
+              "unit": "mm", "range": (0, 200), "ramp": "precip",
+              "floor": 0.5, "every": 60},
+    "qpe24": {"path": "RadarOnly_QPE_24H", "label": "Rainfall 24 hr",
+              "unit": "mm", "range": (0, 250), "ramp": "precip",
+              "floor": 0.5, "every": 60},
+    "qpe72": {"path": "RadarOnly_QPE_72H", "label": "Rainfall 72 hr",
+              "unit": "mm", "range": (0, 400), "ramp": "precip",
+              "floor": 0.5, "every": 60},
+    "qpemulti24": {"path": "MultiSensor_QPE_24H_Pass2",
+                   "label": "Rainfall 24 hr (gauge corrected)", "unit": "mm",
+                   "range": (0, 250), "ramp": "precip", "floor": 0.5, "every": 60},
+    # ── Lightning.
+    "ltgprob30": {"path": "LightningProbabilityNext30minGrid",
+                  "label": "Lightning Prob. 30 min", "unit": "%",
+                  "range": (0, 100), "ramp": "heat", "floor": 5.0, "every": 5},
+    "ltgprob60": {"path": "LightningProbabilityNext60minGrid",
+                  "label": "Lightning Prob. 60 min", "unit": "%",
+                  "range": (0, 100), "ramp": "heat", "floor": 5.0, "every": 5},
+    "ltgdensity": {"path": "LightningDensityNLDN30min",
+                   "label": "Lightning Density 30 min", "unit": "fl/km2/min",
+                   "range": (0, 10), "ramp": "heat", "floor": 0.05, "every": 5},
+    # ── Winter and the melting layer: where rain becomes snow, and the
+    # temperatures that decide it. These are the signed ones.
+    "brightband": {"path": "BrightBandTopHeight", "label": "Melting Layer Top",
+                   "unit": "m", "range": (0, 5000), "ramp": "viridis",
+                   "floor": 1.0, "every": 15},
+    "sfctemp": {"path": "Model_SurfaceTemp", "label": "Surface Temp (model)",
+                "unit": "C", "range": (-40, 45), "ramp": "temp",
+                "floor": -1e9, "signed": True, "every": 15},
+    "wetbulb": {"path": "Model_WetBulbTemp", "label": "Wet Bulb Temp (model)",
+                "unit": "C", "range": (-40, 45), "ramp": "temp",
+                "floor": -1e9, "signed": True, "every": 15},
+    "h0c": {"path": "Model_0degC_Height", "label": "Freezing Level",
+            "unit": "m", "range": (0, 5000), "ramp": "viridis",
+            "floor": 1.0, "every": 15},
 }
 
 
@@ -991,23 +1124,101 @@ def _mrms_read(url):
             pass
 
 
+def _mrms_state_path():
+    return os.path.join(OUT_DIR, "mrms", "state.json")
+
+
+def _mrms_load_state():
+    try:
+        with open(_mrms_state_path(), "r") as fh:
+            s = json.load(fh)
+        return s if isinstance(s, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mrms_due(name, spec, state, now):
+    """Whether this product should be fetched on this pass.
+
+    The catalogue is large and the timer fires every five minutes, so pulling
+    everything every time would be most of a gigabyte an hour for grids that
+    mostly change slowly. Each product carries a wanted cadence, and this adds
+    the adaptive half on top: a product that keeps failing backs itself off
+    rather than being retried into the ground every pass, and one that costs a
+    lot of wall clock is stretched out so it cannot crowd the radar build it
+    shares a timer with. Both recover on their own once the product does.
+    """
+    st = state.get(name) or {}
+    want = float(spec.get("every", 5))
+    # A run of failures pushes the retry out, doubling each time, to an hour.
+    fails = int(st.get("fails", 0))
+    if fails:
+        want = max(want, min(60.0, 5.0 * (2 ** min(fails, 4))))
+    # A product that took a long while last time is asked for less often. The
+    # radar frames share this timer and matter more than any single mosaic.
+    secs = float(st.get("secs", 0) or 0)
+    if secs > 20:
+        want = max(want, 15.0)
+    if secs > 45:
+        want = max(want, 30.0)
+    last = st.get("last")
+    if not last:
+        return True
+    try:
+        prev = datetime.fromisoformat(last)
+    except ValueError:
+        return True
+    if prev.tzinfo is None:
+        prev = prev.replace(tzinfo=timezone.utc)
+    return (now - prev).total_seconds() >= want * 60.0
+
+
 def build_mrms():
-    """Both products into OUT_DIR/mrms, plus the manifest the page reads."""
+    """Every due product into OUT_DIR/mrms, plus the manifest the page reads.
+
+    Products not due on this pass keep their previous entry in the manifest,
+    so the page still sees the picture already on disk rather than the layer
+    vanishing between builds.
+    """
     out = os.path.join(OUT_DIR, "mrms")
     os.makedirs(out, exist_ok=True)
-    man = {"updated": datetime.now(timezone.utc).isoformat(), "products": {}}
+    now = datetime.now(timezone.utc)
+    state = _mrms_load_state()
+    # Carry forward what was built before, so a slow-lane product stays
+    # available on the passes it is not rebuilt.
+    prev_man = {}
+    try:
+        with open(os.path.join(out, "mrms.json"), "r") as fh:
+            prev_man = (json.load(fh) or {}).get("products") or {}
+    except Exception:
+        prev_man = {}
+    man = {"updated": now.isoformat(), "products": dict(prev_man)}
+    built = 0
     for name, spec in MRMS_PRODUCTS.items():
+        if not _mrms_due(name, spec, state, now):
+            continue
         url = f"{MRMS_BASE}/{spec['path']}/MRMS_{spec['path']}.latest.grib2.gz"
+        t0 = time.time()
         try:
             got = _mrms_read(url)
         except Exception as e:
             log(f"  mrms {name}: {e}")
             got = None
         if not got:
+            st = state.get(name) or {}
+            st["fails"] = int(st.get("fails", 0)) + 1
+            st["last"] = now.isoformat()
+            st["secs"] = round(time.time() - t0, 1)
+            state[name] = st
             continue
         arr, south, north, west, east = got
-        # MRMS writes -1 and -3 for missing and out of coverage.
-        arr[arr < 0] = np.nan
+        # MRMS writes -1 and -3 for missing and out of coverage. On a product
+        # where negative readings are real - temperature above all - that
+        # would erase half the map, so those opt out.
+        if spec.get("signed"):
+            arr[arr < -900] = np.nan
+        else:
+            arr[arr < 0] = np.nan
         # Halve the grid by taking each 2x2 block's maximum, not by slicing.
         # A rotation track is a filament one or two cells wide, and plain
         # slicing deletes every filament that falls on a dropped row; these
@@ -1039,11 +1250,20 @@ def build_mrms():
             "file": f"{name}.png", "label": spec["label"],
             "unit": spec["unit"], "min": lo, "max": hi,
             "bounds": [[south, west], [north, east]],
+            "built": now.isoformat(),
         }
-        log(f"  mrms {name}: built")
+        built += 1
+        secs = round(time.time() - t0, 1)
+        state[name] = {"last": now.isoformat(), "fails": 0, "secs": secs}
+        log(f"  mrms {name}: built in {secs}s")
     if man["products"]:
         write_json(os.path.join(out, "mrms.json"), man)
-    return len(man["products"])
+    try:
+        write_json(_mrms_state_path(), state)
+    except Exception as e:
+        log(f"  mrms: could not write state: {e}")
+    log(f"  mrms: {built} built this pass, {len(man['products'])} available")
+    return built
 
 
 def _age(stamp, now):

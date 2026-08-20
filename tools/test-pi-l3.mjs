@@ -334,28 +334,37 @@ console.log('\n1. a healthy Pi, seen from the page');
      tdwr.toasts.length === 0, tdwr.toasts.join(' | '));
   ok('and the terminal wears the green ring', tdwr.ring, String(tdwr.ring));
 
-  // The severe overlays: two pills, each drawing one national image from the
-  // Pi's MRMS build, on and off through the same dispatcher as every pill.
+  // The severe overlays. These used to be two fixed pills on the overlay row;
+  // MRMS now carries the whole 2D catalogue, so it has its own sub-bubble
+  // built from whatever the Pi says it actually has, and the products are
+  // toggled from there. The two old pill names still work as shortcuts, and
+  // open that menu rather than drawing anything themselves.
   await page.evaluate(() => { window.__toasts.length = 0;
-                              toggleOverlayPill('rotation');
-                              toggleOverlayPill('hail'); });
+                              _mrmsToggle('rotation');
+                              _mrmsToggle('mesh'); });
   await page.waitForTimeout(800);
   const sev = await page.evaluate(() => ({
     rot: _mrmsOv.rotation && _mrmsOv.rotation._url,
     hail: _mrmsOv.mesh && _mrmsOv.mesh._url,
-    pills: [document.getElementById('op-rotation').classList.contains('active'),
-            document.getElementById('op-hail').classList.contains('active')],
+    on: [!!_mrmsOn.rotation, !!_mrmsOn.mesh],
     toasts: window.__toasts,
   }));
   ok('rotation tracks draw from the Pi',
      /\/radar\/mrms\/rotation\.png/.test(sev.rot || ''), sev.rot);
   ok('hail swaths draw from the Pi',
      /\/radar\/mrms\/mesh\.png/.test(sev.hail || ''), sev.hail);
-  ok('both pills light up', sev.pills.every(Boolean), sev.pills.join(','));
+  ok('both products register as on', sev.on.every(Boolean), sev.on.join(','));
   ok('with no complaints', sev.toasts.length === 0, sev.toasts.join(' | '));
 
-  await page.evaluate(() => { toggleOverlayPill('rotation');
-                              toggleOverlayPill('hail'); });
+  // The retired pill names still lead somewhere useful instead of dying.
+  const shortcut = await page.evaluate(() => {
+    toggleOverlayPill('rotation');
+    return document.getElementById('sub-bubbles').dataset.mode;
+  });
+  ok('the old rotation pill name now opens the MRMS menu',
+     shortcut === 'mrms', String(shortcut));
+
+  await page.evaluate(() => { _mrmsToggle('rotation'); _mrmsToggle('mesh'); });
   await page.waitForTimeout(400);
   const off = await page.evaluate(() => ({
     gone: !_mrmsOv.rotation && !_mrmsOv.mesh,
