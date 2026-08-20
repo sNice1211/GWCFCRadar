@@ -90,6 +90,11 @@ REGIONS = {
                 "bounds": HAWAII_BOUNDS},
     "prico":   {"label": "Puerto Rico", "box": PRICO_BOX,
                 "bounds": PRICO_BOUNDS},
+    # The same ground as CONUS, under its own name, so a model published at
+    # two resolutions over one place can offer both without a second control
+    # existing purely to say "resolution".
+    "conus32": {"label": "CONUS 32 km", "box": BOX,
+                "bounds": BOUNDS_LATLON},
 }
 
 
@@ -110,7 +115,13 @@ def region_spec(m, key):
         # from the data the way they do for everything else.
         spec["storm"] = key
         return spec
-    spec.update(REGIONS[key])
+    # The region carries a label of its own ("Alaska"), which must not become
+    # the model's label: a NAM run over Alaska is still NAM. It is kept under
+    # its own name so the region picker can read it, and the model's label
+    # survives into the manifest where the page looks for it.
+    box = dict(REGIONS[key])
+    spec["region_label"] = box.pop("label", key)
+    spec.update(box)
     spec.update((m.get("regions") or {}).get(key) or {})
     return spec
 
@@ -145,6 +156,16 @@ MODELS = {
         "regions": {"conus": {},
                     "tropics": {"step": 6, "out": 192, "shear": True}},
     },
+    # NAM is one model. It was five entries in the list, because NOAA publishes
+    # the same run cropped and re-gridded under four other filenames, and each
+    # of those had been added as if it were a separate forecast. Reading "NAM"
+    # and "NAM Alaska" as two models is wrong the same way "GFS" and "GFS
+    # Tropical" were: it is one forecast, cut somewhere else. So the four nests
+    # and the wider coarse grid are regions of it, chosen beside the model.
+    #
+    # Every region names its own file, because a nest genuinely is a different
+    # file from the parent, and its own resolution, because they differ. Only
+    # the directory, the host and the level list are shared.
     "nam": {
         "fetch": "range",
         "label": "NAM", "res": "12 km", "cycle_h": 6, "lag_h": 4,
@@ -160,46 +181,38 @@ MODELS = {
         "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
                  "lev_mean_sea_level", "lev_surface",
                  r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
-    },
-    # NAM's regional nests: the same 12 km NAM run, cropped and re-published
-    # under their own filenames for three areas the CONUS file doesn't cover.
-    # Same host, same byte-range mechanism, same level list as "nam" above -
-    # only the directory/filename differ, so nothing new needed to fetch them.
-    "namak": {
-        "fetch": "range",
-        "label": "NAM Alaska", "res": "6 km", "cycle_h": 6, "lag_h": 4,
-        "filter": "filter_nam.pl",
-        "dir": "/nam.{date}",
-        "file": "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2",
-        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2.idx",
-        "step": 3, "out": 60,
-        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
-                 "lev_mean_sea_level", "lev_surface",
-                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
-    },
-    "namhi": {
-        "fetch": "range",
-        "label": "NAM Hawaii", "res": "6 km", "cycle_h": 6, "lag_h": 4,
-        "filter": "filter_nam.pl",
-        "dir": "/nam.{date}",
-        "file": "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2",
-        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2.idx",
-        "step": 3, "out": 60,
-        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
-                 "lev_mean_sea_level", "lev_surface",
-                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
-    },
-    "nampr": {
-        "fetch": "range",
-        "label": "NAM Puerto Rico", "res": "6 km", "cycle_h": 6, "lag_h": 4,
-        "filter": "filter_nam.pl",
-        "dir": "/nam.{date}",
-        "file": "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2",
-        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2.idx",
-        "step": 3, "out": 60,
-        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
-                 "lev_mean_sea_level", "lev_surface",
-                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
+        "regions": {
+            "conus": {},
+            "alaska": {
+                "res": "6 km",
+                "file": "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2",
+                "raw": "nam/prod/nam.{date}/"
+                       "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2.idx",
+            },
+            "hawaii": {
+                "res": "6 km",
+                "file": "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2",
+                "raw": "nam/prod/nam.{date}/"
+                       "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2.idx",
+            },
+            "prico": {
+                "res": "6 km",
+                "file": "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2",
+                "raw": "nam/prod/nam.{date}/"
+                       "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2.idx",
+            },
+            # Not a place but a grid: the same run published over a domain
+            # that reaches well past the CONUS cut, and further out in time.
+            # A region because that is the control the page already has for
+            # "the same forecast, drawn differently", and inventing a second
+            # one would be a worse answer than reusing this.
+            "conus32": {
+                "res": "32 km", "out": 84,
+                "file": "nam.t{cyc}z.awip32{fhr:02d}.tm00.grib2",
+                "raw": "nam/prod/nam.{date}/"
+                       "nam.t{cyc}z.awip32{fhr:02d}.tm00.grib2.idx",
+            },
+        },
     },
     # ── Same-directory variants of models already proven to build ──────────
     # These carry the strongest evidence available without probing NOAA: the
@@ -228,20 +241,6 @@ MODELS = {
         "step": 6, "out": 240,
         "regions": {"conus": {},
                     "tropics": {"out": 384, "shear": True}},
-    },
-    "nam32": {
-        # NAM on its wider 32 km grid: the same run as "nam" above, published
-        # over a domain that reaches well past the CONUS cut.
-        "fetch": "range",
-        "label": "NAM 32 km", "res": "32 km", "cycle_h": 6, "lag_h": 4,
-        "filter": "filter_nam.pl",
-        "dir": "/nam.{date}",
-        "file": "nam.t{cyc}z.awip32{fhr:02d}.tm00.grib2",
-        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.awip32{fhr:02d}.tm00.grib2.idx",
-        "step": 3, "out": 84,
-        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
-                 "lev_mean_sea_level", "lev_surface",
-                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
     },
     "hrefpmmn": {
         # Probability matched mean: the ensemble's average intensity put back
@@ -297,53 +296,6 @@ MODELS = {
         "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
                  "lev_mean_sea_level", "lev_surface"],
         "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
-    },
-    # ── Regional analyses and blends, on NOAA's regional naming ────────────
-    # Same shape as their CONUS parents above, on the per-area directories
-    # NOAA publishes them under. Lower confidence than the same-directory
-    # variants: the directory itself is the part being guessed, so a wrong
-    # one shows up as a skipped model rather than a broken build.
-    "rtmaak": {
-        "label": "RTMA Alaska (now)", "res": "3 km analysis", "cycle_h": 1, "lag_h": 1,
-        "filter": "filter_akrtma.pl",
-        "dir": "/akrtma.{date}",
-        "file": "akrtma.t{cyc}z.2dvaranl_ndfd_3p0.grb2",
-        "raw": "rtma/prod/akrtma.{date}/akrtma.t{cyc}z.2dvaranl_ndfd_3p0.grb2.idx",
-        "fetch": "range", "step": 1, "out": 0,
-    },
-    "rtmahi": {
-        "label": "RTMA Hawaii (now)", "res": "2.5 km analysis", "cycle_h": 1, "lag_h": 1,
-        "filter": "filter_hirtma.pl",
-        "dir": "/hirtma.{date}",
-        "file": "hirtma.t{cyc}z.2dvaranl_ndfd.grb2",
-        "raw": "rtma/prod/hirtma.{date}/hirtma.t{cyc}z.2dvaranl_ndfd.grb2.idx",
-        "fetch": "range", "step": 1, "out": 0,
-    },
-    "rtmapr": {
-        "label": "RTMA Puerto Rico (now)", "res": "2.5 km analysis", "cycle_h": 1, "lag_h": 1,
-        "filter": "filter_prrtma.pl",
-        "dir": "/prrtma.{date}",
-        "file": "prrtma.t{cyc}z.2dvaranl_ndfd.grb2",
-        "raw": "rtma/prod/prrtma.{date}/prrtma.t{cyc}z.2dvaranl_ndfd.grb2.idx",
-        "fetch": "range", "step": 1, "out": 0,
-    },
-    "nbmak": {
-        "label": "NBM Alaska", "res": "3 km blend", "cycle_h": 6, "lag_h": 2,
-        "filter": "filter_blend.pl",
-        "dir": "/blend.{date}/{cyc}/core",
-        "file": "blend.t{cyc}z.core.f{fhr:03d}.ak.grib2",
-        "raw": "blend/prod/blend.{date}/{cyc}/core/"
-               "blend.t{cyc}z.core.f{fhr:03d}.ak.grib2.idx",
-        "fetch": "range", "first": 3, "step": 3, "out": 120,
-    },
-    "nbmhi": {
-        "label": "NBM Hawaii", "res": "2.5 km blend", "cycle_h": 6, "lag_h": 2,
-        "filter": "filter_blend.pl",
-        "dir": "/blend.{date}/{cyc}/core",
-        "file": "blend.t{cyc}z.core.f{fhr:03d}.hi.grib2",
-        "raw": "blend/prod/blend.{date}/{cyc}/core/"
-               "blend.t{cyc}z.core.f{fhr:03d}.hi.grib2.idx",
-        "fetch": "range", "first": 3, "step": 3, "out": 120,
     },
     "hrrr": {
         "fetch": "range",
@@ -469,6 +421,22 @@ MODELS = {
                "blend.t{cyc}z.core.f{fhr:03d}.co.grib2.idx",
         "fetch": "range",
         "first": 3, "step": 3, "out": 120,
+        # One blend, three domains, told apart by a two letter suffix on the
+        # filename and nothing else. They were three rows in the model list.
+        "regions": {
+            "conus": {},
+            "alaska": {
+                "res": "3 km blend",
+                "file": "blend.t{cyc}z.core.f{fhr:03d}.ak.grib2",
+                "raw": "blend/prod/blend.{date}/{cyc}/core/"
+                       "blend.t{cyc}z.core.f{fhr:03d}.ak.grib2.idx",
+            },
+            "hawaii": {
+                "file": "blend.t{cyc}z.core.f{fhr:03d}.hi.grib2",
+                "raw": "blend/prod/blend.{date}/{cyc}/core/"
+                       "blend.t{cyc}z.core.f{fhr:03d}.hi.grib2.idx",
+            },
+        },
     },
     "rtma": {
         # The odd one out: an analysis, not a forecast. One frame, F+000, of
@@ -488,6 +456,36 @@ MODELS = {
         ],
         "fetch": "range",
         "step": 1, "out": 0,
+        # Same reason NAM is one entry: these are the same analysis run over
+        # four domains, published under four filenames on four hosts, and they
+        # were four separate rows in the model list. The region replaces the
+        # whole address here rather than only the filename, because each domain
+        # has its own filter service and its own directory.
+        "regions": {
+            "conus": {},
+            "alaska": {
+                "res": "3 km analysis",
+                "filter": "filter_akrtma.pl",
+                "dir": "/akrtma.{date}",
+                "file": "akrtma.t{cyc}z.2dvaranl_ndfd_3p0.grb2",
+                "raw": "rtma/prod/akrtma.{date}/"
+                       "akrtma.t{cyc}z.2dvaranl_ndfd_3p0.grb2.idx",
+            },
+            "hawaii": {
+                "filter": "filter_hirtma.pl",
+                "dir": "/hirtma.{date}",
+                "file": "hirtma.t{cyc}z.2dvaranl_ndfd.grb2",
+                "raw": "rtma/prod/hirtma.{date}/"
+                       "hirtma.t{cyc}z.2dvaranl_ndfd.grb2.idx",
+            },
+            "prico": {
+                "filter": "filter_prrtma.pl",
+                "dir": "/prrtma.{date}",
+                "file": "prrtma.t{cyc}z.2dvaranl_ndfd.grb2",
+                "raw": "rtma/prod/prrtma.{date}/"
+                       "prrtma.t{cyc}z.2dvaranl_ndfd.grb2.idx",
+            },
+        },
     },
     # ── Tropical ────────────────────────────────────────────────────────────
     # The same GFS file, cropped somewhere else and asked different questions.
@@ -863,22 +861,15 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "hafs", "hafsb",
                   "gefswave",
                   "iconeu", "cmce",
-                  # NAM's three regional nests. Same byte-range mechanism and
-                  # publish schedule as "nam", built from the documented
-                  # NOMADS filename convention rather than a checked live
-                  # directory listing (unlike the entries above) - if one of
-                  # these three logs nothing but skips, that means the actual
-                  # filename drifted from what's coded here and it belongs in
-                  # OFF_BY_DEFAULT until re-checked, the same as any entry
-                  # below that's been confirmed broken.
-                  "namak", "namhi", "nampr",
                   # Same-directory variants of models already building here,
                   # so the address is the most nearly certain kind of guess
                   # available without probing NOAA.
-                  "gfs0p50", "gfs1p00", "nam32",
-                  "hrefpmmn", "hrefsprd", "gefsc00", "gefsp01",
-                  # Regional analyses and blends, on NOAA's per-area naming.
-                  "rtmaak", "rtmahi", "rtmapr", "nbmak", "nbmhi"]
+                  "gfs0p50", "gfs1p00",
+                  "hrefpmmn", "hrefsprd", "gefsc00", "gefsp01"]
+# NAM's nests, the regional analyses and the regional blends used to be nine
+# more names on that list. They are regions of "nam", "rtma" and "nbm" now, so
+# they are built by naming the parent: build_model walks a model's regions.
+# Nothing was dropped, and nothing new was added.
 
 # Defined above and deliberately not built. Each of these was checked against
 # the publisher's own directory listing and the files are not there: HWRF and
@@ -993,16 +984,18 @@ MB_PER_HOUR = {
     "aqm": 179.0, "etss": 1.0, "hrdps": 14.0, "rdps": 6.0,
     "iconeu": 6.0, "icond2": 4.0,
     "hireswnssl": 6.0, "cmce": 0.1, "iconeps": 21.0, "ecmwfaifsens": 4.3,
-    # Regional nests, cropped to one small area apiece rather than CONUS -
-    # estimated well under "nam" itself until check_models.py has a real
-    # measurement to replace this with.
-    "namak": 0.5, "namhi": 0.3, "nampr": 0.3,
     # Coarser grids cost far less per hour than the 0.25 deg run they are cut
-    # from; the regional analyses are single frames over small areas.
-    "gfs0p50": 0.2, "gfs1p00": 0.05, "nam32": 1.2,
+    # from.
+    "gfs0p50": 0.2, "gfs1p00": 0.05,
     "hrefpmmn": 10.4, "hrefsprd": 10.4, "gefsc00": 0.07, "gefsp01": 0.07,
-    "rtmaak": 2.0, "rtmahi": 0.8, "rtmapr": 0.8, "nbmak": 4.0, "nbmhi": 1.5,
 }
+
+# What one region costs relative to its model's CONUS figure above. The nests
+# and the regional analyses are cut to one small area apiece rather than the
+# lower 48, so charging them the parent's rate would order the cheapest-first
+# build wrongly and overstate the day's bandwidth several times over.
+REGION_COST = {"conus": 1.0, "conus32": 0.7, "tropics": 1.4,
+               "alaska": 0.3, "hawaii": 0.12, "prico": 0.12}
 
 # Some servers refuse the default python-requests user agent outright, and a
 # 403 from that is indistinguishable from a wrong address. Saying who we are
@@ -1155,6 +1148,64 @@ FIELDS = {
               "convert": lambda a: a,           "range": (0, 150),
               "ramp": "heat"},
 
+    # ── Everyday fields most models carry, at levels already being asked for ─
+    # Nothing here needs a new request: these live at 2 m, 10 m, the surface or
+    # the whole column, which is what every fetch already covers. They were
+    # simply never read out of the files that were already being downloaded.
+    #
+    # A model that does not carry one of them just does not produce that chart,
+    # the same way GEFS produces no reflectivity today. Nothing fails.
+
+    # Relative humidity at head height. The everyday companion to dewpoint:
+    # dewpoint says how much moisture is in the air, this says how close that
+    # is to as much as the air can hold, which is what fog and comfort follow.
+    "rh2m":  {"short": ("2r", "r", "rh"), "levtype": ("heightAboveGround",),
+              "level": 2,
+              "convert": lambda a: a,           "range": (0, 100),
+              "ramp": "moisture"},
+    # Total cloud cover through the whole column. Reads as "how much sky is
+    # covered", which is the one thing a forecast is asked for more than any
+    # other and which no chart here answered.
+    "tcc":   {"short": ("tcc", "tcdc"),
+              "levtype": ("atmosphere", "entireAtmosphere",
+                          "atmosphereSingleLayer", "unknown"), "level": 0,
+              "convert": lambda a: a,           "range": (0, 100),
+              "ramp": "cloud"},
+    # Surface visibility, in kilometres. Inverted on purpose in the ramp: the
+    # interesting end is the low end, where fog and heavy snow are.
+    "vis":   {"short": ("vis",),      "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a / 1000.0,  "range": (0, 20),
+              "ramp": "visibility"},
+    # Convective inhibition: the lid holding a storm down. Published negative,
+    # and flipped to a positive depth here so the scale reads "how strong is
+    # the cap" rather than running backwards. CAPE says how much fuel there is;
+    # this says whether it can get lit.
+    "cin":   {"short": ("cin",),      "levtype": ("surface",), "level": 0,
+              "convert": lambda a: -a,          "range": (0, 300),
+              "ramp": "heat"},
+    # Instantaneous precipitation rate, as millimetres per hour. Different
+    # question from accumulated precipitation: this is how hard it is coming
+    # down at that moment, which is what flash flooding follows.
+    "prate": {"short": ("prate",),    "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a * 3600.0,  "range": (0, 25),
+              "ramp": "precip"},
+    # Snow on the ground, as centimetres. Published in metres.
+    "snod":  {"short": ("sde", "snod"), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a * 100.0,   "range": (0, 60),
+              "ramp": "snow"},
+    # Surface lifted index. Negative means the atmosphere is unstable, so the
+    # sign is flipped here for the same reason CIN is: the map should get
+    # brighter as the weather gets more interesting.
+    "lftx":  {"short": ("lftx", "4lftx"), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: -a,          "range": (0, 12),
+              "ramp": "heat"},
+    # Downward shortwave radiation: how much sun is reaching the ground. Reads
+    # as cloud cover from the other direction, and is the field solar output
+    # actually follows.
+    "dswrf": {"short": ("dswrf", "sdswrf"), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a,           "range": (0, 1000),
+              "ramp": "heat"},
+
     # ── Storm surge ─────────────────────────────────────────────────────────
     # Water above the normal tide, which is what actually floods a coast. A
     # hurricane's wind is the number it is named for and this is the number
@@ -1213,7 +1264,12 @@ WANT_VARS = {"TMP", "DPT", "PRMSL", "MSLET", "MSLMA",
              # Waves.
              "HTSGW", "PERPW",
              # Air quality and storm surge.
-             "OZCON", "PMTF", "PMTC", "ETSRG"}
+             "OZCON", "PMTF", "PMTC", "ETSRG",
+             # Everyday fields that were being downloaded past and never read:
+             # humidity, cloud, visibility, the convective cap, rain rate,
+             # snow on the ground, lifted index and incoming sunlight.
+             "RH", "TCDC", "VIS", "CIN", "PRATE", "SNOD", "WEASD",
+             "LFTX", "4LFTX", "DSWRF"}
 # Exact level names, except the last, which is a prefix: models spell the whole
 # column differently. GFS says "entire atmosphere (considered as a single
 # layer)", HRRR just says "entire atmosphere", and guessing wrong is what turns
@@ -1303,6 +1359,17 @@ FIELD_SOURCES = {
     "ozone": [("OZCON", "surface")],
     "pm25":  [("PMTF", "surface"), ("PMTC", "surface")],
     "surge": [("ETSRG", "surface")],
+    # The everyday fields. Every one of these sits at a level already being
+    # asked for, so adding them costs no extra request, only the bytes of the
+    # messages themselves.
+    "rh2m":  [("RH", "2 m above ground")],
+    "tcc":   [("TCDC", "entire atmosphere*")],
+    "vis":   [("VIS", "surface")],
+    "cin":   [("CIN", "surface")],
+    "prate": [("PRATE", "surface")],
+    "snod":  [("SNOD", "surface")],
+    "lftx":  [("LFTX", "surface"), ("4LFTX", "surface")],
+    "dswrf": [("DSWRF", "surface")],
 }
 # Wind is its own case: taken as a speed where the model publishes one, and
 # from both components where it does not. Fetching all three, which the cross
@@ -2003,6 +2070,19 @@ RAMPS = {
                 (1,(120,0,0))],
     "sst":    [(0,(20,20,90)),(0.35,(30,110,190)),(0.55,(60,180,170)),
                (0.62,(250,250,180)),(0.75,(245,160,60)),(1,(170,20,30))],
+    # Cloud cover: clear sky is deep blue and overcast is white, which is what
+    # it looks like from above. Not a rainbow, because the field only runs one
+    # way and a rainbow would invent structure that is not there.
+    "cloud":  [(0,(10,30,70)),(0.3,(60,110,170)),(0.6,(160,190,215)),
+               (1,(250,250,252))],
+    # Visibility runs the other way from everything else: the interesting end
+    # is the low end. Red is fog, and it fades out to nothing at clear.
+    "visibility":[(0,(150,10,20)),(0.15,(230,90,40)),(0.35,(245,205,80)),
+                  (0.6,(170,215,190)),(1,(235,245,250))],
+    # Snow depth, white through blue into a deep indigo, the way depth reads
+    # on any snow map anyone has seen before.
+    "snow":   [(0,(245,250,255)),(0.2,(190,225,245)),(0.45,(110,175,225)),
+               (0.7,(60,105,190)),(1,(30,30,110))],
 }
 
 
@@ -2943,7 +3023,8 @@ def main(models=None):
             # Roughly what this will cost: how many hours, times how big a
             # grid. Only ever compared against other models, so the units do
             # not matter, only the ordering.
-            cost = len(fhours_for(sp)) * MB_PER_HOUR.get(name, 5.0)
+            cost = (len(fhours_for(sp)) * MB_PER_HOUR.get(name, 5.0)
+                    * REGION_COST.get(region, 1.0))
             jobs.append((0 if never else 1, cost, name, region, m))
     # Never built first, and among those the cheap ones first. A cold start
     # otherwise spends twenty minutes on the single most expensive model
