@@ -130,6 +130,59 @@ console.log('\n4. turning satellite off stops it from being animation-ready agai
 console.log('\n5. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 5).join(' | '));
 
+console.log('\n6. the region row only offers sectors the server actually advertises');
+{
+  // A sector named right but not published looks identical to a broken one:
+  // an empty picture. So the row asks the WMS what it serves. This stands up
+  // a capabilities document that advertises meso1 but NOT meso2, and checks
+  // that exactly the unadvertised pair disappears - and that nothing is
+  // hidden before the answer arrives.
+  const capPage = await browser.newPage();
+  const capErrors = [];
+  capPage.on('pageerror', e => capErrors.push(e.message));
+  await capPage.route('**://**', route => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.includes('leaflet') && url.endsWith('.js'))
+      return route.fulfill({ contentType: 'application/javascript',
+        body: readFileSync(join(LEAFLET, 'leaflet.js'), 'utf8') });
+    if (url.includes('leaflet') && url.endsWith('.css'))
+      return route.fulfill({ contentType: 'text/css',
+        body: readFileSync(join(LEAFLET, 'leaflet.css'), 'utf8') });
+    if (url.includes('GetCapabilities')) {
+      const named = ['conus_ch13', 'fulldisk_ch13', 'alaska_ch13',
+                     'hawaii_ch13', 'puertorico_ch13', 'meso1_ch13'];
+      return route.fulfill({ contentType: 'text/xml',
+        body: '<WMT_MS_Capabilities>'
+            + named.map(n => `<Layer><Name>${n}</Name></Layer>`).join('')
+            + '</WMT_MS_Capabilities>' });
+    }
+    return route.abort();
+  });
+  await capPage.goto('file://' + join(ROOT, 'index.html'), { waitUntil: 'domcontentloaded' });
+  await capPage.waitForTimeout(4000);
+  const r = await capPage.evaluate(async () => {
+    if (typeof closeTutorial === 'function') closeTutorial();
+    toggleSatelliteSub();
+    const before = [...document.querySelectorAll('.sat-region-btn')].map(b => b.dataset.regionId);
+    await new Promise(res => setTimeout(res, 1200));
+    const after = [...document.querySelectorAll('.sat-region-btn')].map(b => b.dataset.regionId);
+    return { before, after, declared: GOES_REGIONS.length };
+  });
+  ok('the mesoscale sectors are declared as regions',
+     r.declared === 12 && r.before.includes('emeso1') && r.before.includes('wmeso2'),
+     JSON.stringify(r.before));
+  ok('every region is offered before the server has answered (fails open)',
+     r.before.length === r.declared, JSON.stringify(r.before));
+  ok('sectors the server does advertise survive the check',
+     r.after.includes('emeso1') && r.after.includes('wmeso1')
+     && r.after.includes('east') && r.after.includes('auto'), JSON.stringify(r.after));
+  ok('sectors it does not advertise are dropped',
+     !r.after.includes('emeso2') && !r.after.includes('wmeso2'), JSON.stringify(r.after));
+  ok('nothing threw during the capability check', capErrors.length === 0, capErrors.join(' | '));
+  await capPage.close();
+}
+
 await browser.close();
 console.log(fail ? `\n${fail} FAILED, ${pass} passed` : `\nall ${pass} passed`);
 process.exit(fail ? 1 : 0);

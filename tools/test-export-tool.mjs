@@ -55,19 +55,19 @@ await page.evaluate(() => { if (typeof closeTutorial === 'function') closeTutori
 console.log('\n1. panel open/close and source detection');
 {
   const r = await page.evaluate(() => {
-    const closedStart = !document.getElementById('export-panel').classList.contains('open');
+    const closedStart = !document.getElementById('export-toolbar').classList.contains('visible');
     _expToggle();
-    const opened = document.getElementById('export-panel').classList.contains('open');
+    const opened = document.getElementById('export-toolbar').classList.contains('visible');
     const noneStatus = document.getElementById('export-status').textContent;
     activeLayers.nexrad = false; activeLayers.satellite = false;
     const src = _expActiveSource();
     _expToggle();
-    const closedEnd = !document.getElementById('export-panel').classList.contains('open');
+    const closedEnd = !document.getElementById('export-toolbar').classList.contains('visible');
     return { closedStart, opened, noneStatus, src, closedEnd };
   });
   ok('starts closed', r.closedStart, String(r.closedStart));
   ok('toggling opens it', r.opened, String(r.opened));
-  ok('with nothing active the status says so', /Nothing to export/i.test(r.noneStatus), r.noneStatus);
+  ok('with nothing active the status says so', /nothing on screen/i.test(r.noneStatus), r.noneStatus);
   ok('_expActiveSource returns null with nothing on', r.src === null, JSON.stringify(r.src));
   ok('toggling again closes it', r.closedEnd, String(r.closedEnd));
 }
