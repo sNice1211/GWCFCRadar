@@ -409,7 +409,8 @@ console.log('\n12. a screenshot keeps the broadcast and drops the controls');
       return el ? getComputedStyle(el).display !== 'none' : null;
     };
     const out = { stage: vis('ss-stage'), lower: vis('ss-lower'),
-                  alerts: vis('ss-alerts'), nav: vis('ss-now-nav') };
+                  alerts: vis('ss-alerts'), nav: vis('ss-now-nav'),
+                  exit: vis('ss-exit') };
     document.body.classList.remove('shot-mode');
     _ssStop();
     return out;
@@ -418,9 +419,60 @@ console.log('\n12. a screenshot keeps the broadcast and drops the controls');
      r.stage && r.lower && r.alerts, JSON.stringify(r));
   ok('but the skip buttons go, because they are a control',
      r.nav === false, JSON.stringify(r));
+  ok('and so does the exit button, for the same reason',
+     r.exit === false, JSON.stringify(r));
 }
 
-console.log('\n12b. the logo is the way out');
+console.log('\n12a. there is a labelled exit button');
+{
+  const r = await page.evaluate(async (f) => {
+    _lastAlertFeatures = f;
+    _ssCfg = { coverage: 'us', stepSec: 15, enabled: true, firstRunSeen: true };
+    _ssStart();
+    const b = document.getElementById('ss-exit');
+    const cs = getComputedStyle(b);
+    const box = b.getBoundingClientRect();
+    const clash = (id) => {
+      const o = document.getElementById(id).getBoundingClientRect();
+      return !(box.right <= o.left || box.left >= o.right
+            || box.bottom <= o.top || box.top >= o.bottom);
+    };
+    const out = {
+      exists: true,
+      text: b.textContent.trim(),
+      hasIcon: !!b.querySelector('svg'),
+      clickable: cs.pointerEvents !== 'none' && cs.display !== 'none',
+      // A control, so it should not be wearing the broadcast's gradient.
+      plain: !/gradient/.test(cs.backgroundImage),
+      onScreen: box.right <= innerWidth + 1 && box.bottom <= innerHeight + 1
+                && box.left >= 0 && box.top >= 0,
+      overLower: clash('ss-lower'),
+      overAlerts: clash('ss-alerts'),
+      overNow: clash('ss-now'),
+    };
+    // One click ends it, because it says what it does.
+    b.click();
+    await new Promise(r => setTimeout(r, 60));
+    out.stopped = !_ssOn;
+    out.stageGone = !document.getElementById('ss-stage');
+    out.liveCleared = !document.body.classList.contains('ss-live');
+    return out;
+  }, [TOR]);
+  ok('the exit button exists', r.exists);
+  ok('and says what it does', /exit/i.test(r.text), r.text);
+  ok('with an icon beside the words', r.hasIcon);
+  ok('it is clickable', r.clickable);
+  ok('it reads as a control, not as part of the broadcast', r.plain);
+  ok('it is fully on screen', r.onScreen);
+  ok('and clear of all four broadcast panels',
+     !r.overLower && !r.overAlerts && !r.overNow,
+     JSON.stringify([r.overLower, r.overAlerts, r.overNow]));
+  ok('ONE click ends it, unlike the logo which needs two', r.stopped);
+  ok('the frame comes down', r.stageGone);
+  ok('and the interface comes back', r.liveCleared);
+}
+
+console.log('\n12b. the logo is the way out too');
 {
   const r = await page.evaluate(async (f) => {
     _lastAlertFeatures = f;

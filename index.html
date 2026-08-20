@@ -4767,7 +4767,8 @@ body.shot-mode #export-toolbar {
 /* The StormStream frame is the broadcast, so a screenshot keeps it. Its two
    skip buttons are not: they are a control, and a control in a captured
    frame reads as part of the graphic. */
-body.shot-mode #ss-now-nav { display: none !important; }
+body.shot-mode #ss-now-nav,
+body.shot-mode #ss-exit { display: none !important; }
 
 /* Everything hanging directly off body is interface: the loading screen, the
    top bar, the floating buttons, the status bar. The map lives inside #main,
@@ -7196,6 +7197,37 @@ footer {
   filter: drop-shadow(0 0 16px rgba(255,80,80,0.95));
 }
 
+/* ── The way out, spelled out ─────────────────────────────────────────────
+   Bottom right, in the strip the animation bar normally occupies, which is
+   empty while on air - so it is clear of all four broadcast panels at every
+   width without pushing any of them around.
+
+   Deliberately NOT in the gradient the panels use. It is a control, not part
+   of the graphic, and something that looks like the broadcast but is not
+   would be the confusing choice. It keeps the gold edge so it still belongs
+   to the same design, and it leaves a captured shot for the same reason the
+   skip buttons do. */
+#ss-exit {
+  position: absolute;
+  right: calc(18px + env(safe-area-inset-right, 0px));
+  bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+  z-index: 4;
+  pointer-events: all;
+  display: flex; align-items: center; gap: 7px;
+  font-family: var(--display); font-weight: 700; font-size: 12px;
+  letter-spacing: 0.4px;
+  color: var(--ss-gold);
+  background: rgba(8,10,18,0.82);
+  border: 2px solid var(--ss-gold);
+  border-radius: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition: background 0.15s, color 0.15s;
+}
+#ss-exit:hover { background: var(--ss-gold); color: #12080a; }
+#ss-exit:active { transform: translateY(1px); }
+
 /* ── Adapting down ──────────────────────────────────────────────────────── */
 /* The three top panels stop fitting side by side long before a phone. The
    centre pair is the one that goes first, because it is the one that says
@@ -7224,6 +7256,11 @@ footer {
   }
 }
 @media (max-width: 560px) {
+  #ss-exit {
+    font-size: 10.5px; padding: 6px 10px;
+    right: calc(10px + env(safe-area-inset-right, 0px));
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  }
   /* #right-menu (the drawing-tool column) pulls up to top:90px on phones and
      is anchored to the same edge the alerts panel is, so the panel has to be
      shifted clear of it or it lands directly on those buttons. The on-air
@@ -38565,7 +38602,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "In StormStream, double click the logo on the lower third to come back out - there is no menu on screen while you are live, so the logo is the way out. The lower third is also an octagon now, with all four corners cut, rather than a point at each end.";
+const APP_LATEST_UPDATE = "StormStream now has a plain Exit button in the bottom right corner, so leaving no longer depends on knowing that a double click on the logo does it. The logo still works.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -42179,7 +42216,12 @@ function _ssEnsureHud() {
       </div>
       <div id="ss-lower-bar"><div id="ss-lower-bar-inner">GWCFC Radar</div></div>
       <img id="ss-lower-logo" alt="">
-    </div>`;
+    </div>
+
+    <button id="ss-exit" title="Leave StormStream">
+      <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg>
+      Exit StormStream
+    </button>`;
   document.body.appendChild(_ssHudEl);
   _ssHudEl.classList.add('on');
 
@@ -42223,6 +42265,13 @@ function _ssEnsureHud() {
       if (e.pointerType !== 'mouse') hit(e);
     });
   }
+
+  // One click, because it is a labelled button that says what it does. The
+  // logo needs two because it is not obviously a control and a stray tap on
+  // it must not end a broadcast; a button marked "Exit StormStream" has no
+  // such problem.
+  const exit = document.getElementById('ss-exit');
+  if (exit) exit.onclick = () => _ssStop();
 
   const prev = document.getElementById('ss-hud-prev');
   if (prev) prev.onclick = _ssManualPrev;
