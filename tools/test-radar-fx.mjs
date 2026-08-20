@@ -312,7 +312,6 @@ console.log('\n6c. Model Colors: per-field custom palettes for Pi chart pictures
     const hasFields = sel.options.length > 0;
     const firstIsT2m = sel.options.length && sel.options[0] !== undefined;
     _hdUiPick('t2m');
-    document.getElementById('lqm-hc-c0').value = '#123456';
     _hdUiColor(0, '#123456');
     _hdUiColorsOn(true);
     const savedRaw = localStorage.getItem('gwcfc_model_colors');
@@ -331,6 +330,67 @@ console.log('\n6c. Model Colors: per-field custom palettes for Pi chart pictures
   });
   ok('reset forgets this field\'s custom colors',
      reset.pal === null && !/"t2m"/.test(reset.saved), JSON.stringify(reset));
+}
+
+console.log('\n6d. gradient editor: variable stop count, invert, presets, live preview');
+{
+  const radar = await page.evaluate(() => {
+    _fxColors = {}; _fxSave();
+    lqmOpenSettings();
+    _fxUiPick('ref');
+    const startCount = document.querySelectorAll('#lqm-fx-stops .lqm-grad-stop').length;
+    _fxUiAddStop();
+    const afterAdd = document.querySelectorAll('#lqm-fx-stops .lqm-grad-stop').length;
+    const stopsAfterAdd = _fxColors.ref.stops.length;
+    _fxUiRemoveStop(0);
+    const afterRemove = document.querySelectorAll('#lqm-fx-stops .lqm-grad-stop').length;
+    const original = FX_DEFAULT_STOPS.ref.slice();
+    _fxColors.ref.stops = original.slice();
+    _fxUiRenderStops();
+    _fxUiInvert();
+    const inverted = _fxColors.ref.stops.slice();
+    _fxUiPreset('grayscale');
+    const preset = _fxColors.ref.stops.slice();
+    const presetOn = _fxColors.ref.on;
+    const preview = document.getElementById('lqm-fx-preview').style.background;
+    // Down to the floor of 2 stops, the remove button must disappear so a
+    // gradient can never lose its low/high ends entirely.
+    _fxColors.ref.stops = ['#000000', '#ffffff'];
+    _fxUiRenderStops();
+    const delButtonsAtFloor = document.querySelectorAll('#lqm-fx-stops .lqm-grad-stop-del').length;
+    _fxColors = {}; _fxSave();   // leave no custom-color state behind for later sections
+    return { startCount, afterAdd, stopsAfterAdd, afterRemove, original, inverted, preset, presetOn, preview, delButtonsAtFloor };
+  });
+  ok('radar: starts with 5 stops shown', radar.startCount === 5, String(radar.startCount));
+  ok('radar: adding a stop grows both the swatch row and the saved array',
+     radar.afterAdd === 6 && radar.stopsAfterAdd === 6, JSON.stringify(radar));
+  ok('radar: removing a stop shrinks it back', radar.afterRemove === 5, String(radar.afterRemove));
+  ok('radar: invert reverses the stop order',
+     radar.inverted.join() === radar.original.slice().reverse().join(), JSON.stringify(radar));
+  ok('radar: picking a preset replaces the stops and turns colors on',
+     radar.preset.join() === '#000000,#404040,#808080,#c0c0c0,#ffffff' && radar.presetOn === true,
+     JSON.stringify(radar));
+  ok('radar: the preview bar is a real CSS gradient of the current stops',
+     radar.preview.startsWith('linear-gradient') && radar.preview.includes('rgb(0, 0, 0)'), radar.preview);
+  ok('radar: at the 2-stop floor, neither remaining stop can be deleted',
+     radar.delButtonsAtFloor === 0, String(radar.delButtonsAtFloor));
+
+  const model = await page.evaluate(() => {
+    _hdColors = {}; _hdColorsSave();
+    _hdUiPick('t2m');
+    _hdUiAddStop();
+    const afterAdd = document.querySelectorAll('#lqm-hc-stops .lqm-grad-stop').length;
+    _hdUiInvert();
+    const inverted = _hdColors.t2m.stops.length;
+    _hdUiPreset('sunset');
+    const preset = _hdColors.t2m.stops.slice();
+    return { afterAdd, inverted, preset };
+  });
+  ok('model: adding a stop works the same way as the radar side',
+     model.afterAdd === 6, String(model.afterAdd));
+  ok('model: invert keeps the same stop count', model.inverted === 6, String(model.inverted));
+  ok('model: presets apply here too',
+     model.preset.join() === '#0d0887,#7e03a8,#cc4778,#f89441,#f0f921', model.preset.join());
 }
 
 console.log('\n7. the Pi reroute knows when raw data is required');
