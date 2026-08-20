@@ -198,9 +198,20 @@ console.log('\n4. the gold edge and the pointed shapes are really there');
   });
   ok('the panels carry a gold edge', r.goldish, r.nowEdge);
   ok('so does the alerts panel', r.alertsEdge === r.nowEdge, r.alertsEdge);
-  ok('the chevron is cut to a point at both ends',
-     /polygon/.test(r.barClip) && /polygon/.test(r.innerClip),
-     JSON.stringify([r.barClip, r.innerClip]));
+  // An octagon, not a hexagon: all four corners cut back rather than a
+  // single point at each end. Counted, because both are "a polygon" and only
+  // one of them is the shape in the design.
+  // Counted as coordinate PAIRS. Counting percent signs does not work: a
+  // point can be "0 72%", with only one of them.
+  const pts = (c) => {
+    const inside = /polygon\(([^)]*)\)/.exec(String(c));
+    return inside ? inside[1].split(',').length : 0;
+  };
+  ok('the bar is cut to an octagon, all four corners',
+     pts(r.barClip) === 8 && pts(r.innerClip) === 8,
+     `${pts(r.barClip)} and ${pts(r.innerClip)} points`);
+  ok('and the gold outline follows exactly the same shape as the fill',
+     r.barClip === r.innerClip, JSON.stringify([r.barClip, r.innerClip]));
   ok('the header text is gold, not white', r.headColor === r.nowEdge,
      JSON.stringify([r.headColor, r.nowEdge]));
   ok('the arrow tab is drawn on the on-air panel', r.tabArrow === '""', r.tabArrow);
@@ -407,6 +418,58 @@ console.log('\n12. a screenshot keeps the broadcast and drops the controls');
      r.stage && r.lower && r.alerts, JSON.stringify(r));
   ok('but the skip buttons go, because they are a control',
      r.nav === false, JSON.stringify(r));
+}
+
+console.log('\n12b. the logo is the way out');
+{
+  const r = await page.evaluate(async (f) => {
+    _lastAlertFeatures = f;
+    _ssCfg = { coverage: 'us', stepSec: 15, enabled: true, firstRunSeen: true };
+    _ssStart();
+    const img = document.getElementById('ss-lower-logo');
+    const cs = getComputedStyle(img);
+    const out = { clickable: cs.pointerEvents !== 'none', title: img.title };
+
+    // One click must NOT stop it: a stray tap during a broadcast should not
+    // take the broadcast down.
+    img.click();
+    await new Promise(r => setTimeout(r, 60));
+    out.afterOne = _ssOn;
+    out.armed = img.classList.contains('armed');
+
+    // Two in quick succession must.
+    img.click();
+    await new Promise(r => setTimeout(r, 60));
+    out.afterTwo = _ssOn;
+    out.stageGone = !document.getElementById('ss-stage');
+    out.liveCleared = !document.body.classList.contains('ss-live');
+    return out;
+  }, [TOR]);
+  ok('the logo accepts clicks, unlike the rest of the lower third', r.clickable);
+  ok('and says what it does', /double click/i.test(r.title), r.title);
+  ok('one click does not end the broadcast', r.afterOne === true);
+  ok('but it shows that the first click registered', r.armed);
+  ok('two clicks do end it', r.afterTwo === false);
+  ok('the frame comes down with it', r.stageGone);
+  ok('and the interface comes back', r.liveCleared);
+}
+
+console.log('\n12c. two clicks far apart are not a double click');
+{
+  const r = await page.evaluate(async (f) => {
+    _lastAlertFeatures = f;
+    _ssStart();
+    const img = document.getElementById('ss-lower-logo');
+    img.click();
+    await new Promise(r => setTimeout(r, 900));   // longer than the window
+    img.click();
+    await new Promise(r => setTimeout(r, 60));
+    const still = _ssOn;
+    _ssStop();
+    return { still };
+  }, [TOR]);
+  ok('a click now and another a second later leaves it running',
+     r.still === true, String(r.still));
 }
 
 console.log('\n13. nothing above threw');
