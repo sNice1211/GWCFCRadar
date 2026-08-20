@@ -140,7 +140,7 @@ console.log('\n3. the step buttons follow the same readiness gate as play');
      !r.on.play && !r.on.fwd && !r.on.back, JSON.stringify(r.on));
 }
 
-console.log('\n4. satellite: one preloaded layer per frame, swapped by opacity');
+console.log('\n4. satellite: preloaded layers around the current frame, swapped by opacity');
 {
   const r = await page.evaluate(() => {
     _disableRadar();
@@ -155,8 +155,15 @@ console.log('\n4. satellite: one preloaded layer per frame, swapped by opacity')
     return { frames: goesFrames.length, built, distinct, visibleAtStart,
              visibleAfterScrub, onlyOneVisible, poolMax: GOES_POOL_MAX };
   });
-  ok('a layer is preloaded for each frame, not one layer reused',
-     r.built === r.frames && r.distinct === r.frames, JSON.stringify(r));
+  // Satellite now reaches hours back rather than two, so the frame list is
+  // longer than the pool. What must hold is that a layer is preloaded per
+  // frame in the window - never one layer reused for all of them - and that
+  // the window itself stays capped.
+  ok('a layer is preloaded per frame in the window, not one layer reused',
+     r.built === Math.min(r.frames, r.poolMax) && r.distinct === r.built,
+     JSON.stringify(r));
+  ok('the pool never exceeds its cap however long the loop is',
+     r.built <= r.poolMax, JSON.stringify(r));
   ok('the newest frame is the one showing at first',
      r.visibleAtStart === r.frames - 1, JSON.stringify(r));
   ok('scrubbing changes which preloaded layer is visible',

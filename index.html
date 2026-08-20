@@ -568,6 +568,13 @@ body {
   display: flex; justify-content: space-between;
   font-family: var(--display); font-weight: 700; font-size: 9px; color: #000;
 }
+/* Said plainly, and dimmed, so an empty bar reads as empty rather than as a
+   loop whose labels failed to draw. */
+#timeline-labels .tl-empty {
+  opacity: 0.55; font-weight: 500; letter-spacing: 0.4px;
+}
+#timeline:disabled { cursor: not-allowed; }
+#timeline:disabled::-webkit-slider-thumb { background: rgba(170,0,0,0.35); box-shadow: none; }
 #anim-time {
   font-family: var(--display); font-weight: 700; font-size: 11px; color: #000;
   min-width: 75px; text-align: right; flex-shrink: 0;
@@ -1783,6 +1790,21 @@ body {
   background: rgb(120,0,0);
   border-color: rgba(255,215,0,0.85);
   transform: translateY(-2px);
+}
+/* A heading inside a bubble column. MRMS and satellite both carry too many
+   products for a flat list to be readable, so each group gets a quiet label
+   above it rather than another clickable thing. */
+.sub-bubble-group-label {
+  font-family: var(--display);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: rgba(255,215,0,0.55);
+  padding: 6px 4px 1px;
+  user-select: none;
+  pointer-events: none;
+  white-space: nowrap;
 }
 .sub-bubble.active {
   color: #fff;
@@ -8187,7 +8209,7 @@ let animSpeed = 1.5, radarOpacity = 0.85;
 let _loopLenMin = 60;
 try {
   const _ll = parseInt(localStorage.getItem('gwcfc_loop_len') || '60', 10);
-  if ([60, 180, 360].includes(_ll)) _loopLenMin = _ll;
+  if ([60, 180, 360, 720].includes(_ll)) _loopLenMin = _ll;
 } catch (e) {}
 let currentProduct = 'ref', currentModel = 'gfs', currentModelVar = 'precip';
 
@@ -8525,8 +8547,13 @@ function _generateL3Frames(count) {
 // Frames the loop should hold: the chosen length divided by the 5-minute
 // cadence. iOS is capped tighter, since a long pool of tiles is where its
 // memory gives out first.
+//
+// The desktop cap used to be 80, which quietly truncated anything past about
+// six and a half hours - so a twelve-hour setting would have been a twelve
+// hour label on a six hour loop. _poolWindow now slides on desktop too, so
+// the frames past the window cost a URL each and nothing more.
 function _loopFrameCount() {
-  const cap = _isIOS ? 24 : 80;
+  const cap = _isIOS ? 24 : 150;
   return Math.max(4, Math.min(cap, Math.round(_loopLenMin / 5)));
 }
 
@@ -8700,7 +8727,7 @@ function _poolWindow(idx) {
     return { s, e };
   }
   // z≤3: tiles cover huge area (hundreds each) , cap at 5 to avoid OOM
-  // z≥4: preload every frame so animation is zero-wait
+  // z≥4: preload as much as is safe, so animation is zero-wait
   if (z <= 3) {
     const sz = 5, half = 2;
     let s = Math.max(0, idx - half);
@@ -8708,7 +8735,18 @@ function _poolWindow(idx) {
     s = Math.max(0, e - sz + 1);
     return { s, e };
   }
-  return { s: 0, e: n - 1 };
+  // "Every frame" was fine while the longest loop was 72 frames. Now that the
+  // mosaic reaches back twelve hours it is 144 live tile layers, each still
+  // fetching tiles at whatever opacity, which is the same growth that used to
+  // kill the tab on iOS - just further up the scale. So desktop gets a window
+  // too. It is wide enough that a whole play-through of a normal loop is
+  // still preloaded, and it slides for the long ones.
+  const sz = 48, half = 24;
+  if (n <= sz) return { s: 0, e: n - 1 };
+  let s = Math.max(0, idx - half);
+  let e = Math.min(n - 1, s + sz - 1);
+  s = Math.max(0, e - sz + 1);
+  return { s, e };
 }
 
 // Replace one slot's tile-cache layer with a WMS layer in-place (no full pool rebuild)
@@ -13768,6 +13806,10 @@ function _prLoopBuild(meta, lvl, followLive) {
   _prLoop.lvl = lvl;
   _prLoop.idx = (!followLive && prevStamp && stamps.includes(prevStamp))
     ? stamps.indexOf(prevStamp) : stamps.length - 1;
+  // Size the slider, repaint the track and rewrite the labels off this loop's
+  // own frame stamps. Without this the Pi loop scrubbed under whatever times
+  // the previous layer happened to leave on the bar.
+  if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
 }
 
 // One frame, drawn onto the single reusable overlay rather than a fresh
@@ -14152,7 +14194,12 @@ async function _l3BucketNewest(site, code) {
 async function _l3BucketList(site, code, want) {
   const sid = String(site).toUpperCase().replace(/^([KT])/, m => m === 'K' ? '' : '');
   const found = [];
-  for (let back = 0; back < 4 && found.length < want; back++) {
+  // Each pass reads one hour of the bucket, and a site publishes roughly ten
+  // to twelve scans an hour, so this has to reach back far enough to actually
+  // fill `want`. It stopped at four hours, which quietly capped the loop at
+  // about forty frames however many were asked for.
+  const maxHours = Math.max(4, Math.ceil(want / 8) + 1);
+  for (let back = 0; back < maxHours && found.length < want; back++) {
     const t = new Date(Date.now() - back * 3600000);
     const p = `${sid}_${code}_${t.getUTCFullYear()}_`
             + `${String(t.getUTCMonth() + 1).padStart(2, '0')}_`
@@ -14241,9 +14288,12 @@ async function _l3BucketShow(site) {
 // Where storms have rotated over the last hour, and the largest hail they
 // have produced, as national images the Pi renders from NOAA's MRMS feed on
 // the same five minute beat as the radar. Two overlay pills, one loader.
-let _mrmsOn = { rotation: false, mesh: false };
-let _mrmsOv = { rotation: null, mesh: null };
+// Any number of MRMS products can be on at once, keyed by whatever the Pi
+// publishes - this was two fixed keys back when there were only two products.
+let _mrmsOn = {};
+let _mrmsOv = {};
 let _mrmsTimer = null;
+function _mrmsAnyOn() { return Object.keys(_mrmsOn).some(k => _mrmsOn[k]); }
 
 async function _mrmsLoad() {
   // Always take the old pictures down first, so toggling off works through
@@ -14251,7 +14301,7 @@ async function _mrmsLoad() {
   for (const k of Object.keys(_mrmsOv)) {
     if (_mrmsOv[k]) { try { map.removeLayer(_mrmsOv[k]); } catch (e) {} _mrmsOv[k] = null; }
   }
-  if (!_mrmsOn.rotation && !_mrmsOn.mesh) return;
+  if (!_mrmsAnyOn()) return;
   const base = _hdBase || await _hdResolveBase();
   if (!base) {
     if (typeof showToast === 'function') {
@@ -14270,11 +14320,16 @@ async function _mrmsLoad() {
     }
     return;
   }
+  _mrmsManifest = man;
   for (const k of Object.keys(_mrmsOn)) {
     const p = man.products[k];
     if (!_mrmsOn[k] || !p) continue;
+    // Each product carries its own build time now, so a slow-lane layer that
+    // was not rebuilt this pass is not cache-busted into refetching the same
+    // picture. Falls back to the manifest stamp for anything older.
+    const stamp = p.built || man.updated;
     _mrmsOv[k] = L.imageOverlay(
-      `${base}/radar/mrms/${p.file}?t=${encodeURIComponent(man.updated)}`,
+      `${base}/radar/mrms/${p.file}?t=${encodeURIComponent(stamp)}`,
       p.bounds, { opacity: 0.8, interactive: false, pane: 'radarPane' }
     ).addTo(map);
   }
@@ -14282,9 +14337,13 @@ async function _mrmsLoad() {
 
 function _mrmsToggle(key, pillId) {
   _mrmsOn[key] = !_mrmsOn[key];
-  const pill = document.getElementById(pillId);
-  if (pill) pill.classList.toggle('active', _mrmsOn[key]);
-  const any = _mrmsOn.rotation || _mrmsOn.mesh;
+  // pillId is only passed by the two legacy overlay pills; the MRMS menu
+  // manages its own button state.
+  if (pillId) {
+    const pill = document.getElementById(pillId);
+    if (pill) pill.classList.toggle('active', _mrmsOn[key]);
+  }
+  const any = _mrmsAnyOn();
   if (any && !_mrmsTimer) _mrmsTimer = setInterval(_mrmsLoad, 5 * 60 * 1000);
   if (!any && _mrmsTimer) { clearInterval(_mrmsTimer); _mrmsTimer = null; }
   _mrmsLoad();
@@ -16685,24 +16744,128 @@ function toggleSmooth() {
 // Pattern ported from wms_satellite_3.js: pending guard, hide-by-opacity, force-redraw on refresh.
 
 // Products - IEM WMS channel suffix per product type.
-const GOES_PRODUCTS = [
-  { id: 'ch01', label: 'Blue Visible',      ch: 'ch01', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg>', note: 'Daytime only' },
-  { id: 'ch02', label: 'Red Visible',       ch: 'ch02', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sun></use></svg>', note: 'Daytime only' },
-  { id: 'ch03', label: 'Veggie',            ch: 'ch03', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-leaf></use></svg>', note: 'Daytime only' },
-  { id: 'ch04', label: 'Cirrus',            ch: 'ch04', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-sun></use></svg>', note: 'Daytime only' },
-  { id: 'ch05', label: 'Snow/Ice',          ch: 'ch05', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-snow></use></svg>', note: 'Daytime only' },
-  { id: 'ch06', label: 'Cloud Top',         ch: 'ch06', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud></use></svg>', note: 'Daytime only' },
-  { id: 'ch07', label: 'Shortwave IR',      ch: 'ch07', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sun></use></svg>' },
-  { id: 'ch08', label: 'Upper Water Vapor', ch: 'ch08', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-drop></use></svg>' },
-  { id: 'ch09', label: 'Mid Water Vapor',   ch: 'ch09', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-drop></use></svg>' },
-  { id: 'ch10', label: 'Low Water Vapor',   ch: 'ch10', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wave></use></svg>' },
-  { id: 'ch11', label: 'Cloud Top Temp',    ch: 'ch11', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg>' },
-  { id: 'ch12', label: 'Fire Temp',         ch: 'ch12', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-fire></use></svg>' },
-  { id: 'ch13', label: 'Clean IR',          ch: 'ch13', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg>' },
-  { id: 'ch14', label: 'IR Longwave',       ch: 'ch14', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg>' },
-  { id: 'ch15', label: 'Dirty IR',          ch: 'ch15', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-moon></use></svg>' },
-  { id: 'ch16', label: 'CO₂',              ch: 'ch16', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>' },
+// What each channel is for, which is the thing worth sorting by. The RGB
+// group stays empty until the Pi starts building composites; a group with
+// nothing in it is not drawn, so this is safe to declare ahead of them.
+const GOES_GROUPS = [
+  { id: 'rgb',     label: 'Composites' },
+  { id: 'visible', label: 'Visible' },
+  { id: 'wv',      label: 'Water Vapor' },
+  { id: 'ir',      label: 'Infrared' },
 ];
+
+const GOES_PRODUCTS = [
+  { id: 'ch01', group: 'visible', label: 'Blue Visible',      ch: 'ch01', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg>', note: 'Daytime only' },
+  { id: 'ch02', group: 'visible', label: 'Red Visible',       ch: 'ch02', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sun></use></svg>', note: 'Daytime only' },
+  { id: 'ch03', group: 'visible', label: 'Veggie',            ch: 'ch03', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-leaf></use></svg>', note: 'Daytime only' },
+  { id: 'ch04', group: 'visible', label: 'Cirrus',            ch: 'ch04', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-sun></use></svg>', note: 'Daytime only' },
+  { id: 'ch05', group: 'visible', label: 'Snow/Ice',          ch: 'ch05', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-snow></use></svg>', note: 'Daytime only' },
+  { id: 'ch06', group: 'visible', label: 'Cloud Top',         ch: 'ch06', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud></use></svg>', note: 'Daytime only' },
+  { id: 'ch07', group: 'ir', label: 'Shortwave IR',      ch: 'ch07', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sun></use></svg>' },
+  { id: 'ch08', group: 'wv', label: 'Upper Water Vapor', ch: 'ch08', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-drop></use></svg>' },
+  { id: 'ch09', group: 'wv', label: 'Mid Water Vapor',   ch: 'ch09', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-drop></use></svg>' },
+  { id: 'ch10', group: 'wv', label: 'Low Water Vapor',   ch: 'ch10', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wave></use></svg>' },
+  { id: 'ch11', group: 'ir', label: 'Cloud Top Temp',    ch: 'ch11', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg>' },
+  { id: 'ch12', group: 'ir', label: 'Fire Temp',         ch: 'ch12', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-fire></use></svg>' },
+  { id: 'ch13', group: 'ir', label: 'Clean IR',          ch: 'ch13', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg>' },
+  { id: 'ch14', group: 'ir', label: 'IR Longwave',       ch: 'ch14', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg>' },
+  { id: 'ch15', group: 'ir', label: 'Dirty IR',          ch: 'ch15', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-moon></use></svg>' },
+  { id: 'ch16', group: 'ir', label: 'CO₂',              ch: 'ch16', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>' },
+  // ── Composites, built on the Pi ──────────────────────────────────────────
+  // Everything above is one ABI band served ready-made by a WMS. These are
+  // not a band at all: each is arithmetic across three or four of them, and
+  // no WMS serves them, so pi/satellite_pipeline.py does the sums and writes
+  // a PNG per scan. `src: 'pi'` is what routes them down that path instead.
+  { id: 'rgb-airmass',    group: 'rgb', src: 'pi', recipe: 'airmass',    label: 'Air Mass',           icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>' },
+  { id: 'rgb-truecolor',  group: 'rgb', src: 'pi', recipe: 'truecolor',  label: 'True Colour',        icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sun></use></svg>', note: 'Daytime only' },
+  { id: 'rgb-cloudphase', group: 'rgb', src: 'pi', recipe: 'cloudphase', label: 'Day Cloud Phase',    icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-snow></use></svg>', note: 'Daytime only' },
+  { id: 'rgb-nightmicro', group: 'rgb', src: 'pi', recipe: 'nightmicro', label: 'Night Microphysics', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-moon></use></svg>' },
+  { id: 'rgb-dust',       group: 'rgb', src: 'pi', recipe: 'dust',       label: 'Dust',               icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg>' },
+  { id: 'rgb-ash',        group: 'rgb', src: 'pi', recipe: 'ash',        label: 'Volcanic Ash',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud></use></svg>' },
+  { id: 'rgb-firetemp',   group: 'rgb', src: 'pi', recipe: 'firetemp',   label: 'Fire Temperature',   icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-fire></use></svg>' },
+];
+
+// Which Pi satellite and sector each region on the row corresponds to. The
+// Pi builds CONUS, both mesoscale boxes and (by hand) Full Disk for each
+// satellite; it does not build the Alaska, Hawaii or Caribbean sectors,
+// which the WMS carries and ABI does not scan as their own products. A
+// region missing from here simply cannot show a composite, and is dropped
+// from the row while one is selected rather than drawn empty.
+const GOES_PI_SECTOR = {
+  east:      { sat: 'east', sector: 'conus'    },
+  west:      { sat: 'west', sector: 'conus'    },
+  efulldisk: { sat: 'east', sector: 'fulldisk' },
+  wfulldisk: { sat: 'west', sector: 'fulldisk' },
+  emeso1:    { sat: 'east', sector: 'meso1'    },
+  emeso2:    { sat: 'east', sector: 'meso2'    },
+  wmeso1:    { sat: 'west', sector: 'meso1'    },
+  wmeso2:    { sat: 'west', sector: 'meso2'    },
+};
+
+function _goesProduct() {
+  return GOES_PRODUCTS.find(p => p.id === _goesProductId) || GOES_PRODUCTS[0];
+}
+
+// True while the chosen product is one the Pi builds rather than one the WMS
+// serves. Everything that has to fork - where frames come from, what kind of
+// Leaflet layer a frame is, which regions are on offer - forks on this.
+function _goesIsPi() {
+  return _goesProduct().src === 'pi';
+}
+
+// Auto resolves to whichever satellite the map is nearer, which for a
+// composite is the only sensible reading of "Auto".
+function _goesPiTarget() {
+  if (_goesRegionId !== 'auto') return GOES_PI_SECTOR[_goesRegionId] || null;
+  let west = false;
+  try {
+    if (map) {
+      const lng = ((map.getCenter().lng + 180) % 360 + 360) % 360 - 180;
+      west = lng < -105;
+    }
+  } catch (e) {}
+  return { sat: west ? 'west' : 'east', sector: 'conus' };
+}
+
+// One sector's manifest, briefly cached. Held per sector because switching
+// between two composites in the same sector must not refetch, and switching
+// sector must not show the old one's frames.
+const _goesPiMan = new Map();
+async function _goesPiManifest(sat, sector) {
+  const key = `${sat}/${sector}`;
+  const hit = _goesPiMan.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.man;
+  const base = (typeof _hdBase !== 'undefined' && _hdBase)
+    || (typeof _hdResolveBase === 'function' ? await _hdResolveBase() : null);
+  if (!base) return null;
+  const man = await fetch(`${base}/satellite/${sat}/${sector}/manifest.json?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  _goesPiMan.set(key, { at: Date.now(), man });
+  return man;
+}
+
+// The Pi writes one folder per scan, named for its own time, and lists them
+// oldest first - so its frame list IS the loop, already in the order the
+// timeline wants. Each frame carries its own rectangle, because the two
+// mesoscale boxes move between scans and sharing one would put every frame
+// but the newest in the wrong place.
+async function _goesPiFrames() {
+  const target = _goesPiTarget();
+  const recipe = _goesProduct().recipe;
+  if (!target || !recipe) return [];
+  const man = await _goesPiManifest(target.sat, target.sector);
+  const p = man && man.products && man.products[recipe];
+  if (!p || !p.frames || !p.frames.length) return [];
+  const base = _hdBase;
+  const dir = `${base}/satellite/${target.sat}/${target.sector}`;
+  return p.frames.map(f => ({
+    time: new Date(_prStampToMs(f.t)),
+    timeStr: f.t,
+    url: `${dir}/${f.file}`,
+    bounds: f.bounds || p.bounds,
+  })).filter(f => f.bounds && isFinite(f.time.getTime()));
+}
 
 // Shared WMS base URLs.
 const _GOES_E = 'https://mesonet.agron.iastate.edu/cgi-bin/wms/goes_east.cgi';
@@ -16760,12 +16923,22 @@ async function _goesLoadCaps(host) {
 
 function _goesRegionAvailable(region, ch) {
   if (!region || !region.url) return true;        // Auto is always offered
+  // A Pi composite is not a WMS layer, so the capabilities document has
+  // nothing to say about it. What limits it instead is which sectors the Pi
+  // builds: it does the CONUS, mesoscale and Full Disk sectors that ABI
+  // scans, and cannot do Alaska, Hawaii or the Caribbean, which are the
+  // WMS's own reprojections rather than ABI products.
+  if (typeof _goesIsPi === 'function' && _goesIsPi())
+    return !!GOES_PI_SECTOR[region.id];
   const names = _goesCaps.get(region.url);
   if (!names) return true;                        // unchecked or unreadable
   return names.has(`${region.prefix}_${ch}`);
 }
 
 let _goesRegionId  = 'auto';  // 'auto' or a GOES_REGIONS id
+// Set while the satellite menu is open, so changing product can redraw the
+// region row. A no-op when the menu is closed, which is the common case.
+let _goesRepaintRegions = () => {};
 let _goesProductId = 'ch13'; // a GOES_PRODUCTS id (default: Clean IR)
 
 // Build { url, layer } for the current product + region combination.
@@ -16828,8 +17001,17 @@ function _goesPoolWindow(idx) {
 }
 
 function _goesEnsureLayer(i) {
-  if (_goesPool[i] || !goesFrames[i]) return;
-  const l = _makeGoesLayer(goesFrames[i].timeStr, 0);
+  const f = goesFrames[i];
+  if (_goesPool[i] || !f) return;
+  // A WMS frame is a tile layer built from a time string; a Pi composite is
+  // a finished picture with its own rectangle. Both answer setOpacity, which
+  // is all the pool and the playback loop ever ask of them, so from here on
+  // they are handled identically.
+  const l = f.url
+    ? L.imageOverlay(f.url, f.bounds,
+                     { opacity: 0, interactive: false, pane: 'radarPane',
+                       crossOrigin: 'anonymous', zIndex: 11 }).addTo(map)
+    : _makeGoesLayer(f.timeStr, 0);
   l.on('load', () => { _goesPoolLoaded[i] = true; });
   _goesPool[i] = l;
 }
@@ -16840,14 +17022,38 @@ function _goesClearPool() {
   _goesPoolLoaded = [];
 }
 
-// Build ~2 h of 10-min frames ending ~20 min ago (ensures tiles have propagated to Iowa Mesonet).
+// ── How far back satellite playback reaches ────────────────────────────────
+// This was twelve frames, two hours, which is barely long enough to see a
+// line of storms move at all. The frames themselves cost nothing to declare -
+// each one is only a WMS time string - and the pool above already caps how
+// many are ever attached to the map at once, so a longer list means a longer
+// loop and not more memory.
+//
+// The step stays at ten minutes rather than dropping to the five that ABI
+// actually scans, because a ten-minute grid is what has been proven to line
+// up with times Iowa Mesonet really holds. Asking for a time it does not have
+// gets a blank frame, and a longer loop full of gaps is worse than a short
+// one that is solid.
+const SAT_FRAME_MIN = 10;
+function _satFrameCount() {
+  // A phone on a metered link should not quietly pull six hours of tiles.
+  try {
+    const c = navigator.connection;
+    if (c && (c.saveData || /^(slow-)?2g$/.test(c.effectiveType || ''))) return 12;
+    if (c && c.effectiveType === '3g') return 18;
+  } catch (e) {}
+  return _isIOS ? 24 : 36;      // four hours on a phone, six on a computer
+}
+
+// Frames of SAT_FRAME_MIN minutes ending ~20 min ago, which is the lag Iowa
+// Mesonet needs before a scan is reliably servable.
 function _buildGoesFrames() {
   const now = new Date();
   now.setUTCSeconds(0, 0);
-  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 10) * 10 - 20);
+  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / SAT_FRAME_MIN) * SAT_FRAME_MIN - 20);
   const frames = [];
-  for (let i = 11; i >= 0; i--) {
-    const t = new Date(now.getTime() - i * 10 * 60 * 1000);
+  for (let i = _satFrameCount() - 1; i >= 0; i--) {
+    const t = new Date(now.getTime() - i * SAT_FRAME_MIN * 60 * 1000);
     const pad = n => String(n).padStart(2, '0');
     const timeStr = `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00Z`;
     frames.push({ time: t, timeStr });
@@ -16877,7 +17083,36 @@ function _makeGoesLayer(timeStr, opacity) {
   return L.tileLayer.wms(`${cfg.url}?_cb=${Date.now()}`, opts).addTo(map);
 }
 
+// Put a frame list on screen and on the bar. Both the WMS path and the Pi
+// path end here, so the timeline, the labels and the buttons are wired once
+// instead of once per source, which is how they drifted apart before.
+function _goesApplyFrames(frames) {
+  goesFrames = frames || [];
+  goesCurrentFrame = Math.max(0, goesFrames.length - 1);
+  if (goesFrames.length) showGoesFrame(goesCurrentFrame);
+  if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+}
+
+// The Pi's own composite frames, fetched then applied. A generation counter
+// because a slow manifest must not land after the user has already switched
+// to something else and repaint the map with the wrong product.
+let _goesPiGen = 0;
+async function _goesLoadPiFrames() {
+  const gen = ++_goesPiGen;
+  let frames = [];
+  try { frames = await _goesPiFrames(); } catch (e) { frames = []; }
+  if (gen !== _goesPiGen || !activeLayers.satellite || !_goesIsPi()) return;
+  _goesApplyFrames(frames);
+  if (!frames.length) {
+    const at = document.getElementById('anim-time');
+    // Said plainly: the Pi has simply not built this one, which is a very
+    // different thing from the composite being broken.
+    if (at) { at.textContent = 'Not built on the Pi yet'; at.style.visibility = 'visible'; }
+  }
+}
+
 function _clearGoesLayer() {
+  _goesPiGen++;    // any manifest still in flight no longer speaks for the map
   if (_goesLayer) { try { map.removeLayer(_goesLayer); } catch(e) {} _goesLayer = null; }
   // The prewarm layer above is not always a pool member, so both are cleared:
   // one of them may be holding tiles the other knows nothing about.
@@ -16907,18 +17142,10 @@ function loadGoesLayer() {
     // is used - a pre-warmed layer may have been built for the wrong map area.
     _clearGoesLayer();
 
-    goesFrames       = _buildGoesFrames();
-    goesCurrentFrame = goesFrames.length - 1;
-
-    const tl = document.getElementById('timeline');
-    if (tl) { tl.max = goesFrames.length - 1; tl.value = goesCurrentFrame; }
-    _updateTimelineGradient(goesCurrentFrame, goesFrames.length);
-    buildTimelineLabels();
-
-    showGoesFrame(goesCurrentFrame);
-    // Satellite is a valid animation source the moment it has frames, and
-    // nothing else was telling the play buttons that.
-    if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+    _goesApplyFrames(_goesIsPi() ? [] : _buildGoesFrames());
+    // A Pi composite has to be asked for, so the bar shows "nothing yet"
+    // until the manifest answers rather than a frame list that is a guess.
+    if (_goesIsPi()) _goesLoadPiFrames();
 
     // Auto-refresh every 60 s so a stale newest frame is replaced as the
     // satellite publishes. This used to tear the whole layer down and snap
@@ -16932,13 +17159,8 @@ function loadGoesLayer() {
       const wasAtNewest = goesCurrentFrame >= goesFrames.length - 1;
       if (!wasAtNewest) return;
       _clearGoesLayer();
-      goesFrames       = _buildGoesFrames();
-      goesCurrentFrame = goesFrames.length - 1;
-      const tlR = document.getElementById('timeline');
-      if (tlR) { tlR.max = goesFrames.length - 1; tlR.value = goesCurrentFrame; }
-      _updateTimelineGradient(goesCurrentFrame, goesFrames.length);
-      showGoesFrame(goesCurrentFrame);
-      buildTimelineLabels();
+      if (_goesIsPi()) { _goesLoadPiFrames(); return; }
+      _goesApplyFrames(_buildGoesFrames());
     }, 60000);
 
   } finally {
@@ -17045,17 +17267,24 @@ function _disableSatellite() {
 function _reloadGoesIfActive() {
   if (!activeLayers.satellite) return;
   _clearGoesLayer();
-  goesFrames       = _buildGoesFrames();
-  goesCurrentFrame = goesFrames.length - 1;
-  showGoesFrame(goesCurrentFrame);
+  if (_goesIsPi()) { _goesApplyFrames([]); _goesLoadPiFrames(); return; }
+  _goesApplyFrames(_buildGoesFrames());
 }
 
 function _setGoesProduct(id) {
   _goesProductId = id;
+  // Composites cover a different set of sectors from the WMS bands. Landing
+  // on one while sitting on Alaska would show nothing and give no reason, so
+  // the region falls back to Auto rather than to an empty picture.
+  if (_goesIsPi() && _goesRegionId !== 'auto' && !GOES_PI_SECTOR[_goesRegionId])
+    _goesRegionId = 'auto';
   _reloadGoesIfActive();
   document.querySelectorAll('#sat-product-grid [data-product-id]').forEach(el => {
     el.classList.toggle('active', el.dataset.productId === id);
   });
+  // The region row's contents depend on which product is chosen, so it is
+  // rebuilt rather than left showing sectors this product cannot use.
+  if (typeof _goesRepaintRegions === 'function') _goesRepaintRegions();
 }
 
 function _setGoesRegion(id) {
@@ -17077,21 +17306,35 @@ function toggleSatelliteSub() {
   back.onclick = () => { wrap.dataset.mode = ''; _syncParentBubble('satellite'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
 
-  // Product buttons - 2-column grid of sub-bubbles
+  // Product buttons, grouped by what the channel is actually for. A flat
+  // grid of sixteen bands (soon more) is a wall of names that all look alike;
+  // grouped, the one you want is in the section you would have guessed.
   const pGrid = document.createElement('div');
   pGrid.id = 'sat-product-grid';
-  GOES_PRODUCTS.forEach(p => {
-    const el = document.createElement('div');
-    el.className = 'sub-bubble' + (_goesProductId === p.id ? ' active' : '');
-    el.dataset.productId = p.id;
-    el.innerHTML = `<span class="sb-icon">${_eicon(p.icon)}</span>${p.label}`;
-    el.onclick = () => {
-      pGrid.querySelectorAll('[data-product-id]').forEach(b => b.classList.remove('active'));
-      el.classList.add('active');
-      _setGoesProduct(p.id);
-    };
-    if (LAYER_DESCRIPTIONS[p.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[p.id]));
-    pGrid.appendChild(el);
+  const groups = GOES_GROUPS
+    .map(g => ({ g, items: GOES_PRODUCTS.filter(p => (p.group || 'ir') === g.id) }))
+    .filter(x => x.items.length);
+  const ungrouped = GOES_PRODUCTS.filter(p => !GOES_GROUPS.some(g => g.id === (p.group || 'ir')));
+  if (ungrouped.length) groups.push({ g: { id: 'other', label: 'Other' }, items: ungrouped });
+
+  groups.forEach(({ g, items }) => {
+    const head = document.createElement('div');
+    head.className = 'sub-bubble-group-label';
+    head.textContent = g.label;
+    pGrid.appendChild(head);
+    items.forEach(p => {
+      const el = document.createElement('div');
+      el.className = 'sub-bubble' + (_goesProductId === p.id ? ' active' : '');
+      el.dataset.productId = p.id;
+      el.innerHTML = `<span class="sb-icon">${_eicon(p.icon)}</span>${p.label}`;
+      el.onclick = () => {
+        pGrid.querySelectorAll('[data-product-id]').forEach(b => b.classList.remove('active'));
+        el.classList.add('active');
+        _setGoesProduct(p.id);
+      };
+      if (LAYER_DESCRIPTIONS[p.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[p.id]));
+      pGrid.appendChild(el);
+    });
   });
   wrap.appendChild(pGrid);
 
@@ -17100,9 +17343,12 @@ function toggleSatelliteSub() {
   // list to keep in step, and filtered to what the server really publishes.
   const rRow = document.createElement('div');
   rRow.id = 'sat-region-row';
-  const ch = (GOES_PRODUCTS.find(p => p.id === _goesProductId) || GOES_PRODUCTS[0]).ch;
   const paintRegions = () => {
     rRow.innerHTML = '';
+    // Read live rather than captured once: which sectors are on offer depends
+    // on the product chosen, and the product can change without this menu
+    // being reopened.
+    const ch = _goesProduct().ch;
     GOES_REGIONS.filter(r => _goesRegionAvailable(r, ch)).forEach(r => {
       const btn = document.createElement('div');
       btn.className = 'sat-region-btn' + (_goesRegionId === r.id ? ' active' : '');
@@ -17117,6 +17363,8 @@ function toggleSatelliteSub() {
     });
   };
   paintRegions();
+  // Exposed so _setGoesProduct can rebuild the row when the product changes.
+  _goesRepaintRegions = () => { if (document.body.contains(rRow)) paintRegions(); };
   wrap.appendChild(rRow);
 
   // Ask both satellites what they serve, then redraw the row once the
@@ -17171,6 +17419,16 @@ const LAYER_DESCRIPTIONS = {
   ch14: 'Another infrared channel for cloud tops, similar to Clean IR.',
   ch15: 'Infrared channel useful for spotting volcanic ash and dust.',
   ch16: 'Infrared channel tuned to carbon dioxide absorption, used mainly for very high clouds.',
+  // Composites: not a channel, but several mixed into one colour picture.
+  // The Pi builds these from the raw satellite bands, so they only appear
+  // once it has built them, and only for the sectors it builds.
+  'rgb-airmass':    'A colour mix of four infrared channels that shows the air masses themselves rather than the clouds. Red and orange mean dry, sinking stratospheric air, often right where a jet streak or a developing low is; green means moist tropical air. The classic view for reading a storm system\'s structure.',
+  'rgb-truecolor':  'What the Earth would look like out of a window: real daytime colour, built from the red, blue and veggie bands with green mixed in, because the satellite has no true green camera. The sharpest view there is, and completely black at night.',
+  'rgb-cloudphase': 'Colours clouds by what they are made of. Ice-topped storm clouds come out one colour and liquid water clouds another, so a thunderstorm\'s glaciated top stands out from the ordinary cloud around it. Daytime only.',
+  'rgb-nightmicro': 'The night-time counterpart to Day Cloud Phase. Separates low cloud and fog from higher cloud in the dark, which plain infrared cannot do, so this is the one for finding overnight fog.',
+  'rgb-dust':       'Tuned to make airborne dust visible against both land and cloud, which it is nearly invisible in on any single channel. Works day and night.',
+  'rgb-ash':        'The same idea as Dust but tuned for volcanic ash, which matters because ash is invisible to ordinary satellite views and dangerous to aircraft.',
+  'rgb-firetemp':   'Shows how hot a fire is burning, not just where it is. The hottest, most actively flaming parts glow brightest, so an intensifying fire is visible before the smoke plume changes. Daytime only.',
   waves: 'A smooth color map of ocean conditions from Open-Meteo, covering the whole world’s oceans with a real coastline cutout so color never bleeds onto land. Tap again to pick a product, like Wave Height or Sea Surface Temp.',
   air: 'A smooth worldwide air quality color map from Open-Meteo. Tap again to pick a product, like US AQI, PM2.5, PM10, or Ozone.',
   'wave-height':  'Overall combined wave height (wind waves + swell). Blue is calm, red/purple is rough (12+ ft).',
@@ -17191,6 +17449,7 @@ const LAYER_DESCRIPTIONS = {
   'radar-normal': 'The standard national radar mosaic: every NEXRAD blended into one picture, updated every few minutes. The fastest way to see where it is raining right now.',
   'radar-l2':     'Level 2 is the raw feed straight off a single radar, the sharpest picture the radar makes. Decoded from the live feed, with the full set of dual-pol products, for every NEXRAD and airport terminal radar in the country.',
   'radar-l3':     'Level 3 is a single radar\'s lighter, pre-processed feed: slightly coarser than Level 2 but faster, with extra derived products like storm totals, VIL, and echo tops.',
+  'radar-mrms':   'MRMS is a national mosaic NOAA builds by merging every radar together, then computing things no single radar can: rotation tracks, hail swaths, rainfall totals, lightning probability and more. Your Pi builds the pictures; the whole catalogue lives in here.',
   // The Models row's two doors.
   'run-models':      'Forecast model charts - GFS, ECMWF, HRRR, NAM and more - browsable by product and forecast hour, with an Ensemble Spread view that shows where the models disagree.',
   'spaghetti-models': 'Tropical guidance in one panel: official NHC tracks and cones, AI cyclone forecasts, and storm-track spaghetti from multiple models, every line wearing its model\'s name tag.',
@@ -17311,10 +17570,12 @@ function toggleOverlayLauncher() {
 
 // ── OVERLAY BAR PILLS (Lightning, Radio, Forecasts) ──
 function toggleOverlayPill(id) {
-  if (id === 'rotation') {
-    _mrmsToggle('rotation', 'op-rotation');
-  } else if (id === 'hail') {
-    _mrmsToggle('mesh', 'op-hail');
+  // 'rotation' and 'hail' are deliberately absent: MRMS moved to its own
+  // menu under Radar, where all of it lives together. Anything still asking
+  // for them by their old pill id is answered there instead of silently
+  // doing nothing.
+  if (id === 'rotation' || id === 'hail') {
+    if (typeof toggleMrmsSub === 'function') toggleMrmsSub();
   } else if (id === 'lightning') {
     toggleLayer('lightning');
     const pill = document.getElementById('op-lightning');
@@ -19166,7 +19427,101 @@ const RADAR_SOURCE_BUBBLES = [
     label:'Level 2', action: () => toggleRadarL2Sub() },
   { id:'radar-l3', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>',
     label:'Level 3', action: () => toggleRadarPiSub('l3') },
+  // MRMS is its own source, not two loose overlay pills off in the corner:
+  // it is a national mosaic the Pi builds, with its own long product list,
+  // so it belongs beside the other radar sources rather than beside
+  // lightning and traffic cameras.
+  { id:'radar-mrms', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-hex></use></svg>',
+    label:'MRMS', action: () => toggleMrmsSub() },
 ];
+
+// ── MRMS product menu ──────────────────────────────────────────────────────
+// Built from the manifest the Pi publishes rather than a list hardcoded here,
+// so a product the Pi has not built yet (or has backed off after failures)
+// simply is not offered, and one added to the pipeline appears with no change
+// on this side. Grouped, because a flat list of forty is not a menu.
+const MRMS_GROUPS = [
+  { id: 'severe',  label: 'Severe',
+    match: k => /^(rotation|mesh|posh|shi|vii)/.test(k) },
+  { id: 'refl',    label: 'Reflectivity',
+    match: k => /^(composite|lowalt|hsr|echotop|vil)/.test(k) },
+  { id: 'precip',  label: 'Precip',
+    match: k => /^(preciprate|preciptype|qpe)/.test(k) },
+  { id: 'ltg',     label: 'Lightning',
+    match: k => /^ltg/.test(k) },
+  { id: 'winter',  label: 'Winter',
+    match: k => /^(brightband|sfctemp|wetbulb|h0c)/.test(k) },
+];
+
+function _mrmsGroupOf(key) {
+  const g = MRMS_GROUPS.find(gr => gr.match(key));
+  return g ? g.id : 'other';
+}
+
+let _mrmsManifest = null;
+
+async function _mrmsFetchManifest() {
+  const base = _hdBase || await _hdResolveBase();
+  if (!base) return null;
+  _hdBase = base;
+  const man = await fetch(`${base}/radar/mrms/mrms.json?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (man && man.products) _mrmsManifest = man;
+  return _mrmsManifest;
+}
+
+async function toggleMrmsSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  wrap.dataset.mode = 'mrms';
+  _radarBackBubble(wrap, () => {
+    _syncParentBubble('radar');
+    renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
+  });
+
+  const note = document.createElement('div');
+  note.className = 'sub-bubble';
+  note.style.cssText = 'opacity:.7;pointer-events:none;';
+  note.innerHTML = '<span class="sb-label">Reading the Pi…</span>';
+  wrap.appendChild(note);
+  wrap.style.display = 'flex';
+
+  const man = await _mrmsFetchManifest();
+  if (wrap.dataset.mode !== 'mrms') return;   // moved on while we waited
+  note.remove();
+
+  if (!man || !man.products || !Object.keys(man.products).length) {
+    const empty = document.createElement('div');
+    empty.className = 'sub-bubble';
+    empty.style.cssText = 'opacity:.7;pointer-events:none;';
+    empty.innerHTML = '<span class="sb-label">No MRMS built yet</span>';
+    wrap.appendChild(empty);
+    return;
+  }
+
+  const keys = Object.keys(man.products);
+  const groups = MRMS_GROUPS.map(g => ({ g, keys: keys.filter(k => _mrmsGroupOf(k) === g.id) }))
+    .filter(x => x.keys.length);
+  const other = keys.filter(k => _mrmsGroupOf(k) === 'other');
+  if (other.length) groups.push({ g: { id: 'other', label: 'Other' }, keys: other });
+
+  groups.forEach(({ g, keys: gkeys }) => {
+    const head = document.createElement('div');
+    head.className = 'sub-bubble-group-label';
+    head.textContent = g.label;
+    wrap.appendChild(head);
+    gkeys.forEach(k => {
+      const p = man.products[k];
+      const el = document.createElement('div');
+      el.className = 'sub-bubble' + (_mrmsOn[k] ? ' active' : '');
+      el.dataset.mrmsId = k;
+      el.innerHTML = `<span class="sb-label">${_ccEsc(p.label || k)}</span>`;
+      el.onclick = () => { _mrmsToggle(k); el.classList.toggle('active', !!_mrmsOn[k]); };
+      wrap.appendChild(el);
+    });
+  });
+}
 
 // Level 2, decoded in the browser from one station's own volume.
 //
@@ -24558,7 +24913,7 @@ function _stopRAF() {
 function _animationReady() {
   if (_l2LoopActive()) return true;
   if (_prLoopActive()) return true;
-  if (activeLayers.satellite && goesFrames.length) return true;
+  if (activeLayers.satellite) return goesFrames.length > 1;
   if (currentProduct === 'vel') return true;
   if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') return _dpFrames.length > 0;
   if (currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') return _dpFrames.length > 0;
@@ -24568,14 +24923,70 @@ function _animationReady() {
   return _radarFramesReady >= Math.min(2, radarFrames.length);
 }
 
+// ── One truth about what the animation bar is animating ────────────────────
+// The bar only ever knew about two of the things that can animate: the mosaic
+// and satellite. Every other source - a Level 2 single-site loop, the Level 3
+// bucket loop, the Pi's own product loop, velocity, dual-pol - moved the
+// slider without ever touching the labels underneath it, so the times printed
+// on the bar belonged to whatever had been on screen before, and the coloured
+// track was left painted by a source that no longer existed. That is a bar
+// that looks broken while the playback behind it is fine, and one stale time
+// sitting under an empty slider is exactly what it looks like.
+//
+// So one function now answers "what is playing, and when is each frame", and
+// everything the bar draws comes from its answer. The order of the checks
+// deliberately mirrors stepFrame() exactly: if the bar and the step buttons
+// ever disagreed about which list is live, the bar would be lying again.
+function _animSource() {
+  const mk = (id, times, idx, first) => ({
+    id, times,
+    idx: Math.max(0, Math.min(Math.max(0, times.length - 1), idx | 0)),
+    first: first || 0,
+  });
+  try {
+    if (typeof _l2LoopActive === 'function' && _l2LoopActive())
+      return mk('l2', _l2Loop.frames.map(f => new Date(f.time)), _l2Loop.idx);
+    if (typeof _prLoopActive === 'function' && _prLoopActive())
+      return mk('pr', _prLoop.frames.map(s => new Date(_prStampToMs(s))), _prLoop.idx);
+    // Satellite owns the bar whenever it is the layer on screen, frames or
+    // not. Requiring frames here meant that a composite the Pi has not built
+    // let the bar fall through and report the national mosaic instead: real
+    // times, from a layer nobody could see, under a satellite that was blank.
+    if (activeLayers && activeLayers.satellite)
+      return mk('sat', goesFrames.map(f => f.time), goesCurrentFrame);
+    if (['hc', 'accum', 'boha', 'cc', 'zdr', 'kdp', 'sw'].indexOf(currentProduct) !== -1)
+      return mk('dp', _dpFrames.map(f => new Date(f.time * 1000)), _dpCurrentFrame);
+    if (currentProduct === 'vel')
+      return mk('vel', velFrames.map(f => new Date(f.time * 1000)), velCurrentFrame);
+    if (currentProduct === 'ref' && _refStation && _refSiteFrames.length)
+      return mk('refsite', _refSiteFrames.map(f => new Date(f.time * 1000)), currentFrame);
+    if (radarFrames.length)
+      return mk('radar', radarFrames.map(f => new Date(f.time * 1000)),
+                currentFrame, _firstValidFrame || 0);
+  } catch (e) {}
+  return { id: null, times: [], idx: 0, first: 0 };
+}
+
+// Two or more frames is the whole definition of "there is something to play".
+function _animLoopable(src) {
+  src = src || _animSource();
+  return (src.times.length - (src.first || 0)) > 1;
+}
+
 function _refreshPlayButtonsEnabled() {
-  const ready = _animationReady();
+  const src = _animSource();
+  const loopable = _animLoopable(src);
+  // A source with one frame is not loading, it is simply not a loop, and the
+  // buttons should say which of the two it is rather than promising frames
+  // that are never going to arrive.
+  const ready = _animationReady() && loopable;
   const pb = document.getElementById('play-btn');
   const pbb = document.getElementById('play-back-btn');
   const sf = document.getElementById('step-fwd-btn');
   const sb = document.getElementById('step-back-btn');
   const titles = new Map([[pb, 'Play Forward'], [pbb, 'Play Backwards'],
                           [sf, 'Forward one frame'], [sb, 'Back one frame']]);
+  const why = src.times.length ? 'Loading frames…' : 'Nothing to play yet';
   // The step buttons move through exactly the same frame list the play
   // buttons animate, so they are ready (or not) on exactly the same terms.
   [pb, pbb, sf, sb].forEach(btn => {
@@ -24583,8 +24994,32 @@ function _refreshPlayButtonsEnabled() {
     btn.disabled = !ready;
     btn.style.opacity = ready ? '' : '0.4';
     btn.style.cursor = ready ? '' : 'not-allowed';
-    btn.title = ready ? titles.get(btn) : 'Loading radar frames…';
+    btn.title = ready ? titles.get(btn) : why;
   });
+  _syncAnimbarTrack(src, loopable);
+}
+
+// The slider and the labels under it, redrawn from whatever is actually live.
+function _syncAnimbarTrack(src, loopable) {
+  src = src || _animSource();
+  if (loopable === undefined) loopable = _animLoopable(src);
+  const n = src.times.length;
+  const tl = document.getElementById('timeline');
+  if (tl) {
+    tl.min = loopable ? (src.first || 0) : 0;
+    tl.max = loopable ? n - 1 : 0;
+    tl.value = Math.max(+tl.min, Math.min(+tl.max, src.idx));
+    tl.disabled = !loopable;
+    tl.style.opacity = loopable ? '' : '0.35';
+    tl.style.cursor = loopable ? '' : 'not-allowed';
+    tl.title = loopable ? '' : 'Nothing to scrub yet';
+    // An empty bar must not paint itself full. It used to: the gradient was
+    // only ever written by the two sources that knew about it, so a solid
+    // track from a dead source sat there reading as a complete loop.
+    if (!loopable) tl.style.background = '';
+    else _updateTimelineGradient(src.idx, n);
+  }
+  if (typeof buildTimelineLabels === 'function') buildTimelineLabels(src);
 }
 
 function togglePlay() {
@@ -24622,9 +25057,13 @@ function stepFrame(dir) {
   } else if (_prLoopActive()) {
     const n = _prLoop.frames.length;
     _prLoopShow((_prLoop.idx + dir + n) % n);
-  } else if (activeLayers.satellite && goesFrames.length) {
-    goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
-    showGoesFrame(goesCurrentFrame);
+  } else if (activeLayers.satellite) {
+    // Same reason as _animSource: with satellite up, stepping must not walk
+    // the mosaic's frames behind it just because satellite has none of its own.
+    if (goesFrames.length) {
+      goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
+      showGoesFrame(goesCurrentFrame);
+    }
   } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') {
     if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
   } else if (currentProduct === 'vel') {
@@ -24641,11 +25080,13 @@ function stepFrame(dir) {
     currentFrame = _next;
     showFrame(currentFrame);
   }
+  // Keep the track and the labels honest about where the step landed.
+  try { _syncAnimbarTrack(); } catch (e) {}
 }
 function seekFrame(idx) {
   if (_l2LoopActive()) _l2LoopShow(idx);
   else if (_prLoopActive()) _prLoopShow(idx);
-  else if (activeLayers.satellite && goesFrames.length) showGoesFrame(idx);
+  else if (activeLayers.satellite) { if (goesFrames.length) showGoesFrame(idx); }
   else if (currentProduct === 'vel') showVelFrame(idx);
   else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') showDpFrame(idx);
   else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) _showSingleSiteRefFrame(idx);
@@ -25409,13 +25850,30 @@ function _disableL3() {
 
 // ── SINGLE-SITE RAW PLAYBACK ──────────────────────────────────────────────
 // The single-site radar decoded here shows one live frame. This loops it: a
-// handful of recent volumes decoded in the browser, so the last ~half hour of
-// one radar can be scrubbed and played, all from raw data. The frame count is
-// small on purpose - each frame is a full volume download and decode, and the
-// target is a PS5 browser with little memory to spare. Frames are kept only as
-// finished PNG data URLs (one overlay, swapped), never as a pile of live
-// canvases.
-const L2_LOOP_MAX = 5;           // newest + up to four older
+// run of recent volumes decoded in the browser, so a real stretch of one
+// radar's history can be scrubbed and played, all from raw data. Frames are
+// kept only as finished PNG data URLs (one overlay, swapped), never as a pile
+// of live canvases.
+//
+// How many is a judgement, not a constant: each frame is a full volume
+// download and a decode, so the honest limit is whatever the link and the
+// device can carry. Five was chosen when the target was a PS5 browser with
+// almost nothing to spare, and it capped every device at about twenty-five
+// minutes of history. Frames now arrive progressively, oldest last, so a
+// bigger number lengthens the loop as it fills rather than delaying it.
+function _l2LoopMax() {
+  try {
+    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (c) {
+      if (c.saveData) return 4;
+      const t = c.effectiveType || '';
+      if (t === 'slow-2g' || t === '2g') return 4;
+      if (t === '3g') return 8;
+    }
+  } catch (e) {}
+  return _isIOS ? 12 : 20;       // one hour on a phone, over an hour and a half elsewhere
+}
+const L2_LOOP_MAX = _l2LoopMax();
 let _l2Loop = { frames: [], idx: 0, station: null, product: null,
                 building: false, token: 0 };
 
@@ -25483,7 +25941,19 @@ async function _l2LoopBuild(product, station, curImg) {
 //
 // Fewer frames on iOS for the same reason the radar tile pool is capped
 // there: each frame is a full decoded 1000x1000 image held in memory.
-const L3_LOOP_MAX = _isIOS ? 5 : 10;
+//
+// Level 3 files are a fraction of the size of a Level 2 volume - tens of
+// kilobytes against megabytes - so this loop can reach much further back for
+// the same cost, and it should: at roughly five minutes a scan, forty frames
+// is over three hours of one radar.
+const L3_LOOP_MAX = (function () {
+  try {
+    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (c && (c.saveData || /^(slow-)?2g$/.test(c.effectiveType || ''))) return 10;
+    if (c && c.effectiveType === '3g') return 18;
+  } catch (e) {}
+  return _isIOS ? 24 : 40;
+})();
 
 async function _l3BucketLoopBuild(site, code, curImg) {
   if (!curImg || !curImg.url) return;
@@ -25538,10 +26008,10 @@ function _l2LoopSyncTimeline() {
   if (!_l2LoopActive()) return;
   _l2Loop.frames.sort((a, b) => a.time - b.time);
   _l2Loop.idx = _l2Loop.frames.length - 1;
-  const tl = document.getElementById('timeline');
-  if (tl) { tl.max = _l2Loop.frames.length - 1; tl.value = _l2Loop.idx; }
+  // One call sizes the slider, repaints the track and rewrites the labels off
+  // this loop's own frame times. It used to only move the slider and leave the
+  // labels showing whichever layer was on screen before.
   if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
-  if (typeof buildTimelineLabels === 'function') { /* labels use radarFrames; skip for loop */ }
 }
 
 // Show one loop frame by swapping the single overlay's image, which is far
@@ -30925,6 +31395,7 @@ function selectProduct(p) {
         <option value="60">1 hour</option>
         <option value="180">3 hours</option>
         <option value="360">6 hours</option>
+        <option value="720">12 hours</option>
       </select>
     </div>
     <div class="lqm-settings-row">
@@ -35989,7 +36460,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Radar playback no longer wobbles: every frame is now drawn into one fixed box centred on the radar itself, instead of each frame getting its own box that shifted as the storm grew. Radar also loads much faster, especially on a phone. Plus 12 new models.";
+const APP_LATEST_UPDATE = "Seven new satellite composites (Air Mass, True Colour, Dust, Fire Temperature and more), the satellite menu sorted by type, and MRMS grown from 2 products to 38 in its own menu under Radar. Playback also reaches much further back now, and the animation bar finally shows the right times for whatever is actually playing.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -37390,12 +37861,10 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-spc-reports" data-ovid="spc-reports" title="Storm Reports - Local Storm Reports for tornado, hail, and wind from SPC">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-reports')">Storm Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
-    <div class="ov-pill" id="op-rotation" data-ovid="rotation" title="Rotation Tracks - where storms have rotated over the last hour, from NOAA MRMS via your Pi">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('rotation')">Rotation Tracks</span><span class="ov-drag" title="Drag to reorder">⠿</span>
-    </div>
-    <div class="ov-pill" id="op-hail" data-ovid="hail" title="Hail Swaths - largest estimated hail over the last hour (MRMS MESH) via your Pi">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('hail')">Hail Swaths</span><span class="ov-drag" title="Drag to reorder">⠿</span>
-    </div>
+    <!-- Rotation Tracks and Hail Swaths used to live here as two loose
+         pills. They are two of nearly forty MRMS products now, and all of
+         them live together under Radar > MRMS, which is the one place to
+         look rather than two. -->
     <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -37729,33 +38198,30 @@ function _selectTZandClose(tz) {
   else attach();
 })();
 
-function buildTimelineLabels() {
+// Times printed under the slider, taken from whatever _animSource says is
+// live. It used to read radarFrames or goesFrames directly, which is why a
+// Level 2 or Pi loop scrubbed under labels belonging to a layer that had been
+// switched off minutes earlier, and why an empty bar could be left showing a
+// single leftover time.
+function buildTimelineLabels(src) {
   const wrap = document.getElementById('timeline-labels');
   if (!wrap) return;
-  const cnt = 5; // fixed number of timeline labels
-  if (activeLayers.satellite && goesFrames.length) {
-    const n = goesFrames.length;
-    const step = Math.max(1, Math.floor(n / cnt));
-    let html = '';
-    for (let i = 0; i < n; i += step) {
-      const d = goesFrames[i].time;
-      const label = _fmtHHMMshort(d);
-      html += `<span>${label}</span>`;
-    }
-    wrap.innerHTML = html;
-  } else {
-    if (!radarFrames.length) return;
-    const start = _firstValidFrame || 0;
-    const end = radarFrames.length - 1;
-    const count = end - start + 1;
-    const step = Math.max(1, Math.floor(count / cnt));
-    let html = '';
-    for (let i = start; i <= end; i += step) {
-      const d = new Date(radarFrames[i].time * 1000);
-      html += `<span>${_fmtHHMMshort(d)}</span>`;
-    }
-    wrap.innerHTML = html;
+  src = src || (typeof _animSource === 'function'
+                ? _animSource() : { times: [], first: 0 });
+  const times = src.times || [];
+  const start = src.first || 0;
+  if (times.length - start < 2) {
+    wrap.innerHTML = '<span class="tl-empty">No loop loaded</span>';
+    return;
   }
+  const cnt = 5; // fixed number of timeline labels
+  const step = Math.max(1, Math.floor((times.length - start) / cnt));
+  let html = '';
+  for (let i = start; i < times.length; i += step) {
+    const d = times[i];
+    if (d instanceof Date && isFinite(d.getTime())) html += `<span>${_fmtHHMMshort(d)}</span>`;
+  }
+  wrap.innerHTML = html || '<span class="tl-empty">No loop loaded</span>';
 }
 </script>
 <!-- ── SPC OUTLOOK DAY/HAZARD SWITCHER (floating, shared by models + overlays) ── -->
@@ -38430,6 +38896,7 @@ const OV_DESCRIPTIONS = {
   'l2-kdp':           "Specific differential phase: how much the beam is slowed by liquid water along the way. It responds to rain rate and, unlike reflectivity, is not thrown off by hail or by attenuation.",
   'l2-sw':            "Spectrum width: how much the velocities inside one gate disagree. High values mean turbulence, which marks the shear zones and the boundary of a mesocyclone.",
   'radar-l3':         "Level 3 is what the Weather Service makes from Level 2: one product, already quality controlled, on a coarser grid and about 30 KB. Cheaper and slightly later, and it arrives even when a Level 2 volume is missing.",
+  'radar-mrms':       "MRMS merges every radar in the country into one grid and derives products no single site can: rotation tracks, hail swaths, rainfall totals, echo tops, lightning probability. Built on your Pi, grouped by what each one is for.",
   'pi-reflectivity':  "How heavy the precipitation is, in dBZ. The usual radar picture.",
   'pi-velocity':      "How fast the precipitation is moving toward or away from the antenna. Red beside green means rotation, which is what a tornado looks like on radar.",
   'pi-srvelocity':    "Same idea as Velocity, but with the storm's own motion subtracted out first, so what's left is rotation relative to the storm rather than the whole field drifting with the wind - a tighter, clearer couplet for spotting a mesocyclone.",
