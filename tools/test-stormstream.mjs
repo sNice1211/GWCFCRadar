@@ -166,6 +166,80 @@ console.log('\n4. the cycling engine: HUD renders, map flies, idle state shows a
   ok('stopping removes the HUD entirely', !stopped.on && !stopped.hud, JSON.stringify(stopped));
 }
 
+console.log('\n4b. starting StormStream turns radar on and opens the Alerts panel');
+{
+  const r = await page.evaluate(([torEmerg]) => {
+    activeLayers.nexrad = false;
+    currentProduct = null;
+    document.getElementById('alerts-panel').style.display = 'none';
+    _lastAlertFeatures = [torEmerg];
+    _ssCfg = { coverage: 'us', stepSec: 15, enabled: true, firstRunSeen: true };
+    _ssStart();
+    const r1 = {
+      nexradOn: activeLayers.nexrad,
+      product: currentProduct,
+      alertsPanelOpen: document.getElementById('alerts-panel').style.display === 'flex',
+    };
+    _ssStop();
+    _lastAlertFeatures = [];
+    activeLayers.nexrad = false;
+    document.getElementById('alerts-panel').style.display = 'none';
+    return r1;
+  }, [TOR_EMERG]);
+  ok('the national radar mosaic turns on if it wasn\'t already',
+     r.nexradOn === true && r.product === 'ref', JSON.stringify(r));
+  ok('the Alerts panel opens automatically instead of a second alerts panel being built',
+     r.alertsPanelOpen === true, JSON.stringify(r));
+
+  const leftAlone = await page.evaluate(([torEmerg]) => {
+    // If radar is already showing something, starting StormStream must not
+    // clobber that choice out from under whoever already picked it.
+    activeLayers.nexrad = true;
+    currentProduct = 'vel';
+    _lastAlertFeatures = [torEmerg];
+    _ssCfg = { coverage: 'us', stepSec: 15, enabled: true, firstRunSeen: true };
+    _ssStart();
+    const product = currentProduct;
+    _ssStop();
+    _lastAlertFeatures = [];
+    return { product };
+  }, [TOR_EMERG]);
+  ok('an already-active radar product is left alone, not overridden to reflectivity',
+     leftAlone.product === 'vel', JSON.stringify(leftAlone));
+}
+
+console.log('\n4c. the HUD does not collide with the on-screen drawing-tool column on phones');
+{
+  const phonePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await phonePage.route('**://**', route => {
+    const url = route.request().url();
+    if (url.startsWith('file://')) return route.continue();
+    if (url.includes('leaflet') && url.endsWith('.js'))
+      return route.fulfill({ contentType: 'application/javascript',
+        body: readFileSync(join(LEAFLET, 'leaflet.js'), 'utf8') });
+    if (url.includes('leaflet') && url.endsWith('.css'))
+      return route.fulfill({ contentType: 'text/css',
+        body: readFileSync(join(LEAFLET, 'leaflet.css'), 'utf8') });
+    return route.abort();
+  });
+  await phonePage.goto('file://' + join(ROOT, 'index.html'), { waitUntil: 'domcontentloaded' });
+  await phonePage.waitForTimeout(4000);
+  const r = await phonePage.evaluate(([torEmerg]) => {
+    if (typeof closeTutorial === 'function') closeTutorial();
+    _lastAlertFeatures = [torEmerg];
+    _ssCfg = { coverage: 'us', stepSec: 15, enabled: true, firstRunSeen: true };
+    _ssStart();
+    const hud = document.getElementById('stormstream-hud').getBoundingClientRect();
+    const rm = document.getElementById('right-menu')?.getBoundingClientRect();
+    const overlap = rm ? !(hud.right <= rm.left || hud.left >= rm.right
+      || hud.bottom <= rm.top || hud.top >= rm.bottom) : false;
+    return { hud, rm, overlap };
+  }, [TOR_EMERG]);
+  ok('the HUD does not overlap the phone-width drawing-tool column',
+     r.overlap === false, JSON.stringify(r));
+  await phonePage.close();
+}
+
 console.log('\n5. privacy warning appears when location sharing is on');
 {
   const r = await page.evaluate(([torEmerg]) => {
