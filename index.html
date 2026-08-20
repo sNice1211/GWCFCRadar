@@ -2927,6 +2927,39 @@ body {
 #inspector-readout-rows { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
 #inspector-readout .insp-row { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 /* ── Sounding ── */
+/* ── On air: everything that is not the broadcast gets out of the way ─────
+   The same idea as shot-mode, but live rather than for one capture, and it
+   keeps two things shot-mode does not: the map underneath, which is the
+   picture, and the forecast graphic, which is part of the broadcast.
+
+   Written as "hide the siblings of #main, then put back the three that are
+   the broadcast" rather than as a list of every panel to hide. A list would
+   be wrong the moment a new panel is added, and it would be wrong silently:
+   the new panel would simply appear on air one day. */
+body.ss-live > div:not(#main):not(#ss-stage):not(#sg-active-graphic),
+body.ss-live > button,
+body.ss-live #sidebar,
+body.ss-live #right-menu,
+body.ss-live #sub-bubbles,
+body.ss-live #animbar,
+body.ss-live #alerts-panel,
+body.ss-live #overlay-panel-stack,
+body.ss-live #topbar,
+body.ss-live #logo-wrap,
+body.ss-live .leaflet-control {
+  display: none !important;
+}
+/* The three that stay. The privacy warning is the exception to the exception:
+   it is there to tell the person on air that their location is being shared,
+   which is exactly the moment it must not be hidden. */
+body.ss-live #ss-stage,
+body.ss-live #sg-active-graphic,
+body.ss-live #ss-privacy-warn,
+body.ss-live #main {
+  display: block !important;
+}
+body.ss-live #ss-privacy-warn { display: flex !important; }
+
 /* ── The cyclone ensemble, read as a distribution ─────────────────────────
    Full screen for the same reason the sounding is: four charts and a summary
    row do not fit in a corner box, and squeezing them in makes all four
@@ -3016,60 +3049,89 @@ body {
 }
 
 /* ── The sounding ─────────────────────────────────────────────────────────
-   This was a 320px box with a temperature line in it. A sounding is the one
-   chart in meteorology that has a settled, near-universal layout, and that
-   layout is a full screen of it: skew-T on the left, hodograph top right,
-   parameter tables along the bottom. Anything smaller is a preview of a
-   sounding rather than a sounding, so this is a full overlay instead. */
+   A small panel, not a takeover. A sounding is something you glance at while
+   still looking at the map - which storm is this profile under - and a
+   full-screen one hides the very thing that prompted opening it. So the
+   default is a compact draggable card in the corner, with the skew-T at a
+   readable size and the numbers that matter under it, and a button to expand
+   it when a proper look is wanted. */
 #snd-panel {
-  position: fixed; inset: 0; z-index: 1600; display: none;
-  background: #080b14;
-  font-family: var(--sans);
-  color: #e8edf5;
-  overflow: auto;
+  position: fixed; right: 12px; bottom: 132px; z-index: 1200; display: none;
+  width: min(380px, calc(100vw - 24px));
+  background: rgba(8,12,20,0.97); border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px; box-shadow: 0 10px 34px rgba(0,0,0,0.6);
+  font-family: var(--sans); color: #e8edf5;
+  overflow: hidden;
 }
 #snd-panel.open { display: block; }
+
+/* Expanded: still a panel, just a big one, so the map is never fully gone. */
+#snd-panel.big {
+  right: 50%; bottom: 50%; transform: translate(50%, 50%);
+  width: min(1100px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px); overflow: auto;
+}
+
 .snd-head {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.1);
-  position: sticky; top: 0; background: #080b14; z-index: 2;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.1);
+  cursor: move;
 }
-.snd-title { font-weight: 700; font-size: 15px; letter-spacing: 0.3px; }
-.snd-where { font-family: var(--mono); font-size: 11px; opacity: 0.62; }
+.snd-title { font-weight: 700; font-size: 12px; white-space: nowrap; }
+.snd-where { font-family: var(--mono); font-size: 10px; opacity: 0.6; }
 .snd-head-spacer { flex: 1; }
-.snd-hour-wrap { display: flex; align-items: center; gap: 8px; }
-.snd-hour-lbl { font-family: var(--mono); font-size: 11px; opacity: 0.7; min-width: 46px; }
-.snd-hour { width: 190px; accent-color: var(--accent2); }
-.snd-x {
+.snd-hour-wrap { display: flex; align-items: center; gap: 6px; }
+.snd-hour-lbl { font-family: var(--mono); font-size: 10px; opacity: 0.7; min-width: 40px; }
+.snd-hour { width: 90px; accent-color: var(--accent2); }
+#snd-panel.big .snd-hour { width: 190px; }
+.snd-x, .snd-big {
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
-  color: #e8edf5; cursor: pointer; font-size: 15px; line-height: 1;
-  border-radius: 8px; width: 32px; height: 32px;
+  color: #e8edf5; cursor: pointer; font-size: 12px; line-height: 1;
+  border-radius: 6px; width: 24px; height: 24px; flex-shrink: 0; padding: 0;
 }
-.snd-x:hover { background: rgba(255,255,255,0.18); }
+.snd-x:hover, .snd-big:hover { background: rgba(255,255,255,0.2); }
 
-/* Skew-T beside the hodograph, tables underneath. On a narrow screen the
-   hodograph drops below the skew-T rather than being squeezed to nothing. */
-.snd-grid {
-  display: grid;
+/* Compact: skew-T only, hodograph and the big tables appear when expanded.
+   Two charts and four tables at 380px wide is six unreadable things. */
+.snd-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px; }
+#snd-panel.big .snd-grid {
   grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-  gap: 12px; padding: 12px 16px 0;
 }
-.snd-card {
-  background: #0c1220; border: 1px solid rgba(255,255,255,0.09);
-  border-radius: 10px; padding: 8px;
-}
+.snd-card { min-width: 0; }
 .snd-card canvas { display: block; width: 100%; }
-#snd-skewt { height: min(62vh, 620px); }
-#snd-hodo  { height: min(38vh, 380px); }
+#snd-skewt { height: 230px; }
+#snd-panel.big #snd-skewt { height: min(60vh, 580px); }
+#snd-hodo { height: 200px; }
+#snd-panel.big #snd-hodo { height: min(36vh, 360px); }
+/* The hodograph is hidden small, because at 380px it is a smudge. */
+.snd-right { display: none; flex-direction: column; gap: 8px; min-width: 0; }
+#snd-panel.big .snd-right { display: flex; }
 .snd-card-title {
-  font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase;
-  opacity: 0.55; margin: 1px 0 5px 3px;
+  font-size: 9.5px; letter-spacing: 0.7px; text-transform: uppercase;
+  opacity: 0.5; margin-bottom: 4px;
 }
-.snd-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
-.snd-tables {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  gap: 12px; padding: 12px 16px 20px;
+/* Small: one row of the numbers that matter. Expanded: the full tables. */
+.snd-quick {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px; padding: 0 8px 8px;
+}
+#snd-panel.big .snd-quick { display: none; }
+.snd-q {
+  background: rgba(255,255,255,0.05); border-radius: 7px; padding: 5px 6px;
+  text-align: center; min-width: 0;
+}
+.snd-q span {
+  display: block; font-size: 8.5px; letter-spacing: 0.4px;
+  text-transform: uppercase; opacity: 0.5; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.snd-q b { font-family: var(--mono); font-size: 13px; }
+
+.snd-tables { display: none; }
+#snd-panel.big .snd-tables {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px; padding: 0 12px 14px;
 }
 .snd-tbl { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
 .snd-tbl th {
@@ -3085,16 +3147,19 @@ body {
 .snd-hot  { color: #ff7a5c; font-weight: 700; }
 .snd-warm { color: #ffc44d; }
 .snd-cool { color: #7fd4ee; }
-.snd-note { padding: 0 16px 16px; font-family: var(--mono); font-size: 10.5px; opacity: 0.5; }
-.snd-err {
-  padding: 24px 16px; font-family: var(--mono); font-size: 12px; color: #ff9a8a;
+.snd-note {
+  padding: 0 10px 9px; font-family: var(--mono); font-size: 9px; opacity: 0.45;
+  display: none;
 }
-@media (max-width: 900px) {
-  .snd-grid { grid-template-columns: minmax(0, 1fr); }
-  #snd-skewt { height: 72vh; }
-  #snd-hodo { height: 46vh; }
-  .snd-hour { width: 120px; }
-  .snd-title { font-size: 13px; }
+#snd-panel.big .snd-note { display: block; padding: 0 14px 16px; font-size: 10.5px; }
+.snd-err {
+  padding: 12px 10px; font-family: var(--mono); font-size: 10.5px;
+  color: #ffb4a2; line-height: 1.5;
+}
+.snd-err b { color: #fff; }
+@media (max-width: 640px) {
+  #snd-panel { right: 8px; bottom: 108px; width: calc(100vw - 16px); }
+  #snd-skewt { height: 200px; }
 }
 
 /* ── HD Models panel ── */
@@ -14110,13 +14175,14 @@ async function openSounding(lat, lon) {
     el.id = 'snd-panel';
     el.innerHTML = `
       <div class="snd-head">
-        <span class="snd-title">Point Sounding</span>
+        <span class="snd-title">Sounding</span>
         <span class="snd-where"></span>
         <div class="snd-head-spacer"></div>
         <div class="snd-hour-wrap">
           <span class="snd-hour-lbl">F+000</span>
           <input class="snd-hour" type="range" min="0" max="0" value="0" step="1">
         </div>
+        <button class="snd-big" title="Expand">&#11036;</button>
         <button class="snd-x" title="Close">&#10005;</button>
       </div>
       <div class="snd-grid">
@@ -14131,10 +14197,22 @@ async function openSounding(lat, lon) {
           </div>
         </div>
       </div>
+      <div class="snd-quick"></div>
       <div class="snd-tables"></div>
       <div class="snd-note"></div>`;
     document.body.appendChild(el);
     el.querySelector('.snd-x').onclick = () => { el.classList.remove('open'); };
+    // Expanding shows the hodograph and the full tables, which are hidden at
+    // card size because six things at 380px wide is six unreadable things.
+    el.querySelector('.snd-big').onclick = () => {
+      el.classList.toggle('big');
+      el.querySelector('.snd-big').title = el.classList.contains('big')
+        ? 'Shrink' : 'Expand';
+      if (el._snd) _sndPaint(el, el._snd, el._prof);
+    };
+    if (typeof _makeDraggable === 'function') {
+      try { _makeDraggable(el, el.querySelector('.snd-head')); } catch (e) {}
+    }
     el.querySelector('.snd-hour').oninput = (e) => {
       const hrs = (_sndManifest && _sndManifest.hours) || [0];
       _sndRefresh(el, +hrs[Math.min(+e.target.value, hrs.length - 1)]);
@@ -14159,7 +14237,22 @@ async function openSounding(lat, lon) {
 
 function _sndPaint(el, d, prof) {
   _sndDrawSkewT(el.querySelector('#snd-skewt'), d, prof);
-  _sndDrawHodo(el.querySelector('#snd-hodo'), d);
+  // Only drawn when it is on screen: a canvas with no size measures zero and
+  // draws nothing, and doing it anyway is work for no picture.
+  if (el.classList.contains('big')) _sndDrawHodo(el.querySelector('#snd-hodo'), d);
+}
+
+// The four numbers worth having at card size. Which four is not a guess: CAPE
+// and shear are what say whether storms happen and whether they organise, and
+// the other two are the ones a warning is written from.
+function _sndQuick(d) {
+  const par = (d.ml && d.ml.cape > 0) ? d.ml : d.sb;
+  const q = (label, value, cls) =>
+    `<div class="snd-q"><span>${label}</span><b class="${cls || ''}">${value}</b></div>`;
+  return q('CAPE', _sndFmt(par && par.cape), _sndClass(par && par.cape, 1000, 2500))
+       + q('CIN', _sndFmt(par && par.cin), _sndClass(par && par.cin, 50, 150))
+       + q('0-6 shear', _sndFmt(d.shear6, 0), _sndClass(d.shear6, 35, 50))
+       + q('0-1 SRH', _sndFmt(d.srh1, 0), _sndClass(d.srh1, 100, 250));
 }
 
 async function _sndRefresh(el, fhr) {
@@ -14179,6 +14272,7 @@ async function _sndRefresh(el, fhr) {
       'F+' + String(prof.hour).padStart(3, '0');
 
     _sndPaint(el, d, prof);
+    el.querySelector('.snd-quick').innerHTML = _sndQuick(d);
     el.querySelector('.snd-tables').innerHTML = _sndTables(d);
     note.textContent =
       `Run ${prof.run} - ${d.rows.length} levels - `
@@ -14186,10 +14280,47 @@ async function _sndRefresh(el, fhr) {
       + `temperature, humidity and wind. Heights are hypsometric, not the `
       + `model's own geopotential.`;
   } catch (e) {
+    el.querySelector('.snd-quick').innerHTML = '';
     el.querySelector('.snd-tables').innerHTML =
-      `<div class="snd-err">${String(e.message || e)}</div>`;
+      `<div class="snd-err">${_sndWhy(e)}</div>`;
     note.textContent = '';
   }
+}
+
+// Why there is no sounding, in words that say what to do about it.
+//
+// "could not read the sounding index" is a true sentence and a useless one:
+// it does not say whether the Pi is off, whether the address is wrong, or
+// whether soundings simply have not been switched on. Each of those has a
+// different fix and the message should name it.
+function _sndWhy(e) {
+  const msg = String((e && e.message) || e || '');
+  if (/no address set for the Pi/i.test(msg)) {
+    return '<b>The Pi has not been found yet.</b><br>Nothing here is coming '
+         + 'from the Pi. Check it is switched on and that its address has '
+         + 'been published, then try again.';
+  }
+  if (/no soundings/i.test(msg)) {
+    return '<b>This Pi is not building soundings.</b><br>They are part of the '
+         + 'model build. On the Pi, run <code>bash ~/GWCFCRadar/pi/install.sh'
+         + '</code> to pick up the newest units, then '
+         + '<code>systemctl --user start gwcfc-models</code>. The first run '
+         + 'takes a few minutes.';
+  }
+  if (/outside the area/i.test(msg)) {
+    return '<b>That point is outside the area the Pi covers.</b><br>Soundings '
+         + 'are built over the model domain. Try somewhere inside it.';
+  }
+  if (/could not read the sounding index/i.test(msg)) {
+    return '<b>The Pi answered, but its sounding index could not be read.</b>'
+         + '<br>That usually means a model build is part way through. Give it '
+         + 'a few minutes and try again.';
+  }
+  if (/too few levels/i.test(msg)) {
+    return '<b>Too few levels came back to build a sounding.</b><br>The '
+         + 'level images for this run may still be building.';
+  }
+  return `<b>${_ssEsc ? _ssEsc(msg) : msg}</b>`;
 }
 
 // The Pi models are entries in the Run Models list rather than a panel of
@@ -15439,10 +15570,14 @@ try {
 // day of JSON up front, and a finished historical frame never changes, so
 // once fetched it is never asked for again.
 let _prLoop = { frames: [], idx: -1, site: null, lvl: null, cache: new Map() };
-let _prLoopLenH = 3;   // hours of history offered; 1/3/6/12/24
+// Hours of history offered. The Pi keeps three days now, so 72 is on the
+// list: the frames are already on its disk and the only thing that was
+// stopping playback reaching them was this number.
+let _prLoopLenH = 3;
+const PR_LOOP_LENGTHS = [1, 3, 6, 12, 24, 48, 72];
 try {
   const v = parseFloat(localStorage.getItem('gwcfc_pr_looplen'));
-  if ([1, 3, 6, 12, 24].includes(v)) _prLoopLenH = v;
+  if (PR_LOOP_LENGTHS.includes(v)) _prLoopLenH = v;
 } catch (e) {}
 
 function _prLoopActive() {
@@ -15589,7 +15724,8 @@ async function _prLoopShow(loopIdx) {
 // on hand - no re-fetch of the index, since the Pi's own answer already
 // carried everything up to its full retention window.
 function _prSetLoopLen(hours) {
-  _prLoopLenH = parseFloat(hours) || 3;
+  const want = parseFloat(hours);
+  _prLoopLenH = PR_LOOP_LENGTHS.includes(want) ? want : 3;
   try { localStorage.setItem('gwcfc_pr_looplen', String(_prLoopLenH)); } catch (e) {}
   const meta = _prOn && _prIndex && _prIndex.sites && _prIndex.sites[_prSite];
   if (!meta) return;
@@ -15969,13 +16105,156 @@ let _mrmsOv = {};
 let _mrmsTimer = null;
 function _mrmsAnyOn() { return Object.keys(_mrmsOn).some(k => _mrmsOn[k]); }
 
+// ── MRMS playback ─────────────────────────────────────────────────────────
+// MRMS drew one picture: whatever the Pi had built most recently. That is a
+// still, and a still cannot be scrubbed or played, so MRMS was the one radar
+// product with no history at all. The Pi keeps three days of frames now, and
+// this reads them.
+//
+// Three days is roughly nine hundred frames, which is far too many to
+// download before showing anything. So the frame LIST is loaded up front - it
+// is a few kilobytes of timestamps - and the frame PICTURES are fetched
+// around wherever the scrub head is. The bar spans the whole three days
+// immediately; the images arrive as they are needed.
+let _mrmsLoop = { frames: [], idx: -1, key: null, base: null };
+
+// How many frames either side of the current one to hold ready. Enough that
+// playing forward never waits, small enough that nine hundred image layers
+// are never alive at once - which is the same memory problem the radar tile
+// pool had, one scale further up.
+const MRMS_WINDOW = _isIOS ? 6 : 14;
+
+function _mrmsLoopActive() { return _mrmsLoop.frames.length > 1; }
+
+// The frame timestamps of whichever product is on. With several on at once
+// the first is the one the timeline follows: they are built on the same beat,
+// so their frame lists agree to within a pass.
+function _mrmsLeadKey() {
+  return Object.keys(_mrmsOn).find(k => _mrmsOn[k]) || null;
+}
+
+function _mrmsStampMs(t) {
+  const m = /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/.exec(String(t || ''));
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) : NaN;
+}
+
+function _mrmsLoopReset() {
+  _mrmsLoop = { frames: [], idx: -1, key: null, base: _mrmsLoop.base };
+}
+
+// Build the scrub list from the manifest the Pi just answered with. Frames
+// are timestamps only at this point; nothing is fetched.
+function _mrmsLoopBuild(man, base) {
+  const key = _mrmsLeadKey();
+  const p = key && man.products && man.products[key];
+  const frames = (p && p.frames) || [];
+  if (!key || frames.length < 2) { _mrmsLoopReset(); _mrmsLoop.key = key; return; }
+  const keptStamp = (_mrmsLoop.key === key && _mrmsLoop.idx >= 0
+                     && _mrmsLoop.frames[_mrmsLoop.idx])
+    ? _mrmsLoop.frames[_mrmsLoop.idx].t : null;
+  _mrmsLoop.frames = frames.map(f => ({
+    t: f.t, file: f.file, time: _mrmsStampMs(f.t), bounds: p.bounds,
+  })).filter(f => isFinite(f.time));
+  _mrmsLoop.key = key;
+  _mrmsLoop.base = base;
+  // Hold the frame that was being looked at across a refresh, so the
+  // five-minute rebuild does not yank someone back to now mid-scrub.
+  const at = keptStamp ? _mrmsLoop.frames.findIndex(f => f.t === keptStamp) : -1;
+  _mrmsLoop.idx = at >= 0 ? at : _mrmsLoop.frames.length - 1;
+}
+
+// One frame on screen. Every product that is on is moved to the same
+// timestamp, or to the nearest one it has, so a rotation track and a hail
+// swath shown together are never from different times.
+function _mrmsLoopShow(idx) {
+  const f = _mrmsLoop.frames;
+  if (!f.length) return;
+  idx = Math.max(0, Math.min(f.length - 1, idx));
+  _mrmsLoop.idx = idx;
+  const want = f[idx];
+  const base = _mrmsLoop.base || _hdBase;
+  if (!base || !_mrmsManifest) return;
+
+  Object.keys(_mrmsOn).forEach(k => {
+    if (!_mrmsOn[k]) return;
+    const p = _mrmsManifest.products && _mrmsManifest.products[k];
+    if (!p) return;
+    const pick = _mrmsNearest(p, want.time);
+    if (!pick) return;
+    const url = `${base}/radar/mrms/${pick.file}`;
+    if (_mrmsOv[k]) {
+      // setUrl rather than a new layer: swapping the image on one overlay is
+      // what makes playback a repaint instead of a teardown and rebuild.
+      if (_mrmsOv[k]._gwUrl !== url) { _mrmsOv[k].setUrl(url); _mrmsOv[k]._gwUrl = url; }
+    } else {
+      _mrmsOv[k] = L.imageOverlay(url, p.bounds,
+        { opacity: 0.8, interactive: false, pane: 'radarPane' }).addTo(map);
+      _mrmsOv[k]._gwUrl = url;
+    }
+  });
+  _mrmsPreload(idx);
+  if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+}
+
+// The frame of one product closest in time to a wanted moment. Products are
+// on different cadences - some every five minutes, some hourly - so asking an
+// hourly product for a five-minute timestamp has to land on something real
+// rather than on nothing.
+function _mrmsNearest(p, ms) {
+  const frames = p.frames || [];
+  if (!frames.length) return null;
+  let best = null, bestD = Infinity;
+  for (const f of frames) {
+    const d = Math.abs(_mrmsStampMs(f.t) - ms);
+    if (d < bestD) { bestD = d; best = f; }
+  }
+  return best;
+}
+
+// Warm the browser cache around the scrub head, so playing forward does not
+// stop at every frame waiting for a download. Plain Image objects rather than
+// map layers: this is about the HTTP cache, and a layer per frame is the
+// memory problem this whole design exists to avoid.
+const _mrmsWarmed = new Set();
+function _mrmsPreload(idx) {
+  const base = _mrmsLoop.base || _hdBase;
+  if (!base || !_mrmsManifest) return;
+  const f = _mrmsLoop.frames;
+  // Read ahead of the scrub head, and spend whatever is left over behind it.
+  //
+  // Sitting on the newest frame - which is where this always opens - there is
+  // no "ahead" at all, so a window that only looked forward warmed nothing
+  // and the first press of play-backwards had to wait for every frame. The
+  // leftover going backwards is what makes reviewing the last hour instant.
+  let s = Math.max(0, idx - 2);
+  let e = Math.min(f.length - 1, idx + MRMS_WINDOW);
+  const spare = MRMS_WINDOW - (e - idx);
+  if (spare > 0) s = Math.max(0, s - spare);
+  for (let i = s; i <= e; i++) {
+    Object.keys(_mrmsOn).forEach(k => {
+      if (!_mrmsOn[k]) return;
+      const p = _mrmsManifest.products && _mrmsManifest.products[k];
+      const pick = p && _mrmsNearest(p, f[i].time);
+      if (!pick) return;
+      const url = `${base}/radar/mrms/${pick.file}`;
+      if (_mrmsWarmed.has(url)) return;
+      _mrmsWarmed.add(url);
+      // Bounded, or three days of scrubbing grows this set without limit.
+      if (_mrmsWarmed.size > 400) _mrmsWarmed.clear();
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = url;
+    });
+  }
+}
+
 async function _mrmsLoad() {
   // Always take the old pictures down first, so toggling off works through
   // the same path as refreshing.
   for (const k of Object.keys(_mrmsOv)) {
     if (_mrmsOv[k]) { try { map.removeLayer(_mrmsOv[k]); } catch (e) {} _mrmsOv[k] = null; }
   }
-  if (!_mrmsAnyOn()) return;
+  if (!_mrmsAnyOn()) { _mrmsLoopReset(); return; }
   const base = _hdBase || await _hdResolveBase();
   if (!base) {
     if (typeof showToast === 'function') {
@@ -15995,6 +16274,17 @@ async function _mrmsLoad() {
     return;
   }
   _mrmsManifest = man;
+  _mrmsLoopBuild(man, base);
+
+  if (_mrmsLoopActive()) {
+    // A real loop: draw whichever frame the scrub is on, which is the newest
+    // unless someone had already scrubbed back.
+    _mrmsLoopShow(_mrmsLoop.idx);
+    return;
+  }
+
+  // One frame only, which is what a Pi that has just started building has.
+  // Drawn the old way rather than pretending to be a loop.
   for (const k of Object.keys(_mrmsOn)) {
     const p = man.products[k];
     if (!_mrmsOn[k] || !p) continue;
@@ -16007,6 +16297,7 @@ async function _mrmsLoad() {
       p.bounds, { opacity: 0.8, interactive: false, pane: 'radarPane' }
     ).addTo(map);
   }
+  if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
 }
 
 function _mrmsToggle(key, pillId) {
@@ -16020,7 +16311,12 @@ function _mrmsToggle(key, pillId) {
   const any = _mrmsAnyOn();
   if (any && !_mrmsTimer) _mrmsTimer = setInterval(_mrmsLoad, 5 * 60 * 1000);
   if (!any && _mrmsTimer) { clearInterval(_mrmsTimer); _mrmsTimer = null; }
-  _mrmsLoad();
+  // Turning the last product off leaves no loop, so the animation bar has to
+  // be told rather than left claiming MRMS is still the live source.
+  if (!any) _mrmsLoopReset();
+  _mrmsLoad().then(() => {
+    if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+  });
 }
 
 
@@ -18512,11 +18808,51 @@ async function _goesPiManifest(sat, sector) {
   const base = (typeof _hdBase !== 'undefined' && _hdBase)
     || (typeof _hdResolveBase === 'function' ? await _hdResolveBase() : null);
   if (!base) return null;
+  let status = 0;
   const man = await fetch(`${base}/satellite/${sat}/${sector}/manifest.json?t=${Date.now()}`,
                           { cache: 'no-store' })
-    .then(r => r.ok ? r.json() : null).catch(() => null);
-  _goesPiMan.set(key, { at: Date.now(), man });
+    .then(r => { status = r.status; return r.ok ? r.json() : null; })
+    .catch(() => { status = -1; return null; });
+  // A failure is not an answer. Caching null meant one blink of the tunnel
+  // locked the composite out for a full minute, which reads as "broken"
+  // rather than "try again".
+  if (man) _goesPiMan.set(key, { at: Date.now(), man });
+  _goesPiLast = { sat, sector, status, at: Date.now() };
   return man;
+}
+
+// What the last manifest fetch actually did, so the page can say why there is
+// no picture instead of only that there is none.
+let _goesPiLast = null;
+
+// A composite that will not draw has four different causes and four different
+// fixes, and "Not built on the Pi yet" covers all of them badly. This names
+// the one that actually happened.
+function _goesPiWhy() {
+  const t = _goesPiTarget();
+  const p = _goesProduct();
+  const where = t ? `${t.sat}/${t.sector}` : 'this sector';
+  if (!_hdBase) {
+    return 'The Pi has not been found yet, so there are no composites to '
+         + 'read. Check it is on and that its address has been published.';
+  }
+  const last = _goesPiLast;
+  if (last && last.status === -1) {
+    return 'The Pi did not answer. It may be off, or the tunnel may be down.';
+  }
+  if (last && last.status === 404) {
+    return `The Pi has never built ${where}. Composites are a separate `
+         + 'service: on the Pi run install.sh again to register it, then '
+         + 'systemctl --user start gwcfc-sat. The first build takes a few '
+         + 'minutes and needs netCDF4 installed.';
+  }
+  if (last && last.status >= 400) {
+    return `The Pi answered ${last.status} for ${where}.`;
+  }
+  return `${p.label} has not been built for ${where} yet. It is on the `
+       + 'satellite timer, so it should appear within about ten minutes. '
+       + (p.note ? p.note + '. ' : '')
+       + 'If it never does, check gwcfc-sat on the Pi.';
 }
 
 // The Pi writes one folder per scan, named for its own time, and lists them
@@ -18709,6 +19045,9 @@ function _goesClearPool() {
 // gets a blank frame, and a longer loop full of gaps is worse than a short
 // one that is solid.
 const SAT_FRAME_MIN = 10;
+// How far back the WMS path reaches. The Pi path is not capped here at all:
+// its frame list is whatever the Pi has kept, which is three days, and it
+// costs one small JSON to know that rather than a guess per frame.
 function _satFrameCount() {
   // A phone on a metered link should not quietly pull six hours of tiles.
   try {
@@ -18721,6 +19060,10 @@ function _satFrameCount() {
 
 // Frames of SAT_FRAME_MIN minutes ending ~20 min ago, which is the lag Iowa
 // Mesonet needs before a scan is reliably servable.
+//
+// This is the WMS path only. A Pi composite has a real frame list from the
+// Pi's own three days of history and does not guess at times at all, which is
+// why the two are built differently.
 function _buildGoesFrames() {
   const now = new Date();
   now.setUTCSeconds(0, 0);
@@ -18779,9 +19122,11 @@ async function _goesLoadPiFrames() {
   _goesApplyFrames(frames);
   if (!frames.length) {
     const at = document.getElementById('anim-time');
-    // Said plainly: the Pi has simply not built this one, which is a very
-    // different thing from the composite being broken.
     if (at) { at.textContent = 'Not built on the Pi yet'; at.style.visibility = 'visible'; }
+    // And loudly, with the reason and the fix. The corner of the animation
+    // bar is not where someone looks when a layer they just chose draws
+    // nothing at all.
+    if (typeof showToast === 'function') showToast(_goesPiWhy(), 8000);
   }
 }
 
@@ -26605,34 +26950,16 @@ function _rafTick(ts) {
   const interval = Math.max(50, 600 / animSpeed);
   if (ts - _rafLastTs >= interval) {
     _rafLastTs = ts;
-    if (_l2LoopActive()) {
-      const n = _l2Loop.frames.length;
-      _l2LoopShow((_l2Loop.idx + dir + n) % n);
-    } else if (_prLoopActive()) {
-      const n = _prLoop.frames.length;
-      _prLoopShow((_prLoop.idx + dir + n) % n);
-    } else if (activeLayers.satellite && goesFrames.length) {
-      goesCurrentFrame = (goesCurrentFrame + dir + goesFrames.length) % goesFrames.length;
-      showGoesFrame(goesCurrentFrame);
-    } else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') {
-      if (_dpFrames.length) { _dpCurrentFrame = (_dpCurrentFrame + dir + _dpFrames.length) % _dpFrames.length; showDpFrame(_dpCurrentFrame); }
-    } else if (currentProduct === 'vel') {
-      velCurrentFrame = (velCurrentFrame + dir + velFrames.length) % velFrames.length;
-      showVelFrame(velCurrentFrame);
-    } else if (currentProduct === 'ref' && _refStation && _refSiteFrames.length) {
-      currentFrame = (currentFrame + dir + _refSiteFrames.length) % _refSiteFrames.length;
-      _showSingleSiteRefFrame(currentFrame);
-    } else {
-      // Advance by one frame - showFrame's fallback shows nearest loaded tile.
-      // Wrap respects _firstValidFrame so unplayable old frames are skipped entirely.
-      const n = radarFrames.length;
-      const last = n - 1;
-      let next = currentFrame + dir;
-      if (next > last) next = _firstValidFrame;
-      else if (next < _firstValidFrame) next = last;
-      currentFrame = next;
-      showFrame(currentFrame);
-    }
+    // Through stepFrame rather than a second copy of the same dispatch.
+    //
+    // This used to be its own if-chain listing every source, which made four
+    // places that had to agree about what is playing: _animSource, stepFrame,
+    // seekFrame and here. MRMS was added to the first three and missed here,
+    // so the play button lit up and then nothing moved. One list is the fix.
+    //
+    // `quiet` skips rebuilding the timeline labels, which do not change
+    // between frames and would otherwise be rewritten twenty times a second.
+    stepFrame(dir, true);
   }
   _rafPlayId = requestAnimationFrame(_rafTick);
 }
@@ -26653,6 +26980,7 @@ function _stopRAF() {
 function _animationReady() {
   if (_l2LoopActive()) return true;
   if (_prLoopActive()) return true;
+  if (typeof _mrmsLoopActive === 'function' && _mrmsLoopActive()) return true;
   if (activeLayers.satellite) return goesFrames.length > 1;
   if (currentProduct === 'vel') return true;
   if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha') return _dpFrames.length > 0;
@@ -26688,6 +27016,11 @@ function _animSource() {
       return mk('l2', _l2Loop.frames.map(f => new Date(f.time)), _l2Loop.idx);
     if (typeof _prLoopActive === 'function' && _prLoopActive())
       return mk('pr', _prLoop.frames.map(s => new Date(_prStampToMs(s))), _prLoop.idx);
+    // MRMS keeps three days of frames now, so it is a playback source like
+    // any other. It sits above satellite because when a severe layer is up it
+    // is the thing being watched.
+    if (typeof _mrmsLoopActive === 'function' && _mrmsLoopActive())
+      return mk('mrms', _mrmsLoop.frames.map(f => new Date(f.time)), _mrmsLoop.idx);
     // Satellite owns the bar whenever it is the layer on screen, frames or
     // not. Requiring frames here meant that a composite the Pi has not built
     // let the bar fall through and report the national mosaic instead: real
@@ -26790,13 +27123,16 @@ function setAnimSpeed(val) {
 }
 function cycleSpeed() {} // kept for compat
 
-function stepFrame(dir) {
+function stepFrame(dir, quiet) {
   if (_l2LoopActive()) {
     const n = _l2Loop.frames.length;
     _l2LoopShow((_l2Loop.idx + dir + n) % n);
   } else if (_prLoopActive()) {
     const n = _prLoop.frames.length;
     _prLoopShow((_prLoop.idx + dir + n) % n);
+  } else if (typeof _mrmsLoopActive === 'function' && _mrmsLoopActive()) {
+    const n = _mrmsLoop.frames.length;
+    _mrmsLoopShow((_mrmsLoop.idx + dir + n) % n);
   } else if (activeLayers.satellite) {
     // Same reason as _animSource: with satellite up, stepping must not walk
     // the mosaic's frames behind it just because satellite has none of its own.
@@ -26820,12 +27156,15 @@ function stepFrame(dir) {
     currentFrame = _next;
     showFrame(currentFrame);
   }
-  // Keep the track and the labels honest about where the step landed.
-  try { _syncAnimbarTrack(); } catch (e) {}
+  // Keep the track and the labels honest about where the step landed. Skipped
+  // while playing: the labels do not change between frames, and rewriting
+  // them on every tick is work for no difference on screen.
+  if (!quiet) { try { _syncAnimbarTrack(); } catch (e) {} }
 }
 function seekFrame(idx) {
   if (_l2LoopActive()) _l2LoopShow(idx);
   else if (_prLoopActive()) _prLoopShow(idx);
+  else if (typeof _mrmsLoopActive === 'function' && _mrmsLoopActive()) _mrmsLoopShow(idx);
   else if (activeLayers.satellite) { if (goesFrames.length) showGoesFrame(idx); }
   else if (currentProduct === 'vel') showVelFrame(idx);
   else if (currentProduct === 'hc' || currentProduct === 'accum' || currentProduct === 'boha' || currentProduct === 'cc' || currentProduct === 'zdr' || currentProduct === 'kdp' || currentProduct === 'sw') showDpFrame(idx);
@@ -33146,6 +33485,8 @@ function selectProduct(p) {
         <option value="6">6 hours</option>
         <option value="12">12 hours</option>
         <option value="24">24 hours</option>
+        <option value="48">2 days</option>
+        <option value="72">3 days</option>
       </select>
     </div>
     <div class="lqm-settings-row">
@@ -38200,7 +38541,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The AI cyclone models now read as a distribution, not just as five hundred lines: how strong the storm gets, when it becomes a storm at all, and how much the members disagree, plus the ensemble-mean track on the map coloured by strength with a star where it peaks.";
+const APP_LATEST_UPDATE = "Playback now reaches three days back on radar, satellite and MRMS, and MRMS can be scrubbed and played for the first time. It still paints in well under a second: the Pi sends one small list of frame times up front and the pictures load around wherever you scrub. StormStream also clears the screen of everything except the map and your graphics.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -42059,21 +42400,10 @@ function _ssShowFeature(feature, recordHistory) {
 // alert StormStream is currently showing, and marks it so the connection
 // between the HUD and the panel list is obvious rather than the panel
 // just seeming to scroll on its own.
-function _ssScrollAlertsPanelTo(feature) {
-  try {
-    const p = feature.properties || {};
-    const id = p.id || p['@id'] || feature.id || '';
-    const body = document.getElementById('alerts-panel-body');
-    if (!body) return;
-    body.querySelectorAll('.alert-card.ss-current').forEach(el => el.classList.remove('ss-current'));
-    if (!id) return;
-    const card = body.querySelector(`.alert-card[data-alert-id="${CSS.escape(id)}"]`);
-    if (card) {
-      card.classList.add('ss-current');
-      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  } catch (e) {}
-}
+// Also retired with the panel. The frame's own Active Alerts list marks and
+// scrolls to whatever is on air, which is the same job done in the place the
+// viewer is already looking.
+function _ssScrollAlertsPanelTo() { /* the frame's own list does this */ }
 
 function _ssPlayChime() {
   try {
@@ -42225,17 +42555,15 @@ function _ssEnsureRadarOn() {
     if (typeof selectProduct === 'function') selectProduct('ref');
   } catch (e) {}
 }
-// Opens the existing Alerts panel instead of building a second, separate
-// "all current alerts" panel - one list of what's active, right next to
-// the HUD showing which one is currently on screen.
-function _ssEnsureAlertsPanelOpen() {
-  try {
-    const panel = document.getElementById('alerts-panel');
-    if (panel && panel.style.display !== 'flex' && typeof toggleAlertsPanel === 'function') {
-      toggleAlertsPanel();
-    }
-  } catch (e) {}
-}
+// StormStream used to open the WX Alerts panel and scroll it in step with
+// whatever was on air. That made sense when the HUD was one small box and the
+// panel was the only list of what was active. The broadcast frame has its own
+// Active Alerts panel now, so the WX panel was a second list of the same
+// alerts sitting on top of the graphic, and it is no longer used at all.
+//
+// Kept as a name so nothing that still calls it breaks, and deliberately
+// empty rather than deleted, because the reason it is empty is the point.
+function _ssEnsureAlertsPanelOpen() { /* the frame carries its own list */ }
 
 function _ssStart() {
   if (_ssOn) return;
@@ -42244,7 +42572,10 @@ function _ssStart() {
   _ssEnsureHud();
   _ssPrivacyCheck();
   _ssEnsureRadarOn();
-  _ssEnsureAlertsPanelOpen();
+  // On air, everything that is not the broadcast is clutter sitting on top of
+  // it. The map, the frame and the forecast graphics stay; every panel, menu
+  // and control goes, and comes back when StormStream stops.
+  document.body.classList.add('ss-live');
   if (typeof _sgApplyActiveGraphic === 'function') _sgApplyActiveGraphic();
   _ssTick();
   _ssResetTimer();
@@ -42257,10 +42588,9 @@ function _ssStop() {
   // the countdown runs on its own timer and would otherwise keep ticking
   // against an element that is no longer on the page.
   _ssRemoveHud();
+  document.body.classList.remove('ss-live');
   if (typeof _sgRemoveActiveGraphic === 'function') _sgRemoveActiveGraphic();
   const warn = document.getElementById('ss-privacy-warn'); if (warn) warn.remove();
-  document.querySelectorAll('#alerts-panel-body .alert-card.ss-current')
-    .forEach(el => el.classList.remove('ss-current'));
 }
 
 // ── Settings UI wiring ──────────────────────────────────────────────────

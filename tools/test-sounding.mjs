@@ -33,6 +33,8 @@ try {
 }
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+// The viewport the tests run in, for the one assertion made outside the page.
+const innerWidthGuess = 1280;
 const LEAFLET = process.env.LEAFLET_DIST || '/tmp/node_modules/leaflet/dist';
 
 let pass = 0, fail = 0;
@@ -298,7 +300,7 @@ console.log('\n6. the skew really skews');
      JSON.stringify([r.bot.x, r.hot.x]));
 }
 
-console.log('\n7. the panel is a full sounding, not a box in the corner');
+console.log('\n7. a small card by default, a big one when asked');
 {
   const r = await page.evaluate(async () => {
     // Stand in a profile so the panel can be driven without a Pi.
@@ -317,13 +319,16 @@ console.log('\n7. the panel is a full sounding, not a box in the corner');
     const el = document.getElementById('snd-panel');
     const b = el.getBoundingClientRect();
     const sk = el.querySelector('#snd-skewt');
-    const ho = el.querySelector('#snd-hodo');
     const tbl = el.querySelector('.snd-tables');
+    const quick = el.querySelector('.snd-quick');
     return {
       open: el.classList.contains('open'),
-      full: b.width >= innerWidth - 2 && b.height >= innerHeight - 2,
+      big: el.classList.contains('big'),
+      w: b.width, h: b.height, vw: innerWidth, vh: innerHeight,
       skewSized: sk.width > 100 && sk.height > 100,
-      hodoSized: ho.width > 100 && ho.height > 100,
+      hodoShown: getComputedStyle(el.querySelector('.snd-right')).display !== 'none',
+      quickCount: quick.querySelectorAll('.snd-q').length,
+      quickText: quick.textContent,
       tables: tbl.querySelectorAll('table').length,
       headers: [...tbl.querySelectorAll('th')].map(t => t.textContent),
       body: tbl.textContent,
@@ -333,10 +338,19 @@ console.log('\n7. the panel is a full sounding, not a box in the corner');
     };
   });
   ok('the panel opens', r.open);
-  ok('and fills the screen instead of being a 320px box', r.full, JSON.stringify(r));
+  // A sounding is glanced at while still looking at the map, so the default
+  // is a card in the corner rather than a takeover of the screen.
+  ok('it is a small card, not a full-screen takeover',
+     !r.big && r.w < r.vw * 0.6 && r.h < r.vh * 0.8, JSON.stringify(r));
   ok('the skew-T canvas is really sized and drawn', r.skewSized);
-  ok('so is the hodograph', r.hodoSized);
-  ok('there are four parameter tables', r.tables === 4, String(r.tables));
+  ok('the hodograph is not squeezed in at card size', r.hodoShown === false);
+  ok('four quick numbers stand in for the tables',
+     r.quickCount === 4, String(r.quickCount));
+  ok('and they are the ones a warning is written from',
+     /CAPE/.test(r.quickText) && /shear/i.test(r.quickText)
+     && /SRH/.test(r.quickText), r.quickText);
+  ok('the full tables are built, ready for when it is expanded',
+     r.tables === 4, String(r.tables));
   ok('covering parcels, wind, thermodynamics and composites',
      ['Parcel', 'Wind', 'Thermodynamics', 'Composites'].every(
        h => r.headers.some(x => x.includes(h))), JSON.stringify(r.headers));
@@ -347,6 +361,39 @@ console.log('\n7. the panel is a full sounding, not a box in the corner');
   ok('the header names the point', /35\.40/.test(r.where), r.where);
   ok('and the forecast hour', /F\+000/.test(r.hourLbl), r.hourLbl);
   ok('the hour slider spans the hours the Pi has', r.hourMax === 4, String(r.hourMax));
+}
+
+console.log('\n7b. expanding shows the hodograph and the full tables');
+{
+  const r = await page.evaluate(() => {
+    const el = document.getElementById('snd-panel');
+    el.querySelector('.snd-big').click();
+    const b = el.getBoundingClientRect();
+    const ho = el.querySelector('#snd-hodo');
+    return {
+      big: el.classList.contains('big'),
+      wider: b.width, vw: innerWidth,
+      hodoShown: getComputedStyle(el.querySelector('.snd-right')).display !== 'none',
+      hodoSized: ho.width > 100 && ho.height > 100,
+      tablesShown: getComputedStyle(el.querySelector('.snd-tables')).display !== 'none',
+      quickHidden: getComputedStyle(el.querySelector('.snd-quick')).display === 'none',
+    };
+  });
+  ok('it expands', r.big && r.wider > r.vw * 0.5, JSON.stringify(r));
+  ok('the hodograph appears', r.hodoShown && r.hodoSized, JSON.stringify(r));
+  ok('and is really drawn, not just made visible', r.hodoSized);
+  ok('the full tables appear', r.tablesShown);
+  ok('and the quick row steps aside, rather than saying it twice',
+     r.quickHidden);
+
+  const back = await page.evaluate(() => {
+    const el = document.getElementById('snd-panel');
+    el.querySelector('.snd-big').click();
+    return { big: el.classList.contains('big'),
+             w: el.getBoundingClientRect().width };
+  });
+  ok('and it shrinks back to a card', !back.big && back.w < innerWidthGuess,
+     JSON.stringify(back));
 }
 
 console.log('\n8. stepping the forecast hour redraws it');
@@ -376,8 +423,11 @@ console.log('\n9. it closes, and says so plainly when it cannot read anything');
     return { closed, err: el.querySelector('.snd-tables').textContent };
   });
   ok('the close button closes it', r.closed);
-  ok('a Pi with no soundings says exactly that, rather than spinning',
-     /no soundings/.test(r.err), r.err);
+  // The message has to say what to DO. "could not read the sounding index"
+  // is true and useless: it does not distinguish a Pi that is off from one
+  // that simply is not building soundings, and those have different fixes.
+  ok('a Pi with no soundings says so, and says how to switch them on',
+     /not building soundings/i.test(r.err) && /install\.sh/.test(r.err), r.err);
 }
 
 console.log('\n10. nothing above threw');

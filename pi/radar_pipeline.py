@@ -96,7 +96,22 @@ TDWR_SITES = [
 # would then report a "day" of history that was actually much less. Pruning by
 # wall-clock age keeps whatever genuinely happened in the window, however
 # unevenly spaced, and self-corrects once building resumes.
-KEEP_HOURS = float(os.environ.get("GWCFC_RADAR_KEEP_HOURS", "24"))
+# How far back playback reaches. Three days, because that is what was asked
+# for and because the frames are small: a Level 3 picture is tens of
+# kilobytes, so 72 hours of one site is measured in tens of megabytes rather
+# than gigabytes.
+#
+# The ceiling matters more than the window on a Pi. A site scanning every four
+# minutes produces about 1,080 frames in three days, and there are hundreds of
+# sites; the count cap is what stops a busy severe-weather day filling the
+# card while the age cap is still happy.
+KEEP_HOURS = float(os.environ.get("GWCFC_RADAR_KEEP_HOURS", "72"))
+MAX_FRAMES = int(os.environ.get("GWCFC_RADAR_MAX_FRAMES", "1200"))
+
+# MRMS is national rather than per-site, so one frame covers the whole country
+# and there are thirty-eight products of them. Same window, its own ceiling.
+MRMS_KEEP_HOURS = float(os.environ.get("GWCFC_MRMS_KEEP_HOURS", "72"))
+MRMS_MAX_FRAMES = int(os.environ.get("GWCFC_MRMS_MAX_FRAMES", "900"))
 
 # Level 2 products, as MetPy names the moments inside the file.
 L2_PRODUCTS = {
@@ -743,18 +758,26 @@ def render(data, lat, lon, spec, out_path):
 
 # ── Housekeeping ────────────────────────────────────────────────────────────
 
-def prune(site_dir, hours=KEEP_HOURS):
-    """Drop frames older than the retention window; keep everything inside it.
+def prune(site_dir, hours=KEEP_HOURS, cap=None):
+    """Drop frames past the retention window, and past the count ceiling.
 
     A frame's own directory name IS its timestamp (%Y%m%d_%H%M%S), so no
     extra bookkeeping is needed to know its age. A name that fails to parse
     is left alone rather than guessed about and deleted.
+
+    The count ceiling exists because the window alone is not a budget. Three
+    days is a fine thing to ask for and a site scanning every four minutes
+    still produces about eleven hundred frames inside it; a busy day with many
+    sites is where the card actually fills, and dropping the oldest frames is
+    a far better failure than running out of space mid-write.
     """
     if not os.path.isdir(site_dir):
         return
+    cap = MAX_FRAMES if cap is None else cap
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     import shutil
-    for d in os.listdir(site_dir):
+    kept = []
+    for d in sorted(os.listdir(site_dir)):
         full = os.path.join(site_dir, d)
         if not (os.path.isdir(full) and d and d[0].isdigit()):
             continue
@@ -763,6 +786,11 @@ def prune(site_dir, hours=KEEP_HOURS):
         except ValueError:
             continue
         if stamp < cutoff:
+            shutil.rmtree(full, ignore_errors=True)
+        else:
+            kept.append(full)
+    if cap and len(kept) > cap:
+        for full in kept[:len(kept) - cap]:
             shutil.rmtree(full, ignore_errors=True)
 
 
@@ -897,11 +925,29 @@ def build_site_l3(site, products=None, frames=1):
     return newest
 
 
+# How many frames the shared index carries per site. The index answers "which
+# sites have anything", and every page load fetches it, so it has to stay
+# small. Three days of one site is about eleven hundred frame names, and at
+# twenty sites that is a third of a megabyte before a single picture is drawn.
+#
+# So the index carries a recent window - enough to start playing immediately -
+# and points at a per-site file holding the whole three days, which is fetched
+# only for the site actually being looked at. Boot stays cheap and the long
+# loop is still there for the one site that wants it.
+INDEX_FRAMES = int(os.environ.get("GWCFC_INDEX_FRAMES", "60"))
+
+
 def write_index(level, sites):
-    """One file the page reads to know which sites have frames."""
+    """One small file the page reads to know which sites have frames.
+
+    Plus a frames.json per site holding the full retention window, so a site
+    can be scrubbed across three days without every other site's history
+    riding along in the boot request.
+    """
     root = os.path.join(OUT_DIR, f"l{level}")
     index = {"level": level, "sites": {},
-             "updated": datetime.now(timezone.utc).isoformat()}
+             "updated": datetime.now(timezone.utc).isoformat(),
+             "keep_hours": KEEP_HOURS}
     for site in sites:
         d = os.path.join(root, site)
         if not os.path.isdir(d):
@@ -910,11 +956,21 @@ def write_index(level, sites):
                         if os.path.isdir(os.path.join(d, x)) and x[0].isdigit())
         frames = [f for f in frames
                   if os.path.exists(os.path.join(d, f, "manifest.json"))]
-        if frames:
-            index["sites"][site] = {
-                "frames": frames,
-                "path": f"l{level}/{site}/{{frame}}/manifest.json",
-            }
+        if not frames:
+            continue
+        # The whole window, beside the site's own frames, for the page to
+        # fetch when that site is opened.
+        write_json(os.path.join(d, "frames.json"),
+                   {"site": site, "level": level, "frames": frames,
+                    "keep_hours": KEEP_HOURS,
+                    "updated": datetime.now(timezone.utc).isoformat()})
+        index["sites"][site] = {
+            "frames": frames[-INDEX_FRAMES:],
+            "total": len(frames),
+            "oldest": frames[0],
+            "frames_path": f"l{level}/{site}/frames.json",
+            "path": f"l{level}/{site}/{{frame}}/manifest.json",
+        }
     write_json(os.path.join(OUT_DIR, f"latest_l{level}.json"), index)
     return index
 
@@ -1242,12 +1298,20 @@ def build_mrms():
         rgb = LUTS[spec["ramp"]][idx]
         alpha = np.where(keep, 205, 0).astype(np.uint8)
         del arr, norm, keep, idx
-        path = os.path.join(out, f"{name}.png")
+        # One folder per scan, named for the time it was built, exactly the
+        # way the radar frames and the satellite composites are. MRMS used to
+        # overwrite a single PNG per product, which meant the page could only
+        # ever show "now": an overwritten file is not a loop, and there is no
+        # way to animate one frame.
+        fdir = now.strftime("%Y%m%d_%H%M%S")
+        fout = os.path.join(out, fdir)
+        os.makedirs(fout, exist_ok=True)
+        path = os.path.join(fout, f"{name}.png")
         Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA").save(
             path, optimize=True)
         del rgb, alpha
         man["products"][name] = {
-            "file": f"{name}.png", "label": spec["label"],
+            "file": f"{fdir}/{name}.png", "label": spec["label"],
             "unit": spec["unit"], "min": lo, "max": hi,
             "bounds": [[south, west], [north, east]],
             "built": now.isoformat(),
@@ -1256,14 +1320,79 @@ def build_mrms():
         secs = round(time.time() - t0, 1)
         state[name] = {"last": now.isoformat(), "fails": 0, "secs": secs}
         log(f"  mrms {name}: built in {secs}s")
+    _mrms_prune(out)
+
+    # The frame list is read back off the disk rather than appended to as
+    # frames are written, so a frame that was pruned, or one that failed to
+    # save, can never be advertised to the page as something it can load.
+    for name, meta in list(man["products"].items()):
+        frames = _mrms_frames(out, name)
+        if not frames:
+            # Nothing of this product survives, so stop offering it rather
+            # than pointing the page at a file that is gone.
+            man["products"].pop(name, None)
+            continue
+        meta["frames"] = frames
+        meta["latest"] = frames[-1]["t"]
+        meta["file"] = frames[-1]["file"]
+    man["keep_hours"] = MRMS_KEEP_HOURS
+
     if man["products"]:
         write_json(os.path.join(out, "mrms.json"), man)
     try:
         write_json(_mrms_state_path(), state)
     except Exception as e:
         log(f"  mrms: could not write state: {e}")
-    log(f"  mrms: {built} built this pass, {len(man['products'])} available")
+    total = sum(len(p.get("frames") or []) for p in man["products"].values())
+    log(f"  mrms: {built} built this pass, {len(man['products'])} available, "
+        f"{total} frames on disk")
     return built
+
+
+def _mrms_frames(out, name):
+    """Every frame of one MRMS product still on disk, oldest first."""
+    frames = []
+    if not os.path.isdir(out):
+        return frames
+    for d in sorted(os.listdir(out)):
+        if not d[:1].isdigit():
+            continue
+        if os.path.exists(os.path.join(out, d, f"{name}.png")):
+            frames.append({"t": d, "file": f"{d}/{name}.png"})
+    return frames
+
+
+def _mrms_prune(out, hours=None):
+    """Drop MRMS frame folders past the retention window.
+
+    Thirty-eight products across three days is a great many small files, so
+    this also enforces a ceiling on how many frames any one product keeps.
+    The cadence tiers mean a five-minute product would otherwise hold eight
+    hundred and sixty four frames while an hourly one holds seventy two, and
+    the fast ones are where the card actually fills.
+    """
+    if not os.path.isdir(out):
+        return
+    import shutil
+    hours = MRMS_KEEP_HOURS if hours is None else hours
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    dirs = []
+    for d in sorted(os.listdir(out)):
+        full = os.path.join(out, d)
+        if not (os.path.isdir(full) and d[:1].isdigit()):
+            continue
+        try:
+            when = datetime.strptime(d, "%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if when < cutoff:
+            shutil.rmtree(full, ignore_errors=True)
+        else:
+            dirs.append(full)
+    # Then the ceiling, oldest first, whatever their age.
+    if len(dirs) > MRMS_MAX_FRAMES:
+        for full in dirs[:len(dirs) - MRMS_MAX_FRAMES]:
+            shutil.rmtree(full, ignore_errors=True)
 
 
 def _age(stamp, now):
