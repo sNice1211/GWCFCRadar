@@ -7141,18 +7141,24 @@ footer {
   text-shadow: 0 1px 3px rgba(0,0,0,0.5);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* The chevron: both ends cut back, which is the shape in the design. Drawn
-   as a gold block with the gradient inset one edge width, because clip-path
-   on a bordered box clips the border away too. */
+/* An octagon: all four corners cut back, which is the shape in the design.
+   It was a hexagon - a single point at each end - and that is a different
+   shape that happens to be made the same way.
+
+   Drawn as a gold block with the gradient inset one edge width, because
+   clip-path on a bordered box clips the border away with everything else.
+   The two paths have to match or the gold would show through unevenly. */
 #ss-lower-bar {
   position: relative;
   background: var(--ss-gold);
-  clip-path: polygon(3% 0, 97% 0, 100% 50%, 97% 100%, 3% 100%, 0 50%);
+  clip-path: polygon(2% 0, 98% 0, 100% 28%, 100% 72%,
+                     98% 100%, 2% 100%, 0 72%, 0 28%);
   padding: 3px;
 }
 #ss-lower-bar-inner {
   background: var(--ss-rb);
-  clip-path: polygon(3% 0, 97% 0, 100% 50%, 97% 100%, 3% 100%, 0 50%);
+  clip-path: polygon(2% 0, 98% 0, 100% 28%, 100% 72%,
+                     98% 100%, 2% 100%, 0 72%, 0 28%);
   padding: 22px 9%;
   min-height: 48px;
   color: #fff;
@@ -7162,6 +7168,11 @@ footer {
   text-shadow: 0 2px 4px rgba(0,0,0,0.55);
 }
 /* Sits across the join between the pills and the bar, as drawn. */
+/* Also the way out of StormStream. On air there is no menu, no top bar and
+   no animation bar to reach for, so the one thing still on screen has to be
+   the exit: a double click on the logo stops it. Single clicks are left
+   alone deliberately, because a stray tap during a broadcast must not end
+   the broadcast. */
 #ss-lower-logo {
   position: absolute;
   left: 50%; top: 0;
@@ -7169,7 +7180,20 @@ footer {
   width: min(150px, 11vw); height: min(150px, 11vw);
   z-index: 3;
   filter: drop-shadow(0 3px 10px rgba(0,0,0,0.6));
-  pointer-events: none;
+  pointer-events: all;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: filter 0.15s, transform 0.15s;
+}
+#ss-lower-logo:hover {
+  filter: drop-shadow(0 3px 14px rgba(255,216,61,0.75));
+  transform: translate(-50%, -58%) scale(1.05);
+}
+/* A brief confirmation that the first of the two clicks registered, so the
+   second is not a guess. */
+#ss-lower-logo.armed {
+  filter: drop-shadow(0 0 16px rgba(255,80,80,0.95));
 }
 
 /* ── Adapting down ──────────────────────────────────────────────────────── */
@@ -38541,7 +38565,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Playback now reaches three days back on radar, satellite and MRMS, and MRMS can be scrubbed and played for the first time. It still paints in well under a second: the Pi sends one small list of frame times up front and the pictures load around wherever you scrub. StormStream also clears the screen of everything except the map and your graphics.";
+const APP_LATEST_UPDATE = "In StormStream, double click the logo on the lower third to come back out - there is no menu on screen while you are live, so the logo is the way out. The lower third is also an octagon now, with all four corners cut, rather than a point at each end.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -42164,6 +42188,41 @@ function _ssEnsureHud() {
   const src = (document.getElementById('topbar-logo-img') || {}).src;
   const img = document.getElementById('ss-lower-logo');
   if (img && src) img.src = src; else if (img) img.style.display = 'none';
+
+  // The logo is the way out. On air there is no menu, no top bar and no
+  // animation bar to reach for, so the one thing still on screen has to be
+  // able to end it.
+  //
+  // Two clicks, not one: a stray tap during a broadcast must not take the
+  // broadcast down. Written by hand rather than with ondblclick because that
+  // event does not fire reliably for taps on a phone, which is exactly where
+  // this is most needed.
+  if (img) {
+    img.title = 'Double click to leave StormStream';
+    let armedAt = 0, armTimer = null;
+    const disarm = () => {
+      armedAt = 0;
+      img.classList.remove('armed');
+      if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+    };
+    const hit = (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      const now = Date.now();
+      if (armedAt && now - armedAt < 600) { disarm(); _ssStop(); return; }
+      armedAt = now;
+      img.classList.add('armed');
+      if (armTimer) clearTimeout(armTimer);
+      // Forgets after a moment, so a click now and another in a minute is not
+      // read as a double click.
+      armTimer = setTimeout(disarm, 600);
+    };
+    img.addEventListener('click', hit);
+    // Pointer events cover the tap on a phone, where click can be swallowed
+    // or delayed. Guarded against firing twice for the same tap.
+    img.addEventListener('pointerup', (e) => {
+      if (e.pointerType !== 'mouse') hit(e);
+    });
+  }
 
   const prev = document.getElementById('ss-hud-prev');
   if (prev) prev.onclick = _ssManualPrev;
