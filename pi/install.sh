@@ -74,12 +74,31 @@ if ! "$VENV/bin/python" -c "import netCDF4" >/dev/null 2>&1; then
   "$VENV/bin/pip" install --quiet netCDF4 || \
     warn "netCDF4 would not install; satellite composites will not build"
 fi
+# SounderPy fetches real vertical profiles and SHARPpy computes the parameters
+# on them the way the Storm Prediction Center's own tooling does. Both are
+# optional: without them the page still draws a sounding by reading the Pi's
+# pressure-level images, it just works the numbers out itself from twelve
+# levels instead of several hundred. So a failure here is a warning.
+if ! "$VENV/bin/python" -c "import sounderpy" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet sounderpy || \
+    warn "SounderPy would not install; soundings fall back to the level images"
+fi
+# SHARPpy is the older of the two and the likelier of the two to refuse: its
+# last release predates NumPy 2, so on a Pi that already has NumPy 2 from apt
+# the import can fail even after a clean install. That is survivable, which is
+# why it is a warning: profiles still get fetched, the browser just works the
+# numbers out itself. If you want it badly enough, a NumPy 1 venv is the fix.
+if ! "$VENV/bin/python" -c "import sharppy" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet sharppy || \
+    warn "SHARPpy would not install; profiles are fetched but analysed in the browser"
+fi
 # Braced and forgiven, because set -e would otherwise abandon the whole install
 # over one optional module.
 { "$VENV/bin/python" - <<'PY'
 import sys
 mods = {}
-for m in ("eccodes", "numpy", "PIL", "requests", "metpy", "netCDF4"):
+for m in ("eccodes", "numpy", "PIL", "requests", "metpy", "netCDF4",
+          "sounderpy", "sharppy"):
     try:
         __import__(m); mods[m] = "ok"
     except Exception as e:

@@ -3084,6 +3084,15 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
 .snd-hour-lbl { font-family: var(--mono); font-size: 10px; opacity: 0.7; min-width: 40px; }
 .snd-hour { width: 90px; accent-color: var(--accent2); }
 #snd-panel.big .snd-hour { width: 190px; }
+/* The source picker. Narrow on purpose: the head is already carrying a
+   coordinate, a slider and two buttons at 380px wide. */
+.snd-src {
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
+  color: #e8edf5; border-radius: 6px; font-size: 10px; padding: 3px 4px;
+  max-width: 112px; font-family: var(--sans); cursor: pointer;
+}
+#snd-panel.big .snd-src { max-width: none; font-size: 11px; }
+.snd-src option { background: #0b1018; color: #e8edf5; }
 .snd-x, .snd-big {
   background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
   color: #e8edf5; cursor: pointer; font-size: 12px; line-height: 1;
@@ -3152,6 +3161,11 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
   display: none;
 }
 #snd-panel.big .snd-note { display: block; padding: 0 14px 16px; font-size: 10.5px; }
+/* A fallback is not an error, but it is not nothing either: the numbers on
+   screen came from somewhere other than what was asked for, and that has to
+   be readable without expanding the panel. */
+.snd-fell { color: #ffc44d; opacity: 0.95; }
+#snd-panel .snd-note:has(.snd-fell) { display: block; }
 .snd-err {
   padding: 12px 10px; font-family: var(--mono); font-size: 10.5px;
   color: #ffb4a2; line-height: 1.5;
@@ -13430,6 +13444,41 @@ function _hdDisable() {
 let _sndManifest = null;
 let _sndPixel = null;      // a 1x1 scratch canvas, reused for every read
 
+// Where a profile can come from.
+//
+// The level images are the floor: twelve mandatory pressure levels of one
+// model, read a pixel at a time, always there because the Pi builds them for
+// the maps anyway. Everything else on this list goes through the Pi's
+// /sounding door, where SounderPy fetches the real profile - several hundred
+// levels - and SHARPpy computes the parameters on it the way the Storm
+// Prediction Center's own tooling does.
+//
+// Twelve levels is enough to draw a recognisable sounding and not enough to
+// trust an effective-inflow layer or a 0-1 km SRH from, because both of those
+// live inside the gaps between the levels. That is the whole reason for the
+// door, and why Auto reaches for it first.
+const SND_SOURCES = [
+  { id: 'auto',   pi: null,       label: 'Auto (best available)' },
+  { id: 'rap',    pi: 'rap',      label: 'RAP analysis' },
+  { id: 'obs',    pi: 'obs',      label: 'Observed balloon' },
+  { id: 'hrrr',   pi: 'hrrr',     label: 'HRRR' },
+  { id: 'nam',    pi: 'nam',      label: 'NAM' },
+  { id: 'gfs',    pi: 'gfs',      label: 'GFS' },
+  { id: 'levels', pi: null,       label: 'Pi model levels' },
+];
+// How far back the SounderPy sources can be asked to look, in hours. An
+// analysis is hourly, so these are the hours themselves rather than a
+// forecast's steps: this is the control for "show me what the air looked like
+// when that storm went up", which is the question people actually ask a
+// sounding after the fact.
+const SND_BACK_HOURS = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48];
+
+let _sndSource = 'auto';
+// Remembered per session so Auto stops knocking on a door that is not there.
+// A Pi running an older serve.py answers 404 for /sounding, and retrying that
+// on every click is a second of nothing before every fallback.
+let _sndPiDown = false;
+
 function _sndDecode(px, lo, hi) {
   // Matches the encoding in pi/gfs_pipeline.py: alpha 0 means no data.
   if (px[3] === 0) return null;
@@ -13458,14 +13507,32 @@ function _sndPixelFor(man, lat, lon) {
   };
 }
 
+// Which run the cached manifest belongs to, so a rollover can be noticed.
+let _sndManifestRun = null;
+
 async function _sndProfile(lat, lon, fhr) {
   if (!_hdBase) throw new Error('no address set for the Pi');
-  if (!_sndManifest) {
-    const idx = _hdIndex || await _hdLoadIndex();
-    if (!idx || !idx.sounding) throw new Error('this Pi has no soundings');
-    _sndManifest = await fetch(`${_hdBase}/models/${idx.sounding.path}`,
-      { cache: 'no-store' }).then(r => r.ok ? r.json() : null);
+
+  // The index is read FRESH rather than off whatever was cached at boot.
+  //
+  // Two bugs lived in `_hdIndex || await _hdLoadIndex()`. An index fetched
+  // before the Pi finished its first model build carries no sounding entry,
+  // and it was then kept: the page said "this Pi has no soundings" for the
+  // rest of the session even after the Pi had built them. And when the Pi
+  // rolls to a new run, a stale index still names the old one.
+  const idx = (typeof _hdFreshIndex === 'function')
+    ? await _hdFreshIndex() : (_hdIndex || await _hdLoadIndex());
+  if (!idx || !idx.sounding) throw new Error('this Pi has no soundings');
+
+  // The manifest was cached forever once read. When the Pi moved to a new
+  // run it pruned the old one off its disk, so every level image 404'd, every
+  // read became null, and the panel said "not enough levels" permanently -
+  // with nothing anywhere saying the run had changed underneath it.
+  if (!_sndManifest || _sndManifestRun !== idx.sounding.run) {
+    _sndManifest = await fetch(`${_hdBase}/models/${idx.sounding.path}?t=${Date.now()}`,
+      { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null);
     if (!_sndManifest) throw new Error('could not read the sounding index');
+    _sndManifestRun = idx.sounding.run;
   }
   const man = _sndManifest;
   const at = _sndPixelFor(man, lat, lon);
@@ -13485,23 +13552,203 @@ async function _sndProfile(lat, lon, fhr) {
   // One image per variable per level. Fetched together rather than in
   // sequence: twelve levels waiting on each other in turn is a visible pause,
   // and they are a few KB each.
+  // Every failure here used to become a silent null, so forty-eight dead
+  // images and one point outside the grid produced the same empty answer.
+  // They are counted and told apart instead, because the fixes differ.
+  let missing = 0, tainted = 0, asked = 0;
   await Promise.all(vars.flatMap(v =>
     levels.map(async (lev, i) => {
       const url = `${_hdBase}/models/sounding/${man.run}/${v}_${lev}_f${String(hour).padStart(3, '0')}.png`;
+      asked++;
+      let img;
       try {
-        const img = await _sndLoadImage(url);
+        img = await _sndLoadImage(url);
+      } catch (e) {
+        missing++; out[i][v] = null; return;
+      }
+      try {
         ctx.clearRect(0, 0, 1, 1);
         ctx.drawImage(img, at.x, at.y, 1, 1, 0, 0, 1, 1);
         const d = ctx.getImageData(0, 0, 1, 1).data;
         out[i][v] = _sndDecode(d, man.vars[v].min, man.vars[v].max);
       } catch (e) {
-        out[i][v] = null;
+        // getImageData throwing means the canvas is tainted, which is a
+        // missing CORS header on the Pi and not a missing file. Completely
+        // different fix, and it used to look identical.
+        tainted++; out[i][v] = null;
       }
     })
   ));
 
-  return { hour, run: man.run, lat, lon,
-           levels: out.filter(r => r.t != null) };
+  const levelsOut = out.filter(r => r.t != null);
+  if (!levelsOut.length) {
+    if (tainted) {
+      throw new Error('the level images loaded but could not be read '
+        + '(tainted canvas), which means the Pi is not sending CORS headers '
+        + 'for them');
+    }
+    if (missing >= asked) {
+      throw new Error(`none of the ${asked} level images for run ${man.run} `
+        + 'could be loaded, which usually means the Pi has moved on to a '
+        + 'newer run and pruned this one');
+    }
+    throw new Error(`only ${asked - missing} of ${asked} level images loaded, `
+      + 'and none of them had a temperature at this point');
+  }
+
+  return { hour, run: man.run, lat, lon, missing, tainted, asked,
+           via: 'levels', engine: 'browser',
+           levels: levelsOut };
+}
+
+// ── The Pi's /sounding door: SounderPy to fetch, SHARPpy to analyse ────────
+//
+// Same panel, different numbers underneath. This asks the Pi for one profile
+// at one point and gets back several hundred levels with SHARPpy's parameter
+// suite already computed on them, instead of twelve levels and arithmetic
+// done here.
+//
+// Every failure on this path is recoverable, because the level images are
+// still sitting there. So nothing here throws a stack trace: it throws a
+// sentence, and the caller decides whether to fall back or show it.
+
+function _sndWhenStamp(hoursBack) {
+  const t = new Date(Date.now() - (hoursBack || 0) * 3600e3);
+  const p = n => String(n).padStart(2, '0');
+  return `${t.getUTCFullYear()}${p(t.getUTCMonth() + 1)}${p(t.getUTCDate())}`
+       + `${p(t.getUTCHours())}`;
+}
+
+async function _sndPiSounding(lat, lon, source, hoursBack) {
+  if (!_hdBase) throw new Error('no address set for the Pi');
+  const q = new URLSearchParams({
+    lat: (+lat).toFixed(4), lon: (+lon).toFixed(4), source,
+  });
+  // Hour 0 is left off on purpose: the service already knows that the current
+  // hour is not published yet and asks for the one before it. Naming an hour
+  // here would override that with the one that does not exist.
+  if (hoursBack) q.set('when', _sndWhenStamp(hoursBack));
+
+  let r;
+  try {
+    r = await fetch(`${_hdBase}/sounding?${q.toString()}`, { cache: 'no-store' });
+  } catch (e) {
+    throw new Error('the Pi did not answer the sounding request');
+  }
+  let body = null;
+  try { body = await r.json(); } catch (e) { /* an HTML error page, most likely */ }
+
+  // 404 means an older serve.py with no such door; 501 means the door is
+  // there but sounding_service.py is not beside it. Both are "this Pi cannot
+  // do this at all", so both stop Auto from asking again.
+  if (r.status === 404 || r.status === 501) {
+    _sndPiDown = true;
+    throw new Error('this Pi does not have the sounding service');
+  }
+  if (!r.ok) {
+    throw new Error((body && body.error)
+      || `the Pi answered HTTP ${r.status} for the sounding`);
+  }
+  if (!body || !body.profile) throw new Error('the Pi sent back no profile');
+  return _sndFromPi(body);
+}
+
+// The Pi's answer, in the shape the rest of this panel already reads.
+//
+// SounderPy hands over p in mb, z in metres above sea level, T and Td in C,
+// and u and v in knots - the service converts them explicitly rather than
+// hoping, because the units are the one thing a profile cannot be checked for
+// by looking at it.
+function _sndFromPi(body) {
+  const p = body.profile || {};
+  const n = Math.min(...['p', 'T', 'Td', 'u', 'v']
+    .map(k => (p[k] || []).length).filter(x => x > 0));
+  const levels = [];
+  for (let i = 0; i < n; i++) {
+    if (p.p[i] == null || p.T[i] == null) continue;
+    levels.push({
+      p: p.p[i], t: p.T[i], td: p.Td[i],
+      u: p.u ? p.u[i] : null, v: p.v ? p.v[i] : null,
+      // Above sea level. Kept under its own name because everything else in
+      // this panel means height above the ground by z, and quietly mixing the
+      // two puts the 0-1 km layer a mile up in Denver.
+      zMSL: p.z ? p.z[i] : null,
+    });
+  }
+  if (levels.length < 5) {
+    throw new Error(`the profile came back with only ${levels.length} usable `
+      + 'levels, which is too few to read as a sounding');
+  }
+  return {
+    via: 'pi', source: body.source, label: body.label || body.source,
+    run: body.valid || '', valid: body.valid || '', site: body.site || '',
+    hour: 0, lat: body.lat, lon: body.lon,
+    cached: !!body.cached,
+    engine: (body.engine && body.engine.params) ? 'SHARPpy' : 'browser',
+    fetcher: (body.engine && body.engine.fetch) || 'SounderPy',
+    params: body.params || null,
+    levels,
+  };
+}
+
+// SHARPpy's numbers laid over the browser's, one field at a time.
+//
+// Not a wholesale replacement: the parcel traces drawn on the chart are the
+// browser's, because SHARPpy sends parameters and not curves. Where both have
+// a number for the same thing, SHARPpy's is the one to keep - it is computed
+// off every level of the profile rather than off the twelve the browser can
+// see, and it is the implementation forecasters already read.
+function _sndApplyParams(d, params) {
+  if (!d || !params || params.error) return d;
+  const num = v => (typeof v === 'number' && isFinite(v)) ? v : null;
+  const set = (obj, key, v) => { if (obj && v != null) obj[key] = v; };
+
+  for (const [k, src] of [['sb', params.sb], ['ml', params.ml], ['mu', params.mu]]) {
+    if (!src || !d[k]) continue;
+    set(d[k], 'cape', num(src.cape));
+    // SHARPpy reports CIN negative, and so does the parcel walk here, so this
+    // is a swap and not a sign fix.
+    set(d[k], 'cin', num(src.cin));
+    set(d[k], 'lclZ', num(src.lcl));
+    set(d[k], 'lfcZ', num(src.lfc));
+    set(d[k], 'elZ', num(src.el));
+    set(d[k], 'li', num(src.li));
+    d[k].fromSharppy = true;
+  }
+
+  const w = params.wind || {};
+  set(d, 'shear1', num(w.shear1));
+  set(d, 'shear3', num(w.shear3));
+  set(d, 'shear6', num(w.shear6));
+  set(d, 'shear8', num(w.shear8));
+  set(d, 'ebwd', num(w.ebwd));
+  set(d, 'srh1', num(w.srh1));
+  set(d, 'srh3', num(w.srh3));
+  set(d, 'esrh', num(w.esrh));
+
+  const c = params.composite || {};
+  set(d, 'lr03', num(c.lapse03));
+  set(d, 'lr36', num(c.lapse36));
+  // SHARPpy carries precipitable water in inches, this panel shows millimetres.
+  if (num(c.pwat) != null) d.pwat = c.pwat * 25.4;
+  set(d, 'stp', num(c.stp_cin) != null ? num(c.stp_cin) : num(c.stp_fixed));
+  set(d, 'stpFixed', num(c.stp_fixed));
+  set(d, 'scp', num(c.scp));
+  set(d, 'ship', num(c.ship));
+  set(d, 'sherb', num(c.sherb));
+  set(d, 'dcape', num(c.dcape));
+  set(d, 'kidx', num(c.k_index));
+  if (Array.isArray(c.eil) && num(c.eil[0]) != null) d.eil = c.eil;
+
+  if (params.motion && Array.isArray(params.motion.rm) && d.motion) {
+    const [u, v] = params.motion.rm;
+    if (num(u) != null && num(v) != null) d.motion.right = { u, v };
+    const [lu, lv] = params.motion.lm || [];
+    if (num(lu) != null && num(lv) != null) d.motion.left = { u: lu, v: lv };
+    d.motion.fromSharppy = true;
+  }
+  d.engine = 'SHARPpy';
+  return d;
 }
 
 // Dew point from temperature and relative humidity. The Pi ships humidity
@@ -13823,15 +14070,43 @@ function _sndSCP(mu, srh3, shear6) {
   return (mu.cape / 1000) * (srh3 / 50) * (shr / (20 * 1.94384));
 }
 
+// Heights above the ground, measured when the source knows them and worked
+// out when it does not.
+//
+// The level images carry no heights at all, so they get the hypsometric walk:
+// integrate upward through the layers and see where you end up. SounderPy
+// carries the model's own geopotential height, which is the real answer, and
+// using it removes an approximation from every layer-depth number on the
+// panel. It arrives above SEA level though, and everything here means above
+// GROUND, so the surface value is subtracted off - without that, every layer
+// in Denver starts a mile too high and the 0-1 km numbers are nonsense.
+function _sndHeightsFrom(rows) {
+  const haveAll = rows.length > 2
+    && rows.every(r => typeof r.zMSL === 'number' && isFinite(r.zMSL));
+  if (!haveAll) return _sndHeights(rows);
+  const base = rows[0].zMSL;
+  for (const r of rows) r.z = r.zMSL - base;
+  // Monotonic or it is not a profile: a single bad level would make a layer
+  // read as negative depth and take the shear with it.
+  for (let i = 1; i < rows.length; i++) {
+    if (!(rows[i].z > rows[i - 1].z)) return _sndHeights(rows);
+  }
+  return rows;
+}
+
 // Everything the tables show, worked out once from one profile.
 function _sndDerive(prof) {
   const rows = prof.levels
     .filter(r => r.t != null && r.p != null)
-    .map(r => ({ p: r.p, t: r.t, rh: r.rh, u: r.u, v: r.v,
-                 td: _sndDewpoint(r.t, r.rh) }))
+    .map(r => ({ p: r.p, t: r.t, rh: r.rh, u: r.u, v: r.v, zMSL: r.zMSL,
+                 // The level images ship humidity, because that is what the
+                 // model carries. SounderPy ships the dew point itself, and
+                 // recomputing it from a humidity that was never sent would
+                 // just throw the real number away.
+                 td: (r.td != null ? r.td : _sndDewpoint(r.t, r.rh)) }))
     .sort((a, b) => b.p - a.p);                  // surface first
   if (rows.length < 3) return null;
-  _sndHeights(rows);
+  _sndHeightsFrom(rows);
 
   const sfc = rows[0];
   const sb = _sndParcel(rows, sfc.p, sfc.t, sfc.td != null ? sfc.td : sfc.t, 'SB');
@@ -14157,14 +14432,25 @@ function _sndTables(d) {
         + `<td class="snd-num">${_sndFmt(p.elZ, 0)}</td></tr>`).join('')
     + `</table>`;
 
+  // The effective-inflow rows only appear when SHARPpy sent them. They cannot
+  // honestly be computed from twelve pressure levels: the effective layer is
+  // defined by walking up the profile looking for where a parcel first has
+  // enough CAPE and little enough CIN, and with 100 mb between levels that
+  // walk lands on whichever level it happens to land on.
   const wind = `<table class="snd-tbl"><tr><th colspan="2">Wind</th></tr>`
     + _sndRow('0-1 km shear', _sndFmt(d.shear1, 0, 'kt'), _sndClass(d.shear1, 20, 30))
     + _sndRow('0-3 km shear', _sndFmt(d.shear3, 0, 'kt'), _sndClass(d.shear3, 25, 40))
     + _sndRow('0-6 km shear', _sndFmt(d.shear6, 0, 'kt'), _sndClass(d.shear6, 35, 50))
+    + (d.ebwd != null && isFinite(d.ebwd)
+        ? _sndRow('Effective shear', _sndFmt(d.ebwd, 0, 'kt'), _sndClass(d.ebwd, 35, 50)) : '')
     + _sndRow('0-1 km SRH', _sndFmt(d.srh1, 0, 'm2/s2'), _sndClass(d.srh1, 100, 250))
     + _sndRow('0-3 km SRH', _sndFmt(d.srh3, 0, 'm2/s2'), _sndClass(d.srh3, 150, 400))
+    + (d.esrh != null && isFinite(d.esrh)
+        ? _sndRow('Effective SRH', _sndFmt(d.esrh, 0, 'm2/s2'), _sndClass(d.esrh, 100, 250)) : '')
     + _sndRow('Storm motion',
         d.motion ? `${_sndFmt(Math.hypot(d.motion.right.u, d.motion.right.v), 0, 'kt')} RM` : '--')
+    + (Array.isArray(d.eil) && d.eil[0] != null && isFinite(d.eil[0])
+        ? _sndRow('Effective inflow', `${_sndFmt(d.eil[0], 0)} - ${_sndFmt(d.eil[1], 0)} mb`) : '')
     + `</table>`;
 
   const thermo = `<table class="snd-tbl"><tr><th colspan="2">Thermodynamics</th></tr>`
@@ -14173,11 +14459,21 @@ function _sndTables(d) {
     + _sndRow('PWAT', _sndFmt(d.pwat, 1, 'mm'), _sndClass(d.pwat, 40, 50))
     + _sndRow('0-3 km lapse rate', _sndFmt(d.lr03, 1, 'C/km'), _sndClass(d.lr03, 7, 8.5))
     + _sndRow('3-6 km lapse rate', _sndFmt(d.lr36, 1, 'C/km'), _sndClass(d.lr36, 7, 8))
+    + (d.dcape != null && isFinite(d.dcape)
+        ? _sndRow('DCAPE', _sndFmt(d.dcape, 0, 'J/kg'), _sndClass(d.dcape, 800, 1200)) : '')
+    + (d.kidx != null && isFinite(d.kidx)
+        ? _sndRow('K index', _sndFmt(d.kidx, 0)) : '')
     + `</table>`;
 
   const comp = `<table class="snd-tbl"><tr><th colspan="2">Composites</th></tr>`
     + _sndRow('Sig Tornado (STP)', _sndFmt(d.stp, 1), _sndClass(d.stp, 1, 3))
+    + (d.stpFixed != null && isFinite(d.stpFixed)
+        ? _sndRow('STP (fixed layer)', _sndFmt(d.stpFixed, 1), _sndClass(d.stpFixed, 1, 3)) : '')
     + _sndRow('Supercell (SCP)', _sndFmt(d.scp, 1), _sndClass(d.scp, 2, 6))
+    + (d.ship != null && isFinite(d.ship)
+        ? _sndRow('Sig Hail (SHIP)', _sndFmt(d.ship, 1), _sndClass(d.ship, 1, 2)) : '')
+    + (d.sherb != null && isFinite(d.sherb)
+        ? _sndRow('SHERB', _sndFmt(d.sherb, 1), _sndClass(d.sherb, 1, 1.5)) : '')
     + `</table>`;
 
   return parcels + wind + thermo + comp;
@@ -14202,6 +14498,9 @@ async function openSounding(lat, lon) {
         <span class="snd-title">Sounding</span>
         <span class="snd-where"></span>
         <div class="snd-head-spacer"></div>
+        <select class="snd-src" title="Where the profile comes from">
+          ${SND_SOURCES.map(s => `<option value="${s.id}">${s.label}</option>`).join('')}
+        </select>
         <div class="snd-hour-wrap">
           <span class="snd-hour-lbl">F+000</span>
           <input class="snd-hour" type="range" min="0" max="0" value="0" step="1">
@@ -14237,9 +14536,27 @@ async function openSounding(lat, lon) {
     if (typeof _makeDraggable === 'function') {
       try { _makeDraggable(el, el.querySelector('.snd-head')); } catch (e) {}
     }
+    // The slider means two different things depending on where the profile
+    // comes from, and that is not a compromise: a forecast has forecast hours
+    // and an analysis does not. For the level images it picks a forecast hour;
+    // for anything through the Pi's door it picks how far back to look.
     el.querySelector('.snd-hour').oninput = (e) => {
-      const hrs = (_sndManifest && _sndManifest.hours) || [0];
-      _sndRefresh(el, +hrs[Math.min(+e.target.value, hrs.length - 1)]);
+      const i = Math.max(0, +e.target.value);
+      if (el._piMode) {
+        _sndRefresh(el, SND_BACK_HOURS[Math.min(i, SND_BACK_HOURS.length - 1)]);
+      } else {
+        const hrs = (_sndManifest && _sndManifest.hours) || [0];
+        _sndRefresh(el, +hrs[Math.min(i, hrs.length - 1)]);
+      }
+    };
+    el.querySelector('.snd-src').onchange = (e) => {
+      _sndSource = e.target.value;
+      // A fresh choice deserves a fresh try even at a door that failed before:
+      // the Pi may simply have been restarted with the new serve.py.
+      _sndPiDown = false;
+      el._autoVia = null; el._autoWhy = null;
+      try { localStorage.setItem('gwcfc_snd_source', _sndSource); } catch (err) {}
+      _sndRefresh(el, 0);
     };
     // Both charts are canvases sized off their box, so a resize has to redraw
     // them or they stay at whatever size the panel first opened at.
@@ -14252,10 +14569,20 @@ async function openSounding(lat, lon) {
   }
   el.classList.add('open');
   el.dataset.lat = lat; el.dataset.lon = lon;
+  // A new point gets one fresh attempt at the good path. The Pi may have come
+  // back since the last click, and "outside the area the Pi covers" is a
+  // property of the point rather than of the Pi.
+  el._autoVia = null; el._autoWhy = null;
+  try {
+    const saved = localStorage.getItem('gwcfc_snd_source');
+    if (saved && SND_SOURCES.some(s => s.id === saved)) _sndSource = saved;
+  } catch (e) {}
+  el.querySelector('.snd-src').value = _sndSource;
   el.querySelector('.snd-where').textContent =
     `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
-  el.querySelector('.snd-note').textContent = 'Reading levels off the Pi...';
-  el.querySelector('.snd-tables').innerHTML = '';
+  el.querySelector('.snd-note').textContent = 'Asking the Pi...';
+  el.querySelector('.snd-tables').innerHTML =
+    '<div class="snd-err">Building the sounding...</div>';
   await _sndRefresh(el, null);
 }
 
@@ -14279,36 +14606,125 @@ function _sndQuick(d) {
        + q('0-1 SRH', _sndFmt(d.srh1, 0), _sndClass(d.srh1, 100, 250));
 }
 
-async function _sndRefresh(el, fhr) {
+// One profile, from wherever the picker says, with a fallback that is quiet
+// about succeeding and loud about why it had to.
+//
+// Auto is not "try things until one works" for its own sake. The two paths
+// answer the same question at different resolutions, and there is a real
+// preference between them: SounderPy plus SHARPpy is several hundred levels
+// analysed by the tooling forecasters already read, the level images are
+// twelve levels analysed here. So Auto asks for the good one, and drops to
+// the floor rather than showing an error over a panel that could have drawn
+// something.
+async function _sndFetchFor(el, lat, lon, hr) {
+  const pick = SND_SOURCES.find(s => s.id === _sndSource) || SND_SOURCES[0];
+
+  if (pick.pi) {                       // an explicit SounderPy source
+    const prof = await _sndPiSounding(lat, lon, pick.pi, hr || 0);
+    return { prof, fellBack: null };
+  }
+  if (pick.id === 'levels') {          // explicitly the level images
+    return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
+             fellBack: null };
+  }
+
+  // Auto, having already settled on the level images for this panel.
+  //
+  // Settling is the point. The slider means a forecast hour on one path and
+  // hours-back on the other, so an Auto that re-decided on every refresh
+  // would change what the slider means under the hand. Once it has dropped to
+  // the floor it stays there until the picker is touched.
+  if (el && el._autoVia === 'levels') {
+    return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
+             fellBack: el._autoWhy || null };
+  }
+
+  let why = null;
+  if (!_sndPiDown) {
+    try {
+      return { prof: await _sndPiSounding(lat, lon, 'rap', hr || 0),
+               fellBack: null };
+    } catch (e) { why = String((e && e.message) || e); }
+  }
+  why = why || 'this Pi does not have the sounding service';
+  const prof = await _sndProfile(lat, lon, hr == null ? 0 : hr);
+  if (el) { el._autoVia = 'levels'; el._autoWhy = why; }
+  return { prof, fellBack: why };
+}
+
+async function _sndRefresh(el, hr) {
   const lat = +el.dataset.lat, lon = +el.dataset.lon;
   const note = el.querySelector('.snd-note');
+  const seq = (el._seq = (el._seq || 0) + 1);
   try {
-    const prof = await _sndProfile(lat, lon, fhr == null ? 0 : fhr);
-    const d = _sndDerive(prof);
-    if (!d) throw new Error('not enough levels came back to build a sounding');
-    el._snd = d; el._prof = prof;
+    const { prof, fellBack } = await _sndFetchFor(el, lat, lon, hr);
+    // A slow fetch that finished after a newer one must not overwrite it.
+    // The Pi's door takes seconds, and dragging the slider starts several.
+    if (seq !== el._seq) return;
 
-    const hrs = (_sndManifest && _sndManifest.hours) || [0];
+    let d = _sndDerive(prof);
+    if (!d) throw new Error('not enough levels came back to build a sounding');
+    if (prof.params) d = _sndApplyParams(d, prof.params);
+    el._snd = d; el._prof = prof;
+    el._piMode = prof.via === 'pi';
+
     const sl = el.querySelector('.snd-hour');
-    sl.max = Math.max(0, hrs.length - 1);
-    sl.value = Math.max(0, hrs.indexOf(prof.hour));
-    el.querySelector('.snd-hour-lbl').textContent =
-      'F+' + String(prof.hour).padStart(3, '0');
+    if (el._piMode) {
+      sl.max = SND_BACK_HOURS.length - 1;
+      const back = Math.max(0, SND_BACK_HOURS.indexOf(hr || 0));
+      sl.value = back;
+      el.querySelector('.snd-hour-lbl').textContent =
+        (hr ? `-${hr}h` : 'now');
+    } else {
+      const hrs = (_sndManifest && _sndManifest.hours) || [0];
+      sl.max = Math.max(0, hrs.length - 1);
+      sl.value = Math.max(0, hrs.indexOf(prof.hour));
+      el.querySelector('.snd-hour-lbl').textContent =
+        'F+' + String(prof.hour).padStart(3, '0');
+    }
 
     _sndPaint(el, d, prof);
     el.querySelector('.snd-quick').innerHTML = _sndQuick(d);
     el.querySelector('.snd-tables').innerHTML = _sndTables(d);
-    note.textContent =
-      `Run ${prof.run} - ${d.rows.length} levels - `
-      + `parcel traces, heights and helicity worked out in the browser from `
-      + `temperature, humidity and wind. Heights are hypsometric, not the `
-      + `model's own geopotential.`;
+    note.innerHTML = _sndNote(d, prof, fellBack);
   } catch (e) {
+    if (seq !== el._seq) return;
     el.querySelector('.snd-quick').innerHTML = '';
     el.querySelector('.snd-tables').innerHTML =
       `<div class="snd-err">${_sndWhy(e)}</div>`;
     note.textContent = '';
   }
+}
+
+// What this sounding is, and what worked it out. Both matter: two panels that
+// look identical can disagree by four hundred joules, and the only honest way
+// to show that is to say which one you are looking at.
+function _sndNote(d, prof, fellBack) {
+  const esc = s => (typeof _ssEsc === 'function' ? _ssEsc(String(s)) : String(s));
+  const bits = [];
+  if (prof.via === 'pi') {
+    bits.push(`${esc(prof.label || prof.source)} at ${esc(prof.valid || 'the last hour')}`);
+    if (prof.site) bits.push(esc(prof.site));
+    bits.push(`${d.rows.length} levels via ${esc(prof.fetcher || 'SounderPy')}`);
+    bits.push(d.engine === 'SHARPpy'
+      ? 'parameters computed by SHARPpy on the Pi, the same code the Storm '
+        + 'Prediction Center\'s tooling uses'
+      : 'SHARPpy is not installed on the Pi, so the parameters below were '
+        + 'worked out in the browser from the levels it sent');
+    if (prof.cached) bits.push('served from the Pi\'s cache');
+    bits.push('heights are the model\'s own geopotential, above ground level');
+  } else {
+    bits.push(`Run ${esc(prof.run)}`);
+    bits.push(`${d.rows.length} model levels read off the Pi's images`);
+    bits.push('parcel traces, heights and helicity worked out in the browser');
+    bits.push('heights are hypsometric, not the model\'s own geopotential');
+  }
+  let out = bits.join(' - ') + '.';
+  if (fellBack) {
+    out += `<br><span class="snd-fell">Fell back to the level images: `
+         + `${esc(fellBack)}.</span>`;
+  }
+  return out;
 }
 
 // Why there is no sounding, in words that say what to do about it.
@@ -14343,6 +14759,34 @@ function _sndWhy(e) {
   if (/too few levels/i.test(msg)) {
     return '<b>Too few levels came back to build a sounding.</b><br>The '
          + 'level images for this run may still be building.';
+  }
+  if (/does not have the sounding service/i.test(msg)) {
+    return '<b>This Pi cannot fetch real profiles yet.</b><br>SounderPy and '
+         + 'SHARPpy live on the Pi, not in the page. On the Pi, run '
+         + '<code>bash ~/GWCFCRadar/pi/install.sh</code> to install them and '
+         + 'pick up the newer server, then '
+         + '<code>systemctl --user restart gwcfc-serve</code>. Until then, '
+         + 'choose <b>Pi model levels</b> above, which always works.';
+  }
+  if (/SounderPy is not installed/i.test(msg)) {
+    return '<b>SounderPy is not installed on the Pi.</b><br>Run '
+         + '<code>bash ~/GWCFCRadar/pi/install.sh</code> on the Pi to add it. '
+         + 'Check it took with <code>~/wxenv/bin/python '
+         + '~/GWCFCRadar/pi/sounding_service.py --check</code>.';
+  }
+  if (/did not answer the sounding request/i.test(msg)) {
+    return '<b>The Pi did not answer.</b><br>It may be off, or the tunnel may '
+         + 'have dropped. Everything else Pi-backed will be failing too.';
+  }
+  if (/already working on other soundings/i.test(msg)) {
+    return '<b>The Pi is busy.</b><br>It only builds two profiles at a time, '
+         + 'because each one is a real download and a real computation. '
+         + 'Try again in a moment.';
+  }
+  if (/No .* profile exists|publish about an hour behind/i.test(msg)) {
+    return '<b>There is no profile for that hour yet.</b><br>Analyses publish '
+         + 'about an hour behind. Pull the slider back an hour and it should '
+         + 'be there.';
   }
   return `<b>${_ssEsc ? _ssEsc(msg) : msg}</b>`;
 }
@@ -38565,7 +39009,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "In StormStream, double click the logo on the lower third to come back out - there is no menu on screen while you are live, so the logo is the way out. The lower third is also an octagon now, with all four corners cut, rather than a point at each end.";
+const APP_LATEST_UPDATE = "Soundings now come from SounderPy and are analysed by SHARPpy on the Pi: hundreds of levels instead of twelve, with effective inflow, SHIP, DCAPE and the rest. There is a source picker in the panel head, and it can look back up to two days. If the Pi has not been updated yet it quietly falls back to the old level images and says so. Four bugs that could leave the panel stuck on 'not enough levels' are fixed as well.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

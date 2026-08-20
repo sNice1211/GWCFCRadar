@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+"""
+The Pi's /sounding door, and the service behind it.
+
+    python3 tools/test-sounding-service.py
+
+This is the path that makes the sounding panel show SHARPpy's numbers instead
+of the browser's. Two halves get checked, differently, because they fail
+differently.
+
+The DOOR is exercised against a real HTTP server on a real socket, with a
+stand-in sounding_service swapped into sys.modules. Query parsing, refusing
+nonsense coordinates, the cache short circuit, the two-at-a-time queue, the
+CORS header and the error wording are all things you cannot verify by reading:
+they are what the socket actually says back.
+
+The SERVICE is parsed rather than imported, because SounderPy, SHARPpy and
+NumPy are not installed on the machine this runs on and will not be. What can
+still be checked there is real: that neither library is imported at module
+scope (so a Pi without them starts anyway), that the units are converted
+explicitly rather than hoped for, and that every failure raises a sentence.
+
+What is NOT checked here, and cannot be: whether SounderPy's addresses still
+answer, and whether SHARPpy's attribute names still match. Both are live
+questions about other people's libraries. `sounding_service.py --check` on the
+Pi is the answer to the first half of that, which is why it exists.
+"""
+
+import ast
+import json
+import os
+import sys
+import threading
+import time
+import types
+import urllib.error
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PI = os.path.join(ROOT, "pi")
+SVC = os.path.join(PI, "sounding_service.py")
+SERVE = os.path.join(PI, "serve.py")
+
+passed = failed = 0
+
+
+def ok(name, cond, extra=""):
+    global passed, failed
+    if cond:
+        passed += 1
+        print(f"  ok   {name}")
+    else:
+        failed += 1
+        print(f"  FAIL {name}" + (f"  <{extra}>" if extra else ""))
+
+
+svc_src = open(SVC, encoding="utf-8").read()
+svc_tree = ast.parse(svc_src)
+serve_src = open(SERVE, encoding="utf-8").read()
+
+
+# ── 1. the service can be read without the libraries it uses ────────────────
+print("\n1. a Pi without SounderPy still starts")
+top_imports = set()
+for node in svc_tree.body:
+    if isinstance(node, ast.Import):
+        top_imports.update(a.name.split(".")[0] for a in node.names)
+    elif isinstance(node, ast.ImportFrom) and node.module:
+        top_imports.add(node.module.split(".")[0])
+ok("SounderPy is not imported at module scope",
+   "sounderpy" not in top_imports, str(sorted(top_imports)))
+ok("nor is SHARPpy", "sharppy" not in top_imports, str(sorted(top_imports)))
+ok("nor NumPy, which SHARPpy drags in",
+   "numpy" not in top_imports, str(sorted(top_imports)))
+# This is the whole reason for the rule: serve.py imports this file to answer
+# a request, and an import that throws at module scope takes the door with it.
+ok("so importing it costs nothing but the standard library",
+   top_imports <= {"argparse", "json", "os", "sys", "time", "datetime"},
+   str(sorted(top_imports)))
+
+# It really does import, here, now, with nothing installed.
+sys.path.insert(0, PI)
+import sounding_service as svc          # noqa: E402
+ok("and it really does import on a machine with neither installed", True)
+ok("which it can then say, without a network",
+   callable(getattr(svc, "check", None)) and callable(getattr(svc, "have_libs", None)))
+libs = svc.have_libs()
+ok("have_libs answers for both rather than guessing",
+   set(libs) == {"sounderpy", "sharppy"}, str(libs))
+
+
+# ── 2. units are converted, not assumed ─────────────────────────────────────
+print("\n2. the units are asked for by name")
+# A wind of 40 is a strong wind in knots and a violent one in metres per
+# second, and a sounding drawn from the wrong one looks entirely plausible.
+for unit in ("hPa", "meter", "degC", "knot"):
+    ok(f"{unit} is named in the conversion", f'"{unit}"' in svc_src)
+fn = next(n for n in svc_tree.body
+          if isinstance(n, ast.FunctionDef) and n.name == "_as_list")
+ok("_as_list takes the unit as an argument rather than trusting the caller",
+   [a.arg for a in fn.args.args] == ["x", "unit"],
+   str([a.arg for a in fn.args.args]))
+ok("and it converts through pint when the value carries units",
+   '.to(unit)' in ast.get_source_segment(svc_src, fn))
+
+# _as_list runs for real: no library needed for the plain-list path.
+ok("a plain list of numbers survives it", svc._as_list([1.0, 2.5]) == [1.0, 2.5])
+ok("and a NaN becomes null rather than a poisoned number",
+   svc._as_list([1.0, float("nan")]) == [1.0, None])
+ok("and something that is not a sequence gives an empty list, not a crash",
+   svc._as_list(None) == [])
+
+
+# ── 3. the cache key is the same for two clicks on the same storm ───────────
+print("\n3. the cache is keyed by place, not by pixel")
+a = svc._cache_key("rap", 35.4012, -97.6033, None)
+b = svc._cache_key("rap", 35.4038, -97.5975, None)
+c = svc._cache_key("rap", 36.9, -97.6, None)
+ok("two clicks a hundred metres apart are one sounding", a == b, f"{a} vs {b}")
+ok("two places that are really different are not", a != c, f"{a} vs {c}")
+ok("a different source is a different key",
+   svc._cache_key("hrrr", 35.4, -97.6, None) != a)
+ok("and so is a different hour",
+   svc._cache_key("rap", 35.4, -97.6, "2026082012") != a)
+ok("the key is safe to use as a filename",
+   all(ch.isalnum() or ch == "_" for ch in a), a)
+
+
+# ── 4. failures are sentences ───────────────────────────────────────────────
+print("\n4. every failure says what to do about it")
+raises = [n for n in ast.walk(svc_tree) if isinstance(n, ast.Raise)]
+ok("there are failures to check", len(raises) >= 4, str(len(raises)))
+msgs = []
+for r in raises:
+    seg = ast.get_source_segment(svc_src, r) or ""
+    msgs.append(seg)
+ok("all of them are RuntimeError, so the caller can tell them from a bug",
+   all("RuntimeError" in m for m in msgs), str(msgs)[:200])
+ok("the missing-library one names install.sh",
+   any("install.sh" in m for m in msgs))
+ok("the empty-answer one explains that analyses publish behind",
+   any("behind" in m for m in msgs))
+ok("nothing raises a bare Exception with no message",
+   not any(m.strip() in ("raise", "raise Exception") for m in msgs))
+
+# ── 5. SHARPpy returns nothing rather than exploding ────────────────────────
+print("\n5. no SHARPpy is a smaller answer, not a failure")
+fn = next(n for n in svc_tree.body
+          if isinstance(n, ast.FunctionDef) and n.name == "sharppy_params")
+body = ast.get_source_segment(svc_src, fn)
+ok("the import is inside the function", "import numpy" in body)
+ok("and a missing library returns None", "return None" in body)
+# A profile with no parameters is still a sounding worth drawing, so this must
+# not be allowed to take the fetch down with it.
+ok("a profile with no heights is refused with a reason, not a traceback",
+   "cannot work out layer depths" in body)
+ok("the parcels asked for are the four a forecaster reads",
+   all(p in body for p in ("sfcpcl", "mlpcl", "mupcl", "fcstpcl")))
+ok("the composites include the ones nobody should reimplement by hand",
+   all(p in body for p in ("stp_cin", "right_scp", "ship", "dcape")))
+ok("SHARPpy really is what did the sum, and says so",
+   '"engine"' in body and '"SHARPpy"' in body)
+# Real: sharppy_params with no SHARPpy installed must give None and not throw.
+ok("and calling it right now, with nothing installed, returns None",
+   svc.sharppy_params({"profile": {"p": [1000], "z": [0], "T": [20],
+                                   "Td": [15], "u": [0], "v": [0]}}) is None)
+
+
+# ── 6. the door itself, on a real socket ────────────────────────────────────
+print("\n6. the door answers, on a real socket")
+
+# A stand-in service, swapped in before serve.py's handler imports it. The
+# handler does `import sounding_service` inside the method, so sys.modules
+# decides which one it gets - which is what makes this testable at all.
+stub = types.ModuleType("sounding_service")
+stub.SOURCES = dict(svc.SOURCES)
+stub.calls = []
+stub.cache = {}
+stub.behaviour = "ok"
+stub.hold = threading.Event()
+stub.hold.set()
+
+
+def _key(source, lat, lon, when):
+    return f"{source}|{round(float(lat), 2)}|{round(float(lon), 2)}|{when}"
+
+
+def _read(key):
+    return stub.cache.get(key)
+
+
+def _sounding(source, lat, lon, when=None, use_cache=True):
+    stub.calls.append((source, lat, lon, when))
+    stub.hold.wait(10)
+    if stub.behaviour == "nolib":
+        raise RuntimeError("SounderPy is not installed on this Pi. Run "
+                           "install.sh again to add it.")
+    if stub.behaviour == "boom":
+        raise ValueError("something nobody predicted")
+    return {"source": source, "lat": lat, "lon": lon, "levels": 3,
+            "valid": "2026-08-20T12:00Z", "cached": False,
+            "profile": {"p": [1000, 850, 500], "z": [10, 1500, 5600],
+                        "T": [28, 16, -12], "Td": [22, 12, -25],
+                        "u": [5, 20, 45], "v": [2, -3, 8]},
+            "params": {"engine": "SHARPpy", "sb": {"cape": 2400}}}
+
+
+stub._cache_key = _key
+stub._cache_read = _read
+stub.sounding = _sounding
+sys.modules["sounding_service"] = stub
+
+sys.argv = ["serve.py"]
+import importlib.util                     # noqa: E402
+spec = importlib.util.spec_from_file_location("gwcfc_serve", SERVE)
+serve = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(serve)
+
+from functools import partial             # noqa: E402
+from http.server import ThreadingHTTPServer  # noqa: E402
+
+docroot = os.path.join(ROOT, "tools")
+httpd = ThreadingHTTPServer(("127.0.0.1", 0),
+                            partial(serve.CORSHandler, directory=docroot))
+port = httpd.server_address[1]
+threading.Thread(target=httpd.serve_forever, daemon=True).start()
+BASE = f"http://127.0.0.1:{port}"
+
+
+def get(path, timeout=15):
+    req = urllib.request.Request(BASE + path)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, dict(r.headers), r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read().decode("utf-8", "replace")
+
+
+code, hdr, body = get("/sounding?lat=35.4&lon=-97.6")
+ok("a good request is answered", code == 200, f"{code} {body[:120]}")
+try:
+    got = json.loads(body)
+except ValueError:
+    got = {}
+ok("with JSON, not an HTML error page", "profile" in got, body[:120])
+ok("carrying the profile", len(got.get("profile", {}).get("p", [])) == 3)
+ok("and SHARPpy's parameters with it",
+   (got.get("params") or {}).get("engine") == "SHARPpy", str(got.get("params")))
+# The page is on github.io and the Pi is on a tunnel: without this header the
+# browser refuses to let the page read the answer at all.
+ok("the CORS header is on it, or the page cannot read a word of it",
+   hdr.get("Access-Control-Allow-Origin") == "*", str(hdr))
+ok("and it is cacheable briefly, because an analysis is hourly",
+   "max-age" in (hdr.get("Cache-Control") or ""), str(hdr.get("Cache-Control")))
+ok("the default source is the analysis, since 'what is happening here' is "
+   "the usual question",
+   stub.calls and stub.calls[-1][0] == "rap", str(stub.calls[-1:]))
+
+print("\n7. and refuses what it should refuse")
+for path, why in [
+    ("/sounding", "no coordinates at all"),
+    ("/sounding?lat=35.4", "half a coordinate"),
+    ("/sounding?lat=abc&lon=-97.6", "a coordinate that is not a number"),
+    ("/sounding?lat=935&lon=-97.6", "a latitude off the planet"),
+    ("/sounding?lat=35&lon=-400", "a longitude off the planet"),
+]:
+    code, _, body = get(path)
+    ok(f"{why} is a 400 with a reason", code == 400 and "error" in body,
+       f"{code} {body[:80]}")
+
+code, _, body = get("/sounding?lat=35&lon=-97&source=wishful")
+ok("an unknown source is refused and the real ones are listed",
+   code == 400 and "rap" in body, f"{code} {body[:120]}")
+code, _, body = get("/sounding?lat=35&lon=-97&when=tuesday")
+ok("a malformed hour is refused before anything is fetched",
+   code == 400 and "YYYYMMDDHH" in body, f"{code} {body[:120]}")
+
+before = len(stub.calls)
+get("/sounding?lat=35&lon=-97&when=2026081900")
+ok("a well-formed hour is passed through to the service",
+   stub.calls[-1][3] == "2026081900", str(stub.calls[-1:]))
+ok("and it did reach the service, rather than being refused quietly",
+   len(stub.calls) == before + 1)
+
+print("\n8. a cached answer skips the queue entirely")
+stub.cache[_key("rap", 35.4, -97.6, None)] = {"source": "rap", "cached": False,
+                                              "profile": {"p": [1000]}}
+before = len(stub.calls)
+t0 = time.monotonic()
+code, _, body = get("/sounding?lat=35.4&lon=-97.6")
+lap = time.monotonic() - t0
+ok("the cached answer comes back", code == 200 and '"p"' in body, body[:80])
+ok("and the service was never asked", len(stub.calls) == before,
+   f"{len(stub.calls)} vs {before}")
+ok("it is marked as cached, so the panel can say so",
+   json.loads(body).get("cached") is True, body[:120])
+ok("and it is fast, because that is the whole point",
+   lap < 1.0, f"{lap:.2f}s")
+stub.cache.clear()
+
+print("\n9. the queue is two deep, and says so rather than hanging")
+# Real threads against the real socket. The Pi builds two profiles at a time
+# because a third only makes all three slow, and the third caller has to be
+# told that in words rather than left waiting for a browser timeout.
+serve.SOUNDING_QUEUE_WAIT_S = 0.5
+stub.hold.clear()
+results = []
+
+
+def hit(n):
+    code, _, body = get(f"/sounding?lat=3{n}&lon=-97", timeout=20)
+    results.append((code, body))
+
+
+threads = [threading.Thread(target=hit, args=(i,)) for i in range(3)]
+for t in threads:
+    t.start()
+time.sleep(1.5)                 # long enough for the third to give up waiting
+stub.hold.set()
+for t in threads:
+    t.join(20)
+codes = [c for c, _ in results]
+turned_away = [b for c, b in results if c == 503]
+ok("three at once, and one of them is turned away",
+   codes.count(503) == 1, str(codes))
+ok("the other two are served", codes.count(200) == 2, str(codes))
+ok("the refusal says to try again rather than blaming the user",
+   turned_away and "try again" in turned_away[0].lower(),
+   str(turned_away)[:140])
+ok("and it is flagged as worth retrying, not as a dead end",
+   turned_away and json.loads(turned_away[0]).get("retry") is True,
+   str(turned_away)[:140])
+serve.SOUNDING_QUEUE_WAIT_S = 25.0
+
+print("\n10. the queue reopens afterwards, rather than staying shut")
+# The gate is released in a finally, so a failed fetch must not leak a slot.
+# Three failures in a row followed by a success is what proves it: if the
+# semaphore leaked, the fourth call would be the one that hangs.
+stub.behaviour = "nolib"
+for _ in range(3):
+    get("/sounding?lat=35&lon=-97")
+stub.behaviour = "ok"
+code, _, body = get("/sounding?lat=35&lon=-97")
+ok("after three failures the door still opens", code == 200, f"{code} {body[:80]}")
+
+print("\n11. the failures a person will actually hit are readable")
+stub.behaviour = "nolib"
+code, _, body = get("/sounding?lat=35&lon=-97")
+ok("a Pi without SounderPy answers 502 and names install.sh",
+   code == 502 and "install.sh" in body, f"{code} {body[:140]}")
+stub.behaviour = "boom"
+code, _, body = get("/sounding?lat=35&lon=-97")
+ok("an unexpected error is still JSON, not a stack trace",
+   code == 502 and "error" in body and "Traceback" not in body,
+   f"{code} {body[:140]}")
+ok("and it names the kind of error without pasting the internals",
+   "ValueError" in body, body[:140])
+stub.behaviour = "ok"
+
+print("\n12. the door does not shadow the files the map needs")
+code, _, body = get("/test-sounding-service.py")
+ok("an ordinary file is still served", code == 200 and "the Pi's /sounding door" in body,
+   f"{code} {body[:60]}")
+code, _, _ = get("/no-such-file.json")
+ok("and a missing one is still a plain 404", code == 404, str(code))
+
+httpd.shutdown()
+
+print("\n13. serve.py wires it up the way the rest of the Pi expects")
+ok("the door is a GET, beside the ambient relay",
+   '"/sounding"' in serve_src and "_relay_ambient" in serve_src)
+ok("the service is imported inside the handler, so a missing file is a 501",
+   "501" in serve_src and "import sounding_service" in serve_src)
+ok("and the directory beside serve.py is put on the path explicitly",
+   "sys.path.insert" in serve_src)
+ok("the worker count can be changed without editing code",
+   "GWCFC_SND_WORKERS" in serve_src)
+ok("nothing about this door writes anything",
+   "do_PUT" in serve_src and "send_error(405)" in serve_src)
+
+print("\n14. install.sh installs both, and forgives both")
+ins = open(os.path.join(PI, "install.sh"), encoding="utf-8").read()
+ok("SounderPy is installed", "pip\" install --quiet sounderpy" in ins
+   or "install --quiet sounderpy" in ins)
+ok("SHARPpy is installed", "install --quiet sharppy" in ins)
+ok("neither failure stops the install",
+   ins.count("warn \"SounderPy") == 1 and ins.count("warn \"SHARPpy") == 1)
+ok("and both are checked afterwards, so a silent failure is visible",
+   '"sounderpy", "sharppy"' in ins)
+
+print()
+if failed:
+    print(f"{failed} FAILED, {passed} passed")
+    sys.exit(1)
+print(f"all {passed} passed")
