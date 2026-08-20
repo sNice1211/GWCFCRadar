@@ -1643,7 +1643,12 @@ body {
   padding: 5px 8px;
   backdrop-filter: none;
   border-left: 3px solid var(--warn);
+  transition: background 0.3s;
 }
+/* Marks whichever card StormStream is currently showing, so the panel
+   scrolling to it is obviously connected to what's on screen rather than
+   just jumping around on its own. */
+.alert-card.ss-current { background: rgba(255,68,68,0.16); box-shadow: inset 0 0 0 1px rgba(255,68,68,0.45); }
 .alert-event {
   font-family: var(--display);
   font-size: 10px;
@@ -1907,6 +1912,40 @@ body {
   #right-menu, #sub-bubbles { top: 50px; }
   #right-menu, #sub-bubbles { max-height: calc(100vh - var(--menu-clearance, 82px) - 50px); }
 }
+
+/* ── EXPORT PANEL: same anchor point as #right-menu (it opens from a
+   button inside that same column), offset left past the 34px tool
+   buttons instead of on top of them. Mirrors #right-menu's own
+   breakpoints one-for-one so the two never drift apart on a screen
+   size where only one of them got adjusted. ── */
+#export-panel {
+  display: none;
+  position: absolute;
+  top: 175px;
+  right: 56px;
+  z-index: 850;
+  width: 220px;
+  max-width: calc(100vw - 90px);
+  padding: 10px 12px;
+  background: rgba(8,12,16,0.93);
+  border: 1.5px solid rgba(0,140,186,0.45);
+  border-radius: 10px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.55);
+  flex-direction: column;
+  gap: 2px;
+}
+#export-panel.open { display: flex; }
+#export-title { display: flex; align-items: center; justify-content: center; gap: 5px; }
+@media (max-width: 768px) {
+  #export-panel { top: auto; bottom: var(--menu-clearance, 82px); right: 52px; }
+}
+@media (max-width: 480px) {
+  #export-panel { top: 90px; bottom: auto; right: 48px; }
+}
+@media (max-height: 500px) and (min-width: 769px) {
+  #export-panel { top: 50px; }
+}
+
 .right-bubble {
   display: flex;
   align-items: center;
@@ -8024,6 +8063,31 @@ body.clean-mode #clean-hint { opacity: 1; }
     </svg>
   </button>
 
+  <!-- Export , download the current radar/satellite/model picture or its loop -->
+  <button class="tool-btn" id="tool-export" onclick="_expToggle()" title="Export , download the current picture or its loop">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3v12"/>
+      <path d="M7 10l5 5 5-5"/>
+      <path d="M4 19h16"/>
+    </svg>
+  </button>
+
+</div>
+
+<!-- ─── EXPORT PANEL ─── -->
+<div id="export-panel">
+  <div class="spc-float-title" id="export-title">
+    Export
+    <button id="export-info-btn" class="ov-info-btn" title="What this does" type="button"></button>
+  </div>
+  <div id="export-status" style="font-size:9px;opacity:.75;line-height:1.4;padding:2px 0 6px;"></div>
+  <div id="export-progress" style="display:none;font-size:9px;color:var(--accent2);padding:2px 0 6px;"></div>
+  <button id="export-png-btn" class="lqm-settings-btn" onclick="_expDownloadPng()" style="width:100%;margin-bottom:6px;">
+    Download Current View (PNG)
+  </button>
+  <button id="export-video-btn" class="lqm-settings-btn" onclick="_expDownloadVideo()" style="width:100%;">
+    Download Loop (Video)
+  </button>
 </div>
 
       <div class="right-bubble" id="rm-satellite" onclick="setMapType('satellite'); rmActivate('rm-satellite')"><span class="rb-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-satellite></use></svg></span> Satellite</div>
@@ -9708,6 +9772,10 @@ function renderAlerts(features) {
     const cls = info ? info[1].cls : '';
     const div = document.createElement('div');
     div.className = `alert-card ${cls}`;
+    // Lets anything (StormStream's auto-scroll, a future deep link) find
+    // this exact card later without re-deriving the alert-id fallback
+    // chain used everywhere else in this function.
+    div.dataset.alertId = p.id || p['@id'] || f.id || '';
     const expiresLabel = _fmtAlertTime(p.expires);
     div.innerHTML = `<div class="alert-event"><span>${_ccEsc(ev)}</span>${expiresLabel ? `<span class="alert-event-time">until ${expiresLabel}</span>` : ''}</div><div class="alert-area">${_ccEsc(p.areaDesc || '')}</div>${p._approxZone ? `<div class="alert-meta">zone boundary (approximate)</div>` : ''}`;
 
@@ -13569,10 +13637,14 @@ const PR_PRODUCTS = {
                   l3Tilts: ['n0u', 'n1u', 'n2u', 'n3u'] },
   // Level 3 only: the Weather Service computes these from the full volume, so
   // the Pi gets them ready made and Level 2 has no equivalent file.
-  corrcoeff:    { label: 'Corr. Coeff.',    l2: 'cc',  l3: 'n0c' },
-  diffrefl:     { label: 'Diff. Refl.',     l2: 'zdr', l3: 'n0x' },
-  kdp:          { label: 'Spec. Diff. Phase', l3: 'n0k' },
-  hydroclass:   { label: 'Hydro. Class.',   l3: 'n0h' },
+  corrcoeff:    { label: 'Corr. Coeff.',    l2: 'cc',  l3: 'n0c', l3Tilts: ['n0c', 'n1c'] },
+  diffrefl:     { label: 'Diff. Refl.',     l2: 'zdr', l3: 'n0x', l3Tilts: ['n0x', 'n1x'] },
+  kdp:          { label: 'Spec. Diff. Phase', l3: 'n0k', l3Tilts: ['n0k', 'n1k'] },
+  hydroclass:   { label: 'Hydro. Class.',   l3: 'n0h', l3Tilts: ['n0h', 'n1h'] },
+  // Base velocity re-centered on the storm's own motion - shows a
+  // mesocyclone couplet the ground-relative "velocity" entry above washes
+  // out under a strong environmental wind.
+  srvelocity:   { label: 'Storm Rel. Velocity', l3: 'n0s', l3Tilts: ['n0s', 'n1s'] },
   onehour:      { label: '1-Hr Precip',     l3: 'ohp' },
   stormtotal:   { label: 'Storm Total',     l3: 'stp' },
   vil:          { label: 'VIL',             l3: 'dvl' },
@@ -16970,6 +17042,8 @@ LAYER_DESCRIPTIONS['pi-diffrefl']     = LAYER_DESCRIPTIONS.zdr;
 LAYER_DESCRIPTIONS['pi-kdp']          = LAYER_DESCRIPTIONS.kdp;
 LAYER_DESCRIPTIONS['pi-spectrum']     = LAYER_DESCRIPTIONS.sw;
 LAYER_DESCRIPTIONS['pi-hydroclass']   = LAYER_DESCRIPTIONS.hc;
+LAYER_DESCRIPTIONS['pi-srvelocity']   = LAYER_DESCRIPTIONS.velocity
+  + " With the storm's own motion subtracted out first, so what's left is rotation relative to the storm rather than the whole field drifting with the wind - a tighter couplet for spotting a mesocyclone.";
 
 const SB_ICON_RADAR = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M12 12 L19 7"/><path d="M8 12a4 4 0 0 1 4-4"/><path d="M5 12a7 7 0 0 1 7-7"/><path d="M2 12a10 10 0 0 1 10-10"/></svg>';
 const SB_ICON_SATELLITE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="6" height="6" rx="1"/><line x1="2" y1="6" x2="7" y2="11"/><line x1="2" y1="12" x2="7" y2="7"/><line x1="22" y1="6" x2="17" y2="11"/><line x1="22" y1="12" x2="17" y2="7"/><line x1="12" y1="15" x2="12" y2="21"/><path d="M9 21h6"/></svg>';
@@ -18952,7 +19026,7 @@ const _PR_ICONS = {
   reflectivity: 'ic-cloud-rain', velocity: 'ic-wind', corrcoeff: 'ic-hex',
   diffrefl: 'ic-signal', kdp: 'ic-gauge', hydroclass: 'ic-rainbow',
   onehour: 'ic-cloud-rain', stormtotal: 'ic-drop', vil: 'ic-gauge',
-  spectrum: 'ic-sliders',
+  spectrum: 'ic-sliders', srvelocity: 'ic-tornado',
   echotops: 'ic-mountain', composite: 'ic-cloud',
 };
 // One bubble per product the picked level can actually serve, built from
@@ -35546,7 +35620,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "StormStream Mode got a remodel: the info card no longer overlaps the drawing tools on phones, shows how many alerts are queued up, and turning it on now switches on radar and opens the Alerts panel automatically instead of you having to do it yourself.";
+const APP_LATEST_UPDATE = "New: an Export tool on the toolbar for downloading the current radar/satellite/model picture as a PNG or its whole loop as a video. Satellite now plays through the same loop button radar uses. StormStream's alert panel auto-scrolls to whichever alert is showing. Plus new radar products (storm-relative velocity, more dual-pol tilts) and three new NAM regional models on the Pi.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -37988,6 +38062,7 @@ const OV_DESCRIPTIONS = {
   'radar-l3':         "Level 3 is what the Weather Service makes from Level 2: one product, already quality controlled, on a coarser grid and about 30 KB. Cheaper and slightly later, and it arrives even when a Level 2 volume is missing.",
   'pi-reflectivity':  "How heavy the precipitation is, in dBZ. The usual radar picture.",
   'pi-velocity':      "How fast the precipitation is moving toward or away from the antenna. Red beside green means rotation, which is what a tornado looks like on radar.",
+  'pi-srvelocity':    "Same idea as Velocity, but with the storm's own motion subtracted out first, so what's left is rotation relative to the storm rather than the whole field drifting with the wind - a tighter, clearer couplet for spotting a mesocyclone.",
   'wpc-outlook':      'Flash flood risk over the next 3 days, from the Weather Prediction Center.',
   'lightning':        'Live lightning strike data, updated as strikes happen.',
   'cloudcam':         'Upload a photo of the sky or storm damage near you, or browse photos other users have shared.',
@@ -39189,6 +39264,7 @@ function _ssShowFeature(feature, recordHistory) {
 
   _ssApplyRadarForEvent(p.event || '');
   _ssRenderHud(feature);
+  _ssScrollAlertsPanelTo(feature);
 
   if (recordHistory !== false) {
     _ssHistory = _ssHistory.slice(0, _ssHistoryPos + 1);
@@ -39199,6 +39275,26 @@ function _ssShowFeature(feature, recordHistory) {
 
   try {
     if (localStorage.getItem('lqm_alertsound') === 'true') _ssPlayChime();
+  } catch (e) {}
+}
+
+// Scrolls the (already-open) Alerts panel to whichever card matches the
+// alert StormStream is currently showing, and marks it so the connection
+// between the HUD and the panel list is obvious rather than the panel
+// just seeming to scroll on its own.
+function _ssScrollAlertsPanelTo(feature) {
+  try {
+    const p = feature.properties || {};
+    const id = p.id || p['@id'] || feature.id || '';
+    const body = document.getElementById('alerts-panel-body');
+    if (!body) return;
+    body.querySelectorAll('.alert-card.ss-current').forEach(el => el.classList.remove('ss-current'));
+    if (!id) return;
+    const card = body.querySelector(`.alert-card[data-alert-id="${CSS.escape(id)}"]`);
+    if (card) {
+      card.classList.add('ss-current');
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
   } catch (e) {}
 }
 
@@ -39383,6 +39479,8 @@ function _ssStop() {
   if (_ssHudEl) { _ssHudEl.remove(); _ssHudEl = null; }
   if (typeof _sgRemoveActiveGraphic === 'function') _sgRemoveActiveGraphic();
   const warn = document.getElementById('ss-privacy-warn'); if (warn) warn.remove();
+  document.querySelectorAll('#alerts-panel-body .alert-card.ss-current')
+    .forEach(el => el.classList.remove('ss-current'));
 }
 
 // ── Settings UI wiring ──────────────────────────────────────────────────
@@ -39740,6 +39838,233 @@ async function _sgUiRefreshList() {
     _sgUiRefreshList();
   });
 }
+</script>
+
+<script>
+// ── EXPORT TOOL ─────────────────────────────────────────────────────────
+// Downloads whatever radar/satellite/model picture is on screen right now:
+// the single visible frame as a PNG, or every frame of its loop stitched
+// into a video (or, on a browser that can't record one, the same frames as
+// a numbered sequence of separate PNGs instead).
+const EXPORT_INFO_TEXT = "Downloads whatever radar, satellite, or model "
+  + "picture is currently on screen - either the single frame you're "
+  + "looking at, or every frame in its loop, stitched into one video "
+  + "where the browser supports recording one.";
+
+function _expToggle() {
+  const panel = document.getElementById('export-panel');
+  if (!panel) return;
+  const opening = !panel.classList.contains('open');
+  panel.classList.toggle('open', opening);
+  if (opening) _expRefreshStatus();
+}
+
+// Which of the three "picture, not raw numbers" pathways is actually on
+// screen right now - the Pi's own single-site loop, the national mosaic,
+// or satellite - each fetched a different way below.
+function _expActiveSource() {
+  if (typeof _prLoopActive === 'function' && _prLoopActive()) {
+    return { kind: 'pi', count: _prLoop.frames.length,
+             label: (PR_PRODUCTS[_prProduct] || {}).label || 'Radar' };
+  }
+  if (typeof activeLayers !== 'undefined' && activeLayers.satellite
+      && typeof goesFrames !== 'undefined' && goesFrames.length) {
+    return { kind: 'satellite', count: goesFrames.length, label: 'Satellite' };
+  }
+  if (typeof activeLayers !== 'undefined' && activeLayers.nexrad
+      && typeof radarFrames !== 'undefined' && radarFrames.length) {
+    return { kind: 'nexrad', count: radarFrames.length, label: 'Radar' };
+  }
+  return null;
+}
+
+function _expCanRecordVideo() {
+  try {
+    return typeof MediaRecorder !== 'undefined'
+      && typeof HTMLCanvasElement.prototype.captureStream === 'function';
+  } catch (e) { return false; }
+}
+
+function _expRefreshStatus() {
+  const status = document.getElementById('export-status');
+  const videoBtn = document.getElementById('export-video-btn');
+  const pngBtn = document.getElementById('export-png-btn');
+  const src = _expActiveSource();
+  if (!src) {
+    if (status) status.textContent = 'Nothing to export right now - turn on radar, satellite, or a model chart first.';
+    if (pngBtn) pngBtn.disabled = true;
+    if (videoBtn) videoBtn.disabled = true;
+    return;
+  }
+  if (status) status.textContent = `${src.label}: ${src.count} frame${src.count === 1 ? '' : 's'} available.`;
+  if (pngBtn) pngBtn.disabled = false;
+  if (videoBtn) {
+    videoBtn.disabled = src.count < 2;
+    videoBtn.textContent = _expCanRecordVideo() ? 'Download Loop (Video)' : 'Download Loop (Image Sequence)';
+  }
+}
+
+function _expLoadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('image failed to load'));
+    img.src = url;
+  });
+}
+
+// One WMS GetMap request covering exactly the current map view, instead of
+// compositing the dozens of individually-positioned tile <img> elements the
+// live satellite/radar layers use - the WMS servers already support asking
+// for one image sized to a bounding box, so that's what's asked for here.
+function _expWmsFrameUrl(baseUrl, layer, timeStr) {
+  const size = map.getSize();
+  const bounds = map.getBounds();
+  const crs = L.CRS.EPSG3857;
+  const sw = crs.project(bounds.getSouthWest());
+  const ne = crs.project(bounds.getNorthEast());
+  const params = new URLSearchParams({
+    SERVICE: 'WMS', VERSION: '1.1.1', REQUEST: 'GetMap',
+    LAYERS: layer, STYLES: '', FORMAT: 'image/png', TRANSPARENT: 'true',
+    SRS: 'EPSG:3857', BBOX: [sw.x, sw.y, ne.x, ne.y].join(','),
+    WIDTH: String(Math.max(1, Math.round(size.x))),
+    HEIGHT: String(Math.max(1, Math.round(size.y))),
+  });
+  if (timeStr) params.set('TIME', timeStr);
+  const sep = baseUrl.includes('?') ? '&' : '?';
+  return baseUrl + sep + params.toString();
+}
+
+// One frame, however that source pathway actually gets one: the Pi loop
+// already knows how to fetch and (if custom colors are on) recolor its own
+// frames correctly, so that path is driven through the real _prLoopShow
+// rather than re-deriving its manifest/recolor logic here - the frame is
+// then reloaded independently with crossOrigin set, since the live overlay
+// itself may not have that set and canvas capture needs it either way.
+async function _expFrameImage(src, idx) {
+  if (src.kind === 'pi') {
+    await _prLoopShow(idx);
+    const el = _prOverlay && _prOverlay.getElement && _prOverlay.getElement();
+    if (!el || !el.src) return null;
+    return _expLoadImage(el.src);
+  }
+  if (src.kind === 'satellite') {
+    const cfg = _detectGoesConfig();
+    return _expLoadImage(_expWmsFrameUrl(cfg.url, cfg.layer, goesFrames[idx].timeStr));
+  }
+  if (src.kind === 'nexrad') {
+    const frame = radarFrames[idx];
+    const timeStr = frame.iso || frame.timeStr;
+    return _expLoadImage(_expWmsFrameUrl(IEM_NEXRAD_WMS, IEM_NEXRAD_LAYER, timeStr));
+  }
+  return null;
+}
+
+function _expDownloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function _expDownloadPng() {
+  const src = _expActiveSource();
+  const status = document.getElementById('export-status');
+  if (!src) return;
+  try {
+    const idx = src.kind === 'pi' ? _prLoop.idx
+      : src.kind === 'satellite' ? goesCurrentFrame : currentFrame;
+    const img = await _expFrameImage(src, Math.max(0, idx));
+    if (!img) { if (status) status.textContent = 'Could not load that frame.'; return; }
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    canvas.toBlob(blob => {
+      if (blob) _expDownloadBlob(blob, `gwcfc-${src.kind}-${Date.now()}.png`);
+      else if (status) status.textContent = 'Could not build that image.';
+    }, 'image/png');
+  } catch (e) {
+    if (status) status.textContent = 'Export failed: ' + e.message;
+  }
+}
+
+async function _expDownloadVideo() {
+  const src = _expActiveSource();
+  if (!src || src.count < 2) return;
+  const btn = document.getElementById('export-video-btn');
+  const status = document.getElementById('export-status');
+  const progress = document.getElementById('export-progress');
+  if (btn) btn.disabled = true;
+  if (progress) progress.style.display = '';
+  try {
+    if (!_expCanRecordVideo()) {
+      // No MediaRecorder / canvas.captureStream on this browser (notably
+      // Safari's support for either is inconsistent) - fall back to a
+      // numbered sequence of plain PNGs, still every frame of the loop,
+      // just not stitched into one file.
+      for (let i = 0; i < src.count; i++) {
+        if (progress) progress.textContent = `Frame ${i + 1} / ${src.count}…`;
+        const img = await _expFrameImage(src, i);
+        if (!img) continue;
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        await new Promise(resolve => canvas.toBlob(blob => {
+          if (blob) _expDownloadBlob(blob, `gwcfc-${src.kind}-frame-${String(i + 1).padStart(3, '0')}.png`);
+          resolve();
+        }, 'image/png'));
+      }
+      if (status) status.textContent = `Downloaded ${src.count} frames.`;
+      return;
+    }
+
+    const size = map.getSize();
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(size.x));
+    canvas.height = Math.max(1, Math.round(size.y));
+    const ctx = canvas.getContext('2d');
+    const stream = canvas.captureStream(0);
+    const track = stream.getVideoTracks()[0];
+    const mimeType = ['video/webm;codecs=vp9', 'video/webm']
+      .find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
+    const chunks = [];
+    const rec = new MediaRecorder(stream, { mimeType });
+    rec.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    const stopped = new Promise(resolve => { rec.onstop = resolve; });
+    rec.start();
+    for (let i = 0; i < src.count; i++) {
+      if (progress) progress.textContent = `Frame ${i + 1} / ${src.count}…`;
+      const img = await _expFrameImage(src, i);
+      if (img) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      }
+      if (track && typeof track.requestFrame === 'function') track.requestFrame();
+      await new Promise(resolve => setTimeout(resolve, 220));
+    }
+    rec.stop();
+    await stopped;
+    _expDownloadBlob(new Blob(chunks, { type: mimeType }), `gwcfc-${src.kind}-loop-${Date.now()}.webm`);
+    if (status) status.textContent = 'Video downloaded.';
+  } catch (e) {
+    if (status) status.textContent = 'Loop export failed: ' + e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+    if (progress) progress.style.display = 'none';
+  }
+}
+
+(function () {
+  const infoBtn = document.getElementById('export-info-btn');
+  if (!infoBtn) return;
+  infoBtn.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-info></use></svg>';
+  infoBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    if (typeof _ovShowInfo === 'function') _ovShowInfo(EXPORT_INFO_TEXT, infoBtn);
+  };
+})();
 </script>
 </body>
 </html>

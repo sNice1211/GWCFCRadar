@@ -169,6 +169,34 @@ L3_PRODUCTS = {
             "ramp": "velocity", "label": "Velocity Tilt 3", "unit": "kt"},
     "n3u": {"code": "N3U", "dir": "DS.p99v3", "range": (-40, 40),
             "ramp": "velocity", "label": "Velocity Tilt 4", "unit": "kt"},
+    # The dual-pol moments above (n0c/n0x/n0k/n0h) are only listed at tilt 1.
+    # Reflectivity and velocity both publish their higher tilts by
+    # incrementing the trailing digit in the same "dir" (p94r0 -> p94r1 ->
+    # p94r2, p99v0 -> p99v1 -> p99v2), and the RPG assigns that trailing
+    # elevation-cut digit the same way across every digital product family,
+    # not just these two - so tilt 2 of each dual-pol moment is added here
+    # on that same pattern rather than a separate live-checked guess. Same
+    # deal as everything past n3u: skipped, not fatal, if a site's build
+    # ever disagrees with it.
+    "n1c": {"code": "N1C", "dir": "DS.161c1", "range": (0.2, 1.05),
+            "ramp": "viridis", "label": "Corr. Coeff. Tilt 2", "unit": ""},
+    "n1x": {"code": "N1X", "dir": "DS.159x1", "range": (-4, 8),
+            "ramp": "spread", "label": "Diff. Refl. Tilt 2", "unit": "dB"},
+    "n1k": {"code": "N1K", "dir": "DS.163k1", "range": (-2, 7),
+            "ramp": "moisture", "label": "Spec. Diff. Phase Tilt 2", "unit": "deg/km"},
+    "n1h": {"code": "N1H", "dir": "DS.165h1", "range": (0, 160),
+            "ramp": "viridis", "label": "Hydro. Class. Tilt 2", "unit": ""},
+    # Storm-relative velocity: the base velocity field re-centered on the
+    # storm's own motion, which is what actually shows a mesocyclone couplet
+    # instead of the whole field just sliding with the environmental wind.
+    # WSR-88D product number 56; "s" suffix chosen the same way "r" marks the
+    # reflectivity family and "v" marks ground-relative velocity above. Lower
+    # confidence than the tilt-2 entries just above (not a same-file pattern
+    # extension, so genuinely worth checking against a live site).
+    "n0s": {"code": "N0S", "dir": "DS.p56s0", "range": (-40, 40),
+            "ramp": "velocity", "label": "Storm Rel. Velocity", "unit": "kt"},
+    "n1s": {"code": "N1S", "dir": "DS.p56s1", "range": (-40, 40),
+            "ramp": "velocity", "label": "Storm Rel. Velocity Tilt 2", "unit": "kt"},
 }
 
 # ── TDWR Level 3, the terminal radars' own dialect ──────────────────────────
