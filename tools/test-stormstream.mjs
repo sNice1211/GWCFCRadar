@@ -188,8 +188,12 @@ console.log('\n4b. starting StormStream turns radar on and opens the Alerts pane
   }, [TOR_EMERG]);
   ok('the national radar mosaic turns on if it wasn\'t already',
      r.nexradOn === true && r.product === 'ref', JSON.stringify(r));
-  ok('the Alerts panel opens automatically instead of a second alerts panel being built',
-     r.alertsPanelOpen === true, JSON.stringify(r));
+  // StormStream used to open the WX Alerts panel and scroll it in step. The
+  // broadcast frame carries its own Active Alerts list now, so the WX panel
+  // was a second copy of the same alerts sitting on top of the graphic. It is
+  // no longer opened at all, and on air it is hidden outright.
+  ok('the WX Alerts panel is NOT opened, because the frame has its own list',
+     r.alertsPanelOpen === false, JSON.stringify(r));
 
   const leftAlone = await page.evaluate(([torEmerg]) => {
     // If radar is already showing something, starting StormStream must not

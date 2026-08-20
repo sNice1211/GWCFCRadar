@@ -57,7 +57,12 @@ OUT_DIR = os.path.expanduser("~/wxdata/satellite")
 # How much history to keep on disk. This is what the page can loop over, so
 # it is the difference between a five frame flicker and a real animation. The
 # ceiling is the SD card, not the code: a CONUS composite is a few hundred KB.
-KEEP_HOURS = float(os.environ.get("GWCFC_SAT_KEEP_HOURS", "12"))
+KEEP_HOURS = float(os.environ.get("GWCFC_SAT_KEEP_HOURS", "72"))
+# A composite is a few hundred kilobytes and CONUS rebuilds every ten minutes,
+# so three days is about four hundred and thirty frames a product. The count
+# ceiling is the real budget: the window alone says nothing about how many
+# frames a faster sector produces inside it.
+MAX_FRAMES = int(os.environ.get("GWCFC_SAT_MAX_FRAMES", "500"))
 
 # GOES-East and GOES-West. The bucket name is the whole difference.
 SATS = {
@@ -457,6 +462,7 @@ def prune(sector_dir, hours=KEEP_HOURS):
         return
     import shutil
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    kept = []
     for d in sorted(os.listdir(sector_dir)):
         full = os.path.join(sector_dir, d)
         if not (os.path.isdir(full) and d[:1].isdigit()):
@@ -466,6 +472,14 @@ def prune(sector_dir, hours=KEEP_HOURS):
         except ValueError:
             continue
         if when < cutoff:
+            shutil.rmtree(full, ignore_errors=True)
+        else:
+            kept.append(full)
+    # The window is not a budget on its own: a mesoscale sector rebuilding
+    # every ten minutes produces four times what Full Disk does inside the
+    # same three days. Oldest first, so what goes is what is least missed.
+    if MAX_FRAMES and len(kept) > MAX_FRAMES:
+        for full in kept[:len(kept) - MAX_FRAMES]:
             shutil.rmtree(full, ignore_errors=True)
 
 
