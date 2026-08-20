@@ -11797,17 +11797,18 @@
     const p4 = project(sinAz1, cosAz1, r2);
     return [p1, p2, p3, p4];
   };
-  var RANGE_FULL_DETAIL_KM = 120;
-  var RANGE_STEP_KM = 120;
-  var RANGE_MAX_STRIDE = 4;
+  var RANGE_FULL_DETAIL_KM = 100;
+  var RANGE_STEP_KM = 100;
+  var RANGE_MAX_STRIDE = 8;
   var strideForRange = (rangeKm, gateSizeKm, full) => {
     if (full) return 1;
     if (!(gateSizeKm > 0) || gateSizeKm >= 0.9) return 1;
     if (rangeKm <= RANGE_FULL_DETAIL_KM) return 1;
-    const steps = Math.floor((rangeKm - RANGE_FULL_DETAIL_KM) / RANGE_STEP_KM) + 2;
+    const steps = Math.floor((rangeKm - RANGE_FULL_DETAIL_KM) / RANGE_STEP_KM) + 1;
+    const stride = Math.pow(2, steps);
     const beamKm = rangeKm / 57;
     const byBeam = Math.max(1, Math.floor(beamKm / gateSizeKm));
-    return Math.max(1, Math.min(RANGE_MAX_STRIDE, steps, byBeam));
+    return Math.max(1, Math.min(RANGE_MAX_STRIDE, stride, byBeam));
   };
   var readRangeOptions = (options) => ({
     limitKm: Number.isFinite(options.range_limit_km) && options.range_limit_km > 0 ? options.range_limit_km : null,

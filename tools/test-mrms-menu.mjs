@@ -97,9 +97,12 @@ const read = () => page.evaluate(() => {
     groups: [...w.querySelectorAll('[data-mrms-group]')].map(e => e.dataset.mrmsGroup),
     products: [...w.querySelectorAll('[data-mrms-id]')].map(e => e.dataset.mrmsId),
     counts: [...w.querySelectorAll('.sb-count')].map(e => e.textContent),
-    heading: (w.querySelector('.sub-bubble-group-label') || {}).textContent,
+    // Where you are is in the back pill now ("Back to Severe"), not in a
+    // gold heading floating above the column: with no pill around it that
+    // read as a caption printed on the map rather than as part of the menu.
+    heading: (w.querySelector('.sb-back .sb-label') || {}).textContent,
     backs: [...w.querySelectorAll('.sub-bubble .sb-label')]
-      .filter(e => e.textContent === 'Back').length,
+      .filter(e => /^Back\b/.test(e.textContent)).length,
     active: [...w.querySelectorAll('.sub-bubble.active')]
       .map(e => e.dataset.mrmsId || e.dataset.mrmsGroup),
   };

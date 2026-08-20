@@ -113,28 +113,52 @@ await page.evaluate(() => { if (typeof closeTutorial === 'function') closeTutori
 // Point the page at the mock Pi, the same way a real resolve would.
 await page.evaluate(pi => { _hdBase = pi; }, PI);
 
-console.log('\n1. the composites are in the menu, under their own heading');
+console.log('\n1. the composites are their own branch of the menu');
 {
+  // The menu nests now: RGB Composites or ABI Bands first, then a category,
+  // then the products. So this walks it the way a person would, rather than
+  // reading a flat grid that no longer exists.
   const r = await page.evaluate(() => {
+    const w = () => document.getElementById('sub-bubbles');
     toggleSatelliteSub();
-    const grid = document.getElementById('sat-product-grid');
-    const heads = [...grid.querySelectorAll('.sub-bubble-group-label')]
-      .map(h => h.textContent);
-    const rgb = GOES_PRODUCTS.filter(p => p.group === 'rgb');
+    const kinds = [...w().querySelectorAll('[data-sat-kind]')]
+      .map(e => e.dataset.satKind);
+    w().querySelector('[data-sat-kind="rgb"]').click();
+    const cats = [...w().querySelectorAll('[data-sat-cat]')].map(e => e.dataset.satCat);
+    const catLabels = [...w().querySelectorAll('[data-sat-cat] .sb-label')]
+      .map(e => e.textContent);
+    // Every composite, found by walking into each of its categories.
+    const found = [];
+    cats.forEach(c => {
+      w().querySelector(`[data-sat-cat="${c}"]`).click();
+      [...w().querySelectorAll('[data-product-id]')]
+        .forEach(e => found.push(e.dataset.productId));
+      // Back to the category list for the next one.
+      w().querySelector('.sb-back').click();
+    });
+    const rgb = GOES_PRODUCTS.filter(p => String(p.group || '').startsWith('rgb'));
     return {
-      heads,
+      kinds, cats, catLabels, found,
       count: rgb.length,
       allPi: rgb.every(p => p.src === 'pi' && !!p.recipe),
       described: rgb.filter(p => !LAYER_DESCRIPTIONS[p.id]).map(p => p.id),
-      inGrid: rgb.filter(p => !grid.querySelector(`[data-product-id="${p.id}"]`)).map(p => p.id),
+      missing: rgb.filter(p => !found.includes(p.id)).map(p => p.id),
       bandsUntouched: GOES_PRODUCTS.filter(p => p.ch && p.src === 'pi').length,
     };
   });
-  ok('there is a Composites heading', r.heads.includes('Composites'), JSON.stringify(r.heads));
-  ok('and a real set of them under it, not one token entry', r.count >= 7, String(r.count));
+  // The first choice is the honest one: a band is a measurement, a composite
+  // is arithmetic across several. They are not the same kind of answer.
+  ok('the top of the satellite menu is the two kinds',
+     r.kinds.includes('rgb') && r.kinds.includes('abi'), JSON.stringify(r.kinds));
+  ok('and RGB opens into categories rather than straight into products',
+     r.cats.length >= 2, JSON.stringify(r.cats));
+  ok('which are named in words, not ids',
+     r.catLabels.every(l => /[a-z]/.test(l) && l.length > 3), JSON.stringify(r.catLabels));
+  ok('a real set of composites, not one token entry', r.count >= 7, String(r.count));
   ok('every one is marked as coming from the Pi, with a recipe named', r.allPi);
   ok('every one has an info description', r.described.length === 0, r.described.join(','));
-  ok('every one is actually drawn in the menu', r.inGrid.length === 0, r.inGrid.join(','));
+  ok('and every one is reachable by walking the menu',
+     r.missing.length === 0, r.missing.join(','));
   ok('and no plain band was turned into a Pi product by accident',
      r.bandsUntouched === 0, String(r.bandsUntouched));
 }

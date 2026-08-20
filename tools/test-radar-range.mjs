@@ -185,15 +185,20 @@ console.log('\n5. the thinning only happens where the beam is already wider');
   // The whole justification: a one degree beam is 2 km across at 115 km and
   // 4 km at 230. A 250 m radial cell out there is finer than anything the
   // radar can resolve, so merging costs nothing that was ever measured.
-  ok('inside 120 km nothing is merged at all',
+  ok('inside 100 km nothing is merged at all',
      mod.strideForRange(50, 0.25, false) === 1
-     && mod.strideForRange(119, 0.25, false) === 1);
-  ok('past it, cells lengthen a step at a time',
-     mod.strideForRange(121, 0.25, false) === 2
-     && mod.strideForRange(250, 0.25, false) === 3
-     && mod.strideForRange(400, 0.25, false) === 4);
-  ok('and never past four, however far out',
-     mod.strideForRange(2000, 0.25, false) === 4);
+     && mod.strideForRange(99, 0.25, false) === 1);
+  // Doubling, not counting up. Counting up left a 460 km sweep with about a
+  // thousand cells on every radial, which is three quarters of a million
+  // polygons for one picture, and drawing a million of anything is where a
+  // browser stops being a browser. Doubling matches what the beam is doing
+  // anyway: it widens in proportion to range, so the cell should too.
+  ok('past it the cell doubles each hundred kilometres',
+     mod.strideForRange(101, 0.25, false) === 2
+     && mod.strideForRange(250, 0.25, false) === 4
+     && mod.strideForRange(350, 0.25, false) === 8);
+  ok('and never past eight, however far out',
+     mod.strideForRange(2000, 0.25, false) === 8);
   ok('a kilometre gate is never merged, at any range',
      mod.strideForRange(400, 1, false) === 1
      && mod.strideForRange(50, 1, false) === 1);

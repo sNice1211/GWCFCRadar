@@ -99,9 +99,9 @@ const buildPolygon = (project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2) => {
 //
 // Full detail is kept inside RANGE_FULL_DETAIL_KM, which covers every storm
 // anyone interrogates closely, and beyond that the cells lengthen in steps.
-const RANGE_FULL_DETAIL_KM = 120;
-const RANGE_STEP_KM = 120;      // every further step of this adds one gate
-const RANGE_MAX_STRIDE = 4;     // never coarser than this, however far out
+const RANGE_FULL_DETAIL_KM = 100;
+const RANGE_STEP_KM = 100;      // every further step of this doubles the cell
+const RANGE_MAX_STRIDE = 8;     // never coarser than this, however far out
 
 // How many gates to merge into one cell at this range.
 //
@@ -113,16 +113,20 @@ const strideForRange = (rangeKm, gateSizeKm, full) => {
     if (full) return 1;
     if (!(gateSizeKm > 0) || gateSizeKm >= 0.9) return 1;
     if (rangeKm <= RANGE_FULL_DETAIL_KM) return 1;
-    // 120 to 240 km merges two gates, 240 to 360 merges three, and so on.
-    // The +2 is what makes the first band past full detail a pair rather than
-    // a single: floor() of anything just over the boundary is still nought.
-    const steps = Math.floor((rangeKm - RANGE_FULL_DETAIL_KM) / RANGE_STEP_KM) + 2;
+    // Doubling rather than counting up: 100 to 200 km merges two gates, 200
+    // to 300 merges four, 300 to 400 merges eight. Counting up gave 460 km of
+    // sweep about a thousand cells on every radial, and drawing a million of
+    // anything is where a browser stops being a browser. Doubling gives about
+    // six hundred, and it matches what the beam is doing anyway: the beam
+    // widens in proportion to range, so the cell should too.
+    const steps = Math.floor((rangeKm - RANGE_FULL_DETAIL_KM) / RANGE_STEP_KM) + 1;
+    const stride = Math.pow(2, steps);
     // Never merge past the point where a cell is longer than the beam is
     // wide: that would be visible as blockiness rather than as fidelity
     // nobody could see anyway.
     const beamKm = rangeKm / 57;
     const byBeam = Math.max(1, Math.floor(beamKm / gateSizeKm));
-    return Math.max(1, Math.min(RANGE_MAX_STRIDE, steps, byBeam));
+    return Math.max(1, Math.min(RANGE_MAX_STRIDE, stride, byBeam));
 };
 
 // What the caller asked for, resolved once per scan.

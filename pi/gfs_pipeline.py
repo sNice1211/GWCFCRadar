@@ -2106,6 +2106,104 @@ def build_lut(name):
 LUTS = {name: build_lut(name) for name in RAMPS}
 
 
+# ── Radar bands, which are not a ramp ───────────────────────────────────────
+# Radar has been drawn in discrete bands since it was drawn on paper, and that
+# is not tradition for its own sake. A forecaster reads a band EDGE as a
+# threshold: 35 dBZ is about where a shower becomes a storm, 50 is where hail
+# starts being worth thinking about, 60 is a core. A smooth ramp has no edges,
+# so none of those numbers can be read off the picture, and once a browser
+# smooths the finished PNG as it magnifies it, every echo becomes a soft
+# rainbow blob. That is what these replace.
+#
+# Values are in the field's own units, so the same table gives the right
+# colours whatever range a product declares.
+BANDS = {
+    # The National Weather Service reflectivity scale, in dBZ. The one every
+    # radar picture anyone has ever looked at uses.
+    "radar": [
+        (5, (4, 233, 231)), (10, (1, 159, 244)), (15, (3, 0, 244)),
+        (20, (2, 253, 2)), (25, (1, 197, 1)), (30, (0, 142, 0)),
+        (35, (253, 248, 2)), (40, (229, 188, 0)), (45, (253, 149, 0)),
+        (50, (253, 0, 0)), (55, (212, 0, 0)), (60, (188, 0, 0)),
+        (65, (248, 0, 253)), (70, (152, 84, 198)), (75, (253, 253, 253)),
+    ],
+    # Velocity in knots, symmetric because the number means "towards" on one
+    # side of zero and "away" on the other, and the thing worth seeing is the
+    # two side by side. Brightest at the extremes; near zero is nearly black
+    # so still air does not shout.
+    "velocity": [
+        (-140, (0, 255, 255)), (-100, (0, 224, 192)), (-80, (0, 240, 0)),
+        (-64, (0, 208, 0)), (-50, (0, 180, 0)), (-36, (0, 148, 0)),
+        (-26, (0, 120, 0)), (-20, (0, 92, 0)), (-10, (0, 66, 0)),
+        (-5, (20, 20, 20)), (5, (66, 0, 0)), (10, (92, 0, 0)),
+        (20, (120, 0, 0)), (26, (148, 0, 0)), (36, (180, 0, 0)),
+        (50, (208, 0, 0)), (64, (240, 0, 0)), (80, (255, 80, 80)),
+        (100, (255, 144, 144)), (140, (255, 208, 208)),
+    ],
+}
+
+
+def build_band_lut(name, lo, hi):
+    """256 entries that step at the band edges instead of sliding between."""
+    bands = BANDS[name]
+    lut = np.zeros((256, 3), dtype=np.uint8)
+    for i in range(256):
+        v = lo + (i / 255.0) * (hi - lo)
+        rgb = bands[0][1]
+        for edge, colour in bands:
+            if v >= edge:
+                rgb = colour
+            else:
+                break
+        lut[i] = rgb
+    return lut
+
+
+def _idx_at(value, lo, hi):
+    """Which of the 256 encoded steps a real value lands on."""
+    return int(round((value - lo) / float(hi - lo) * 255))
+
+
+def band_alpha(ramp, idx, alpha, lo, hi):
+    """Hide the readings a banded product should not paint at all.
+
+    Below reflectivity's first band is clear-air return and ground clutter,
+    not weather, and painting it turns every map into a solid wash centred on
+    the radar. Within a few knots of zero is still air, and a wash of that
+    across a whole sweep hides the couplet that is the only reason anyone
+    opened velocity.
+
+    Both cutoffs are read off the band table rather than typed in, so the
+    picture and the palette can never drift apart.
+    """
+    if ramp not in BANDS:
+        return alpha
+    if ramp == "velocity":
+        alpha[(idx > _idx_at(-5, lo, hi)) & (idx < _idx_at(5, lo, hi))] = 0
+    else:
+        alpha[idx < _idx_at(BANDS[ramp][0][0], lo, hi)] = 0
+    return alpha
+
+
+_BAND_LUTS = {}
+
+
+def lut_for(ramp, lo, hi):
+    """The lookup table for a ramp over a range.
+
+    Banded where radar convention says bands, smooth everywhere else. The
+    range has to be passed because a band edge is a real value: 50 dBZ is 50
+    dBZ whether a product declares -10 to 75 or 0 to 80, and a table built for
+    the wrong range would put the red where the yellow belongs.
+    """
+    if ramp not in BANDS:
+        return LUTS[ramp]
+    key = (ramp, lo, hi)
+    if key not in _BAND_LUTS:
+        _BAND_LUTS[key] = build_band_lut(ramp, lo, hi)
+    return _BAND_LUTS[key]
+
+
 # ── NOAA ────────────────────────────────────────────────────────────────────
 
 def fhours_for(m):
@@ -2482,14 +2580,17 @@ def render_png(values, lats, spec, out_path):
     bad = ~np.isfinite(norm)
     idx = np.clip(np.nan_to_num(norm) * 255.0, 0, 255).astype(np.uint8)
 
-    rgb = LUTS[spec["ramp"]][idx]
+    rgb = lut_for(spec["ramp"], lo, hi)[idx]
     alpha = np.full(idx.shape, 200, dtype=np.uint8)
     alpha[bad] = 0
     # Values at the very bottom of the scale are usually "nothing here" for
     # precipitation and reflectivity, so they fade out instead of tinting the
-    # whole map.
-    if spec["ramp"] in ("precip", "radar"):
+    # whole map. A banded palette knows exactly where its own bottom is, so
+    # reflectivity takes that rather than a flat index of six, which on the
+    # -10 to 75 scale was minus eight: eight dBZ of nothing, painted.
+    if spec["ramp"] == "precip":
         alpha[idx < 6] = 0
+    band_alpha(spec["ramp"], idx, alpha, lo, hi)
 
     Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA").save(
         out_path, optimize=True)
