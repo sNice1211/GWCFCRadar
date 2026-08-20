@@ -249,7 +249,7 @@ console.log('\n6. the Settings panel drives it all');
     return { opts: opts.join(','), velRange, velLabel, refRange };
   });
   ok('the picker offers every family',
-     ui.opts === 'ref,vel,sw,cc,zdr,kdp,hc,et', ui.opts);
+     ui.opts === 'ref,vel,sw,cc,zdr,kdp,hc,et,vil,composite,onehour,stormtotal', ui.opts);
   ok('velocity gets its own knots range', ui.velRange === '-100..100'
      && / kt$/.test(ui.velLabel), ui.velRange + ' / ' + ui.velLabel);
   ok('reflectivity gets the dBZ range', ui.refRange === '-30..80', ui.refRange);
@@ -271,6 +271,66 @@ console.log('\n6. the Settings panel drives it all');
   });
   ok('reset forgets this product\'s rules',
      !reset.active && !/"ref":\{"on":true/.test(reset.saved), reset.saved);
+}
+
+console.log('\n6b. picture-only families hide the filter, raw families keep it');
+{
+  const rows = await page.evaluate(() => {
+    _fxUiPick('vil');
+    const pic = {
+      filter: document.getElementById('lqm-fx-filter-row').style.display,
+      min: document.getElementById('lqm-fx-min-row').style.display,
+      max: document.getElementById('lqm-fx-max-row').style.display,
+      note: document.getElementById('lqm-fx-picture-note').style.display,
+    };
+    _fxUiPick('ref');
+    const raw = {
+      filter: document.getElementById('lqm-fx-filter-row').style.display,
+      min: document.getElementById('lqm-fx-min-row').style.display,
+      max: document.getElementById('lqm-fx-max-row').style.display,
+      note: document.getElementById('lqm-fx-picture-note').style.display,
+    };
+    return { pic, raw };
+  });
+  ok('VIL (picture-only) hides the filter/min/max rows and shows the note',
+     rows.pic.filter === 'none' && rows.pic.min === 'none'
+     && rows.pic.max === 'none' && rows.pic.note !== 'none',
+     JSON.stringify(rows.pic));
+  ok('reflectivity (raw) shows the filter/min/max rows and hides the note',
+     rows.raw.filter !== 'none' && rows.raw.min !== 'none'
+     && rows.raw.max !== 'none' && rows.raw.note === 'none',
+     JSON.stringify(rows.raw));
+}
+
+console.log('\n6c. Model Colors: per-field custom palettes for Pi chart pictures');
+{
+  const r = await page.evaluate(() => {
+    localStorage.removeItem('gwcfc_model_colors');
+    _hdColors = {};
+    lqmOpenSettings();
+    const sel = document.getElementById('lqm-hc-field');
+    const hasFields = sel.options.length > 0;
+    const firstIsT2m = sel.options.length && sel.options[0] !== undefined;
+    _hdUiPick('t2m');
+    document.getElementById('lqm-hc-c0').value = '#123456';
+    _hdUiColor(0, '#123456');
+    _hdUiColorsOn(true);
+    const savedRaw = localStorage.getItem('gwcfc_model_colors');
+    const pal = _hdPaletteFor('t2m');
+    return { hasFields, firstIsT2m, savedRaw, pal };
+  });
+  ok('the field picker is populated from HD_FIELDS', r.hasFields, String(r.hasFields));
+  ok('turning custom colors on for a field records it',
+     r.pal && r.pal[0] === '#123456', JSON.stringify(r.pal));
+  ok('the choice persists to localStorage',
+     /"t2m"/.test(r.savedRaw) && /123456/.test(r.savedRaw), r.savedRaw);
+
+  const reset = await page.evaluate(() => {
+    _hdUiReset();
+    return { pal: _hdPaletteFor('t2m'), saved: localStorage.getItem('gwcfc_model_colors') };
+  });
+  ok('reset forgets this field\'s custom colors',
+     reset.pal === null && !/"t2m"/.test(reset.saved), JSON.stringify(reset));
 }
 
 console.log('\n7. the Pi reroute knows when raw data is required');

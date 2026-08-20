@@ -11622,6 +11622,13 @@ const HD_INSP_RAMPS = {
   radar:   [[0,[4,233,231]],[0.25,[1,159,244]],[0.4,[3,0,244]],
             [0.55,[2,253,2]],[0.7,[253,248,2]],[0.85,[253,139,0]],
             [0.95,[253,0,0]],[1,[188,0,188]]],
+  // Doppler velocity, the one ramp that has to stay symmetric: green is
+  // "towards the radar", red is "away", nothing at the middle (a color at
+  // zero would fill the whole map with air that is not moving). Mirrors
+  // pi/gfs_pipeline.py's "velocity" ramp exactly.
+  velocity:[[0,[0,90,0]],[0.25,[0,220,0]],[0.45,[120,255,120]],
+            [0.5,[20,20,20]],[0.55,[255,140,140]],[0.75,[230,0,0]],
+            [1,[120,0,0]]],
   precip:  [[0,[200,240,200]],[0.25,[60,190,110]],[0.5,[40,140,220]],
             [0.75,[140,60,200]],[1,[230,60,120]]],
   wind:    [[0,[230,245,255]],[0.3,[90,180,230]],[0.6,[60,200,120]],
@@ -11693,8 +11700,14 @@ function _hdInspLut(name) {
 // (a basemap pixel bleeding through, a label, anything). The 256 steps
 // mean the answer is quantized to (hi-lo)/255, hence the "about" sign
 // on the readout.
-function _hdColorToValue(scale, r, g, b) {
-  const lut = scale && _hdInspLut(scale.ramp);
+function _hdColorToValue(scale, r, g, b, overrideLut) {
+  // overrideLut: when the chart on screen has been recolored (Settings ->
+  // Model Colors), its pixels no longer come from the field's own ramp at
+  // all - they come from the user's five picks, expanded to the same 256
+  // steps by _customLut. The step INDEX still means the same thing either
+  // way (0..255 across the field's lo..hi), so reading it back just means
+  // matching against whichever 256 colors actually got painted.
+  const lut = overrideLut || (scale && _hdInspLut(scale.ramp));
   if (!lut) return null;
   let best = -1, bestD = Infinity;
   for (let i = 0; i < 256; i++) {
@@ -11707,6 +11720,103 @@ function _hdColorToValue(scale, r, g, b) {
   return { value: scale.lo + (best / 255) * (scale.hi - scale.lo), idx: best };
 }
 
+// ── RECOLORING A PICTURE THE PI ALREADY PAINTED ─────────────────────────────
+// Model charts and the handful of radar products with no raw feed here (VIL,
+// Composite, the precip totals) arrive as finished PNGs: the Pi looked up
+// each value in a 256-color ramp and baked the answer straight into pixels,
+// the same way _hdInspLut mirrors for the Inspector. That is exactly what
+// makes recoloring them possible without touching a single number: sample
+// each pixel, work out which of the 256 original colors it is (the same
+// nearest-match _hdColorToValue already does, just run once per distinct
+// color instead of once per click), and paint the matching step of the
+// user's own ramp over it instead. Transparent pixels - "no data" - are
+// left alone; nothing here invents an answer the Pi never gave.
+
+// A user's 2-6 hex colors, spread evenly, expanded to the same 256 steps a
+// built-in ramp gets - built once per distinct set of stops asked for.
+const _customLutCache = new Map();
+function _customLut(stops) {
+  const key = stops.join(',');
+  if (_customLutCache.has(key)) return _customLutCache.get(key);
+  const rgbs = stops.map(_fxHexToRgb);
+  const lut = [];
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    const x = t * (rgbs.length - 1);
+    let j = Math.floor(x); if (j >= rgbs.length - 1) j = rgbs.length - 2;
+    const f = x - j;
+    const a = rgbs[j], b = rgbs[j + 1];
+    lut.push([Math.round(a[0] + (b[0] - a[0]) * f),
+              Math.round(a[1] + (b[1] - a[1]) * f),
+              Math.round(a[2] + (b[2] - a[2]) * f)]);
+  }
+  if (_customLutCache.size > 40) _customLutCache.delete(_customLutCache.keys().next().value);
+  return (_customLutCache.set(key, lut), lut);
+}
+
+// color -> which of the 256 original steps painted it. Built once per ramp
+// and reused for every pixel: PNG color is quantized, not photographic, so
+// an exact hit is the common case and this is the difference between a
+// lookup and a 256-way search per pixel on an image with a million of them.
+const _lutIndexCache = new Map();
+function _lutIndexMap(rampName) {
+  if (_lutIndexCache.has(rampName)) return _lutIndexCache.get(rampName);
+  const lut = _hdInspLut(rampName);
+  if (!lut) return null;
+  const map = new Map();
+  lut.forEach((c, i) => map.set((c[0] << 16) | (c[1] << 8) | c[2], i));
+  _lutIndexCache.set(rampName, map);
+  return map;
+}
+function _nearestLutIndex(rampName, r, g, b) {
+  const lut = _hdInspLut(rampName);
+  if (!lut) return null;
+  let best = -1, bestD = Infinity;
+  for (let i = 0; i < lut.length; i++) {
+    const c = lut[i];
+    const d = (r - c[0]) * (r - c[0]) + (g - c[1]) * (g - c[1]) + (b - c[2]) * (b - c[2]);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return bestD <= 4000 ? best : null;
+}
+
+// The recolored picture, as a data: URL an <img> or L.imageOverlay can use
+// exactly like the original PNG's own URL. Loaded with crossOrigin so the
+// canvas read below does not taint (the Pi already sends
+// Access-Control-Allow-Origin on everything, which is what lets the
+// Inspector read pixels back too).
+function _recolorImage(imgUrl, origRamp, stops) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const idxMap = _lutIndexMap(origRamp);
+        const newLut = _customLut(stops);
+        const c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const data = ctx.getImageData(0, 0, c.width, c.height);
+        const px = data.data;
+        for (let i = 0; i < px.length; i += 4) {
+          if (px[i + 3] === 0) continue;   // transparent: no data, stays no data
+          const key = (px[i] << 16) | (px[i + 1] << 8) | px[i + 2];
+          let idx = idxMap ? idxMap.get(key) : undefined;
+          if (idx === undefined) idx = _nearestLutIndex(origRamp, px[i], px[i + 1], px[i + 2]);
+          if (idx == null) continue;       // not a color this ramp ever painted - leave it
+          const nc = newLut[idx];
+          px[i] = nc[0]; px[i + 1] = nc[1]; px[i + 2] = nc[2];
+        }
+        ctx.putImageData(data, 0, 0);
+        resolve(c.toDataURL('image/png'));
+      } catch (e) { reject(e); }
+    };
+    img.onerror = () => reject(new Error('image failed to load'));
+    img.src = imgUrl;
+  });
+}
+
 // Which scale the chart on screen was painted with: the manifest's own word
 // for it when the Pi wrote one, else the mirrored tables above (with the
 // GEFS-spread special case, whose charts reuse field names on another scale).
@@ -11715,6 +11825,108 @@ function _hdInspScale() {
   if (meta && meta.scale && meta.scale.ramp) return meta.scale;
   if (_hdModel === 'gefsspr') return HD_INSP_SPREAD[_hdField] || null;
   return HD_INSP_SCALES[_hdField] || null;
+}
+
+// ── MODEL COLORS: the same picture-recolor trick, one field at a time ─────
+// A model chart is a finished picture the Pi already painted, exactly like
+// VIL or Composite Reflectivity on the radar side (see RADAR_PICTURE_FAMS) -
+// there is no raw number left in it to run a filter against, only pixels
+// that can be reassigned to a different ramp step for step. Kept per field
+// rather than per model on purpose: t2m means the same thing whether it
+// came from GFS or ECMWF, so a color choice for it should follow the field
+// across every model rather than starting over each time.
+const HD_COLORS_KEY = 'gwcfc_model_colors';
+let _hdColors = (function(key) {
+  try {
+    var raw = JSON.parse(localStorage.getItem(key) || '{}');
+    return (raw && typeof raw === 'object') ? raw : {};
+  } catch (e) { return {}; }
+})(HD_COLORS_KEY);
+function _hdColorsSave() {
+  try { localStorage.setItem(HD_COLORS_KEY, JSON.stringify(_hdColors)); } catch (e) {}
+}
+function _hdPaletteFor(fieldId) {
+  const c = fieldId && _hdColors[fieldId];
+  if (!c || !c.on || !Array.isArray(c.stops)) return null;
+  const ok = c.stops.length >= 2 && c.stops.every(s => /^#[0-9a-f]{6}$/i.test(String(s)));
+  return ok ? c.stops : null;
+}
+function _hdRgbToHex(rgb) {
+  return '#' + rgb.map(v => Math.max(0, Math.min(255, Math.round(v)))
+    .toString(16).padStart(2, '0')).join('');
+}
+// Five colors sampled straight off the field's own built-in ramp, so the
+// starting point already looks like what is on screen right now - there to
+// be overwritten, not a guess at what someone might want instead.
+function _hdDefaultStops(fieldId) {
+  const scale = HD_INSP_SCALES[fieldId] || HD_INSP_SPREAD[fieldId];
+  const lut = scale && _hdInspLut(scale.ramp);
+  if (!lut) return ['#000000', '#404040', '#808080', '#c0c0c0', '#ffffff'];
+  return [0, 0.25, 0.5, 0.75, 1].map(t => _hdRgbToHex(lut[Math.round(t * 255)]));
+}
+function _hdEnsureColor(fieldId) {
+  if (!_hdColors[fieldId] || !Array.isArray(_hdColors[fieldId].stops)
+      || _hdColors[fieldId].stops.length !== 5) {
+    _hdColors[fieldId] = { on: !!(_hdColors[fieldId] && _hdColors[fieldId].on),
+                           stops: _hdDefaultStops(fieldId) };
+  }
+}
+// Same debounce reasoning as radar's _fxTouch: a color picker can fire
+// rapidly while dragging, and each application here is a real canvas
+// recolor over a real image, not a free repaint.
+let _hdColorApplyTimer = null;
+function _hdColorTouch() {
+  _hdColorsSave();
+  if (_hdColorApplyTimer) clearTimeout(_hdColorApplyTimer);
+  _hdColorApplyTimer = setTimeout(() => {
+    _hdColorApplyTimer = null;
+    if (_hdOn && typeof _hdShow === 'function') _hdShow();
+  }, 250);
+}
+
+let _hdUiField = 't2m';
+function _hdUiSync() {
+  const sel = document.getElementById('lqm-hc-field');
+  if (!sel) return;
+  if (!sel.options.length) {
+    HD_FIELDS.forEach(f => {
+      const o = document.createElement('option');
+      o.value = f.id;
+      o.textContent = f.label + (f.unit ? ' (' + f.unit + ')' : '');
+      sel.appendChild(o);
+    });
+  }
+  sel.value = _hdUiField;
+  const c = _hdColors[_hdUiField] || {};
+  const on = document.getElementById('lqm-hc-colors-on');
+  if (on) on.checked = !!c.on;
+  const stops = (Array.isArray(c.stops) && c.stops.length === 5)
+    ? c.stops : _hdDefaultStops(_hdUiField);
+  for (let i = 0; i < 5; i++) {
+    const inp = document.getElementById('lqm-hc-c' + i);
+    if (inp) inp.value = stops[i];
+  }
+}
+function _hdUiPick(fieldId) {
+  if (!HD_FIELDS.some(f => f.id === fieldId)) return;
+  _hdUiField = fieldId;
+  _hdUiSync();
+}
+function _hdUiColorsOn(on) {
+  _hdEnsureColor(_hdUiField);
+  _hdColors[_hdUiField].on = !!on;
+  _hdColorTouch();
+}
+function _hdUiColor(i, v) {
+  _hdEnsureColor(_hdUiField);
+  _hdColors[_hdUiField].stops[i] = v;
+  if (_hdColors[_hdUiField].on) _hdColorTouch(); else _hdColorsSave();
+}
+function _hdUiReset() {
+  delete _hdColors[_hdUiField];
+  _hdColorsSave();
+  _hdUiSync();
+  if (_hdOn) _hdShow();
 }
 
 let _hdOn = false;
@@ -12030,7 +12242,8 @@ function _hdHoursFor(field) {
   return (f && f.hours) || [];
 }
 
-function _hdShow() {
+let _hdShowToken = 0;
+async function _hdShow() {
   if (!_hdManifest || !_hdBase) return;
   const hours = _hdHoursFor(_hdField);
   if (!hours.length) return;
@@ -12049,16 +12262,34 @@ function _hdShow() {
   const url = `${_hdBase}/models/${dir}`
             + `/${_hdField}_f${String(fhr).padStart(3, '0')}.png`;
 
+  // A model chart is a finished picture, exactly like the radar products
+  // with no raw feed (see RADAR_PICTURE_FAMS) - recoloring it means finding
+  // which of the 256 steps of its own ramp each pixel is and substituting
+  // the matching step of the user's five picks instead. _hdInspScale is the
+  // same lookup the Inspector already trusts for "what ramp painted this".
+  let src = url;
+  const pal = _hdPaletteFor(_hdField);
+  if (pal) {
+    const scale = _hdInspScale();
+    if (scale && scale.ramp) {
+      const token = ++_hdShowToken;
+      try { src = await _recolorImage(url, scale.ramp, pal); }
+      catch (e) { src = url; }           // a recolor that fails still shows the real chart
+      if (token !== _hdShowToken) return; // scrubbed to another frame/field meanwhile
+    }
+  }
+
   // Swap rather than stack. Adding without removing leaves the old picture
   // painted underneath with nothing pointing at it, which is both a smear and
   // a leak, and is exactly the bug the ensemble frames had.
   // crossOrigin matters: the Pi's server sends Access-Control-Allow-Origin
   // on everything, and asking for the image anonymously is what lets the
   // Inspector read its pixels back without tainting the canvas. Without it
-  // the picture draws the same but every pixel read throws.
-  const next = L.imageOverlay(url, _hdManifest.bounds,
+  // the picture draws the same but every pixel read throws. A recolored
+  // picture is already a same-origin data: URL and needs no such asking.
+  const next = L.imageOverlay(src, _hdManifest.bounds,
     { opacity: 0.72, interactive: false, pane: 'radarPane',
-      crossOrigin: 'anonymous' });
+      crossOrigin: src === url ? 'anonymous' : undefined });
   // Swap only once the replacement is actually up, so scrubbing does not
   // flash the basemap between frames. Both outcomes have to drop the old one:
   // waiting purely on success means a missing frame leaves the previous image
@@ -13057,6 +13288,7 @@ function _cycDisable() {
 let _prOn = false;
 let _prLayers = [];           // one image overlay per site currently on the map
 let _prOverlay = null;        // the same overlay, swapped in place as frames scrub
+let _prShowToken = 0;         // guards a recolor in flight against a scrub that outran it
 let _prTimer = null;
 
 // What can be asked for. A product is named once, in the words a person would
@@ -13205,13 +13437,30 @@ async function _prShowFrame(base, lvl, meta, stamp, live) {
   }
 
   const url = `${base}/radar/${lvl}/${_prSite}/${stamp}/${field}.png`;
+  // The four Level 3 products with no raw feed (VIL, Composite, the precip
+  // totals) can never go through the value filter's raw-decode path - there
+  // is no volume behind them to decode. Recoloring the finished picture is
+  // the other half of "improve the radar color changer": the ramp its
+  // pixels were actually painted with rides in the manifest now (see
+  // pi/radar_pipeline.py), with RADAR_PICTURE_FAMS as the fallback for a
+  // Pi that has not pulled that update yet.
+  let src = url;
+  const pictureFam = RADAR_PICTURE_FAMS[_prProduct];
+  const pal = pictureFam && typeof _fxPaletteFor === 'function' && _fxPaletteFor(_prProduct);
+  if (pal) {
+    const ramp = (man.fields[field] && man.fields[field].ramp) || pictureFam.ramp;
+    const token = ++_prShowToken;
+    try { src = await _recolorImage(url, ramp, pal); }
+    catch (e) { src = url; }             // a recolor that fails still shows the real picture
+    if (token !== _prShowToken) return false;  // scrubbed elsewhere while this was recoloring
+  }
   if (!_prOverlay) {
-    _prOverlay = L.imageOverlay(url, man.bounds,
+    _prOverlay = L.imageOverlay(src, man.bounds,
       { opacity: 0.78, interactive: false, pane: 'radarPane' });
     _prOverlay.addTo(map);
     _prLayers = [_prOverlay];
   } else {
-    _prOverlay.setUrl(url);
+    _prOverlay.setUrl(src);
     _prOverlay.setBounds(man.bounds);
   }
   return true;
@@ -21844,7 +22093,8 @@ function _inspHdRow(cx, cy) {
   }
   const color = `rgb(${s.r},${s.g},${s.b})`;
   if (!scale) return { label, value: 'Color', unit: color, color };
-  const hit = _hdColorToValue(scale, s.r, s.g, s.b);
+  const pal = typeof _hdPaletteFor === 'function' && _hdPaletteFor(_hdField);
+  const hit = _hdColorToValue(scale, s.r, s.g, s.b, pal ? _customLut(pal) : null);
   if (!hit) return { label, value: 'No data', color };
   const step = (scale.hi - scale.lo) / 255;
   let value = hit.value.toFixed(step >= 1 ? 0 : 1);
@@ -24913,6 +25163,24 @@ const RADAR_FAMS = {
   et:  { label: 'Echo Tops',         unit: 'kft',  min: 0,   max: 70,  step: 1 },
 };
 
+// The four Level 3 products with no raw feed at all: the Pi bakes them
+// straight from its own value grid, with no Level 2 volume behind them to
+// decode instead, so the value filter (which needs real numbers) can never
+// reach them. What can, and what makes these customizable for the first
+// time, is recoloring the finished picture itself - see _recolorImage.
+// `ramp` mirrors pi/radar_pipeline.py's L3_PRODUCTS exactly, and is only
+// the fallback: the manifest carries its own `ramp` per field now, so this
+// only matters against a Pi that has not pulled that update yet.
+const RADAR_PICTURE_FAMS = {
+  vil:        { label: 'VIL',             unit: 'kg/m²', min: 0,   max: 80,  ramp: 'heat' },
+  composite:  { label: 'Composite Refl.', unit: 'dBZ',   min: -10, max: 75,  ramp: 'radar' },
+  onehour:    { label: '1-Hr Precip',     unit: 'mm',    min: 0,   max: 75,  ramp: 'precip' },
+  stormtotal: { label: 'Storm Total',     unit: 'mm',    min: 0,   max: 200, ramp: 'precip' },
+};
+// Both tables, as one, for anywhere that just needs "is this a known family
+// and what does it look like" without caring which kind it is.
+function _fxFamDef(id) { return RADAR_FAMS[id] || RADAR_PICTURE_FAMS[id]; }
+
 // The hydrometeor classifier speaks in codes of ten: what the radar thinks
 // is actually up there, from bugs to hail.
 const HC_CLASSES = {
@@ -25126,6 +25394,10 @@ function _radarFxApply() {
     _prBucketSite = null;
     if (typeof _disableL3 === 'function') try { _disableL3(); } catch (e) {}
     _prDraw(_hdBase, lvl, _prIndex);
+  } else if (RADAR_PICTURE_FAMS[_prProduct] && _prLoop.frames.length) {
+    // No raw feed to reroute to - this family only ever recolors the
+    // picture already on screen, in place, at whichever frame is showing.
+    _prLoopShow(_prLoop.idx);
   }
 }
 
@@ -25143,10 +25415,16 @@ const FX_DEFAULT_STOPS = {
   kdp: ['#30a030', '#80c040', '#e0e040', '#e08030', '#d03030'],
   hc:  ['#8a8f98', '#3b82f6', '#22c55e', '#f97316', '#ef4444'],
   et:  ['#3050d0', '#30b0d0', '#30d060', '#e0c030', '#e03030'],
+  vil:        ['#0a1050', '#2050c0', '#40a020', '#e0c020', '#e02020'],
+  composite:  ['#04e9e7', '#019ff4', '#02fd02', '#fdf802', '#fd0000'],
+  onehour:    ['#c8f0c8', '#3cbe6e', '#288cdc', '#8c3cc8', '#e63c78'],
+  stormtotal: ['#c8f0c8', '#3cbe6e', '#288cdc', '#8c3cc8', '#e63c78'],
 };
 
 function _fxEnsure(fam) {
-  if (!_fxFilter[fam]) {
+  // Only the raw-decode families ever take a value filter - the four
+  // picture-only ones have no numbers behind them to filter.
+  if (RADAR_FAMS[fam] && !_fxFilter[fam]) {
     _fxFilter[fam] = { on: false, min: RADAR_FAMS[fam].min,
                        max: RADAR_FAMS[fam].max };
   }
@@ -25174,26 +25452,46 @@ function _fxUiSync() {
   var sel = document.getElementById('lqm-fx-fam');
   if (!sel) return;
   if (!sel.options.length) {
+    var rawGrp = document.createElement('optgroup');
+    rawGrp.label = 'Raw values (filter + colors)';
     Object.keys(RADAR_FAMS).forEach(function (id) {
       var d = RADAR_FAMS[id];
       var o = document.createElement('option');
       o.value = id;
       o.textContent = d.label + (d.unit ? ' (' + d.unit + ')' : '');
-      sel.appendChild(o);
+      rawGrp.appendChild(o);
     });
+    sel.appendChild(rawGrp);
+    var picGrp = document.createElement('optgroup');
+    picGrp.label = 'Picture only (colors, no filter)';
+    Object.keys(RADAR_PICTURE_FAMS).forEach(function (id) {
+      var d = RADAR_PICTURE_FAMS[id];
+      var o = document.createElement('option');
+      o.value = id;
+      o.textContent = d.label + (d.unit ? ' (' + d.unit + ')' : '');
+      picGrp.appendChild(o);
+    });
+    sel.appendChild(picGrp);
   }
   sel.value = _fxUiFam;
-  var d = RADAR_FAMS[_fxUiFam];
+  var d = _fxFamDef(_fxUiFam);
+  var isRaw = !!RADAR_FAMS[_fxUiFam];
   var f = _fxFilter[_fxUiFam] || {};
   var c = _fxColors[_fxUiFam] || {};
-  var mn = document.getElementById('lqm-fx-min');
-  var mx = document.getElementById('lqm-fx-max');
-  [mn, mx].forEach(function (el) {
-    el.min = d.min; el.max = d.max; el.step = d.step;
+  ['lqm-fx-filter-row', 'lqm-fx-min-row', 'lqm-fx-max-row'].forEach(function (id) {
+    var row = document.getElementById(id);
+    if (row) row.style.display = isRaw ? '' : 'none';
   });
-  mn.value = (f.min != null) ? f.min : d.min;
-  mx.value = (f.max != null) ? f.max : d.max;
-  document.getElementById('lqm-fx-filter-on').checked = !!f.on;
+  var note = document.getElementById('lqm-fx-picture-note');
+  if (note) note.style.display = isRaw ? 'none' : '';
+  if (isRaw) {
+    var mn = document.getElementById('lqm-fx-min');
+    var mx = document.getElementById('lqm-fx-max');
+    [mn, mx].forEach(function (el) { el.min = d.min; el.max = d.max; el.step = d.step; });
+    mn.value = (f.min != null) ? f.min : d.min;
+    mx.value = (f.max != null) ? f.max : d.max;
+    document.getElementById('lqm-fx-filter-on').checked = !!f.on;
+  }
   document.getElementById('lqm-fx-colors-on').checked = !!c.on;
   var stops = (Array.isArray(c.stops) && c.stops.length === 5)
     ? c.stops : FX_DEFAULT_STOPS[_fxUiFam];
@@ -25201,11 +25499,11 @@ function _fxUiSync() {
     var inp = document.getElementById('lqm-fx-c' + i);
     if (inp) inp.value = stops[i];
   }
-  _fxUiLabels();
+  if (isRaw) _fxUiLabels();
 }
 
 function _fxUiLabels() {
-  var d = RADAR_FAMS[_fxUiFam];
+  var d = _fxFamDef(_fxUiFam);
   var fmt = function (v) {
     return (d.step < 1 ? (+v).toFixed(2).replace(/\.?0+$/, '')
                        : String(Math.round(+v)))
@@ -25218,11 +25516,12 @@ function _fxUiLabels() {
 }
 
 function _fxUiPick(fam) {
-  if (!RADAR_FAMS[fam]) return;
+  if (!_fxFamDef(fam)) return;
   _fxUiFam = fam;
   _fxUiSync();
 }
 function _fxUiFilterOn(on) {
+  if (!RADAR_FAMS[_fxUiFam]) return;   // picture-only families have no filter
   _fxEnsure(_fxUiFam);
   var f = _fxFilter[_fxUiFam];
   f.on = !!on;
@@ -25231,12 +25530,14 @@ function _fxUiFilterOn(on) {
   _fxTouch();
 }
 function _fxUiMin(v) {
+  if (!RADAR_FAMS[_fxUiFam]) return;
   _fxEnsure(_fxUiFam);
   _fxFilter[_fxUiFam].min = +v;
   _fxUiLabels();
   if (_fxFilter[_fxUiFam].on) _fxTouch(); else _fxSave();
 }
 function _fxUiMax(v) {
+  if (!RADAR_FAMS[_fxUiFam]) return;
   _fxEnsure(_fxUiFam);
   _fxFilter[_fxUiFam].max = +v;
   _fxUiLabels();
@@ -29763,6 +30064,79 @@ function selectProduct(p) {
   <button id="lqm-settings-close" onclick="lqmCloseSettings()"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg></button>
   <div class="lqm-settings-title"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gear></use></svg> Settings</div>
 
+  <!-- ─── DISPLAY ─── -->
+  <div class="lqm-settings-group">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-desktop></use></svg> Display</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Map Style</span>
+      <select id="lqm-set-maptype" class="lqm-settings-select" onchange="setMapType(this.value)">
+        <option value="dark"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-moon></use></svg> Dark</option>
+        <option value="light"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-sun></use></svg> Light</option>
+        <option value="satellite"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-satellite></use></svg> Satellite (default)</option>
+        <option value="topo"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-map></use></svg> Topo</option>
+      </select>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Coords on Click</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-coords" onchange="lqmToggleSetting('coords',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Compass Rose</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-compass" checked onchange="lqmToggleSetting('compass',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Scale Bar</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-scale" checked onchange="lqmToggleSetting('scale',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+
+
+    <div class="lqm-settings-category" style="margin-top:12px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-map></use></svg> Map Borders &amp; Labels</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">State Borders</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-stateborders" checked onchange="lqmToggleSetting('stateborders',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">County Borders</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-countyborders" onchange="lqmToggleSetting('countyborders',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Province Borders</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-provinceborders" checked onchange="lqmToggleSetting('provinceborders',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">City Name Size</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-citynamesize" min="8" max="18" value="12" step="1"
+          class="lqm-slider" oninput="lqmSetCityNameSize(this.value)">
+        <span id="lqm-citynamesize-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">12px</span>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── RADAR ─── -->
   <div class="lqm-settings-group">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-storm></use></svg> Radar</div>
@@ -29842,14 +30216,15 @@ function selectProduct(p) {
     </div>
   </div>
 
-  <!-- ─── RADAR DATA: the value filter and custom colors, raw data only ─── -->
+  <!-- ─── RADAR COLORS: value filter + custom colors (raw families), and
+       picture recolor for the four products with no raw feed at all ─── -->
   <div class="lqm-settings-group">
-    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Radar Data</div>
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Radar Colors</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Product</span>
       <select id="lqm-fx-fam" class="lqm-settings-select" onchange="_fxUiPick(this.value)"></select>
     </div>
-    <div class="lqm-settings-row">
+    <div class="lqm-settings-row" id="lqm-fx-filter-row">
       <span class="lqm-settings-lbl">Value Filter</span>
       <label class="lqm-toggle">
         <input type="checkbox" id="lqm-fx-filter-on" onchange="_fxUiFilterOn(this.checked)">
@@ -29857,19 +30232,22 @@ function selectProduct(p) {
         <div class="lqm-toggle-knob"></div>
       </label>
     </div>
-    <div class="lqm-settings-row">
+    <div class="lqm-settings-row" id="lqm-fx-min-row">
       <span class="lqm-settings-lbl">Show From</span>
       <div style="display:flex;align-items:center;gap:6px;">
         <input type="range" id="lqm-fx-min" class="lqm-slider" oninput="_fxUiMin(this.value)">
         <span id="lqm-fx-min-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:48px;"></span>
       </div>
     </div>
-    <div class="lqm-settings-row">
+    <div class="lqm-settings-row" id="lqm-fx-max-row">
       <span class="lqm-settings-lbl">Show Up To</span>
       <div style="display:flex;align-items:center;gap:6px;">
         <input type="range" id="lqm-fx-max" class="lqm-slider" oninput="_fxUiMax(this.value)">
         <span id="lqm-fx-max-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:48px;"></span>
       </div>
+    </div>
+    <div class="lqm-settings-row" id="lqm-fx-picture-note" style="display:none;">
+      <span style="font-size:9px;opacity:.65;line-height:1.4;">This product has no raw feed to filter - colors only, applied straight to the picture the Pi already built.</span>
     </div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Custom Colors</span>
@@ -29894,12 +30272,54 @@ function selectProduct(p) {
       <button id="lqm-fx-reset" onclick="_fxUiReset()" style="font-family:var(--mono);font-size:9px;color:var(--accent2);background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);border-radius:6px;padding:3px 10px;cursor:pointer;">Reset</button>
     </div>
     <div style="font-size:9px;opacity:.65;line-height:1.45;padding:2px 4px 0;">
-      These rules run on the raw radar numbers, Level 2 and Level 3, for every
-      site. The filter hides returns outside the range you set; the colors
-      repaint the product from your five picks, weakest to strongest. While
-      either is on, site pictures are decoded in your browser from the raw
-      feed so the rule applies to real values, not to paint. VIL, composite
-      and the precip totals have no raw feed here and keep their built look.
+      Reflectivity through Echo Tops run on the raw radar numbers, Level 2
+      and Level 3, for every site: the filter hides returns outside the
+      range you set, and the colors repaint the product from your five
+      picks, weakest to strongest. While either is on, site pictures are
+      decoded in your browser from the raw feed so the rule applies to
+      real values, not to paint. VIL, Composite Refl. and the two precip
+      totals have no raw feed at all, so only their picture-recolor
+      option applies to them - see the Product list's second group.
+    </div>
+  </div>
+
+  <!-- ─── MODEL COLORS: same picture-recolor trick, for the Pi's model
+       charts ─── -->
+  <div class="lqm-settings-group">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-bar></use></svg> Model Colors</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Field</span>
+      <select id="lqm-hc-field" class="lqm-settings-select" onchange="_hdUiPick(this.value)"></select>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Custom Colors</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-hc-colors-on" onchange="_hdUiColorsOn(this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Weak to Strong</span>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <input type="color" id="lqm-hc-c0" oninput="_hdUiColor(0,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+        <input type="color" id="lqm-hc-c1" oninput="_hdUiColor(1,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+        <input type="color" id="lqm-hc-c2" oninput="_hdUiColor(2,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+        <input type="color" id="lqm-hc-c3" oninput="_hdUiColor(3,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+        <input type="color" id="lqm-hc-c4" oninput="_hdUiColor(4,this.value)" style="width:26px;height:20px;border:none;padding:0;background:none;cursor:pointer;">
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Back to Normal</span>
+      <button id="lqm-hc-reset" onclick="_hdUiReset()" style="font-family:var(--mono);font-size:9px;color:var(--accent2);background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);border-radius:6px;padding:3px 10px;cursor:pointer;">Reset</button>
+    </div>
+    <div style="font-size:9px;opacity:.65;line-height:1.45;padding:2px 4px 0;">
+      A model chart is a finished picture too, not raw numbers, so this
+      recolors it the same way the four picture-only radar products above
+      do: your five picks replace the field's own ramp step for step, one
+      field at a time. Pick another model or field on the map first - this
+      remembers colors per field, not per model, so switching between GFS
+      and ECMWF keeps the same look for the same quantity.
     </div>
   </div>
 
@@ -29948,75 +30368,92 @@ function selectProduct(p) {
     </div>
   </div>
 
-  <!-- ─── DISPLAY ─── -->
+  <!-- ─── WIND PARTICLES ─── -->
   <div class="lqm-settings-group">
-    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-desktop></use></svg> Display</div>
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg> Wind Particles</div>
     <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Map Style</span>
-      <select id="lqm-set-maptype" class="lqm-settings-select" onchange="setMapType(this.value)">
-        <option value="dark"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-moon></use></svg> Dark</option>
-        <option value="light"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-sun></use></svg> Light</option>
-        <option value="satellite"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-satellite></use></svg> Satellite (default)</option>
-        <option value="topo"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-map></use></svg> Topo</option>
-      </select>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Coords on Click</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-coords" onchange="lqmToggleSetting('coords',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Compass Rose</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-compass" checked onchange="lqmToggleSetting('compass',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Scale Bar</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-scale" checked onchange="lqmToggleSetting('scale',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-
-
-    <div class="lqm-settings-category" style="margin-top:12px;"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-map></use></svg> Map Borders &amp; Labels</div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">State Borders</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-stateborders" checked onchange="lqmToggleSetting('stateborders',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">County Borders</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-countyborders" onchange="lqmToggleSetting('countyborders',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Province Borders</span>
-      <label class="lqm-toggle">
-        <input type="checkbox" id="lqm-set-provinceborders" checked onchange="lqmToggleSetting('provinceborders',this.checked)">
-        <div class="lqm-toggle-track"></div>
-        <div class="lqm-toggle-knob"></div>
-      </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">City Name Size</span>
+      <span class="lqm-settings-lbl">Speed</span>
       <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-citynamesize" min="8" max="18" value="12" step="1"
-          class="lqm-slider" oninput="lqmSetCityNameSize(this.value)">
-        <span id="lqm-citynamesize-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">12px</span>
+        <input type="range" id="lqm-set-windptspeed" min="25" max="300" value="100" step="25"
+          class="lqm-slider" oninput="lqmSetWindPtSpeed(this.value)">
+        <span id="lqm-windptspeed-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.00x</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Intensity</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptintensity" min="20" max="100" value="95" step="5"
+          class="lqm-slider" oninput="lqmSetWindPtIntensity(this.value)">
+        <span id="lqm-windptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">95%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Thickness</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptthickness" min="5" max="40" value="22" step="1"
+          class="lqm-slider" oninput="lqmSetWindPtThickness(this.value)">
+        <span id="lqm-windptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">2.2px</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Density</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptdensity" min="200" max="4000" value="1800" step="200"
+          class="lqm-slider" oninput="lqmSetWindPtDensity(this.value)">
+        <span id="lqm-windptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1800</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Opacity</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-windptopacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetWindPtOpacity(this.value)">
+        <span id="lqm-windptopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ─── WAVE PARTICLES ─── -->
+  <div class="lqm-settings-group">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wave></use></svg> Wave Particles</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Speed</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptspeed" min="25" max="300" value="100" step="25"
+          class="lqm-slider" oninput="lqmSetWavePtSpeed(this.value)">
+        <span id="lqm-waveptspeed-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.00x</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Intensity</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptintensity" min="20" max="100" value="95" step="5"
+          class="lqm-slider" oninput="lqmSetWavePtIntensity(this.value)">
+        <span id="lqm-waveptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">95%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Thickness</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptthickness" min="5" max="40" value="22" step="1"
+          class="lqm-slider" oninput="lqmSetWavePtThickness(this.value)">
+        <span id="lqm-waveptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">2.2px</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Density</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptdensity" min="200" max="4000" value="1800" step="200"
+          class="lqm-slider" oninput="lqmSetWavePtDensity(this.value)">
+        <span id="lqm-waveptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1800</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Opacity</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-set-waveptopacity" min="10" max="100" value="100" step="5"
+          class="lqm-slider" oninput="lqmSetWavePtOpacity(this.value)">
+        <span id="lqm-waveptopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
       </div>
     </div>
   </div>
@@ -30142,96 +30579,6 @@ function selectProduct(p) {
     </div>
   </div>
 
-  <!-- ─── WIND PARTICLES ─── -->
-  <div class="lqm-settings-group">
-    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg> Wind Particles</div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Speed</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-windptspeed" min="25" max="300" value="100" step="25"
-          class="lqm-slider" oninput="lqmSetWindPtSpeed(this.value)">
-        <span id="lqm-windptspeed-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.00x</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Intensity</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-windptintensity" min="20" max="100" value="95" step="5"
-          class="lqm-slider" oninput="lqmSetWindPtIntensity(this.value)">
-        <span id="lqm-windptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">95%</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Thickness</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-windptthickness" min="5" max="40" value="22" step="1"
-          class="lqm-slider" oninput="lqmSetWindPtThickness(this.value)">
-        <span id="lqm-windptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">2.2px</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Density</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-windptdensity" min="200" max="4000" value="1800" step="200"
-          class="lqm-slider" oninput="lqmSetWindPtDensity(this.value)">
-        <span id="lqm-windptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1800</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Opacity</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-windptopacity" min="10" max="100" value="100" step="5"
-          class="lqm-slider" oninput="lqmSetWindPtOpacity(this.value)">
-        <span id="lqm-windptopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
-      </div>
-    </div>
-  </div>
-
-  <!-- ─── WAVE PARTICLES ─── -->
-  <div class="lqm-settings-group">
-    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wave></use></svg> Wave Particles</div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Speed</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-waveptspeed" min="25" max="300" value="100" step="25"
-          class="lqm-slider" oninput="lqmSetWavePtSpeed(this.value)">
-        <span id="lqm-waveptspeed-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1.00x</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Intensity</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-waveptintensity" min="20" max="100" value="95" step="5"
-          class="lqm-slider" oninput="lqmSetWavePtIntensity(this.value)">
-        <span id="lqm-waveptintensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">95%</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Thickness</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-waveptthickness" min="5" max="40" value="22" step="1"
-          class="lqm-slider" oninput="lqmSetWavePtThickness(this.value)">
-        <span id="lqm-waveptthickness-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">2.2px</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Density</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-waveptdensity" min="200" max="4000" value="1800" step="200"
-          class="lqm-slider" oninput="lqmSetWavePtDensity(this.value)">
-        <span id="lqm-waveptdensity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">1800</span>
-      </div>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Opacity</span>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <input type="range" id="lqm-set-waveptopacity" min="10" max="100" value="100" step="5"
-          class="lqm-slider" oninput="lqmSetWavePtOpacity(this.value)">
-        <span id="lqm-waveptopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">100%</span>
-      </div>
-    </div>
-  </div>
-
   <!-- ─── AI ─── -->
   <div class="lqm-settings-group">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-robot></use></svg> AI Chat</div>
@@ -30252,6 +30599,7 @@ function selectProduct(p) {
       <button class="lqm-settings-btn" onclick="openCredits()">View <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-arrow></use></svg></button>
     </div>
   </div>
+
 </div>
 
 <script>
@@ -31823,14 +32171,23 @@ function lqmOpenSettings() {
   if (bcRow) bcRow.style.display = _locMarker ? '' : 'none';
   const bcCb = document.getElementById('lqm-set-breadcrumb');
   if (bcCb) bcCb.checked = _gpsBreadcrumbOn;
-  // The Radar Data controls (value filter + custom colors) reflect their
+  // The Radar Colors controls (value filter + custom colors) reflect their
   // saved state, and start on the family of whatever radar is showing.
   if (typeof _fxUiSync === 'function') {
     try {
       const fam = typeof _meshFamily === 'function'
         && _lastMeshProduct && _meshFamily(_lastMeshProduct);
       if (fam && RADAR_FAMS[fam]) _fxUiFam = fam;
+      else if (typeof _prProduct !== 'undefined' && RADAR_PICTURE_FAMS[_prProduct]) _fxUiFam = _prProduct;
       _fxUiSync();
+    } catch (e) {}
+  }
+  // Same idea for Model Colors: start on whichever field the map is
+  // actually showing, if the Pi model layer is on.
+  if (typeof _hdUiSync === 'function') {
+    try {
+      if (typeof _hdOn !== 'undefined' && _hdOn && typeof _hdField !== 'undefined') _hdUiField = _hdField;
+      _hdUiSync();
     } catch (e) {}
   }
 }
@@ -34784,7 +35141,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed: the small status message no longer shows leftover progress text like Radar 7/12 or Intercepting severe weather alerts. It only shows up now for things worth knowing, like a layer coming up empty.";
+const APP_LATEST_UPDATE = "New: you can now recolor model charts too, not just radar. VIL, Composite Reflectivity, 1-Hr Precip and Storm Total now get custom colors as well. Settings is reorganized into look-and-feel groups up top, then behavior, then meta.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

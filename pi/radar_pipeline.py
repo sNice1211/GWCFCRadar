@@ -859,7 +859,8 @@ def build_site_l3(site, products=None, frames=1):
                         "built_at": datetime.now(timezone.utc).isoformat()})
             man.setdefault("fields", {})[pname] = {
                 "label": spec["label"], "unit": spec["unit"],
-                "min": spec["range"][0], "max": spec["range"][1]}
+                "min": spec["range"][0], "max": spec["range"][1],
+                "ramp": spec["ramp"]}
             write_json(done, man)
             newest = stamp
             log(f"{site} {stamp}: {pname}")
