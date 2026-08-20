@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-from gfs_pipeline import (BOX, ECMWF_BASE, DEFAULT_MODELS, REGIONS, URL_SOURCES, regions_of, region_spec, ECMWF_PARAMS,
+from gfs_pipeline import (BOX, ECMWF_BASES, DEFAULT_MODELS, REGIONS, URL_SOURCES, regions_of, region_spec, ECMWF_PARAMS,
                           ECMWF_SHEAR_PARAMS, FILTER_BASE, HTTP, MODELS,
                           RAW_BASE, SHEAR_LEVELS, SHEAR_LEVEL_NAMES,
                           WANT_VARS, ask_from_inventory, cycle_for,
@@ -145,11 +145,16 @@ def check_ecmwf(name, m):
         # tell them apart without asking.
         for url, code in tried[:6]:
             print(f"  {DIM}HTTP {code}  {url}{OFF}")
-        for probe in (tried[0][0].rsplit("/", 1)[0] + "/",
-                      f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/0p25/",
-                      f"{ECMWF_BASE}/{date_str}/{cyc}z/ifs/",
-                      f"{ECMWF_BASE}/{date_str}/",
-                      f"{ECMWF_BASE}/"):
+        # ECMWF is served from more than one host (its own and an S3 mirror),
+        # and either can be the one that is up, so every candidate directory
+        # is probed on every host rather than on one hardcoded base.
+        probes = [tried[0][0].rsplit("/", 1)[0] + "/"]
+        for base in ECMWF_BASES:
+            probes += [f"{base}/{date_str}/{cyc}z/ifs/0p25/",
+                       f"{base}/{date_str}/{cyc}z/ifs/",
+                       f"{base}/{date_str}/",
+                       f"{base}/"]
+        for probe in probes:
             got = listing(probe)
             if got:
                 print(f"  {DIM}{probe} contains:{OFF}")
@@ -157,8 +162,8 @@ def check_ecmwf(name, m):
                     print(f"  {DIM}    {n}{OFF}")
                 break
         else:
-            print(f"  {DIM}nothing under {ECMWF_BASE} answers at all, which "
-                  f"points at the network rather than the address{OFF}")
+            print(f"  {DIM}none of {', '.join(ECMWF_BASES)} answers at all, "
+                  f"which points at the network rather than the address{OFF}")
         return False
 
     print(f"  {GREEN}index found{OFF}  {date_str} {cyc}z"

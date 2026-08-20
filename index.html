@@ -1913,38 +1913,48 @@ body {
   #right-menu, #sub-bubbles { max-height: calc(100vh - var(--menu-clearance, 82px) - 50px); }
 }
 
-/* ── EXPORT PANEL: same anchor point as #right-menu (it opens from a
-   button inside that same column), offset left past the 34px tool
-   buttons instead of on top of them. Mirrors #right-menu's own
-   breakpoints one-for-one so the two never drift apart on a screen
-   size where only one of them got adjusted. ── */
-#export-panel {
+/* ── EXPORT TOOLBAR: built to the same recipe as #draw-toolbar and
+   #poly-toolbar so every tool that opens a bar opens the same kind of
+   bar, in the same place, draggable the same way. ── */
+#export-toolbar {
   display: none;
   position: absolute;
-  top: 175px;
-  right: 56px;
-  z-index: 850;
-  width: 220px;
-  max-width: calc(100vw - 90px);
-  padding: 10px 12px;
-  background: rgba(8,12,16,0.93);
-  border: 1.5px solid rgba(0,140,186,0.45);
-  border-radius: 10px;
-  box-shadow: 0 4px 18px rgba(0,0,0,0.55);
-  flex-direction: column;
-  gap: 2px;
+  bottom: calc(90px + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1100;
+  background: rgb(14,18,24);
+  border: 1px solid rgba(0,140,186,0.35);
+  border-radius: 12px;
+  padding: 6px 10px;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100vw - 20px);
+  flex-wrap: wrap;
+  box-shadow: 0 6px 22px rgba(0,0,0,0.5);
 }
-#export-panel.open { display: flex; }
-#export-title { display: flex; align-items: center; justify-content: center; gap: 5px; }
-@media (max-width: 768px) {
-  #export-panel { top: auto; bottom: var(--menu-clearance, 82px); right: 52px; }
+#export-toolbar.visible { display: flex; }
+#export-status, #export-progress {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: rgba(255,255,255,0.55);
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-@media (max-width: 480px) {
-  #export-panel { top: 90px; bottom: auto; right: 48px; }
+#export-progress { color: var(--accent2); }
+#export-close {
+  width:30px; height:30px; border-radius:8px;
+  background:transparent; border:1px solid rgba(255,255,255,0.12);
+  color:rgba(255,255,255,0.5); cursor:pointer; font-size:16px; line-height:1;
+  flex-shrink:0; transition: background 0.12s;
+  display:flex; align-items:center; justify-content:center;
+  -webkit-tap-highlight-color: transparent;
 }
-@media (max-height: 500px) and (min-width: 769px) {
-  #export-panel { top: 50px; }
-}
+#export-close:hover { background:rgba(255,60,60,0.25); border-color:rgba(255,60,60,0.6); color:#fff; }
+#export-toolbar .dtb-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .right-bubble {
   display: flex;
@@ -4501,7 +4511,8 @@ body.shot-mode #spaghetti-models-panel,
 body.shot-mode #sev-compare-panel,
 body.shot-mode #nwr-rec-panel,
 body.shot-mode #storm-reports-panel,
-body.shot-mode #stormstream-hud {
+body.shot-mode #stormstream-hud,
+body.shot-mode #export-toolbar {
   display: none !important;
 }
 
@@ -7965,6 +7976,14 @@ body.clean-mode #clean-hint { opacity: 1; }
     <div id="recenter-float" onclick="recenterMap()" style="display:none"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-target></use></svg> Tap to recenter</div>
     <div id="animbar">
       <button id="play-back-btn" onclick="togglePlayBack()" title="Play Backwards"><svg class=svgi width=1em height=1em style=vertical-align:-.15em;transform:rotate(180deg)><use href=#ic-play></use></svg></button>
+      <!-- Back one frame. Sits beside Play Backwards so the two backward
+           controls read as a pair, the same way the forward pair does. -->
+      <button id="step-back-btn" onclick="stepFrame(-1)" title="Back one frame">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+          <rect x="4" y="5" width="2.5" height="14" rx="1"/>
+          <path d="M20 5.8v12.4a1 1 0 0 1-1.53.85l-9.7-6.2a1 1 0 0 1 0-1.7l9.7-6.2A1 1 0 0 1 20 5.8z"/>
+        </svg>
+      </button>
       <div id="zoom-wrap">
         <div id="zoom-controls">
           <button class="zoom-btn" id="zoom-in-btn" onclick="_zoomTimeline(1)" title="Zoom map in">+</button>
@@ -7992,6 +8011,14 @@ body.clean-mode #clean-hint { opacity: 1; }
         <div id="timeline-labels"></div>
       </div>
       <div id="anim-time-display" title="Hold to change timezone">--:-- --- --</div>
+      <!-- Forward one frame, mirroring the back-one-frame button on the
+           other end of the bar. -->
+      <button id="step-fwd-btn" onclick="stepFrame(1)" title="Forward one frame">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+          <path d="M4 5.8v12.4a1 1 0 0 0 1.53.85l9.7-6.2a1 1 0 0 0 0-1.7l-9.7-6.2A1 1 0 0 0 4 5.8z"/>
+          <rect x="17.5" y="5" width="2.5" height="14" rx="1"/>
+        </svg>
+      </button>
       <button id="play-btn" onclick="togglePlay()" title="Play Forward"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg></button>
     </div>
     <div id="tz-popover"></div>
@@ -8074,20 +8101,28 @@ body.clean-mode #clean-hint { opacity: 1; }
 
 </div>
 
-<!-- ─── EXPORT PANEL ─── -->
-<div id="export-panel">
-  <div class="spc-float-title" id="export-title">
-    Export
-    <button id="export-info-btn" class="ov-info-btn" title="What this does" type="button"></button>
-  </div>
-  <div id="export-status" style="font-size:9px;opacity:.75;line-height:1.4;padding:2px 0 6px;"></div>
-  <div id="export-progress" style="display:none;font-size:9px;color:var(--accent2);padding:2px 0 6px;"></div>
-  <button id="export-png-btn" class="lqm-settings-btn" onclick="_expDownloadPng()" style="width:100%;margin-bottom:6px;">
-    Download Current View (PNG)
+<!-- ─── EXPORT TOOLBAR ─── -->
+<!-- Same shape as the Draw and Polygon toolbars: a draggable bar across the
+     bottom of the map rather than a panel pinned beside the tool column. -->
+<div id="export-toolbar">
+  <div class="dtb-drag" id="export-drag" title="Drag to move">⠿</div>
+  <span class="dtb-label">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg>
+    EXPORT
+  </span>
+  <div class="dtb-sep"></div>
+  <button class="dtb-btn" id="export-png-btn" onclick="_expDownloadPng()" title="Download the current view as a PNG">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.6"/><path d="M21 16l-5-5L5 20"/></svg>
   </button>
-  <button id="export-video-btn" class="lqm-settings-btn" onclick="_expDownloadVideo()" style="width:100%;">
-    Download Loop (Video)
+  <button class="dtb-btn" id="export-video-btn" onclick="_expDownloadVideo()" title="Download the whole loop">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><rect x="2" y="5" width="14" height="14" rx="2"/><path d="M22 8l-6 4 6 4V8z"/></svg>
   </button>
+  <div class="dtb-sep"></div>
+  <span id="export-status"></span>
+  <span id="export-progress" style="display:none;"></span>
+  <div class="dtb-sep"></div>
+  <button class="dtb-btn" id="export-info-btn" title="What this does" type="button"></button>
+  <button id="export-close" onclick="_expToggle()" title="Close export tool"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg></button>
 </div>
 
       <div class="right-bubble" id="rm-satellite" onclick="setMapType('satellite'); rmActivate('rm-satellite')"><span class="rb-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-satellite></use></svg></span> Satellite</div>
@@ -14104,8 +14139,20 @@ function _l3BucketCode(site, product, tilt) {
 // Asking by the hour rather than by the day keeps each listing to a few dozen
 // entries instead of several hundred, and needs no paging.
 async function _l3BucketNewest(site, code) {
+  const keys = await _l3BucketList(site, code, 1);
+  return keys.length ? `${L3_BUCKET}/${keys[keys.length - 1]}` : null;
+}
+
+// The same listing, kept whole instead of thrown away down to its last entry.
+// One prefix is one UTC hour, so a loop that wants more frames than the
+// current hour has yet published walks back through earlier hours until it
+// has enough. Keys sort lexicographically into time order because the time
+// is baked into the key itself (SID_CODE_YYYY_MM_DD_HH_MM_SS), so no date
+// parsing is needed to order them - only to label them later.
+async function _l3BucketList(site, code, want) {
   const sid = String(site).toUpperCase().replace(/^([KT])/, m => m === 'K' ? '' : '');
-  for (let back = 0; back < 4; back++) {
+  const found = [];
+  for (let back = 0; back < 4 && found.length < want; back++) {
     const t = new Date(Date.now() - back * 3600000);
     const p = `${sid}_${code}_${t.getUTCFullYear()}_`
             + `${String(t.getUTCMonth() + 1).padStart(2, '0')}_`
@@ -14116,9 +14163,18 @@ async function _l3BucketNewest(site, code) {
       .then(r => r.ok ? r.text() : null).catch(() => null);
     if (!xml) continue;
     const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map(m => m[1]).sort();
-    if (keys.length) return `${L3_BUCKET}/${keys[keys.length - 1]}`;
+    // Earlier hours are older, so they go in front of what's already held.
+    found.unshift(...keys);
   }
-  return null;
+  return found.slice(-want);   // newest `want` keys, still oldest-to-newest
+}
+
+// SID_CODE_YYYY_MM_DD_HH_MM_SS -> ms. Used only for the timeline's clock
+// readout; ordering comes from the key sort above.
+function _l3BucketKeyTime(key) {
+  const m = /_(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})$/.exec(String(key));
+  if (!m) return NaN;
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
 }
 
 // Fetch, decode and draw one product for one site, entirely in the browser.
@@ -14161,7 +14217,14 @@ async function _l3BucketShow(site) {
     // honest scale before anything downstream reads a number.
     _l3MeshNormalize(result.meshData, code);
     _disableL3();                   // clear the previous browser-drawn picture
-    _renderMesh(result, code.toLowerCase(), site);
+    const img = _renderMesh(result, code.toLowerCase(), site);
+    // Build the scrubbable loop behind the live frame, exactly as the Level 2
+    // path already does. Without this every single-site radar - every NEXRAD
+    // and every terminal radar reached through the bucket - was a single
+    // still picture with a dead play button.
+    if (img && typeof _l3BucketLoopBuild === 'function') {
+      _l3BucketLoopBuild(site, code, img);
+    }
   } catch (e) {
     if (e && e.message === 'superseded') return;
     // A site that could not be read is not the site being looked at. Left set,
@@ -16656,7 +16719,51 @@ const GOES_REGIONS = [
   { id: 'caribbean', label: 'Caribbean',     url: _GOES_E, prefix: 'puertorico' },
   { id: 'efulldisk', label: 'E. Full Disk',  url: _GOES_E, prefix: 'fulldisk'   },
   { id: 'wfulldisk', label: 'W. Full Disk',  url: _GOES_W, prefix: 'fulldisk'   },
+  // The floating mesoscale sectors: small boxes the satellite re-scans every
+  // minute or two, aimed at whatever is currently interesting, which is
+  // usually exactly the storm worth watching. Offered per satellite because
+  // each one aims its own two independently.
+  { id: 'emeso1',    label: 'E. Meso 1',     url: _GOES_E, prefix: 'meso1'      },
+  { id: 'emeso2',    label: 'E. Meso 2',     url: _GOES_E, prefix: 'meso2'      },
+  { id: 'wmeso1',    label: 'W. Meso 1',     url: _GOES_W, prefix: 'meso1'      },
+  { id: 'wmeso2',    label: 'W. Meso 2',     url: _GOES_W, prefix: 'meso2'      },
 ];
+
+// ── Which sectors the server will actually serve ───────────────────────────
+// A sector that is named right but not published looks, on the map, exactly
+// like a sector that is broken: an empty picture and no reason given. Rather
+// than trusting a hardcoded list to stay true, the region row asks the WMS
+// what it actually advertises and only offers those.
+//
+// Deliberately fails OPEN: if the capabilities document cannot be read (no
+// network yet, slow link, the request timing out) every region stays on
+// offer, because "could not check" is not the same as "not there" and
+// hiding a working sector is the worse mistake.
+const _goesCaps = new Map();          // host -> Set of layer names, or null
+const _goesCapsTried = new Set();
+
+async function _goesLoadCaps(host) {
+  if (!host || _goesCapsTried.has(host)) return _goesCaps.get(host) || null;
+  _goesCapsTried.add(host);
+  try {
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    if (ctl) setTimeout(() => ctl.abort(), 8000);
+    const xml = await fetch(`${host}?SERVICE=WMS&REQUEST=GetCapabilities&VERSION=1.1.1`,
+                            ctl ? { signal: ctl.signal } : {})
+      .then(r => r.ok ? r.text() : null);
+    if (!xml) return null;
+    const names = new Set([...xml.matchAll(/<Name>([^<]+)<\/Name>/g)].map(m => m[1]));
+    if (names.size) _goesCaps.set(host, names);
+    return _goesCaps.get(host) || null;
+  } catch (e) { return null; }
+}
+
+function _goesRegionAvailable(region, ch) {
+  if (!region || !region.url) return true;        // Auto is always offered
+  const names = _goesCaps.get(region.url);
+  if (!names) return true;                        // unchecked or unreadable
+  return names.has(`${region.prefix}_${ch}`);
+}
 
 let _goesRegionId  = 'auto';  // 'auto' or a GOES_REGIONS id
 let _goesProductId = 'ch13'; // a GOES_PRODUCTS id (default: Clean IR)
@@ -16692,6 +16799,46 @@ let goesCurrentFrame = 0;
 let _goesLayer           = null;  // active L.tileLayer.wms
 let _goesRefreshInterval = null;
 let _goesPending         = false; // pending guard - mirrors wms_satellite_3.js _showPending
+
+// ── Satellite frame pool ───────────────────────────────────────────────────
+// Satellite used to animate by mutating TIME on one single layer, which meant
+// every frame was a fresh round trip to the WMS server: by the time the tiles
+// for one frame arrived the loop had already asked for the next, so playing
+// it looked like nothing happening at all. The radar mosaic solved this long
+// ago by keeping one layer per frame, preloaded at zero opacity, and just
+// swapping which one is visible - so this does the same, and playback becomes
+// an opacity change with no network wait.
+//
+// Capped, with real eviction, for exactly the reason the radar pool is (see
+// _poolWindow): each pooled layer keeps loading tiles for as long as it is
+// attached to the map, and an uncapped pile of them is what put iOS Safari
+// over its memory limit.
+let _goesPool       = [];
+let _goesPoolLoaded = [];
+const GOES_POOL_MAX = _isIOS ? 5 : 12;
+
+function _goesPoolWindow(idx) {
+  const n = goesFrames.length;
+  if (n <= GOES_POOL_MAX) return { s: 0, e: n - 1 };
+  const half = Math.floor(GOES_POOL_MAX / 2);
+  let s = Math.max(0, idx - half);
+  let e = Math.min(n - 1, s + GOES_POOL_MAX - 1);
+  s = Math.max(0, e - GOES_POOL_MAX + 1);
+  return { s, e };
+}
+
+function _goesEnsureLayer(i) {
+  if (_goesPool[i] || !goesFrames[i]) return;
+  const l = _makeGoesLayer(goesFrames[i].timeStr, 0);
+  l.on('load', () => { _goesPoolLoaded[i] = true; });
+  _goesPool[i] = l;
+}
+
+function _goesClearPool() {
+  _goesPool.forEach(l => { if (l) { try { map.removeLayer(l); } catch (e) {} } });
+  _goesPool = [];
+  _goesPoolLoaded = [];
+}
 
 // Build ~2 h of 10-min frames ending ~20 min ago (ensures tiles have propagated to Iowa Mesonet).
 function _buildGoesFrames() {
@@ -16732,6 +16879,9 @@ function _makeGoesLayer(timeStr, opacity) {
 
 function _clearGoesLayer() {
   if (_goesLayer) { try { map.removeLayer(_goesLayer); } catch(e) {} _goesLayer = null; }
+  // The prewarm layer above is not always a pool member, so both are cleared:
+  // one of them may be holding tiles the other knows nothing about.
+  _goesClearPool();
   goesLayer = null;
 }
 
@@ -16766,11 +16916,21 @@ function loadGoesLayer() {
     buildTimelineLabels();
 
     showGoesFrame(goesCurrentFrame);
+    // Satellite is a valid animation source the moment it has frames, and
+    // nothing else was telling the play buttons that.
+    if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
 
-    // Auto-refresh every 60 s: destroy old layer + rebuild with new cachebust so stale tiles
-    // are never served - mirrors wms_satellite_3.js refreshInterval setTiles() pattern.
+    // Auto-refresh every 60 s so a stale newest frame is replaced as the
+    // satellite publishes. This used to tear the whole layer down and snap
+    // back to the newest frame unconditionally, which yanked the view out
+    // from under anyone mid-playback or mid-scrub every minute - so now it
+    // holds off entirely while playing, and otherwise only follows the live
+    // edge for someone who was already sitting on it.
     _goesRefreshInterval = setInterval(() => {
       if (!activeLayers.satellite) { clearInterval(_goesRefreshInterval); _goesRefreshInterval = null; return; }
+      if (playing || playingBack) return;
+      const wasAtNewest = goesCurrentFrame >= goesFrames.length - 1;
+      if (!wasAtNewest) return;
       _clearGoesLayer();
       goesFrames       = _buildGoesFrames();
       goesCurrentFrame = goesFrames.length - 1;
@@ -16795,16 +16955,30 @@ function showGoesFrame(idx) {
 
   const frame = goesFrames[idx];
 
-  if (_goesLayer) {
-    // Reuse existing layer - update the timestamp in place (fast path, no tile-cache
-    // invalidation needed since each time value is a different URL anyway).
-    _goesLayer.setParams({ TIME: frame.timeStr }, false);
-    if (activeLayers.satellite) _goesLayer.setOpacity(0.85);
-  } else {
-    // Build fresh layer (first show, or after 60-s cache-bust rebuild)
-    _goesLayer = _makeGoesLayer(frame.timeStr, activeLayers.satellite ? 0.85 : 0);
-    goesLayer  = _goesLayer;
+  // A prewarm layer built before the pool existed would sit on top of it
+  // forever, showing whichever single time it was created with.
+  if (_goesLayer && !_goesPool.includes(_goesLayer)) {
+    try { map.removeLayer(_goesLayer); } catch (e) {}
+    _goesLayer = null;
   }
+
+  const { s, e } = _goesPoolWindow(idx);
+  for (let i = 0; i < _goesPool.length; i++) {
+    if ((i >= s && i <= e) || i === idx) continue;
+    if (_goesPool[i]) {
+      try { map.removeLayer(_goesPool[i]); } catch (err) {}
+      _goesPool[i] = null;
+      _goesPoolLoaded[i] = false;
+    }
+  }
+  for (let i = s; i <= e; i++) _goesEnsureLayer(i);
+
+  // One opacity swap, no network wait: the frame being shown was already
+  // fetched while its neighbours were on screen.
+  const vis = activeLayers.satellite ? 0.85 : 0;
+  _goesPool.forEach((l, i) => { if (l) l.setOpacity(i === idx ? vis : 0); });
+  _goesLayer = _goesPool[idx] || null;
+  goesLayer  = _goesLayer;
 
   const animTimeEl = document.getElementById('anim-time');
   if (animTimeEl) {
@@ -16921,31 +17095,35 @@ function toggleSatelliteSub() {
   });
   wrap.appendChild(pGrid);
 
-  // Region row - compact sat-region-btn pills below the sub-bubbles
+  // Region row - compact sat-region-btn pills below the sub-bubbles, built
+  // from GOES_REGIONS so a sector added there shows up here with no second
+  // list to keep in step, and filtered to what the server really publishes.
   const rRow = document.createElement('div');
   rRow.id = 'sat-region-row';
-  [
-    { id: 'auto',      label: 'Auto' },
-    { id: 'east',      label: 'East CONUS' },
-    { id: 'west',      label: 'West CONUS' },
-    { id: 'alaska',    label: 'Alaska' },
-    { id: 'hawaii',    label: 'Hawaii' },
-    { id: 'caribbean', label: 'Caribbean' },
-    { id: 'efulldisk', label: 'E. Full Disk' },
-    { id: 'wfulldisk', label: 'W. Full Disk' },
-  ].forEach(r => {
-    const btn = document.createElement('div');
-    btn.className = 'sat-region-btn' + (_goesRegionId === r.id ? ' active' : '');
-    btn.dataset.regionId = r.id;
-    btn.textContent = r.label;
-    btn.onclick = () => {
-      rRow.querySelectorAll('.sat-region-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      _setGoesRegion(r.id);
-    };
-    rRow.appendChild(btn);
-  });
+  const ch = (GOES_PRODUCTS.find(p => p.id === _goesProductId) || GOES_PRODUCTS[0]).ch;
+  const paintRegions = () => {
+    rRow.innerHTML = '';
+    GOES_REGIONS.filter(r => _goesRegionAvailable(r, ch)).forEach(r => {
+      const btn = document.createElement('div');
+      btn.className = 'sat-region-btn' + (_goesRegionId === r.id ? ' active' : '');
+      btn.dataset.regionId = r.id;
+      btn.textContent = r.label;
+      btn.onclick = () => {
+        rRow.querySelectorAll('.sat-region-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        _setGoesRegion(r.id);
+      };
+      rRow.appendChild(btn);
+    });
+  };
+  paintRegions();
   wrap.appendChild(rRow);
+
+  // Ask both satellites what they serve, then redraw the row once the
+  // answers land. Until then everything stays offered.
+  Promise.all([_goesLoadCaps(_GOES_E), _goesLoadCaps(_GOES_W)])
+    .then(() => { if (document.body.contains(rRow)) paintRegions(); })
+    .catch(() => {});
 
   wrap.style.display = 'flex';
 }
@@ -24394,12 +24572,18 @@ function _refreshPlayButtonsEnabled() {
   const ready = _animationReady();
   const pb = document.getElementById('play-btn');
   const pbb = document.getElementById('play-back-btn');
-  [pb, pbb].forEach(btn => {
+  const sf = document.getElementById('step-fwd-btn');
+  const sb = document.getElementById('step-back-btn');
+  const titles = new Map([[pb, 'Play Forward'], [pbb, 'Play Backwards'],
+                          [sf, 'Forward one frame'], [sb, 'Back one frame']]);
+  // The step buttons move through exactly the same frame list the play
+  // buttons animate, so they are ready (or not) on exactly the same terms.
+  [pb, pbb, sf, sb].forEach(btn => {
     if (!btn) return;
     btn.disabled = !ready;
     btn.style.opacity = ready ? '' : '0.4';
     btn.style.cursor = ready ? '' : 'not-allowed';
-    btn.title = ready ? (btn === pb ? 'Play Forward' : 'Play Backwards') : 'Loading radar frames…';
+    btn.title = ready ? titles.get(btn) : 'Loading radar frames…';
   });
 }
 
@@ -25220,6 +25404,62 @@ async function _l2LoopBuild(product, station, curImg) {
     }
   } catch (e) {
     console.warn('[L2 loop] build:', e);
+  } finally {
+    if (token === _l2Loop.token) { _l2Loop.building = false; _l2LoopSyncTimeline(); }
+  }
+}
+
+// The Level 3 bucket's own loop. It fills the SAME _l2Loop the Level 2 path
+// uses rather than standing up a parallel system: both draw decoded mesh
+// images into the same _l3Overlay, so everything already wired to that loop
+// (the play button's readiness check, the RAF tick, the timeline scrub, the
+// step buttons) serves this without a second copy of any of it. The only
+// real difference is where the older frames come from - S3 keys instead of
+// Archive II volumes.
+//
+// Fewer frames on iOS for the same reason the radar tile pool is capped
+// there: each frame is a full decoded 1000x1000 image held in memory.
+const L3_LOOP_MAX = _isIOS ? 5 : 10;
+
+async function _l3BucketLoopBuild(site, code, curImg) {
+  if (!curImg || !curImg.url) return;
+  const token = ++_l2Loop.token;
+  _l2Loop.frames = [{ url: curImg.url, bounds: curImg.leafletBounds,
+                      time: Date.now() }];
+  _l2Loop.idx = 0;
+  _l2Loop.station = site;
+  _l2Loop.product = String(code).toLowerCase();
+  _l2Loop.building = true;
+  try {
+    const keys = await _l3BucketList(site, code, L3_LOOP_MAX);
+    if (token !== _l2Loop.token) return;          // superseded by a newer draw
+    if (keys.length) {
+      const newestT = _l3BucketKeyTime(keys[keys.length - 1]);
+      if (isFinite(newestT)) _l2Loop.frames[0].time = newestT;
+    }
+    // The last key is the frame already on screen; decode the older ones,
+    // newest-first, so the most useful history fills in soonest.
+    for (let i = keys.length - 2; i >= 0; i--) {
+      if (token !== _l2Loop.token) return;
+      let img = null;
+      try {
+        const buf = await fetch(`${L3_BUCKET}/${keys[i]}`,
+                                { signal: _abortSignal(30000) })
+          .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+        if (token !== _l2Loop.token) return;
+        const result = await _workerProcess(buf, code);
+        if (token !== _l2Loop.token) return;
+        _l3MeshNormalize(result.meshData, code);
+        img = _meshToImage(result, String(code).toLowerCase());
+      } catch (e) { continue; }   // one unreadable frame is not the loop failing
+      if (!img) continue;
+      const t = _l3BucketKeyTime(keys[i]);
+      _l2Loop.frames.push({ url: img.url, bounds: img.leafletBounds,
+                            time: isFinite(t) ? t : (_l2Loop.frames[0].time - (keys.length - 1 - i) * 300000) });
+      _l2LoopSyncTimeline();
+    }
+  } catch (e) {
+    console.warn('[L3 loop] build:', e);
   } finally {
     if (token === _l2Loop.token) { _l2Loop.building = false; _l2LoopSyncTimeline(); }
   }
@@ -35620,7 +35860,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "New: an Export tool on the toolbar for downloading the current radar/satellite/model picture as a PNG or its whole loop as a video. Satellite now plays through the same loop button radar uses. StormStream's alert panel auto-scrolls to whichever alert is showing. Plus new radar products (storm-relative velocity, more dual-pol tilts) and three new NAM regional models on the Pi.";
+const APP_LATEST_UPDATE = "Playback fixed properly: every single radar site and every terminal radar now loops instead of showing one frozen frame, and satellite preloads its frames so playing actually moves. Two new one-frame step buttons sit either side of the animation bar. Satellite adds the floating mesoscale sectors, and only ever lists sectors the server really serves.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -36526,6 +36766,7 @@ document.addEventListener('DOMContentLoaded', () => {
   _makeDraggable(document.getElementById('lqm-ai-overlay'),       document.getElementById('lqm-ai-drag'));
   _makeDraggable(document.getElementById('lqm-settings-overlay'), document.getElementById('lqm-settings-drag'));
   _makeDraggable(document.getElementById('tutorial-modal-inner'), document.getElementById('tut-dialog-drag'));
+  _makeDraggable(document.getElementById('export-toolbar'),       document.getElementById('export-drag'));
   // Restore NWR recordings from archive on page load
   _nwrLoadArchive();
 });
@@ -39852,10 +40093,12 @@ const EXPORT_INFO_TEXT = "Downloads whatever radar, satellite, or model "
   + "where the browser supports recording one.";
 
 function _expToggle() {
-  const panel = document.getElementById('export-panel');
-  if (!panel) return;
-  const opening = !panel.classList.contains('open');
-  panel.classList.toggle('open', opening);
+  const bar = document.getElementById('export-toolbar');
+  if (!bar) return;
+  const opening = !bar.classList.contains('visible');
+  bar.classList.toggle('visible', opening);
+  const btn = document.getElementById('tool-export');
+  if (btn) btn.classList.toggle('active', opening);
   if (opening) _expRefreshStatus();
 }
 
@@ -39891,16 +40134,21 @@ function _expRefreshStatus() {
   const pngBtn = document.getElementById('export-png-btn');
   const src = _expActiveSource();
   if (!src) {
-    if (status) status.textContent = 'Nothing to export right now - turn on radar, satellite, or a model chart first.';
+    if (status) status.textContent = 'Nothing on screen to export yet';
     if (pngBtn) pngBtn.disabled = true;
     if (videoBtn) videoBtn.disabled = true;
     return;
   }
-  if (status) status.textContent = `${src.label}: ${src.count} frame${src.count === 1 ? '' : 's'} available.`;
+  if (status) status.textContent = `${src.label} · ${src.count} frame${src.count === 1 ? '' : 's'}`;
   if (pngBtn) pngBtn.disabled = false;
   if (videoBtn) {
     videoBtn.disabled = src.count < 2;
-    videoBtn.textContent = _expCanRecordVideo() ? 'Download Loop (Video)' : 'Download Loop (Image Sequence)';
+    // Icon-only buttons now, so what the loop button will actually produce
+    // lives in its tooltip instead of its face.
+    videoBtn.title = src.count < 2
+      ? 'Needs more than one frame to make a loop'
+      : (_expCanRecordVideo() ? 'Download the whole loop as a video'
+                              : 'Download the whole loop as an image sequence');
   }
 }
 
