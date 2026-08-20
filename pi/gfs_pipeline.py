@@ -161,6 +161,46 @@ MODELS = {
                  "lev_mean_sea_level", "lev_surface",
                  r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
     },
+    # NAM's regional nests: the same 12 km NAM run, cropped and re-published
+    # under their own filenames for three areas the CONUS file doesn't cover.
+    # Same host, same byte-range mechanism, same level list as "nam" above -
+    # only the directory/filename differ, so nothing new needed to fetch them.
+    "namak": {
+        "fetch": "range",
+        "label": "NAM Alaska", "res": "6 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.alaskanest.hiresf{fhr:02d}.tm00.grib2.idx",
+        "step": 3, "out": 60,
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface",
+                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
+    },
+    "namhi": {
+        "fetch": "range",
+        "label": "NAM Hawaii", "res": "6 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.hawaiinest.hiresf{fhr:02d}.tm00.grib2.idx",
+        "step": 3, "out": 60,
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface",
+                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
+    },
+    "nampr": {
+        "fetch": "range",
+        "label": "NAM Puerto Rico", "res": "6 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.priconest.hiresf{fhr:02d}.tm00.grib2.idx",
+        "step": 3, "out": 60,
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface",
+                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
+    },
     "hrrr": {
         "fetch": "range",
         # Hourly and 3 km: the one worth having when something is happening
@@ -678,7 +718,16 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "hrrrsub",
                   "hafs", "hafsb",
                   "gefswave",
-                  "iconeu", "cmce"]
+                  "iconeu", "cmce",
+                  # NAM's three regional nests. Same byte-range mechanism and
+                  # publish schedule as "nam", built from the documented
+                  # NOMADS filename convention rather than a checked live
+                  # directory listing (unlike the entries above) - if one of
+                  # these three logs nothing but skips, that means the actual
+                  # filename drifted from what's coded here and it belongs in
+                  # OFF_BY_DEFAULT until re-checked, the same as any entry
+                  # below that's been confirmed broken.
+                  "namak", "namhi", "nampr"]
 
 # Defined above and deliberately not built. Each of these was checked against
 # the publisher's own directory listing and the files are not there: HWRF and
@@ -793,6 +842,10 @@ MB_PER_HOUR = {
     "aqm": 179.0, "etss": 1.0, "hrdps": 14.0, "rdps": 6.0,
     "iconeu": 6.0, "icond2": 4.0,
     "hireswnssl": 6.0, "cmce": 0.1, "iconeps": 21.0, "ecmwfaifsens": 4.3,
+    # Regional nests, cropped to one small area apiece rather than CONUS -
+    # estimated well under "nam" itself until check_models.py has a real
+    # measurement to replace this with.
+    "namak": 0.5, "namhi": 0.3, "nampr": 0.3,
 }
 
 # Some servers refuse the default python-requests user agent outright, and a
