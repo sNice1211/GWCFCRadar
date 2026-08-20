@@ -133,7 +133,7 @@ console.log('\n4. the cycling engine: HUD renders, map flies, idle state shows a
     _lastAlertFeatures = [torEmerg, svr];
     _ssCfg = { coverage: 'us', stepSec: 15, enabled: true, firstRunSeen: true };
     _ssStart();
-    const hud = document.getElementById('stormstream-hud');
+    const hud = document.getElementById('ss-stage');
     return { hudExists: !!hud, hudText: hud ? hud.textContent : '', on: _ssOn };
   }, [TOR_EMERG, SVR]);
   ok('StormStream is running and the HUD exists', withAlerts.on && withAlerts.hudExists, JSON.stringify(withAlerts));
@@ -141,28 +141,28 @@ console.log('\n4. the cycling engine: HUD renders, map flies, idle state shows a
      /Warning/.test(withAlerts.hudText) && !/All Clear/.test(withAlerts.hudText), withAlerts.hudText);
 
   const skip = await page.evaluate(() => {
-    const before = document.getElementById('stormstream-hud').textContent;
+    const before = document.getElementById('ss-stage').textContent;
     _ssManualNext();
-    const after = document.getElementById('stormstream-hud').textContent;
+    const after = document.getElementById('ss-stage').textContent;
     return { before, after };
   });
   ok('manual skip changes which alert is shown', skip.before !== skip.after, JSON.stringify(skip));
 
   const back = await page.evaluate(() => {
     _ssManualPrev();
-    return document.getElementById('stormstream-hud').textContent;
+    return document.getElementById('ss-stage').textContent;
   });
   ok('manual previous returns to the earlier alert', back === skip.before, JSON.stringify({ back, expect: skip.before }));
 
   const idle = await page.evaluate(() => {
     _lastAlertFeatures = [];
     _ssTick();
-    return document.getElementById('stormstream-hud').textContent;
+    return document.getElementById('ss-stage').textContent;
   });
   ok('with nothing active it shows an all-clear message', /All Clear/.test(idle), idle);
 
   await page.evaluate(() => { _ssStop(); _lastAlertFeatures = []; });
-  const stopped = await page.evaluate(() => ({ on: _ssOn, hud: !!document.getElementById('stormstream-hud') }));
+  const stopped = await page.evaluate(() => ({ on: _ssOn, hud: !!document.getElementById('ss-stage') }));
   ok('stopping removes the HUD entirely', !stopped.on && !stopped.hud, JSON.stringify(stopped));
 }
 
@@ -229,13 +229,16 @@ console.log('\n4c. the HUD does not collide with the on-screen drawing-tool colu
     _lastAlertFeatures = [torEmerg];
     _ssCfg = { coverage: 'us', stepSec: 15, enabled: true, firstRunSeen: true };
     _ssStart();
-    const hud = document.getElementById('stormstream-hud').getBoundingClientRect();
+    // The frame fills the screen, so the whole stage overlapping anything
+    // means nothing. What must clear the drawing column is the top-right
+    // panel, which is the piece anchored to that edge.
+    const hud = document.getElementById('ss-alerts').getBoundingClientRect();
     const rm = document.getElementById('right-menu')?.getBoundingClientRect();
     const overlap = rm ? !(hud.right <= rm.left || hud.left >= rm.right
       || hud.bottom <= rm.top || hud.top >= rm.bottom) : false;
     return { hud, rm, overlap };
   }, [TOR_EMERG]);
-  ok('the HUD does not overlap the phone-width drawing-tool column',
+  ok('the Active Alerts panel does not overlap the phone-width drawing-tool column',
      r.overlap === false, JSON.stringify(r));
   await phonePage.close();
 }
