@@ -4289,8 +4289,6 @@ body {
 }
 #sev-compare-btn:hover { background: rgba(232,184,0,0.22); }
 #sev-compare-btn.active { background: #e8b800; border-color: #e8b800; color: #1a0900; }
-#sev-sounding-btn:hover { background: rgba(0,140,186,0.25); }
-#sev-sounding-btn.active { background: #008CBA; border-color: #008CBA; color: #fff; }
 #sev-compare-panel {
   border-top: 1px dashed rgba(232,184,0,0.25); border-bottom: 1px dashed rgba(232,184,0,0.25);
   padding: 6px 0; margin-bottom: 5px;
@@ -7723,7 +7721,6 @@ body.clean-mode #clean-hint { opacity: 1; }
                Filled in by _hdFillRegionPicker(). -->
           <select id="sev-region-sel" onchange="_hdSetRegion(this.value)"
                   style="display:none;margin-left:4px;"></select>
-          <button id="sev-sounding-btn" onclick="_sevToggleSounding()" title="View sounding at map center" style="margin-left:4px;padding:3px 8px;background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);color:#008CBA;border-radius:4px;cursor:pointer;font-size:10px;font-family:Comfortaa;">Sounding</button>
         </div>
         <div class="sev-dd-wrap">
           <label class="sev-dd-label">Product</label>
@@ -11915,6 +11912,17 @@ const HD_FIELDS = [
   { id: 'ozone', label: 'Ozone',          unit: 'ppb' },
   { id: 'pm25',  label: 'PM2.5',          unit: 'ug/m3' },
   { id: 'surge', label: 'Storm Surge',    unit: 'm' },
+  // The everyday fields. These were always inside the files the Pi already
+  // downloads, at levels it already asks for; they were simply never read out
+  // of them. A model that does not carry one just does not offer that chart.
+  { id: 'rh2m',  label: 'Humidity',       unit: '%' },
+  { id: 'tcc',   label: 'Cloud Cover',    unit: '%' },
+  { id: 'vis',   label: 'Visibility',     unit: 'km' },
+  { id: 'cin',   label: 'Cap Strength',   unit: 'J/kg' },
+  { id: 'prate', label: 'Rain Rate',      unit: 'mm/h' },
+  { id: 'snod',  label: 'Snow Depth',     unit: 'cm' },
+  { id: 'lftx',  label: 'Instability',    unit: 'K' },
+  { id: 'dswrf', label: 'Solar',          unit: 'W/m2' },
 ];
 
 // What each chart's colors MEAN, for the Inspector tool. The Pi paints a
@@ -11954,6 +11962,12 @@ const HD_INSP_RAMPS = {
             [0.55,[120,200,150]],[0.8,[70,120,180]],[1,[30,40,80]]],
   sst:     [[0,[20,20,90]],[0.35,[30,110,190]],[0.55,[60,180,170]],
             [0.62,[250,250,180]],[0.75,[245,160,60]],[1,[170,20,30]]],
+  cloud:   [[0,[10,30,70]],[0.3,[60,110,170]],[0.6,[160,190,215]],
+            [1,[250,250,252]]],
+  visibility:[[0,[150,10,20]],[0.15,[230,90,40]],[0.35,[245,205,80]],
+              [0.6,[170,215,190]],[1,[235,245,250]]],
+  snow:    [[0,[245,250,255]],[0.2,[190,225,245]],[0.45,[110,175,225]],
+            [0.7,[60,105,190]],[1,[30,30,110]]],
 };
 const HD_INSP_SCALES = {
   t2m:   { ramp: 'temp',     lo: -40, hi: 45 },
@@ -11972,6 +11986,17 @@ const HD_INSP_SCALES = {
   ozone: { ramp: 'heat',     lo: 0,   hi: 120 },
   pm25:  { ramp: 'heat',     lo: 0,   hi: 150 },
   surge: { ramp: 'precip',   lo: 0,   hi: 4 },
+  rh2m:  { ramp: 'moisture', lo: 0,   hi: 100 },
+  tcc:   { ramp: 'cloud',    lo: 0,   hi: 100 },
+  vis:   { ramp: 'visibility', lo: 0, hi: 20 },
+  // Both of these are published negative and flipped on the Pi, so the map
+  // brightens as the weather gets more interesting. The Inspector reads the
+  // flipped number, which is the one the colour actually means.
+  cin:   { ramp: 'heat',     lo: 0,   hi: 300 },
+  prate: { ramp: 'precip',   lo: 0,   hi: 25 },
+  snod:  { ramp: 'snow',     lo: 0,   hi: 60 },
+  lftx:  { ramp: 'heat',     lo: 0,   hi: 12 },
+  dswrf: { ramp: 'heat',     lo: 0,   hi: 1000 },
 };
 // GEFS spread paints the same field names on its own scale: spread is a
 // distance between ensemble members, never negative and small.
@@ -12508,6 +12533,9 @@ function _hdFillModelPicker() {
   names.forEach(k => {
     const o = document.createElement('option');
     o.value = 'pi:' + k;
+    // A folded model spans several resolutions now - NAM is 12 km over the
+    // lower 48 and 6 km over its nests - so the model line carries the model's
+    // own figure and the region picker beside it carries the region's.
     const res = mods[k].res ? `, ${mods[k].res}` : '';
     o.textContent = `${mods[k].label || k} (Pi${res})`;
     group.appendChild(o);
@@ -12592,6 +12620,9 @@ async function _hdLoadManifest(model, region) {
 const HD_REGION_LABELS = {
   conus: 'CONUS', tropics: 'Tropics', alaska: 'Alaska',
   hawaii: 'Hawaii', prico: 'Puerto Rico',
+  // The same ground as CONUS on a coarser grid that reaches further out in
+  // time. A region rather than a separate model, because it is the same run.
+  conus32: 'CONUS 32 km',
 };
 
 // The hurricane model has one run per active storm rather than a fixed set of
@@ -12619,7 +12650,12 @@ function _hdFillRegionPicker() {
   regions.forEach(r => {
     const o = document.createElement('option');
     o.value = r;
-    o.textContent = _hdRegionLabel(r);
+    // The resolution rides on the region, because folding NAM's nests into
+    // NAM means the model line can no longer say one number for all of them.
+    const e = _hdRegionEntry(_hdModel, r);
+    const res = e && e.res && e.res !== (_hdIndex.models[_hdModel] || {}).res
+      ? ` (${e.res})` : '';
+    o.textContent = _hdRegionLabel(r) + res;
     sel.appendChild(o);
   });
   if (_hdRegion) sel.value = _hdRegion;
@@ -18562,19 +18598,27 @@ function _sevSetVar(v){
   _sevFrame=_sevStartFrame();_sevBuildFrameGrid();_sevRender();
 }
 function _sevSetRun(v){_sevRun=v;_sevFrame=_sevStartFrame();_sevBuildFrameGrid();_sevRender();}
-// The button reads the sounding off the Pi's level images. It used to open a
-// panel whose data source had been removed, which loaded forever: the working
-// reader existed the whole time and was simply never wired to anything.
-function _sevToggleSounding(){
-  if (_sndPanelIsOpen()) {
+// The sounding used to be a button inside the Run Models panel, which meant
+// two things that were both wrong. It only ever read the map's centre, so
+// getting a sounding somewhere meant dragging the map until that place was in
+// the middle; and it lived inside the models panel, so it looked like a thing
+// about models when it is not. The profile is read off the Pi's own level
+// images and has nothing to do with which layer is on screen: radar,
+// satellite, a model chart or a bare basemap all give the same answer for the
+// same point.
+//
+// So it moved to the right-click menu, which is where every other "what is
+// HERE" question is already asked, and takes the point that was clicked.
+// Kept as a name because it is a sensible thing to be able to call.
+function _sevToggleSounding(lat, lon){
+  if (_sndPanelIsOpen() && lat === undefined) {
     const el = document.getElementById('snd-panel');
     if (el) el.style.display = 'none';
-  } else {
-    const c = map.getCenter();
-    openSounding(c.lat, c.lng);
+    return;
   }
-  const btn = document.getElementById('sev-sounding-btn');
-  if(btn) btn.classList.toggle('active', _sndPanelIsOpen());
+  const c = (lat === undefined || lon === undefined)
+    ? map.getCenter() : { lat: lat, lng: lon };
+  openSounding(c.lat, c.lng);
 }
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -23994,6 +24038,7 @@ function _cmOpen(e) {
     ${nc ? `<div class="cm-item" onclick="_cmGoForecast()">${ic('cloud-sun')} Forecast: ${nc.city.name.split(',')[0]} &middot; ${nc.miles} mi</div>` : ''}
     <div class="cm-item${_cmAlertList.length ? '' : ' cm-dim'}" onclick="_cmShowAlerts()">${ic('siren')} Alerts here (${_cmAlertList.length})</div>
     <div class="cm-item" onclick="_cmInspectHere()">${ic('search')} Inspect values here</div>
+    <div class="cm-item" onclick="_cmSoundingHere()">${ic('chart-up')} Sounding here</div>
     <div class="cm-item" onclick="_cmRadiusHere()">${ic('target')} 50 mi radius here</div>
     <div class="cm-item" onclick="_cmSetRecenter()">${ic('compass')} Set as recenter</div>
     <div class="cm-item" onclick="_cmSetLoadSpot()">${ic('flag')} Set as load spot</div>
@@ -24005,6 +24050,17 @@ function _cmOpen(e) {
   const w = _cmEl.offsetWidth || 220, h = _cmEl.offsetHeight || 260;
   _cmEl.style.left = Math.max(6, Math.min(window.innerWidth - w - 6, ox)) + 'px';
   _cmEl.style.top  = Math.max(6, Math.min(window.innerHeight - h - 6, oy)) + 'px';
+}
+
+// A vertical profile at the clicked point. Read off the Pi's own level
+// images, so it works under any layer, or none: the question "what does the
+// atmosphere look like above this spot" has nothing to do with whether radar
+// or satellite happens to be drawn over it.
+function _cmSoundingHere() {
+  if (!_cmLatLng) { _cmClose(); return; }
+  const lat = _cmLatLng.lat, lng = _cmLatLng.lng;
+  _cmClose();
+  if (typeof openSounding === 'function') openSounding(lat, lng);
 }
 
 function _cmCopyCoords() {
@@ -36460,7 +36516,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Seven new satellite composites (Air Mass, True Colour, Dust, Fire Temperature and more), the satellite menu sorted by type, and MRMS grown from 2 products to 38 in its own menu under Radar. Playback also reaches much further back now, and the animation bar finally shows the right times for whatever is actually playing.";
+const APP_LATEST_UPDATE = "Eight new model charts on every model: humidity, cloud cover, visibility, rain rate, snow depth, cap strength, instability and solar. NAM, RTMA and NBM are now one entry each with a region switch instead of a row per place. And the sounding moved to the right-click menu, so you can pull one anywhere on the map under any layer.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
