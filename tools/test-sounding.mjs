@@ -430,7 +430,339 @@ console.log('\n9. it closes, and says so plainly when it cannot read anything');
      /not building soundings/i.test(r.err) && /install\.sh/.test(r.err), r.err);
 }
 
-console.log('\n10. nothing above threw');
+console.log('\n10. the Pi\'s SounderPy answer becomes the same kind of profile');
+{
+  const r = await page.evaluate(() => {
+    const body = {
+      source: 'rap', label: 'RAP analysis', valid: '2026-08-20T18:00Z',
+      site: '', lat: 35.4, lon: -97.6, cached: true,
+      engine: { fetch: 'SounderPy', params: 'SHARPpy' },
+      params: { engine: 'SHARPpy' },
+      profile: {
+        p: [985, 925, 850, 700, 500, 300],
+        z: [380, 940, 1620, 3180, 5820, 9410],   // above SEA level
+        T: [30, 24, 18, 6, -13, -44],
+        Td: [21, 18, 13, -4, -25, -60],
+        u: [6, 14, 22, 33, 47, 68], v: [3, -2, -4, 5, 12, 16],
+      },
+    };
+    const prof = _sndFromPi(body);
+    let short = null;
+    try {
+      _sndFromPi({ profile: { p: [1000, 850], z: [0, 1], T: [20, 10],
+                              Td: [15, 5], u: [1, 2], v: [1, 2] } });
+    } catch (e) { short = e.message; }
+    return {
+      via: prof.via, n: prof.levels.length,
+      td: prof.levels[0].td, zMSL: prof.levels[0].zMSL,
+      hasZ: prof.levels[0].z === undefined,
+      engine: prof.engine, fetcher: prof.fetcher, cached: prof.cached,
+      valid: prof.valid, short,
+    };
+  });
+  ok('it is marked as having come from the Pi\'s door', r.via === 'pi', r.via);
+  ok('every level arrives', r.n === 6, String(r.n));
+  // The whole reason for this path: SounderPy sends the dew point itself, so
+  // it must not be thrown away and recomputed from a humidity nobody sent.
+  ok('the dew point is kept as sent, not recomputed', r.td === 21, String(r.td));
+  ok('height arrives under its own name, because it is above sea level',
+     r.zMSL === 380 && r.hasZ, JSON.stringify(r));
+  ok('SHARPpy is named as what did the sums', r.engine === 'SHARPpy', r.engine);
+  ok('and SounderPy as what fetched them', r.fetcher === 'SounderPy', r.fetcher);
+  ok('a cached answer says so', r.cached === true);
+  ok('the valid time comes across', /2026-08-20T18/.test(r.valid), r.valid);
+  ok('and a profile too short to read is refused with a sentence',
+     /too few/.test(r.short || ''), r.short);
+}
+
+console.log('\n11. real heights are used when the source has them');
+{
+  const r = await page.evaluate(() => {
+    // Denver: the ground is a mile up, so treating height above SEA level as
+    // height above GROUND puts the 0-1 km layer at 1600 m and makes every
+    // low-level number nonsense.
+    const denver = [
+      { p: 840, t: 28, td: 12, u: 5, v: 2, zMSL: 1610 },
+      { p: 700, t: 14, td: 4, u: 18, v: -3, zMSL: 3120 },
+      { p: 500, t: -9, td: -20, u: 40, v: 6, zMSL: 5800 },
+      { p: 300, t: -40, td: -55, u: 62, v: 14, zMSL: 9350 },
+    ];
+    _sndHeightsFrom(denver);
+    // No heights at all: it has to fall back to the hypsometric walk.
+    const noZ = [{ p: 1000, t: 25, td: 18 }, { p: 850, t: 15, td: 10 },
+                 { p: 700, t: 5, td: -2 }, { p: 500, t: -12, td: -25 }];
+    _sndHeightsFrom(noZ);
+    // One bad level, out of order. Trusting it would give a layer with
+    // negative depth and take the shear with it.
+    const broken = [{ p: 1000, t: 25, td: 18, zMSL: 100 },
+                    { p: 850, t: 15, td: 10, zMSL: 90 },
+                    { p: 700, t: 5, td: -2, zMSL: 3000 },
+                    { p: 500, t: -12, td: -25, zMSL: 5600 }];
+    _sndHeightsFrom(broken);
+    return {
+      sfc: denver[0].z, top: denver[3].z,
+      noZsfc: noZ[0].z, noZtop: noZ[3].z,
+      brokenMono: broken.every((r, i) => i === 0 || r.z > broken[i - 1].z),
+      brokenTop: broken[3].z,
+    };
+  });
+  ok('the ground is zero even a mile above sea level', r.sfc === 0, String(r.sfc));
+  ok('and the top is the real depth above it, not above the sea',
+     Math.abs(r.top - 7740) < 1, String(r.top));
+  ok('a source with no heights still gets them, hypsometrically',
+     r.noZsfc === 0 && r.noZtop > 4000 && r.noZtop < 7000,
+     `${r.noZsfc}, ${r.noZtop && r.noZtop.toFixed(0)}`);
+  ok('and one bad height makes it fall back rather than build a broken profile',
+     r.brokenMono && r.brokenTop > 4000, JSON.stringify(r));
+}
+
+console.log('\n12. SHARPpy\'s numbers replace the browser\'s, field by field');
+{
+  const r = await page.evaluate(() => {
+    const rows = [
+      { p: 1000, t: 29, rh: 78, u: 4, v: 2 }, { p: 925, t: 23, rh: 76, u: 10, v: -4 },
+      { p: 850, t: 18, rh: 68, u: 20, v: -2 }, { p: 700, t: 7, rh: 55, u: 30, v: 6 },
+      { p: 600, t: -2, rh: 48, u: 36, v: 10 }, { p: 500, t: -13, rh: 42, u: 44, v: 14 },
+      { p: 400, t: -27, rh: 36, u: 52, v: 16 }, { p: 300, t: -43, rh: 30, u: 60, v: 18 },
+      { p: 250, t: -53, rh: 25, u: 64, v: 18 }, { p: 200, t: -57, rh: 20, u: 66, v: 16 },
+    ];
+    const prof = { levels: rows, run: 'x', via: 'levels' };
+    const before = _sndDerive(prof);
+    const after = _sndApplyParams(_sndDerive(prof), {
+      sb: { cape: 4321, cin: -55, lcl: 900, lfc: 1400, el: 12000 },
+      wind: { shear6: 61, srh1: 222, esrh: 333, ebwd: 48 },
+      composite: { pwat: 2, stp_cin: 3.4, scp: 12, ship: 1.8, dcape: 950,
+                   lapse03: 8.1, eil: [960, 800] },
+      motion: { rm: [30, 5], lm: [10, 20] },
+    });
+    // A params block that failed must change nothing at all.
+    const errd = _sndApplyParams(_sndDerive(prof), { error: 'SHARPpy blew up' });
+    const nulled = _sndApplyParams(_sndDerive(prof), null);
+    const tables = _sndTables(after);
+    const plain = _sndTables(before);
+    return {
+      beforeCape: before.sb.cape, afterCape: after.sb.cape,
+      cin: after.sb.cin, lcl: after.sb.lclZ,
+      shear6: after.shear6, srh1: after.srh1, esrh: after.esrh,
+      pwatBefore: before.pwat, pwat: after.pwat,
+      stp: after.stp, ship: after.ship, dcape: after.dcape,
+      rm: after.motion && after.motion.right,
+      traceKept: !!(after.sb.trace && after.sb.trace.length > 3),
+      engine: after.engine, beforeEngine: before.engine,
+      errdCape: errd.sb.cape, nulledCape: nulled.sb.cape,
+      hasEffRows: /Effective SRH/.test(tables) && /Effective inflow/.test(tables),
+      hasShip: /SHIP/.test(tables), hasDcape: /DCAPE/.test(tables),
+      plainHasEff: /Effective SRH/.test(plain), plainHasShip: /SHIP/.test(plain),
+    };
+  });
+  ok('CAPE is SHARPpy\'s once it has sent one',
+     r.afterCape === 4321 && r.beforeCape !== 4321,
+     `${r.beforeCape} -> ${r.afterCape}`);
+  ok('CIN stays negative, because both sides already agree it is',
+     r.cin === -55, String(r.cin));
+  ok('the LCL height comes across', r.lcl === 900, String(r.lcl));
+  ok('shear and helicity too', r.shear6 === 61 && r.srh1 === 222,
+     `${r.shear6}, ${r.srh1}`);
+  // The one real unit trap on this path: SHARPpy carries precipitable water
+  // in inches and this panel has always shown millimetres. Two inches is
+  // 50.8 mm, and left unconverted it would read as a desert.
+  ok('precipitable water is converted from inches, not copied',
+     Math.abs(r.pwat - 50.8) < 0.01, `${r.pwatBefore} -> ${r.pwat}`);
+  ok('the composites come across', r.stp === 3.4 && r.ship === 1.8,
+     `${r.stp}, ${r.ship}`);
+  ok('and the storm motion', r.rm && r.rm.u === 30 && r.rm.v === 5,
+     JSON.stringify(r.rm));
+  // SHARPpy sends parameters, not curves, so the drawn parcel line stays the
+  // browser's. Losing it would blank the chart to gain a number.
+  ok('the parcel trace survives, so the chart still has a line on it',
+     r.traceKept);
+  ok('and the panel says which engine the numbers came from',
+     r.engine === 'SHARPpy' && r.beforeEngine !== 'SHARPpy', String(r.engine));
+  ok('a params block that failed changes nothing',
+     r.errdCape === r.beforeCape, `${r.errdCape} vs ${r.beforeCape}`);
+  ok('and no params block at all changes nothing either',
+     r.nulledCape === r.beforeCape);
+  // The effective-inflow rows cannot be computed honestly from twelve
+  // pressure levels, so they appear only when SHARPpy sent them.
+  ok('the effective-layer rows appear when SHARPpy sent them', r.hasEffRows);
+  ok('as do SHIP and DCAPE', r.hasShip && r.hasDcape);
+  ok('and they stay off the table when it did not, rather than showing dashes',
+     !r.plainHasEff && !r.plainHasShip);
+}
+
+console.log('\n13. Auto asks the Pi first and falls back without an error');
+{
+  const r = await page.evaluate(async () => {
+    const el = document.getElementById('snd-panel');
+    const rows = [
+      { p: 1000, t: 29, rh: 78, u: 4, v: 2 }, { p: 925, t: 23, rh: 76, u: 10, v: -4 },
+      { p: 850, t: 18, rh: 68, u: 20, v: -2 }, { p: 700, t: 7, rh: 55, u: 30, v: 6 },
+      { p: 600, t: -2, rh: 48, u: 36, v: 10 }, { p: 500, t: -13, rh: 42, u: 44, v: 14 },
+      { p: 400, t: -27, rh: 36, u: 52, v: 16 }, { p: 300, t: -43, rh: 30, u: 60, v: 18 },
+    ];
+    window._sndProfile = async (lat, lon, fhr) =>
+      ({ hour: fhr || 0, run: '2026082012', lat, lon, via: 'levels', levels: rows });
+    _sndManifest = { hours: [0, 6, 12, 18, 24], run: '2026082012' };
+    _hdBase = 'https://pi.example';
+    _sndSource = 'auto'; _sndPiDown = false;
+
+    const asked = [];
+    const realFetch = window.fetch;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes('/sounding?')) {
+        asked.push(u);
+        return new Response(JSON.stringify({
+          source: 'rap', label: 'RAP analysis', valid: '2026-08-20T18:00Z',
+          lat: 35.4, lon: -97.6, cached: false,
+          engine: { fetch: 'SounderPy', params: 'SHARPpy' },
+          params: { sb: { cape: 3100, cin: -30, lcl: 850 },
+                    ml: { cape: 2750, cin: -41, lcl: 1020 },
+                    mu: { cape: 3260, cin: -12, lcl: 850 },
+                    wind: { shear6: 58, srh1: 240, esrh: 310 },
+                    composite: { pwat: 1.5, stp_cin: 2.2, scp: 9 } },
+          profile: {
+            p: [985, 925, 850, 700, 500, 400, 300, 250],
+            z: [380, 940, 1620, 3180, 5820, 7400, 9410, 10600],
+            T: [30, 24, 18, 6, -13, -27, -44, -53],
+            Td: [21, 18, 13, -4, -25, -38, -60, -66],
+            u: [6, 14, 22, 33, 47, 55, 68, 72],
+            v: [3, -2, -4, 5, 12, 14, 16, 15],
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return realFetch(url, opts);
+    };
+
+    await openSounding(35.4, -97.6);
+    await new Promise(r => setTimeout(r, 350));
+    const good = {
+      asked: asked.slice(),
+      note: el.querySelector('.snd-note').textContent,
+      quick: el.querySelector('.snd-quick').textContent,
+      hourLbl: el.querySelector('.snd-hour-lbl').textContent,
+      piMode: !!el._piMode,
+      fell: !!el.querySelector('.snd-note').querySelector('.snd-fell'),
+    };
+
+    // Now the Pi's door is gone, the way an older serve.py answers.
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes('/sounding?')) {
+        return new Response('Not Found', { status: 404 });
+      }
+      return realFetch(url, opts);
+    };
+    _sndPiDown = false;
+    await openSounding(35.4, -97.6);
+    await new Promise(r => setTimeout(r, 350));
+    const fellBack = {
+      note: el.querySelector('.snd-note').innerHTML,
+      shown: getComputedStyle(el.querySelector('.snd-note')).display,
+      tables: el.querySelector('.snd-tables').querySelectorAll('table').length,
+      err: el.querySelector('.snd-tables').textContent.slice(0, 60),
+      piMode: !!el._piMode,
+      down: _sndPiDown,
+    };
+    // A second click must not knock on the door again now it is known shut.
+    const before = asked.length;
+    await openSounding(36, -97);
+    await new Promise(r => setTimeout(r, 300));
+    const noRetry = asked.length === before;
+
+    window.fetch = realFetch;
+    return { good, fellBack, noRetry };
+  });
+  ok('Auto asks the Pi\'s door', r.good.asked.length === 1, JSON.stringify(r.good.asked));
+  ok('with the point on the query string',
+     /lat=35\.4000/.test(r.good.asked[0] || '') && /lon=-97\.6000/.test(r.good.asked[0] || ''),
+     r.good.asked[0]);
+  ok('and asks for the analysis by default',
+     /source=rap/.test(r.good.asked[0] || ''), r.good.asked[0]);
+  // Hour zero must NOT be sent: the service already knows the current hour is
+  // not published and asks for the one before it. Naming an hour here would
+  // override that with the one that does not exist.
+  ok('and does not name an hour, so the service can pick the published one',
+     !/when=/.test(r.good.asked[0] || ''), r.good.asked[0]);
+  // The quick row shows the mixed-layer parcel, which is the one a forecaster
+  // reads first, so this checks that SHARPpy's ML CAPE reached the screen and
+  // not just that some number changed somewhere.
+  ok('the numbers on screen are SHARPpy\'s',
+     /2750/.test(r.good.quick) && /240/.test(r.good.quick), r.good.quick);
+  ok('the note says where they came from',
+     /SHARPpy/.test(r.good.note) && /SounderPy/.test(r.good.note), r.good.note);
+  ok('and that the heights are the real ones',
+     /geopotential/.test(r.good.note), r.good.note);
+  ok('nothing is flagged as a fallback when nothing fell back', !r.good.fell);
+  // The slider changes meaning with the source, because an analysis has no
+  // forecast hours. It has to say which it is showing.
+  ok('the slider now reads as time, not as a forecast hour',
+     r.good.hourLbl === 'now' && r.good.piMode, r.good.hourLbl);
+
+  ok('a Pi with no such door still draws a sounding', r.fellBack.tables === 4,
+     `${r.fellBack.tables} tables, err: ${r.fellBack.err}`);
+  ok('rather than an error where the numbers should be',
+     !/cannot|could not/i.test(r.fellBack.err), r.fellBack.err);
+  ok('and it says plainly that it fell back, and why',
+     /Fell back/.test(r.fellBack.note) && /sounding service/.test(r.fellBack.note),
+     r.fellBack.note.slice(0, 160));
+  ok('the reason is visible at card size, not hidden until expanded',
+     r.fellBack.shown !== 'none', r.fellBack.shown);
+  ok('the slider goes back to meaning a forecast hour', !r.fellBack.piMode);
+  ok('a door that answered 404 is remembered as shut', r.fellBack.down);
+  ok('so the next click does not wait on it all over again', r.noRetry);
+}
+
+console.log('\n13b. and the picker can force either one');
+{
+  const r = await page.evaluate(async () => {
+    const el = document.getElementById('snd-panel');
+    const sel = el.querySelector('.snd-src');
+    const ids = [...sel.options].map(o => o.value);
+    const asked = [];
+    const realFetch = window.fetch;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes('/sounding?')) {
+        asked.push(u);
+        return new Response(JSON.stringify({ error: 'no such hour yet' }),
+                            { status: 502 });
+      }
+      return realFetch(url, opts);
+    };
+    // Explicitly the level images: the door must not be touched at all.
+    sel.value = 'levels'; sel.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 300));
+    const levelsOnly = { asked: asked.length,
+                         tables: el.querySelector('.snd-tables')
+                                   .querySelectorAll('table').length };
+    // Explicitly a SounderPy source: no silent fallback, because the person
+    // asked for that one and a quiet substitution would be a lie.
+    sel.value = 'obs'; sel.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 300));
+    const forced = { asked: asked.slice(),
+                     err: el.querySelector('.snd-tables').textContent };
+    sel.value = 'auto'; sel.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 300));
+    window.fetch = realFetch;
+    return { ids, levelsOnly, forced,
+             saved: localStorage.getItem('gwcfc_snd_source') };
+  });
+  ok('every source is offered, the floor included',
+     r.ids.includes('auto') && r.ids.includes('rap') && r.ids.includes('obs')
+     && r.ids.includes('levels'), JSON.stringify(r.ids));
+  ok('choosing the level images does not touch the Pi\'s door at all',
+     r.levelsOnly.asked === 0, String(r.levelsOnly.asked));
+  ok('and still draws the full sounding', r.levelsOnly.tables === 4,
+     String(r.levelsOnly.tables));
+  ok('choosing a SounderPy source really asks for that one',
+     /source=obs/.test(r.forced.asked.join(' ')), r.forced.asked.join(' '));
+  ok('and when it fails it says so rather than quietly showing something else',
+     /no such hour yet/.test(r.forced.err), r.forced.err.slice(0, 120));
+  ok('the choice is remembered for next time', r.saved === 'auto', String(r.saved));
+}
+
+console.log('\n14. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));
   ok('no page errors', real.length === 0, real.slice(0, 3).join(' | '));

@@ -13,9 +13,11 @@ log to explain it.
     python3 pi/serve.py            # port 8080, serving ~/wxdata
     python3 pi/serve.py 9000 /srv  # or say where
 
-Reads are read-only as before, with one read-side relay door
-(GET /relay/ambient, which fetches the owner's Ambient Weather stations with
-keys kept on the Pi). The ONLY writes accepted are two relay doors,
+Reads are read-only as before, with two read-side doors:
+GET /relay/ambient fetches the owner's Ambient Weather stations with keys kept
+on the Pi, and GET /sounding builds one analysed vertical profile through
+sounding_service.py (SounderPy to fetch, SHARPpy to compute). Neither writes
+anything. The ONLY writes accepted are two relay doors,
 POST /relay/chat and POST /relay/feedback, which forward a message to a
 Discord webhook. The webhook URLs used to be written INTO the public page,
 and to Discord a webhook URL is the entire credential: anyone who reads it
@@ -35,6 +37,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -58,6 +61,24 @@ _relay_last = {}  # sender ip -> monotonic time of the last accepted post
 AMBIENT_FILE = os.path.expanduser("~/.gwcfc_ambient.json")
 AMBIENT_CACHE_S = 30.0
 _ambient_cache = {"at": -AMBIENT_CACHE_S, "body": None}
+
+# GET /sounding is the one door that makes the Pi do real work: SounderPy
+# downloads a model file and SHARPpy chews through every level of it, which on
+# a Pi 4 is seconds, not milliseconds. So it gets a queue of its own.
+#
+# Two at a time, because a third would just make all three slow. Everyone else
+# waits a little and is then told to try again, which is a better answer than a
+# request that hangs until the browser gives up on it.
+SOUNDING_WORKERS = int(os.environ.get("GWCFC_SND_WORKERS", "2"))
+SOUNDING_QUEUE_WAIT_S = 25.0
+_sounding_gate = threading.Semaphore(SOUNDING_WORKERS)
+
+# sounding_service.py lives beside this file. Python already puts a script's
+# own directory on the path, but a systemd unit can be started in ways that do
+# not, and "no soundings" is a confusing symptom for a path problem.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 
 def ambient_upstream():
@@ -144,6 +165,11 @@ class CORSHandler(SimpleHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path.endswith("latest.json"):
             self.send_header("Cache-Control", "no-cache, must-revalidate")
+        elif path == "/sounding":
+            # An analysis is hourly, so five minutes of browser cache costs
+            # nothing in freshness and saves the Pi a rebuild every time
+            # somebody closes the panel and opens it again.
+            self.send_header("Cache-Control", "public, max-age=300")
         elif path.endswith((".png", "manifest.json")):
             self.send_header("Cache-Control", "public, max-age=21600")
         super().end_headers()
@@ -152,12 +178,89 @@ class CORSHandler(SimpleHTTPRequestHandler):
         self.send_response(204)
         self.end_headers()
 
-    # One read-side relay door; every other GET is plain file serving.
+    # Two read-side doors; every other GET is plain file serving.
     def do_GET(self):
-        if self.path.split("?")[0] == "/relay/ambient":
+        head = self.path.split("?")[0]
+        if head == "/relay/ambient":
             self._relay_ambient()
             return
+        if head == "/sounding":
+            self._sounding()
+            return
         super().do_GET()
+
+    def _sounding(self):
+        """GET /sounding?lat=&lon=&source=&when= -> one analysed profile.
+
+        The page can already draw a sounding from the Pi's pressure-level
+        images without this door, so every failure here answers with a
+        readable reason and the page quietly falls back. A 500 with a stack
+        trace in it would be worse than useless: nobody reading the map can
+        act on one.
+        """
+        from urllib.parse import parse_qs, urlparse
+        q = parse_qs(urlparse(self.path).query)
+
+        def one(name, default=""):
+            v = q.get(name, [default])
+            return (v[0] if v else default).strip()
+
+        try:
+            lat = float(one("lat"))
+            lon = float(one("lon"))
+        except ValueError:
+            self._reply_json(400, {"error": "lat and lon are required, as numbers"})
+            return
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            self._reply_json(400, {"error": f"{lat}, {lon} is not a place on Earth"})
+            return
+
+        try:
+            import sounding_service as snd
+        except Exception as e:
+            self._reply_json(501, {"error": "the sounding service is not installed "
+                                            f"beside serve.py ({e})"})
+            return
+
+        source = one("source", "rap") or "rap"
+        if source not in snd.SOURCES:
+            self._reply_json(400, {"error": f"unknown source {source!r}",
+                                   "sources": sorted(snd.SOURCES)})
+            return
+        when = one("when") or None
+        if when and not (len(when) == 10 and when.isdigit()):
+            self._reply_json(400, {"error": "when must be YYYYMMDDHH in UTC"})
+            return
+
+        # A cache hit costs a file read, so it skips the queue entirely. That
+        # is what makes clicking around the same storm feel instant even while
+        # somebody else's fetch is running.
+        key = snd._cache_key(source, lat, lon, when)
+        hit = snd._cache_read(key)
+        if hit:
+            hit["cached"] = True
+            self._reply_json(200, hit)
+            return
+
+        if not _sounding_gate.acquire(timeout=SOUNDING_QUEUE_WAIT_S):
+            self._reply_json(503, {"error": "the Pi is already working on other "
+                                            "soundings. Try again in a moment.",
+                                   "retry": True})
+            return
+        try:
+            out = snd.sounding(source, lat, lon, when)
+        except RuntimeError as e:
+            # The expected failures: library missing, hour not published yet,
+            # too few levels. All of them are sentences a person can read.
+            self._reply_json(502, {"error": str(e)})
+            return
+        except Exception as e:
+            self._reply_json(502, {"error": "the sounding could not be built: "
+                                            f"{e.__class__.__name__}"})
+            return
+        finally:
+            _sounding_gate.release()
+        self._reply_json(200, out)
 
     def _relay_ambient(self):
         now = time.monotonic()
