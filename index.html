@@ -1794,6 +1794,15 @@ body {
 /* A heading inside a bubble column. MRMS and satellite both carry too many
    products for a flat list to be readable, so each group gets a quiet label
    above it rather than another clickable thing. */
+/* How many products a group holds, and how many of them are drawn. Sits at
+   the end of the row so the label still reads first. */
+.sb-count {
+  margin-left: auto; padding-left: 8px;
+  font-family: var(--mono); font-size: 9px;
+  opacity: 0.5; flex-shrink: 0;
+}
+.sub-bubble.active .sb-count { opacity: 0.85; }
+
 .sub-bubble-group-label {
   font-family: var(--display);
   font-size: 8.5px;
@@ -2916,22 +2925,87 @@ body {
 #inspector-readout-rows { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
 #inspector-readout .insp-row { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 /* ── Sounding ── */
+/* ── The sounding ─────────────────────────────────────────────────────────
+   This was a 320px box with a temperature line in it. A sounding is the one
+   chart in meteorology that has a settled, near-universal layout, and that
+   layout is a full screen of it: skew-T on the left, hodograph top right,
+   parameter tables along the bottom. Anything smaller is a preview of a
+   sounding rather than a sounding, so this is a full overlay instead. */
 #snd-panel {
-  position: fixed; right: 12px; bottom: 132px; z-index: 900; display: none;
-  width: min(320px, calc(100vw - 24px));
-  background: rgba(8,12,16,0.96); border: 1px solid var(--border);
-  border-radius: 10px; padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+  position: fixed; inset: 0; z-index: 1600; display: none;
+  background: #080b14;
   font-family: var(--sans);
+  color: #e8edf5;
+  overflow: auto;
 }
-#snd-panel .snd-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-#snd-panel .snd-title { font-weight: 700; font-size: 13px; color: var(--accent); }
-#snd-panel .snd-where { flex: 1; font-family: var(--mono); font-size: 10px; opacity: .7; color: var(--text); }
-#snd-panel .snd-x { background: none; border: none; color: var(--text); cursor: pointer; font-size: 13px; opacity: .7; }
-#snd-panel .snd-plot { width: 100%; height: 240px; display: block;
-  background: rgba(0,0,0,0.25); border-radius: 6px; }
-#snd-panel .snd-hour { width: 100%; accent-color: var(--accent2); margin-top: 7px; }
-#snd-panel .snd-meta { font-family: var(--mono); font-size: 10px; color: var(--text); margin-top: 2px; }
-@media (max-width: 640px) { #snd-panel { bottom: 108px; right: 8px; } }
+#snd-panel.open { display: block; }
+.snd-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.1);
+  position: sticky; top: 0; background: #080b14; z-index: 2;
+}
+.snd-title { font-weight: 700; font-size: 15px; letter-spacing: 0.3px; }
+.snd-where { font-family: var(--mono); font-size: 11px; opacity: 0.62; }
+.snd-head-spacer { flex: 1; }
+.snd-hour-wrap { display: flex; align-items: center; gap: 8px; }
+.snd-hour-lbl { font-family: var(--mono); font-size: 11px; opacity: 0.7; min-width: 46px; }
+.snd-hour { width: 190px; accent-color: var(--accent2); }
+.snd-x {
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
+  color: #e8edf5; cursor: pointer; font-size: 15px; line-height: 1;
+  border-radius: 8px; width: 32px; height: 32px;
+}
+.snd-x:hover { background: rgba(255,255,255,0.18); }
+
+/* Skew-T beside the hodograph, tables underneath. On a narrow screen the
+   hodograph drops below the skew-T rather than being squeezed to nothing. */
+.snd-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 12px; padding: 12px 16px 0;
+}
+.snd-card {
+  background: #0c1220; border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 10px; padding: 8px;
+}
+.snd-card canvas { display: block; width: 100%; }
+#snd-skewt { height: min(62vh, 620px); }
+#snd-hodo  { height: min(38vh, 380px); }
+.snd-card-title {
+  font-size: 10.5px; letter-spacing: 0.8px; text-transform: uppercase;
+  opacity: 0.55; margin: 1px 0 5px 3px;
+}
+.snd-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+.snd-tables {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px; padding: 12px 16px 20px;
+}
+.snd-tbl { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
+.snd-tbl th {
+  text-align: left; font-weight: 700; font-size: 10px; letter-spacing: 0.6px;
+  text-transform: uppercase; color: var(--accent2, #7fd4ee);
+  padding: 2px 6px 4px; border-bottom: 1px solid rgba(255,255,255,0.14);
+}
+.snd-tbl td { padding: 2.5px 6px; border-bottom: 1px solid rgba(255,255,255,0.05); }
+.snd-tbl td:first-child { opacity: 0.68; }
+.snd-tbl td.snd-num { text-align: right; font-variant-numeric: tabular-nums; }
+/* The colours a forecaster already reads these numbers in: warm for the
+   values that mean more storm, cool for the ones that mean less. */
+.snd-hot  { color: #ff7a5c; font-weight: 700; }
+.snd-warm { color: #ffc44d; }
+.snd-cool { color: #7fd4ee; }
+.snd-note { padding: 0 16px 16px; font-family: var(--mono); font-size: 10.5px; opacity: 0.5; }
+.snd-err {
+  padding: 24px 16px; font-family: var(--mono); font-size: 12px; color: #ff9a8a;
+}
+@media (max-width: 900px) {
+  .snd-grid { grid-template-columns: minmax(0, 1fr); }
+  #snd-skewt { height: 72vh; }
+  #snd-hodo { height: 46vh; }
+  .snd-hour { width: 120px; }
+  .snd-title { font-size: 13px; }
+}
 
 /* ── HD Models panel ── */
 #hd-panel {
@@ -4531,10 +4605,14 @@ body.shot-mode #spaghetti-models-panel,
 body.shot-mode #sev-compare-panel,
 body.shot-mode #nwr-rec-panel,
 body.shot-mode #storm-reports-panel,
-body.shot-mode #stormstream-hud,
 body.shot-mode #export-toolbar {
   display: none !important;
 }
+
+/* The StormStream frame is the broadcast, so a screenshot keeps it. Its two
+   skip buttons are not: they are a control, and a control in a captured
+   frame reads as part of the graphic. */
+body.shot-mode #ss-now-nav { display: none !important; }
 
 /* Everything hanging directly off body is interface: the loading screen, the
    top bar, the floating buttons, the status bar. The map lives inside #main,
@@ -4542,10 +4620,14 @@ body.shot-mode #export-toolbar {
    to name each one and without breaking when a new panel is added later.
    Scripts, styles and the icon sprite are left alone: the sprite is what the
    <use> references resolve against. */
-body.shot-mode > div:not(#main),
+body.shot-mode > div:not(#main):not(#ss-stage),
 body.shot-mode > button {
   display: none !important;
 }
+/* #ss-stage is the exception the rule above needs: it hangs off body like
+   every other panel, but it is not interface. It IS the broadcast graphic,
+   which is the whole reason a shot is being taken, so a capture that dropped
+   it would return a bare map. Its two skip buttons still go, above. */
 
 #update-bar {
   pointer-events: all;
@@ -6693,81 +6775,300 @@ footer {
   background: #000;
 }
 
-/* ── STORMSTREAM MODE: HUD, privacy warning, first-run explainer ── */
-#stormstream-hud {
-  /* Sits in the same "floating info panel" corner as the top nav's Severe/
-     Ice tab bubbles (#tabs-right: top 18px, 58px tall, z-index 1100) - this
-     used to start right where those end, and on some phone widths the
-     tabs' own extra height ate into it, so the panel's top corner was
-     genuinely hidden behind them. Pushed down with real clearance instead
-     of a razor-thin gap, plus a safe-area allowance for notched phones. */
-  position: fixed;
-  top: calc(84px + env(safe-area-inset-top, 0px));
-  right: calc(10px + env(safe-area-inset-right, 0px));
-  z-index: 950;
-  width: 240px;
-  max-width: calc(100vw - 24px);
-  background: rgba(8,4,4,0.92);
-  border: 1px solid var(--ss-accent, #ff4444);
-  border-top: 3px solid var(--ss-accent, #ff4444);
-  border-radius: 12px;
-  padding: 10px 12px 11px;
-  font-family: var(--mono);
-  font-size: 10px;
-  color: rgba(255,255,255,0.88);
-  backdrop-filter: blur(8px);
-  box-shadow: 0 6px 22px rgba(0,0,0,0.5);
+/* ── StormStream: the broadcast overlay ────────────────────────────────────
+   Built to a supplied design rather than invented here, so the shapes and the
+   gradient directions are copied from it exactly, including the places where
+   neighbouring panels deliberately run opposite ways.
+
+   The old HUD was one dark box in the top right, which is a map control, not
+   a broadcast. This is a frame: what is on air top left, what the map is
+   showing across the top, everything active top right, and the headline along
+   the bottom under the logo. It replaces the old HUD entirely.
+
+   It adapts rather than locking to 16:9. A phone in portrait cannot carry a
+   lower third and two top panels side by side, so below the breakpoints the
+   panels reflow and shrink instead of letterboxing the map away. */
+:root {
+  --ss-gold:   #f5cf12;
+  --ss-red:    #c0161a;
+  --ss-blue:   #2f9fd6;
+  /* Red into blue, and blue into red. Which panel gets which is copied from
+     the design; they are not consistent with each other there, on purpose. */
+  --ss-rb: linear-gradient(90deg, var(--ss-red) 0%, var(--ss-blue) 100%);
+  --ss-br: linear-gradient(90deg, var(--ss-blue) 0%, var(--ss-red) 100%);
+  --ss-edge: 3px solid var(--ss-gold);
+}
+
+#ss-stage {
+  position: fixed; inset: 0; z-index: 950;
   pointer-events: none;
+  font-family: var(--display);
+  display: none;
 }
-#stormstream-hud .ss-hud-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 6px;
-  margin-bottom: 6px;
+#ss-stage.on { display: block; }
+
+/* Gold text on a gradient needs a dark edge or it disappears over the blue
+   half. Two shadows rather than -webkit-text-stroke, which thins the glyph. */
+.ss-title-text {
+  color: var(--ss-gold);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-shadow: 0 2px 0 rgba(0,0,0,0.55), 0 0 6px rgba(0,0,0,0.4);
 }
-#stormstream-hud .ss-hud-title {
-  font-family: var(--display); font-weight: 700; font-size: 11px; letter-spacing: 0.6px;
-  color: var(--ss-accent, #ff4444); text-transform: uppercase;
+
+/* ── Top left: the alert now on air ─────────────────────────────────────── */
+/* Sizes are read off the design as fractions of the frame it was drawn on,
+   rather than picked to look right at one width: the on-air panel is a little
+   over a fifth of the frame wide, the alerts panel a fifth, the centre pair a
+   third, and the lower third most of it. A pixel ceiling stops them growing
+   silly on a very wide monitor. */
+#ss-now {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  left: calc(16px + env(safe-area-inset-left, 0px));
+  width: min(430px, 22vw);
+  pointer-events: all;
+}
+#ss-now-tab {
+  position: relative;
+  background: var(--ss-br);
+  border: var(--ss-edge);
+  border-radius: 10px 10px 4px 4px;
+  padding: 7px 16px;
+  font-size: 15px;
+  line-height: 1.2;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-#stormstream-hud .ss-hud-count {
-  flex-shrink: 0; font-size: 8px; color: rgba(255,255,255,0.5);
-  background: rgba(255,255,255,0.09); border-radius: 8px; padding: 2px 6px;
+/* The pointed tab on the left edge, drawn as a rotated square so its two
+   visible sides keep the same gold edge as the panel. */
+#ss-now-tab::before {
+  content: '';
+  position: absolute; left: -13px; top: 50%;
+  width: 16px; height: 16px;
+  transform: translateY(-50%) rotate(45deg);
+  background: var(--ss-blue);
+  border-left: var(--ss-edge);
+  border-bottom: var(--ss-edge);
+  border-radius: 2px;
 }
-#stormstream-hud .ss-hud-flag {
-  font-family: var(--display); font-weight: 700; font-size: 9px; letter-spacing: 0.8px;
-  padding: 3px 6px; border-radius: 5px; margin-bottom: 6px; display: inline-block;
+#ss-now-body {
+  background: var(--ss-rb);
+  border: var(--ss-edge);
+  border-top: none;
+  border-radius: 4px 4px 12px 12px;
+  padding: 12px 16px 14px;
+  color: #fff;
+  font-size: 12.5px;
+  min-height: 130px;
 }
-#stormstream-hud .ss-flag-emergency { background: #ff0000; color: #fff; }
-#stormstream-hud .ss-flag-pds { background: #c400ff; color: #fff; }
-#stormstream-hud .ss-hud-progress {
-  width: 100%; height: 4px; margin: 2px 0 7px; accent-color: var(--ss-accent, #ff4444);
+.ss-now-line { margin-bottom: 4px; text-shadow: 0 1px 2px rgba(0,0,0,0.45); }
+.ss-now-line:last-child { margin-bottom: 0; }
+.ss-now-flag {
+  display: inline-block; margin-bottom: 5px;
+  background: #fff; color: #a00; font-weight: 700;
+  font-size: 9.5px; letter-spacing: 0.7px;
+  padding: 2px 7px; border-radius: 4px;
 }
-#stormstream-hud .ss-hud-times {
-  display: flex; align-items: center; gap: 4px;
-  font-size: 9px; color: rgba(255,255,255,0.6); margin-bottom: 7px;
-}
-#stormstream-hud .ss-hud-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
-#stormstream-hud .ss-tag {
-  font-size: 8.5px; font-weight: 600; background: rgba(255,255,255,0.09);
-  border: 1px solid rgba(255,255,255,0.14); border-radius: 6px; padding: 3px 7px;
-}
-#stormstream-hud .ss-hud-nav { display: flex; gap: 8px; pointer-events: all; }
-#stormstream-hud .ss-hud-nav button {
-  flex: 1; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.18); color: #fff;
-  border-radius: 6px; font-family: var(--mono); font-size: 10px; padding: 4px 0; cursor: pointer;
+.ss-now-flag.ss-pds { color: #7a00a8; }
+#ss-now-nav { display: flex; gap: 6px; margin-top: 7px; }
+#ss-now-nav button {
+  flex: 1; cursor: pointer;
+  font-family: var(--display); font-weight: 700; font-size: 10px;
+  color: var(--ss-gold);
+  background: rgba(0,0,0,0.28);
+  border: 2px solid var(--ss-gold);
+  border-radius: 6px; padding: 3px 0;
   transition: background 0.15s;
 }
-#stormstream-hud .ss-hud-nav button:hover { background: rgba(255,255,255,0.16); }
-/* On phones #right-menu (the drawing-tool column: draw/text/polygon/
-   distance) pulls up to top:90px, right at the edge this panel is also
-   anchored to (see #right-menu's own comments on that override) - without
-   this the HUD's right edge would sit directly over those tool buttons.
-   Same 56px clearance #overlay-panel-stack already uses to clear the
-   equivalent compact icon column on the opposite edge. */
-@media (max-width: 480px) {
-  #stormstream-hud {
-    right: calc(56px + env(safe-area-inset-right, 0px));
-    max-width: calc(100vw - 68px);
+#ss-now-nav button:hover { background: rgba(0,0,0,0.5); }
+
+/* ── Top centre: what the map is showing ────────────────────────────────── */
+/* Hidden when there is nothing to put in it, so a quiet moment is not a wide
+   empty banner across the top of the map. */
+#ss-layers {
+  position: absolute;
+  top: calc(14px + env(safe-area-inset-top, 0px));
+  left: 50%; transform: translateX(-50%);
+  width: min(680px, 35vw);
+  pointer-events: none;
+  display: none;
+}
+#ss-layers.on { display: block; }
+#ss-layers-main {
+  background: var(--ss-rb);
+  border: var(--ss-edge);
+  border-radius: 60px;
+  padding: 14px 28px;
+  font-size: 15px;
+  color: #fff;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* Tucked under and narrower, the way the design nests them. */
+#ss-layers-sub {
+  width: 88%; margin: 4px auto 0;
+  background: var(--ss-br);
+  border: var(--ss-edge);
+  border-radius: 60px;
+  padding: 7px 22px;
+  font-size: 12px;
+  color: #fff;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#ss-layers-sub.off { display: none; }
+
+/* ── Top right: everything active ───────────────────────────────────────── */
+#ss-alerts {
+  position: absolute;
+  top: calc(16px + env(safe-area-inset-top, 0px));
+  right: calc(16px + env(safe-area-inset-right, 0px));
+  width: min(400px, 21vw);
+  pointer-events: all;
+}
+#ss-alerts-head {
+  background: var(--ss-br);
+  border: var(--ss-edge);
+  border-radius: 10px 10px 4px 4px;
+  padding: 7px 16px;
+  font-size: 18px;
+  text-align: center;
+}
+#ss-alerts-body {
+  background: var(--ss-rb);
+  border: var(--ss-edge);
+  border-top: none;
+  border-radius: 4px 4px 12px 12px;
+  padding: 11px 14px;
+  color: #fff;
+  font-size: 12.5px;
+  min-height: 200px;
+  max-height: min(440px, 42vh);
+  overflow-y: auto;
+}
+.ss-alert-row {
+  display: flex; justify-content: space-between; gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.2);
+  text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+}
+.ss-alert-row:last-child { border-bottom: none; }
+.ss-alert-row.on { color: var(--ss-gold); font-weight: 700; }
+.ss-alert-what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-alert-when { flex-shrink: 0; opacity: 0.85; font-size: 10px; }
+.ss-alerts-none { opacity: 0.85; text-align: center; padding: 6px 0; }
+
+/* ── Bottom: the lower third ────────────────────────────────────────────── */
+#ss-lower {
+  position: absolute;
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  width: min(1600px, 88vw);
+  pointer-events: none;
+}
+#ss-lower-pills {
+  display: flex; justify-content: space-between;
+  padding: 0 6%;
+  margin-bottom: -6px;
+  position: relative; z-index: 2;
+}
+.ss-pill {
+  background: var(--ss-br);
+  border: var(--ss-edge);
+  border-radius: 12px;
+  padding: 6px 26px 14px;
+  font-size: 13px;
+  color: #fff;
+  min-width: 26%;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* The chevron: both ends cut back, which is the shape in the design. Drawn
+   as a gold block with the gradient inset one edge width, because clip-path
+   on a bordered box clips the border away too. */
+#ss-lower-bar {
+  position: relative;
+  background: var(--ss-gold);
+  clip-path: polygon(3% 0, 97% 0, 100% 50%, 97% 100%, 3% 100%, 0 50%);
+  padding: 3px;
+}
+#ss-lower-bar-inner {
+  background: var(--ss-rb);
+  clip-path: polygon(3% 0, 97% 0, 100% 50%, 97% 100%, 3% 100%, 0 50%);
+  padding: 22px 9%;
+  min-height: 48px;
+  color: #fff;
+  font-size: 18px;
+  line-height: 1.3;
+  text-align: center;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.55);
+}
+/* Sits across the join between the pills and the bar, as drawn. */
+#ss-lower-logo {
+  position: absolute;
+  left: 50%; top: 0;
+  transform: translate(-50%, -58%);
+  width: min(150px, 11vw); height: min(150px, 11vw);
+  z-index: 3;
+  filter: drop-shadow(0 3px 10px rgba(0,0,0,0.6));
+  pointer-events: none;
+}
+
+/* ── Adapting down ──────────────────────────────────────────────────────── */
+/* The three top panels stop fitting side by side long before a phone. The
+   centre pair is the one that goes first, because it is the one that says
+   the least. */
+@media (max-width: 1100px) {
+  #ss-now    { width: min(300px, 27vw); }
+  #ss-alerts { width: min(280px, 25vw); }
+  #ss-layers { width: min(340px, 30vw); }
+  #ss-now-tab, #ss-alerts-head { font-size: 13px; }
+  #ss-now-body, #ss-alerts-body { font-size: 11px; }
+  #ss-now-body { min-height: 100px; }
+  #ss-alerts-body { min-height: 140px; }
+  #ss-layers-main { font-size: 12.5px; padding: 10px 18px; }
+  #ss-layers-sub { font-size: 10.5px; padding: 5px 14px; }
+  #ss-lower  { width: 92vw; }
+  #ss-lower-bar-inner { font-size: 15px; padding: 16px 9%; }
+  #ss-lower-logo { width: 100px; height: 100px; }
+}
+@media (max-width: 820px) {
+  /* Below this the centre pair would be a sliver between the other two, so
+     it drops under them across the full width instead. */
+  #ss-layers {
+    top: auto;
+    bottom: calc(210px + env(safe-area-inset-bottom, 0px));
+    width: min(420px, 84vw);
   }
+}
+@media (max-width: 560px) {
+  /* #right-menu (the drawing-tool column) pulls up to top:90px on phones and
+     is anchored to the same edge the alerts panel is, so the panel has to be
+     shifted clear of it or it lands directly on those buttons. The on-air
+     panel is narrowed to match so the top row stays even. */
+  #ss-alerts {
+    right: calc(52px + env(safe-area-inset-right, 0px));
+    width: calc(50vw - 42px);
+  }
+  #ss-now { width: calc(50vw - 26px); }
+  #ss-now-tab, #ss-alerts-head { font-size: 11px; padding: 4px 8px; }
+  #ss-now-body, #ss-alerts-body { font-size: 9.5px; padding: 6px 8px 8px; }
+  #ss-alerts-body { max-height: 26vh; }
+  #ss-now-body { min-height: 0; }
+  #ss-lower {
+    width: calc(100vw - 16px);
+    bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+  }
+  #ss-lower-bar-inner { font-size: 11.5px; padding: 10px 8%; }
+  .ss-pill { font-size: 9.5px; padding: 3px 10px 8px; min-width: 30%; }
+  #ss-lower-logo { width: 62px; height: 62px; }
+  #ss-layers { bottom: calc(178px + env(safe-area-inset-bottom, 0px)); }
+  #ss-layers-main { font-size: 10.5px; padding: 5px 12px; }
+  #ss-layers-sub { font-size: 9px; padding: 3px 10px; }
+  #ss-now-nav button { font-size: 9px; }
 }
 
 #ss-privacy-warn {
@@ -13028,67 +13329,682 @@ function _sndDewpoint(tC, rh) {
   return (b * g) / (a - g);
 }
 
-// A plain temperature-against-height plot rather than a true skew-T. The skew
-// is a printing convention from paper charts, and on a phone it costs more in
-// legibility than it returns.
-function _sndPlotProfile(canvas, prof) {
+// ── Sounding thermodynamics ───────────────────────────────────────────────
+// Everything below is worked out in the browser from what the Pi ships, which
+// is temperature, relative humidity and the two wind components at twelve
+// pressure levels. That is enough for a real sounding: dewpoint follows from
+// humidity, heights follow from the hypsometric equation, and a parcel lifted
+// from the surface gives CAPE, CIN and the levels a forecaster reads first.
+//
+// The formulas are the standard ones rather than anything invented here:
+// Bolton (1980) for saturation vapour pressure and the LCL, the pseudoadiabat
+// integrated stepwise above it, Bunkers (2000) for storm motion. Where a
+// simplification is made it is called out, because a sounding that is subtly
+// wrong is worse than no sounding.
+
+const SND_RD = 287.058, SND_CP = 1004.0, SND_G = 9.80665, SND_EPS = 0.622;
+
+// Saturation vapour pressure over water, in hPa. Bolton's form, good to a
+// fraction of a percent over every temperature a sounding contains.
+function _sndEs(tC) {
+  return 6.112 * Math.exp((17.67 * tC) / (tC + 243.5));
+}
+function _sndMixing(p, e) {
+  const d = p - e;
+  return d > 0 ? SND_EPS * e / d : 0;
+}
+// Virtual temperature, in kelvin. A moist parcel is lighter than a dry one at
+// the same temperature, and near the surface in a humid airmass that is worth
+// several hundred J/kg of CAPE, so it is not skipped.
+function _sndTv(tC, w) {
+  return (tC + 273.15) * (1 + w / SND_EPS) / (1 + w);
+}
+function _sndDryLapse(p, t0C, p0) {
+  return (t0C + 273.15) * Math.pow(p / p0, SND_RD / SND_CP) - 273.15;
+}
+// One step along a pseudoadiabat. Integrated rather than solved, because the
+// closed forms are approximations too and this one is easy to read.
+function _sndMoistStep(p, tC, dp) {
+  const t = tC + 273.15;
+  const w = _sndMixing(p, _sndEs(tC));
+  const Lv = 2.501e6 - 2370 * tC;
+  const num = 1 + (Lv * w) / (SND_RD * t);
+  const den = 1 + (Lv * Lv * w * SND_EPS) / (SND_CP * SND_RD * t * t);
+  const dtdp = (SND_RD * t / (SND_CP * p)) * (num / den);
+  return tC + dtdp * dp;
+}
+
+// The lifting condensation level, Bolton's equation 22, then the dry adiabat
+// to it. Returns pressure in hPa and the parcel temperature there.
+function _sndLCL(p, tC, tdC) {
+  const t = tC + 273.15, td = tdC + 273.15;
+  const denom = 1 / (td - 56) + Math.log(t / td) / 800;
+  const tlcl = 1 / denom + 56;              // kelvin
+  // The dry adiabat is reversible, so the LCL pressure follows from it.
+  const plcl = p * Math.pow(tlcl / t, SND_CP / SND_RD);
+  return { p: plcl, t: tlcl - 273.15 };
+}
+
+// Heights above the surface, from the hypsometric equation over each layer.
+// Model soundings do not ship geopotential here, and a height axis that is
+// guessed from a standard atmosphere would put the shear layers in the wrong
+// place, which is the one thing a hodograph must not do.
+function _sndHeights(rows) {
+  let z = 0;
+  rows[0].z = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const a = rows[i - 1], b = rows[i];
+    const wa = _sndMixing(a.p, _sndEs(a.td != null ? a.td : a.t));
+    const wb = _sndMixing(b.p, _sndEs(b.td != null ? b.td : b.t));
+    const tvbar = (_sndTv(a.t, wa) + _sndTv(b.t, wb)) / 2;
+    z += (SND_RD * tvbar / SND_G) * Math.log(a.p / b.p);
+    b.z = z;
+  }
+  return rows;
+}
+
+// Linear interpolation of a field against height, used everywhere a layer is
+// named in kilometres rather than in millibars.
+function _sndAtZ(rows, zm, key) {
+  if (!rows.length) return null;
+  if (zm <= rows[0].z) return rows[0][key];
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i].z >= zm) {
+      const a = rows[i - 1], b = rows[i];
+      if (a[key] == null || b[key] == null) return b[key];
+      const f = (zm - a.z) / (b.z - a.z);
+      return a[key] + f * (b[key] - a[key]);
+    }
+  }
+  return null;
+}
+
+// A parcel lifted from (p, T, Td): its trace, and the numbers read off it.
+// `rows` must already carry z and td.
+function _sndParcel(rows, p0, t0, td0, label) {
+  if (p0 == null || t0 == null || td0 == null) return null;
+  const lcl = _sndLCL(p0, t0, td0);
+  const trace = [];
+  let cape = 0, cin = 0, lfc = null, el = null, prevBuoy = null, prevP = null;
+
+  const w0 = _sndMixing(p0, _sndEs(td0));
+  for (const r of rows) {
+    if (r.p > p0) continue;                       // below where it started
+    let tp;
+    if (r.p >= lcl.p) {
+      tp = _sndDryLapse(r.p, t0, p0);             // still unsaturated
+    } else {
+      // Walk the pseudoadiabat down in pressure from the LCL in small steps,
+      // rather than one jump per reported level: the levels are 50 to 100 mb
+      // apart and a single step across that overshoots badly.
+      tp = lcl.t;
+      let pp = lcl.p;
+      while (pp > r.p + 1e-6) {
+        const step = Math.min(5, pp - r.p);
+        tp = _sndMoistStep(pp, tp, -step);
+        pp -= step;
+      }
+    }
+    // Above the LCL the parcel is saturated; below it, it keeps its mixing
+    // ratio. Both matter for the virtual temperature correction.
+    const wp = r.p >= lcl.p ? w0 : _sndMixing(r.p, _sndEs(tp));
+    const we = _sndMixing(r.p, _sndEs(r.td != null ? r.td : r.t));
+    const buoy = _sndTv(tp, wp) - _sndTv(r.t, we);
+    trace.push({ p: r.p, t: tp, z: r.z, buoy });
+
+    if (prevBuoy != null) {
+      const layer = SND_RD * ((buoy + prevBuoy) / 2) * Math.log(prevP / r.p);
+      if (layer > 0) {
+        if (prevBuoy <= 0 && lfc == null) lfc = r.p;
+        cape += layer;
+      } else if (lfc != null && el == null && prevBuoy > 0) {
+        el = prevP;                                // crossed back to negative
+      } else if (lfc == null) {
+        cin += layer;
+      }
+    }
+    prevBuoy = buoy; prevP = r.p;
+  }
+  if (cape > 0 && lfc == null) lfc = lcl.p;
+  // A parcel that is still warmer than its surroundings at the top level has
+  // its equilibrium level somewhere above the sounding, not nowhere. Reported
+  // as the top rather than as nothing, because "no EL" reads as "no storm"
+  // when what it means is "this profile does not reach high enough".
+  if (cape > 0 && el == null && trace.length) {
+    el = trace[trace.length - 1].p;
+    var elCapped = true;
+  }
+
+  return {
+    label, trace,
+    cape: Math.max(0, cape), cin: Math.min(0, cin),
+    lclP: lcl.p, lclZ: _sndPToZ(rows, lcl.p),
+    lfcP: lfc, lfcZ: lfc ? _sndPToZ(rows, lfc) : null,
+    elP: el, elZ: el ? _sndPToZ(rows, el) : null,
+    elAboveTop: !!elCapped,
+  };
+}
+
+function _sndPToZ(rows, p) {
+  if (!rows.length || p == null) return null;
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i].p <= p) {
+      const a = rows[i - 1], b = rows[i];
+      const f = Math.log(a.p / p) / Math.log(a.p / b.p);
+      return a.z + f * (b.z - a.z);
+    }
+  }
+  return rows[rows.length - 1].z;
+}
+
+// A mixed-layer parcel: the lowest 100 mb averaged, which is what is normally
+// quoted, because a single surface reading can be unrepresentatively hot.
+function _sndMixedParcel(rows) {
+  const p0 = rows[0].p;
+  const layer = rows.filter(r => r.p >= p0 - 100);
+  if (!layer.length) return null;
+  let t = 0, w = 0, n = 0;
+  layer.forEach(r => {
+    const td = r.td != null ? r.td : r.t;
+    t += r.t; w += _sndMixing(r.p, _sndEs(td)); n++;
+  });
+  t /= n; w /= n;
+  // Back out a dewpoint from the averaged mixing ratio.
+  const e = (w * p0) / (SND_EPS + w);
+  const td = e > 0 ? (243.5 * Math.log(e / 6.112)) / (17.67 - Math.log(e / 6.112)) : t;
+  return _sndParcel(rows, p0, t, td, 'ML');
+}
+
+// The most unstable parcel: whichever level in the lowest 300 mb gives the
+// most CAPE. This is the one that matters for elevated storms, where the
+// surface parcel is capped and something above it is not.
+function _sndMostUnstable(rows) {
+  const p0 = rows[0].p;
+  let best = null;
+  rows.filter(r => r.p >= p0 - 300).forEach(r => {
+    const td = r.td != null ? r.td : r.t;
+    const par = _sndParcel(rows, r.p, r.t, td, 'MU');
+    if (par && (!best || par.cape > best.cape)) best = par;
+  });
+  return best;
+}
+
+// ── Wind ──────────────────────────────────────────────────────────────────
+function _sndShear(rows, z0, z1) {
+  const u0 = _sndAtZ(rows, z0, 'u'), v0 = _sndAtZ(rows, z0, 'v');
+  const u1 = _sndAtZ(rows, z1, 'u'), v1 = _sndAtZ(rows, z1, 'v');
+  if ([u0, v0, u1, v1].some(x => x == null)) return null;
+  return Math.hypot(u1 - u0, v1 - v0);
+}
+
+// Mean wind through a layer, on the same fine height grid the helicity uses.
+// Averaging the reported levels instead weights them by how the pressure
+// levels happen to be spaced, which puts more weight on the low levels than
+// the layer deserves and drags the storm motion with it.
+function _sndMeanWind(rows, z0, z1) {
+  if (!rows.length) return null;
+  const top = Math.min(z1, rows[rows.length - 1].z);
+  if (!(top > z0)) return null;
+  let u = 0, v = 0, n = 0;
+  for (let z = z0; z <= top; z += 100) {
+    const uu = _sndAtZ(rows, z, 'u'), vv = _sndAtZ(rows, z, 'v');
+    if (uu == null || vv == null) continue;
+    u += uu; v += vv; n++;
+  }
+  return n ? { u: u / n, v: v / n } : null;
+}
+
+// Bunkers right mover: the 0-6 km mean wind, pushed 7.5 m/s to the right of
+// the 0-6 km shear vector. The left mover is the same push the other way.
+function _sndStormMotion(rows) {
+  const mean = _sndMeanWind(rows, 0, 6000);
+  const u0 = _sndAtZ(rows, 0, 'u'), v0 = _sndAtZ(rows, 0, 'v');
+  const u6 = _sndAtZ(rows, 6000, 'u'), v6 = _sndAtZ(rows, 6000, 'v');
+  if (!mean || [u0, v0, u6, v6].some(x => x == null)) return null;
+  const su = u6 - u0, sv = v6 - v0;
+  const mag = Math.hypot(su, sv);
+  if (!mag) return { right: mean, left: mean, mean };
+  const D = 7.5 * 1.94384;                     // 7.5 m/s, in knots
+  return {
+    mean,
+    right: { u: mean.u + D * (sv / mag), v: mean.v - D * (su / mag) },
+    left:  { u: mean.u - D * (sv / mag), v: mean.v + D * (su / mag) },
+  };
+}
+
+// Storm relative helicity through a layer, the standard discrete sum - but
+// over a fine height grid rather than over the levels as published.
+//
+// The Pi ships twelve pressure levels, which puts two of them in the lowest
+// kilometre. Summing a curve over two points is not measuring the curve: it
+// reported a helicity for 0-1 km that was not even the same sign as the one
+// for 0-3 km, which cannot happen for nested layers of a real hodograph.
+// Interpolating every hundred metres fixes it and costs nothing.
+function _sndSRH(rows, z0, z1, motion) {
+  if (!motion || !rows.length) return null;
+  const top = Math.min(z1, rows[rows.length - 1].z);
+  if (!(top > z0)) return null;
+  const STEP = 100;
+  const pts = [];
+  for (let z = z0; z <= top; z += STEP) {
+    const u = _sndAtZ(rows, z, 'u'), v = _sndAtZ(rows, z, 'v');
+    if (u == null || v == null) return null;
+    pts.push({ u, v });
+  }
+  if (pts.length < 2) return null;
+  let srh = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    srh += (b.u - motion.u) * (a.v - motion.v) - (a.u - motion.u) * (b.v - motion.v);
+  }
+  return srh;
+}
+
+// Precipitable water, integrated through the column, in millimetres.
+function _sndPWAT(rows) {
+  let tw = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const a = rows[i - 1], b = rows[i];
+    const wa = _sndMixing(a.p, _sndEs(a.td != null ? a.td : a.t));
+    const wb = _sndMixing(b.p, _sndEs(b.td != null ? b.td : b.t));
+    tw += ((wa + wb) / 2) * (a.p - b.p) * 100 / SND_G;   // kg/m2 == mm
+  }
+  return tw;
+}
+
+function _sndLapse(rows, z0, z1) {
+  const t0 = _sndAtZ(rows, z0, 't'), t1 = _sndAtZ(rows, z1, 't');
+  if (t0 == null || t1 == null) return null;
+  return (t0 - t1) / ((z1 - z0) / 1000);        // deg C per km
+}
+
+// Significant Tornado Parameter, the fixed-layer form, and the Supercell
+// Composite. Both are the published definitions.
+function _sndSTP(ml, srh1, shear6) {
+  if (!ml || srh1 == null || shear6 == null || !ml.lclZ) return null;
+  const capeTerm = ml.cape / 1500;
+  const lclTerm = ml.lclZ >= 2000 ? 0 : (ml.lclZ <= 1000 ? 1 : (2000 - ml.lclZ) / 1000);
+  const srhTerm = srh1 / 150;
+  let shr = shear6;
+  if (shr < 12.5 * 1.94384) shr = 0;
+  else if (shr > 30 * 1.94384) shr = 30 * 1.94384;
+  const shearTerm = shr / (20 * 1.94384);
+  return capeTerm * lclTerm * srhTerm * shearTerm;
+}
+function _sndSCP(mu, srh3, shear6) {
+  if (!mu || srh3 == null || shear6 == null) return null;
+  let shr = shear6;
+  if (shr < 10 * 1.94384) shr = 0;
+  else if (shr > 20 * 1.94384) shr = 20 * 1.94384;
+  return (mu.cape / 1000) * (srh3 / 50) * (shr / (20 * 1.94384));
+}
+
+// Everything the tables show, worked out once from one profile.
+function _sndDerive(prof) {
+  const rows = prof.levels
+    .filter(r => r.t != null && r.p != null)
+    .map(r => ({ p: r.p, t: r.t, rh: r.rh, u: r.u, v: r.v,
+                 td: _sndDewpoint(r.t, r.rh) }))
+    .sort((a, b) => b.p - a.p);                  // surface first
+  if (rows.length < 3) return null;
+  _sndHeights(rows);
+
+  const sfc = rows[0];
+  const sb = _sndParcel(rows, sfc.p, sfc.t, sfc.td != null ? sfc.td : sfc.t, 'SB');
+  const ml = _sndMixedParcel(rows);
+  const mu = _sndMostUnstable(rows);
+  const motion = _sndStormMotion(rows);
+  const shear1 = _sndShear(rows, 0, 1000);
+  const shear3 = _sndShear(rows, 0, 3000);
+  const shear6 = _sndShear(rows, 0, 6000);
+  const srh1 = motion ? _sndSRH(rows, 0, 1000, motion.right) : null;
+  const srh3 = motion ? _sndSRH(rows, 0, 3000, motion.right) : null;
+
+  return {
+    rows, sfc, sb, ml, mu, motion,
+    shear1, shear3, shear6, srh1, srh3,
+    pwat: _sndPWAT(rows),
+    lr03: _sndLapse(rows, 0, 3000),
+    lr36: _sndLapse(rows, 3000, 6000),
+    stp: _sndSTP(ml, srh1, shear6),
+    scp: _sndSCP(mu, srh3, shear6),
+  };
+}
+
+// ── The skew-T ────────────────────────────────────────────────────────────
+// A real one this time. The skew is not decoration: it is what makes the dry
+// adiabats, the moist adiabats and the temperature trace all readable at once
+// instead of piling into the bottom left corner, and it is why every sounding
+// anywhere has looked like this for a century.
+const SND_PTOP = 100, SND_PBOT = 1050;
+const SND_TMIN = -40, SND_TMAX = 50;      // at the bottom of the chart
+const SND_SKEW = 45;                       // degrees C of shift per full height
+
+function _sndSkewXY(W, H, tC, p) {
+  // Pressure is logarithmic in the vertical, as on every printed sounding.
+  const y = H * (Math.log(p / SND_PTOP) / Math.log(SND_PBOT / SND_PTOP));
+  const frac = 1 - y / H;                          // 0 at bottom, 1 at top
+  const t = tC + SND_SKEW * frac;                  // the skew itself
+  const x = W * (t - SND_TMIN) / (SND_TMAX - SND_TMIN);
+  return { x, y };
+}
+
+function _sndDrawSkewT(canvas, d, prof) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const W = canvas.clientWidth, H = canvas.clientHeight;
-  canvas.width = W * dpr; canvas.height = H * dpr;
+  const CW = canvas.clientWidth, CH = canvas.clientHeight;
+  if (!CW || !CH) return;
+  canvas.width = CW * dpr; canvas.height = CH * dpr;
   const g = canvas.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, W, H);
+  g.clearRect(0, 0, CW, CH);
 
-  const rows = prof.levels;
-  if (!rows.length) return;
-  const pad = { l: 34, r: 10, t: 10, b: 22 };
-  const temps = rows.flatMap(r => [r.t, _sndDewpoint(r.t, r.rh)]).filter(v => v != null);
-  const tMin = Math.floor(Math.min(...temps) / 10) * 10 - 2;
-  const tMax = Math.ceil(Math.max(...temps) / 10) * 10 + 2;
-  // Pressure is plotted on a log scale, which is what makes the height axis
-  // roughly linear and the shape of the profile readable.
-  const pTop = Math.min(...rows.map(r => r.p)), pBot = Math.max(...rows.map(r => r.p));
-  const X = t => pad.l + (t - tMin) / (tMax - tMin) * (W - pad.l - pad.r);
-  const Y = p => pad.t + (Math.log(p) - Math.log(pTop)) /
-                 (Math.log(pBot) - Math.log(pTop)) * (H - pad.t - pad.b);
+  const padL = 38, padR = 62, padT = 8, padB = 22;
+  const W = CW - padL - padR, H = CH - padT - padB;
+  if (W < 40 || H < 40) return;
+  const XY = (t, p) => {
+    const q = _sndSkewXY(W, H, t, p);
+    return { x: padL + q.x, y: padT + q.y };
+  };
 
-  g.strokeStyle = 'rgba(255,255,255,0.12)'; g.fillStyle = 'rgba(255,255,255,0.5)';
-  g.lineWidth = 1; g.font = '9px monospace';
-  [1000, 850, 700, 500, 300, 200, 100].filter(p => p <= pBot && p >= pTop).forEach(p => {
-    g.beginPath(); g.moveTo(pad.l, Y(p)); g.lineTo(W - pad.r, Y(p)); g.stroke();
-    g.fillText(String(p), 4, Y(p) + 3);
+  g.save();
+  g.beginPath(); g.rect(padL, padT, W, H); g.clip();
+
+  // Isotherms, skewed. Zero is drawn heavier because it is the line everyone
+  // looks for first.
+  for (let t = -120; t <= 60; t += 10) {
+    const a = XY(t, SND_PBOT), b = XY(t, SND_PTOP);
+    g.strokeStyle = t === 0 ? 'rgba(120,190,255,0.45)' : 'rgba(255,255,255,0.10)';
+    g.lineWidth = t === 0 ? 1.4 : 1;
+    g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+  }
+  // Dry adiabats.
+  g.strokeStyle = 'rgba(255,170,90,0.16)'; g.lineWidth = 1;
+  for (let th = -40; th <= 200; th += 10) {
+    g.beginPath();
+    let first = true;
+    for (let p = SND_PBOT; p >= SND_PTOP; p -= 25) {
+      const t = _sndDryLapse(p, th, 1000);
+      const q = XY(t, p);
+      first ? (g.moveTo(q.x, q.y), first = false) : g.lineTo(q.x, q.y);
+    }
+    g.stroke();
+  }
+  // Moist adiabats, which are the ones a parcel follows once it is saturated.
+  g.strokeStyle = 'rgba(90,220,150,0.16)';
+  for (let th = -20; th <= 40; th += 5) {
+    g.beginPath();
+    let t = th, first = true;
+    for (let p = 1000; p >= SND_PTOP; p -= 10) {
+      const q = XY(t, p);
+      first ? (g.moveTo(q.x, q.y), first = false) : g.lineTo(q.x, q.y);
+      t = _sndMoistStep(p, t, -10);
+    }
+    g.stroke();
+  }
+  g.restore();
+
+  // Pressure axis, and the heights beside it, because a forecaster reads
+  // layers in kilometres and the levels are published in millibars.
+  g.font = '10px ui-monospace, monospace';
+  g.textBaseline = 'middle';
+  [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150, 100].forEach(p => {
+    const q = XY(0, p);
+    g.strokeStyle = 'rgba(255,255,255,0.14)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(padL, q.y); g.lineTo(padL + W, q.y); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.55)'; g.textAlign = 'right';
+    g.fillText(String(p), padL - 5, q.y);
+    const z = _sndPToZ(d.rows, p);
+    if (z != null && z > 0) {
+      g.fillStyle = 'rgba(255,255,255,0.3)'; g.textAlign = 'left';
+      g.fillText((z / 1000).toFixed(1) + 'km', padL + 3, q.y - 8);
+    }
   });
-  for (let t = Math.ceil(tMin / 20) * 20; t <= tMax; t += 20) {
-    g.beginPath(); g.moveTo(X(t), pad.t); g.lineTo(X(t), H - pad.b); g.stroke();
-    g.fillText(`${t}`, X(t) - 6, H - pad.b + 12);
-  }
-  // Freezing is the line people actually look for.
-  if (tMin < 0 && tMax > 0) {
-    g.strokeStyle = 'rgba(120,190,255,0.45)'; g.setLineDash([3, 3]);
-    g.beginPath(); g.moveTo(X(0), pad.t); g.lineTo(X(0), H - pad.b); g.stroke();
-    g.setLineDash([]);
+  // Temperature axis along the bottom.
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  for (let t = SND_TMIN; t <= SND_TMAX; t += 10) {
+    const q = XY(t, SND_PBOT);
+    if (q.x < padL - 2 || q.x > padL + W + 2) continue;
+    g.fillStyle = 'rgba(255,255,255,0.5)';
+    g.fillText(String(t), q.x, padT + H + 4);
   }
 
-  const line = (get, color) => {
-    g.strokeStyle = color; g.lineWidth = 2; g.beginPath();
-    let started = false;
-    rows.forEach(r => {
+  const trace = (get, color, width, dash) => {
+    g.save();
+    g.beginPath();
+    g.strokeStyle = color; g.lineWidth = width;
+    if (dash) g.setLineDash(dash);
+    let first = true;
+    d.rows.forEach(r => {
       const v = get(r);
       if (v == null) return;
-      const x = X(v), y = Y(r.p);
-      started ? g.lineTo(x, y) : (g.moveTo(x, y), started = true);
+      const q = XY(v, r.p);
+      first ? (g.moveTo(q.x, q.y), first = false) : g.lineTo(q.x, q.y);
     });
     g.stroke();
+    g.restore();
   };
-  line(r => _sndDewpoint(r.t, r.rh), '#37d67a');   // dew point
-  line(r => r.t, '#ff6b4a');                        // temperature
-}
-function _sndPanelIsOpen() {
-  const el = document.getElementById('snd-panel');
-  return !!el && el.style.display !== 'none';
+
+  // The parcel first, so the real traces sit on top of it.
+  const par = d.ml && d.ml.cape > 0 ? d.ml : d.sb;
+  if (par && par.trace.length) {
+    g.save();
+    g.beginPath(); g.rect(padL, padT, W, H); g.clip();
+    g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = 1.6;
+    g.setLineDash([5, 4]);
+    let first = true;
+    par.trace.forEach(t => {
+      const q = XY(t.t, t.p);
+      first ? (g.moveTo(q.x, q.y), first = false) : g.lineTo(q.x, q.y);
+    });
+    g.stroke();
+    g.restore();
+  }
+
+  trace(r => r.td, '#37d67a', 2.6);          // dew point
+  trace(r => r.t, '#ff5a3c', 2.6);           // temperature
+
+  // The three levels everyone reads off a sounding.
+  if (par) {
+    const mark = (p, label, color) => {
+      if (p == null) return;
+      const q = XY(SND_TMAX - 26, p);
+      g.fillStyle = color;
+      g.beginPath(); g.arc(q.x, q.y, 3.2, 0, Math.PI * 2); g.fill();
+      g.font = 'bold 10px ui-monospace, monospace';
+      g.textAlign = 'left'; g.textBaseline = 'middle';
+      g.fillText(label, q.x + 6, q.y);
+    };
+    mark(par.lclP, 'LCL', '#7fd4ee');
+    mark(par.lfcP, 'LFC', '#ffc44d');
+    mark(par.elP, 'EL', '#ff7a5c');
+  }
+
+  // Wind barbs down the right-hand margin, at the levels that carry wind.
+  const bx = padL + W + 26;
+  g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = 1.2;
+  g.beginPath(); g.moveTo(bx, padT); g.lineTo(bx, padT + H); g.stroke();
+  d.rows.forEach(r => {
+    if (r.u == null || r.v == null) return;
+    const q = XY(0, r.p);
+    _sndBarb(g, bx, q.y, r.u, r.v);
+  });
 }
 
-// Opened from the Sounding button in the model panel, at the map centre.
+// One wind barb, drawn the standard way: the staff points into the wind, ten
+// knots to a full feather, fifty to a pennant.
+function _sndBarb(g, x, y, u, v) {
+  const spd = Math.hypot(u, v);
+  if (!isFinite(spd)) return;
+  const dir = Math.atan2(-u, -v);          // direction the wind comes FROM
+  const L = 17;
+  const dx = Math.sin(dir), dy = -Math.cos(dir);
+  g.save();
+  g.strokeStyle = 'rgba(255,255,255,0.85)'; g.lineWidth = 1.2;
+  g.beginPath(); g.moveTo(x, y); g.lineTo(x + dx * L, y + dy * L); g.stroke();
+  if (spd < 5) {
+    g.beginPath(); g.arc(x, y, 2.5, 0, Math.PI * 2); g.stroke();
+    g.restore(); return;
+  }
+  // Feathers hang off the far end, perpendicular to the staff.
+  const px = -dy, py = dx;
+  let left = Math.round(spd / 5) * 5;
+  let pos = L;
+  const put = (len, filled) => {
+    const ax = x + dx * pos, ay = y + dy * pos;
+    const bx2 = ax + px * len - dx * 4, by2 = ay + py * len - dy * 4;
+    g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx2, by2);
+    if (filled) { g.lineTo(ax - dx * 5, ay - dy * 5); g.closePath(); g.fill(); }
+    else g.stroke();
+  };
+  g.fillStyle = 'rgba(255,255,255,0.85)';
+  while (left >= 50) { put(9, true); left -= 50; pos -= 6; }
+  while (left >= 10) { put(8, false); left -= 10; pos -= 4; }
+  if (left >= 5) put(4, false);
+  g.restore();
+}
+
+// ── The hodograph ─────────────────────────────────────────────────────────
+// The wind vectors joined tip to tip, with height along the curve. What it is
+// for is the shape: a straight line is splitting storms, a curve is one
+// dominant rotating one, and the storm motion dot is what the helicity is
+// measured against.
+function _sndDrawHodo(canvas, d) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const CW = canvas.clientWidth, CH = canvas.clientHeight;
+  if (!CW || !CH) return;
+  canvas.width = CW * dpr; canvas.height = CH * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, CW, CH);
+
+  const rows = d.rows.filter(r => r.u != null && r.v != null && r.z <= 12000);
+  const cx = CW / 2, cy = CH / 2;
+  let maxR = 40;
+  rows.forEach(r => { maxR = Math.max(maxR, Math.hypot(r.u, r.v)); });
+  if (d.motion) {
+    ['right', 'left', 'mean'].forEach(k => {
+      const m = d.motion[k];
+      if (m) maxR = Math.max(maxR, Math.hypot(m.u, m.v));
+    });
+  }
+  maxR = Math.ceil((maxR * 1.15) / 10) * 10;
+  const S = Math.min(CW, CH) / 2 - 16;
+  const P = (u, v) => ({ x: cx + (u / maxR) * S, y: cy - (v / maxR) * S });
+
+  // Speed rings, labelled, because the whole chart is read in knots.
+  g.font = '9px ui-monospace, monospace';
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  const step = maxR > 60 ? 20 : 10;
+  for (let r = step; r <= maxR; r += step) {
+    g.strokeStyle = 'rgba(255,255,255,0.11)'; g.lineWidth = 1;
+    g.beginPath(); g.arc(cx, cy, (r / maxR) * S, 0, Math.PI * 2); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.3)';
+    g.fillText(String(r), cx + (r / maxR) * S, cy - 7);
+  }
+  g.strokeStyle = 'rgba(255,255,255,0.16)';
+  g.beginPath(); g.moveTo(cx - S, cy); g.lineTo(cx + S, cy);
+  g.moveTo(cx, cy - S); g.lineTo(cx, cy + S); g.stroke();
+
+  // The trace, coloured by height band the way every hodograph is: the low
+  // levels are what tornadoes come from, so they are the loud colour.
+  const band = (z) => z <= 1000 ? '#ff4d4d' : z <= 3000 ? '#ffc44d'
+                    : z <= 6000 ? '#5ce07a' : '#7fb6ff';
+  g.lineWidth = 2.6; g.lineCap = 'round';
+  for (let i = 1; i < rows.length; i++) {
+    const a = P(rows[i - 1].u, rows[i - 1].v), b = P(rows[i].u, rows[i].v);
+    g.strokeStyle = band(rows[i].z);
+    g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+  }
+  // Height ticks at the kilometres people actually name.
+  [1000, 3000, 6000, 9000].forEach(z => {
+    const u = _sndAtZ(d.rows, z, 'u'), v = _sndAtZ(d.rows, z, 'v');
+    if (u == null || v == null) return;
+    const q = P(u, v);
+    g.fillStyle = band(z);
+    g.beginPath(); g.arc(q.x, q.y, 3.4, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.8)';
+    g.font = 'bold 9px ui-monospace, monospace';
+    g.fillText(String(z / 1000), q.x + 9, q.y - 7);
+  });
+
+  if (d.motion) {
+    const dot = (m, label, color) => {
+      if (!m) return;
+      const q = P(m.u, m.v);
+      g.strokeStyle = color; g.lineWidth = 1.6;
+      g.beginPath(); g.arc(q.x, q.y, 5, 0, Math.PI * 2); g.stroke();
+      g.fillStyle = color; g.font = 'bold 10px ui-monospace, monospace';
+      g.fillText(label, q.x, q.y + 13);
+    };
+    dot(d.motion.right, 'RM', '#ff5a8a');
+    dot(d.motion.left, 'LM', '#7fd4ee');
+    dot(d.motion.mean, 'MW', 'rgba(255,255,255,0.6)');
+  }
+}
+
+// ── The parameter tables ──────────────────────────────────────────────────
+// The numbers a forecaster reads before looking at anything else. Coloured on
+// the thresholds they are actually judged against, so the colour carries
+// meaning rather than decorating: an orange CAPE is a number worth stopping
+// at, a plain one is not.
+function _sndFmt(v, dp, unit) {
+  if (v == null || !isFinite(v)) return '--';
+  return v.toFixed(dp == null ? 0 : dp) + (unit ? ' ' + unit : '');
+}
+function _sndClass(v, warm, hot) {
+  if (v == null || !isFinite(v)) return '';
+  if (hot != null && Math.abs(v) >= hot) return 'snd-hot';
+  if (warm != null && Math.abs(v) >= warm) return 'snd-warm';
+  return '';
+}
+function _sndRow(label, value, cls) {
+  return `<tr><td>${label}</td><td class="snd-num ${cls || ''}">${value}</td></tr>`;
+}
+
+function _sndTables(d) {
+  const par = [d.sb, d.ml, d.mu].filter(Boolean);
+  const parcels = `<table class="snd-tbl"><tr><th>Parcel</th><th>CAPE</th><th>CIN</th>`
+    + `<th>LCL</th><th>LFC</th><th>EL</th></tr>`
+    + par.map(p => `<tr><td>${p.label}</td>`
+        + `<td class="snd-num ${_sndClass(p.cape, 1000, 2500)}">${_sndFmt(p.cape)}</td>`
+        + `<td class="snd-num ${_sndClass(p.cin, 50, 150)}">${_sndFmt(p.cin)}</td>`
+        + `<td class="snd-num">${_sndFmt(p.lclZ, 0)}</td>`
+        + `<td class="snd-num">${_sndFmt(p.lfcZ, 0)}</td>`
+        + `<td class="snd-num">${_sndFmt(p.elZ, 0)}</td></tr>`).join('')
+    + `</table>`;
+
+  const wind = `<table class="snd-tbl"><tr><th colspan="2">Wind</th></tr>`
+    + _sndRow('0-1 km shear', _sndFmt(d.shear1, 0, 'kt'), _sndClass(d.shear1, 20, 30))
+    + _sndRow('0-3 km shear', _sndFmt(d.shear3, 0, 'kt'), _sndClass(d.shear3, 25, 40))
+    + _sndRow('0-6 km shear', _sndFmt(d.shear6, 0, 'kt'), _sndClass(d.shear6, 35, 50))
+    + _sndRow('0-1 km SRH', _sndFmt(d.srh1, 0, 'm2/s2'), _sndClass(d.srh1, 100, 250))
+    + _sndRow('0-3 km SRH', _sndFmt(d.srh3, 0, 'm2/s2'), _sndClass(d.srh3, 150, 400))
+    + _sndRow('Storm motion',
+        d.motion ? `${_sndFmt(Math.hypot(d.motion.right.u, d.motion.right.v), 0, 'kt')} RM` : '--')
+    + `</table>`;
+
+  const thermo = `<table class="snd-tbl"><tr><th colspan="2">Thermodynamics</th></tr>`
+    + _sndRow('Surface temp', _sndFmt(d.sfc.t, 1, 'C'))
+    + _sndRow('Surface dew point', _sndFmt(d.sfc.td, 1, 'C'))
+    + _sndRow('PWAT', _sndFmt(d.pwat, 1, 'mm'), _sndClass(d.pwat, 40, 50))
+    + _sndRow('0-3 km lapse rate', _sndFmt(d.lr03, 1, 'C/km'), _sndClass(d.lr03, 7, 8.5))
+    + _sndRow('3-6 km lapse rate', _sndFmt(d.lr36, 1, 'C/km'), _sndClass(d.lr36, 7, 8))
+    + `</table>`;
+
+  const comp = `<table class="snd-tbl"><tr><th colspan="2">Composites</th></tr>`
+    + _sndRow('Sig Tornado (STP)', _sndFmt(d.stp, 1), _sndClass(d.stp, 1, 3))
+    + _sndRow('Supercell (SCP)', _sndFmt(d.scp, 1), _sndClass(d.scp, 2, 6))
+    + `</table>`;
+
+  return parcels + wind + thermo + comp;
+}
+
+function _sndPanelIsOpen() {
+  const el = document.getElementById('snd-panel');
+  return !!el && el.classList.contains('open');
+}
+
+// Opened from the map's right-click menu, at whichever point was clicked.
 async function openSounding(lat, lon) {
   // The reader needs the Pi's address, which is only looked up once something
   // Pi-backed is used. A sounding may be the first such thing this session.
@@ -13099,47 +14015,85 @@ async function openSounding(lat, lon) {
     el.id = 'snd-panel';
     el.innerHTML = `
       <div class="snd-head">
-        <span class="snd-title">Sounding</span>
+        <span class="snd-title">Point Sounding</span>
         <span class="snd-where"></span>
-        <button class="snd-x" title="Close">✕</button>
+        <div class="snd-head-spacer"></div>
+        <div class="snd-hour-wrap">
+          <span class="snd-hour-lbl">F+000</span>
+          <input class="snd-hour" type="range" min="0" max="0" value="0" step="1">
+        </div>
+        <button class="snd-x" title="Close">&#10005;</button>
       </div>
-      <canvas class="snd-plot"></canvas>
-      <div class="snd-foot">
-        <input class="snd-hour" type="range" min="0" max="0" value="0" step="1">
-        <div class="snd-meta"></div>
-      </div>`;
+      <div class="snd-grid">
+        <div class="snd-card">
+          <div class="snd-card-title">Skew-T log-P</div>
+          <canvas id="snd-skewt"></canvas>
+        </div>
+        <div class="snd-right">
+          <div class="snd-card">
+            <div class="snd-card-title">Hodograph (kt)</div>
+            <canvas id="snd-hodo"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="snd-tables"></div>
+      <div class="snd-note"></div>`;
     document.body.appendChild(el);
-    el.querySelector('.snd-x').onclick = () => { el.style.display = 'none'; };
+    el.querySelector('.snd-x').onclick = () => { el.classList.remove('open'); };
     el.querySelector('.snd-hour').oninput = (e) => {
       const hrs = (_sndManifest && _sndManifest.hours) || [0];
       _sndRefresh(el, +hrs[Math.min(+e.target.value, hrs.length - 1)]);
     };
+    // Both charts are canvases sized off their box, so a resize has to redraw
+    // them or they stay at whatever size the panel first opened at.
+    window.addEventListener('resize', () => {
+      if (_sndPanelIsOpen() && el._snd) _sndPaint(el, el._snd, el._prof);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && _sndPanelIsOpen()) el.classList.remove('open');
+    });
   }
-  el.style.display = 'block';
+  el.classList.add('open');
   el.dataset.lat = lat; el.dataset.lon = lon;
   el.querySelector('.snd-where').textContent =
     `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
-  el.querySelector('.snd-meta').textContent = 'reading levels…';
+  el.querySelector('.snd-note').textContent = 'Reading levels off the Pi...';
+  el.querySelector('.snd-tables').innerHTML = '';
   await _sndRefresh(el, null);
+}
+
+function _sndPaint(el, d, prof) {
+  _sndDrawSkewT(el.querySelector('#snd-skewt'), d, prof);
+  _sndDrawHodo(el.querySelector('#snd-hodo'), d);
 }
 
 async function _sndRefresh(el, fhr) {
   const lat = +el.dataset.lat, lon = +el.dataset.lon;
+  const note = el.querySelector('.snd-note');
   try {
     const prof = await _sndProfile(lat, lon, fhr == null ? 0 : fhr);
-    _sndPlotProfile(el.querySelector('.snd-plot'), prof);
+    const d = _sndDerive(prof);
+    if (!d) throw new Error('not enough levels came back to build a sounding');
+    el._snd = d; el._prof = prof;
+
     const hrs = (_sndManifest && _sndManifest.hours) || [0];
     const sl = el.querySelector('.snd-hour');
     sl.max = Math.max(0, hrs.length - 1);
     sl.value = Math.max(0, hrs.indexOf(prof.hour));
-    const sfc = prof.levels[0] || {};
-    const dp = _sndDewpoint(sfc.t, sfc.rh);
-    el.querySelector('.snd-meta').innerHTML =
-      `<b>+${prof.hour}h</b> · ${prof.levels.length} levels` +
-      (sfc.t != null ? ` · <span style="color:#ff6b4a">${sfc.t.toFixed(1)}°C</span>` : '') +
-      (dp != null ? ` <span style="color:#37d67a">${dp.toFixed(1)}°C dp</span>` : '');
+    el.querySelector('.snd-hour-lbl').textContent =
+      'F+' + String(prof.hour).padStart(3, '0');
+
+    _sndPaint(el, d, prof);
+    el.querySelector('.snd-tables').innerHTML = _sndTables(d);
+    note.textContent =
+      `Run ${prof.run} - ${d.rows.length} levels - `
+      + `parcel traces, heights and helicity worked out in the browser from `
+      + `temperature, humidity and wind. Heights are hypsometric, not the `
+      + `model's own geopotential.`;
   } catch (e) {
-    el.querySelector('.snd-meta').textContent = String(e.message || e);
+    el.querySelector('.snd-tables').innerHTML =
+      `<div class="snd-err">${String(e.message || e)}</div>`;
+    note.textContent = '';
   }
 }
 
@@ -19515,11 +20469,25 @@ async function _mrmsFetchManifest() {
   return _mrmsManifest;
 }
 
+// MRMS carries thirty-eight products now, and thirty-eight rows behind one
+// button is a list to scroll rather than a menu to use. So it nests: the first
+// level is the five groups, and opening one shows only that group's products.
+// Each level has its own Back, so a wrong turn is one tap to undo rather than
+// a trip back out to the top of the radar menu.
+//
+// The count on a group is the number of its products currently drawn, which
+// is the one thing worth knowing without opening it.
 async function toggleMrmsSub() {
   const wrap = document.getElementById('sub-bubbles');
   wrap.innerHTML = '';
   wrap.dataset.mode = 'mrms';
+  delete wrap.dataset.mrmsIn;
   _radarBackBubble(wrap, () => {
+    // Clear the mode on the way out, or the wrapper goes on claiming to be
+    // the MRMS menu while showing the radar one, and the in-flight guard
+    // above would let a late manifest repaint over it.
+    delete wrap.dataset.mode;
+    delete wrap.dataset.mrmsIn;
     _syncParentBubble('radar');
     renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
   });
@@ -19545,26 +20513,58 @@ async function toggleMrmsSub() {
   }
 
   const keys = Object.keys(man.products);
-  const groups = MRMS_GROUPS.map(g => ({ g, keys: keys.filter(k => _mrmsGroupOf(k) === g.id) }))
+  const groups = MRMS_GROUPS
+    .map(g => ({ g, keys: keys.filter(k => _mrmsGroupOf(k) === g.id) }))
     .filter(x => x.keys.length);
   const other = keys.filter(k => _mrmsGroupOf(k) === 'other');
   if (other.length) groups.push({ g: { id: 'other', label: 'Other' }, keys: other });
 
   groups.forEach(({ g, keys: gkeys }) => {
-    const head = document.createElement('div');
-    head.className = 'sub-bubble-group-label';
-    head.textContent = g.label;
-    wrap.appendChild(head);
-    gkeys.forEach(k => {
-      const p = man.products[k];
-      const el = document.createElement('div');
-      el.className = 'sub-bubble' + (_mrmsOn[k] ? ' active' : '');
-      el.dataset.mrmsId = k;
-      el.innerHTML = `<span class="sb-label">${_ccEsc(p.label || k)}</span>`;
-      el.onclick = () => { _mrmsToggle(k); el.classList.toggle('active', !!_mrmsOn[k]); };
-      wrap.appendChild(el);
-    });
+    const on = gkeys.filter(k => _mrmsOn[k]).length;
+    const el = document.createElement('div');
+    // A group counts as active when something inside it is drawn, so the
+    // top level still says what is on without being opened.
+    el.className = 'sub-bubble' + (on ? ' active' : '');
+    el.dataset.mrmsGroup = g.id;
+    el.innerHTML = `<span class="sb-label">${_ccEsc(g.label)}</span>`
+      + `<span class="sb-count">${on ? on + '/' : ''}${gkeys.length}</span>`;
+    el.onclick = () => _mrmsGroupSub(g, gkeys, man);
+    wrap.appendChild(el);
   });
+}
+
+// One group's products. Back returns to the group list rather than to the
+// radar menu, because that is where this was opened from.
+function _mrmsGroupSub(g, gkeys, man) {
+  const wrap = document.getElementById('sub-bubbles');
+  wrap.innerHTML = '';
+  wrap.dataset.mode = 'mrms-group';
+  // Deliberately NOT data-mrms-group: that is what the group buttons use to
+  // say which group they are, and putting it on their own container made the
+  // container match a lookup for a button. The button found was the wrapper,
+  // and clicking a wrapper does nothing, so the menu silently stopped
+  // descending the second time it was opened.
+  wrap.dataset.mrmsIn = g.id;
+  _radarBackBubble(wrap, () => toggleMrmsSub());
+
+  const head = document.createElement('div');
+  head.className = 'sub-bubble-group-label';
+  head.textContent = g.label;
+  wrap.appendChild(head);
+
+  gkeys.forEach(k => {
+    const p = man.products[k];
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (_mrmsOn[k] ? ' active' : '');
+    el.dataset.mrmsId = k;
+    el.innerHTML = `<span class="sb-label">${_ccEsc(p.label || k)}</span>`;
+    el.onclick = () => { _mrmsToggle(k); el.classList.toggle('active', !!_mrmsOn[k]); };
+    if (LAYER_DESCRIPTIONS[`mrms-${k}`]) {
+      el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[`mrms-${k}`]));
+    }
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
 }
 
 // Level 2, decoded in the browser from one station's own volume.
@@ -36516,7 +37516,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Eight new model charts on every model: humidity, cloud cover, visibility, rain rate, snow depth, cap strength, instability and solar. NAM, RTMA and NBM are now one entry each with a region switch instead of a row per place. And the sounding moved to the right-click menu, so you can pull one anywhere on the map under any layer.";
+const APP_LATEST_UPDATE = "StormStream is a full broadcast frame now, not a box in the corner: what is on air, what the map is showing, every active alert and a headline across the bottom. The sounding is a real one too, with a skew-T, a hodograph and the full parameter tables. MRMS products now nest by group.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -40042,7 +41042,13 @@ function _ssKey(f) {
 
 function _ssParseTags(desc) {
   desc = desc || '';
-  const hail = desc.match(/(\d+(?:\.\d+)?)\s*(?:in|inch|inches)?\s*hail/i);
+  // The size can come before or after the word, and the Weather Service uses
+  // both: "1.75 inch hail" in prose, "HAIL...2.75IN" in the tag block at the
+  // bottom of the same product. Only the first was being read, so a warning
+  // that carried its hail size in the tags showed no hail size at all.
+  const hail = desc.match(/(\d+(?:\.\d+)?)\s*(?:in|inch|inches)\b[^.]{0,12}hail/i)
+            || desc.match(/hail[^A-Za-z0-9]{0,12}(\d+(?:\.\d+)?)\s*(?:in|inch|inches)?/i)
+            || desc.match(/(\d+(?:\.\d+)?)\s*(?:in|inch|inches)?\s*hail/i);
   const wind = desc.match(/(\d{2,3})\s*mph/i);
   const tornadoTag = /TORNADO\.\.\.OBSERVED/i.test(desc) ? 'OBSERVED'
     : /TORNADO\.\.\.RADAR INDICATED/i.test(desc) ? 'RADAR INDICATED' : null;
@@ -40082,61 +41088,255 @@ function _ssApplyRadarForEvent(event) {
   _ssRadarStepTimers.push(setTimeout(() => _prSetProduct('corrcoeff'), stepMs * 2));
 }
 
-// ── HUD ─────────────────────────────────────────────────────────────────
+// ── The broadcast overlay ───────────────────────────────────────────────
+// StormStream used to draw one dark box in the top right corner, which is a
+// map control, not a broadcast. This is a frame around the map: what is on
+// air top left, what the map is showing across the top, everything active top
+// right, and the headline along the bottom under the logo.
+//
+// Built once and refilled, rather than rebuilt per tick: the alert list is
+// scrollable and the countdown updates every second, and both would fight a
+// full innerHTML rewrite.
 function _ssEnsureHud() {
-  if (_ssHudEl) return;
+  if (_ssHudEl && document.body.contains(_ssHudEl)) return;
   _ssHudEl = document.createElement('div');
-  _ssHudEl.id = 'stormstream-hud';
+  _ssHudEl.id = 'ss-stage';
+  _ssHudEl.innerHTML = `
+    <div id="ss-now">
+      <div id="ss-now-tab" class="ss-title-text">Standing by</div>
+      <div id="ss-now-body">
+        <div class="ss-now-line" id="ss-now-detail">Waiting for an alert.</div>
+        <div id="ss-now-nav">
+          <button id="ss-hud-prev" title="Previous alert">&larr; Prev</button>
+          <button id="ss-hud-next" title="Next alert">Next &rarr;</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="ss-layers">
+      <div id="ss-layers-main"></div>
+      <div id="ss-layers-sub"></div>
+    </div>
+
+    <div id="ss-alerts">
+      <div id="ss-alerts-head" class="ss-title-text">Active Alerts</div>
+      <div id="ss-alerts-body"><div class="ss-alerts-none">None right now</div></div>
+    </div>
+
+    <div id="ss-lower">
+      <div id="ss-lower-pills">
+        <div class="ss-pill" id="ss-pill-where">-</div>
+        <div class="ss-pill" id="ss-pill-when">-</div>
+      </div>
+      <div id="ss-lower-bar"><div id="ss-lower-bar-inner">GWCFC Radar</div></div>
+      <img id="ss-lower-logo" alt="">
+    </div>`;
   document.body.appendChild(_ssHudEl);
+  _ssHudEl.classList.add('on');
+
+  // The logo is already on the page as a data URI on the top bar, so it is
+  // borrowed rather than embedded a second time.
+  const src = (document.getElementById('topbar-logo-img') || {}).src;
+  const img = document.getElementById('ss-lower-logo');
+  if (img && src) img.src = src; else if (img) img.style.display = 'none';
+
+  const prev = document.getElementById('ss-hud-prev');
+  if (prev) prev.onclick = _ssManualPrev;
+  const next = document.getElementById('ss-hud-next');
+  if (next) next.onclick = _ssManualNext;
+
+  // The countdown is the one thing that has to move on its own. One timer,
+  // not one per render, and it stops with the overlay.
+  if (_ssTickTimer) clearInterval(_ssTickTimer);
+  _ssTickTimer = setInterval(_ssTickCountdown, 1000);
+}
+
+let _ssTickTimer = null;
+let _ssExpiresAt = null;     // ms, or null when nothing is on air
+
+function _ssRemoveHud() {
+  if (_ssTickTimer) { clearInterval(_ssTickTimer); _ssTickTimer = null; }
+  if (_ssHudEl) { try { _ssHudEl.remove(); } catch (e) {} }
+  _ssHudEl = null;
+  _ssExpiresAt = null;
+}
+
+// "3h 42m", "12m 07s", "expired". Seconds only appear under an hour, because
+// a countdown ticking seconds from four hours out is noise.
+function _ssCountdown(ms) {
+  if (!Number.isFinite(ms)) return '-';
+  if (ms <= 0) return 'Expired';
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  return `${m}m ${String(sec).padStart(2, '0')}s`;
+}
+
+function _ssTickCountdown() {
+  const el = document.getElementById('ss-pill-when');
+  if (!el) return;
+  if (!_ssExpiresAt) { el.textContent = 'No active alert'; return; }
+  el.textContent = 'Expires in ' + _ssCountdown(_ssExpiresAt - Date.now());
+}
+
+// ── What the map is showing ─────────────────────────────────────────────
+// The big pill names the layers, the narrow one under it names the overlays.
+// The pair hides entirely when there is nothing to say, so a quiet moment is
+// not a wide empty banner across the top of the map.
+function _ssLayersText() {
+  const out = [];
+  if (activeLayers.nexrad) {
+    let what = 'Radar';
+    if (typeof _prOn !== 'undefined' && _prOn && typeof _prSite !== 'undefined' && _prSite) {
+      what = String(_prSite).toUpperCase();
+      const prod = (typeof PR_PRODUCTS === 'object' && typeof _prProduct !== 'undefined'
+                    && PR_PRODUCTS[_prProduct]) ? PR_PRODUCTS[_prProduct].label : null;
+      if (prod) what += ' ' + prod;
+    } else if (typeof currentProduct !== 'undefined' && currentProduct !== 'ref') {
+      what = 'Radar ' + currentProduct.toUpperCase();
+    }
+    out.push(what);
+  }
+  if (activeLayers.satellite) {
+    const p = (typeof _goesProduct === 'function') ? _goesProduct() : null;
+    out.push('Satellite' + (p && p.label ? ' ' + p.label : ''));
+  }
+  if (typeof _hdOn !== 'undefined' && _hdOn && typeof _hdModel !== 'undefined' && _hdModel) {
+    const e = (_hdIndex && _hdIndex.models && _hdIndex.models[_hdModel]) || {};
+    out.push('Model ' + (e.label || _hdModel).toUpperCase());
+  }
+  return out.join('  ·  ');
+}
+
+function _ssOverlaysText() {
+  const out = [];
+  if (typeof _mrmsAnyOn === 'function' && _mrmsAnyOn()) {
+    const on = Object.keys(_mrmsOn).filter(k => _mrmsOn[k]);
+    out.push('MRMS' + (on.length ? ' (' + on.length + ')' : ''));
+  }
+  const named = { spc1: 'SPC Day 1', spcrpts: 'Storm Reports', lightning: 'Lightning',
+                  nhc: 'NHC', meso: 'Mesoscale Discussions', watch: 'Watches' };
+  Object.keys(named).forEach(k => { if (activeLayers[k]) out.push(named[k]); });
+  return out.join('  ·  ');
+}
+
+function _ssRenderLayers() {
+  const wrap = document.getElementById('ss-layers');
+  if (!wrap) return;
+  const main = _ssLayersText(), sub = _ssOverlaysText();
+  const mainEl = document.getElementById('ss-layers-main');
+  const subEl = document.getElementById('ss-layers-sub');
+  if (mainEl) mainEl.textContent = main;
+  if (subEl) {
+    subEl.textContent = sub;
+    subEl.classList.toggle('off', !sub);
+  }
+  // Nothing on the map is nothing to say, so the whole pair goes.
+  wrap.classList.toggle('on', !!(main || sub));
+}
+
+// ── Top right: everything active, with the one on air picked out ────────
+function _ssRenderAlertList(currentKey) {
+  const body = document.getElementById('ss-alerts-body');
+  if (!body) return;
+  const queue = _ssActiveInCoverage().sort((a, b) => _ssPriority(b) - _ssPriority(a));
+  if (!queue.length) {
+    body.innerHTML = '<div class="ss-alerts-none">None right now</div>';
+    return;
+  }
+  body.innerHTML = queue.map(f => {
+    const p = f.properties || {};
+    const on = currentKey && _ssKey(f) === currentKey;
+    return `<div class="ss-alert-row${on ? ' on' : ''}">`
+         + `<span class="ss-alert-what">${_ssEsc(p.event || p.productTitle || 'Alert')}</span>`
+         + `<span class="ss-alert-when">${_ssEsc(_ssFormatTime(p.expires))}</span></div>`;
+  }).join('');
+  // Keep the one on air in view without yanking the whole page.
+  const cur = body.querySelector('.ss-alert-row.on');
+  if (cur && typeof cur.scrollIntoView === 'function') {
+    try { cur.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+  }
+}
+
+// The county or city the alert is over, for the left pill. areaDesc is a
+// comma separated list and the first entry is the one to lead with.
+function _ssWhere(p) {
+  const area = (p.areaDesc || '').split(';')[0].split(',')[0].trim();
+  if (area) return area;
+  if (typeof _cmNearestCity === 'function' && typeof map !== 'undefined') {
+    try {
+      const c = map.getCenter();
+      const n = _cmNearestCity(c.lat, c.lng);
+      if (n) return n.city.name.split(',')[0];
+    } catch (e) {}
+  }
+  return 'Coverage area';
 }
 
 function _ssRenderHud(feature) {
   _ssEnsureHud();
   const p = feature.properties || {};
   const tags = _ssParseTags(p.description);
-  const progress = _ssLifetimeProgress(p);
-  const match = Object.entries(typeof ALERT_COLORS === 'object' ? ALERT_COLORS : {})
-    .find(([k]) => (p.event || '').includes(k));
-  const color = match ? match[1].color : '#ff4444';
-  _ssHudEl.style.setProperty('--ss-accent', color);
 
-  // Same priority sort _ssTick cycles through, so the count badge matches
-  // where this alert actually sits in the rotation, not just its raw index.
   const queue = _ssActiveInCoverage().sort((a, b) => _ssPriority(b) - _ssPriority(a));
   const key = _ssKey(feature);
   const rank = queue.findIndex(f => _ssKey(f) === key);
-  const countBadge = queue.length > 1
-    ? `<span class="ss-hud-count">${rank >= 0 ? rank + 1 : 1} / ${queue.length}</span>` : '';
+  const badge = queue.length > 1 ? `  (${rank >= 0 ? rank + 1 : 1}/${queue.length})` : '';
 
-  _ssHudEl.innerHTML = `
-    <div class="ss-hud-head">
-      <span class="ss-hud-title">${_ssEsc(p.event || p.productTitle || 'Alert')}</span>
-      ${countBadge}
-    </div>
-    ${tags.isEmergency ? '<div class="ss-hud-flag ss-flag-emergency">TORNADO EMERGENCY</div>' : ''}
-    ${!tags.isEmergency && tags.isPds ? '<div class="ss-hud-flag ss-flag-pds">PARTICULARLY DANGEROUS SITUATION</div>' : ''}
-    <input class="ss-hud-progress" type="range" min="0" max="100" step="0.1" value="${progress.toFixed(1)}"
-      style="--progress:${progress.toFixed(1)}%" disabled>
-    <div class="ss-hud-times">Expires ${_ssFormatTime(p.expires)}</div>
-    <div class="ss-hud-tags">
-      ${tags.tornadoTag ? `<span class="ss-tag">Tornado: ${_ssEsc(tags.tornadoTag)}</span>` : ''}
-      ${tags.hailSize ? `<span class="ss-tag">Hail ${_ssEsc(tags.hailSize)}in</span>` : ''}
-      ${tags.windGust ? `<span class="ss-tag">Wind ${_ssEsc(tags.windGust)}mph</span>` : ''}
-    </div>
-    <div class="ss-hud-nav">
-      <button id="ss-hud-prev" title="Previous alert">&larr; Prev</button>
-      <button id="ss-hud-next" title="Next alert">Next &rarr;</button>
-    </div>`;
-  const prevBtn = document.getElementById('ss-hud-prev'); if (prevBtn) prevBtn.onclick = _ssManualPrev;
-  const nextBtn = document.getElementById('ss-hud-next'); if (nextBtn) nextBtn.onclick = _ssManualNext;
+  const tab = document.getElementById('ss-now-tab');
+  if (tab) tab.textContent = (p.event || p.productTitle || 'Alert') + badge;
+
+  const detail = document.getElementById('ss-now-detail');
+  if (detail) {
+    const bits = [];
+    if (tags.tornadoTag) bits.push(`Tornado: ${_ssEsc(tags.tornadoTag)}`);
+    if (tags.hailSize) bits.push(`Hail ${_ssEsc(tags.hailSize)} in`);
+    if (tags.windGust) bits.push(`Wind ${_ssEsc(tags.windGust)} mph`);
+    const flag = tags.isEmergency
+      ? '<div class="ss-now-flag">TORNADO EMERGENCY</div>'
+      : tags.isPds ? '<div class="ss-now-flag ss-pds">PARTICULARLY DANGEROUS SITUATION</div>' : '';
+    detail.innerHTML = flag
+      + `<div class="ss-now-line">${_ssEsc(_ssWhere(p))}</div>`
+      + `<div class="ss-now-line">Until ${_ssEsc(_ssFormatTime(p.expires))}</div>`
+      + (bits.length ? `<div class="ss-now-line">${bits.join('  ·  ')}</div>` : '');
+  }
+
+  const bar = document.getElementById('ss-lower-bar-inner');
+  if (bar) {
+    // The headline: the strongest thing that can be said in one line. A
+    // tornado emergency outranks the event name, which outranks the tags.
+    bar.textContent = tags.isEmergency ? 'TORNADO EMERGENCY'
+      : ((p.event || p.productTitle || 'Alert')
+         + (tags.isPds ? '  ·  PARTICULARLY DANGEROUS SITUATION' : '')
+         + '  ·  ' + _ssWhere(p));
+  }
+
+  const where = document.getElementById('ss-pill-where');
+  if (where) where.textContent = _ssWhere(p);
+
+  const exp = new Date(p.expires).getTime();
+  _ssExpiresAt = Number.isFinite(exp) ? exp : null;
+  _ssTickCountdown();
+
+  _ssRenderAlertList(key);
+  _ssRenderLayers();
 }
 
 function _ssRenderHudIdle() {
   _ssEnsureHud();
-  _ssHudEl.style.setProperty('--ss-accent', '#39ff88');
-  _ssHudEl.innerHTML = `
-    <div class="ss-hud-head"><span class="ss-hud-title">All Clear</span></div>
-    <div class="ss-hud-times">No active alerts in your coverage area.</div>`;
+  const tab = document.getElementById('ss-now-tab');
+  if (tab) tab.textContent = 'All Clear';
+  const detail = document.getElementById('ss-now-detail');
+  if (detail) detail.innerHTML =
+    '<div class="ss-now-line">No active alerts in your coverage area.</div>';
+  const bar = document.getElementById('ss-lower-bar-inner');
+  if (bar) bar.textContent = 'No active alerts in the coverage area';
+  const where = document.getElementById('ss-pill-where');
+  if (where) where.textContent = 'Coverage area';
+  _ssExpiresAt = null;
+  _ssTickCountdown();
+  _ssRenderAlertList(null);
+  _ssRenderLayers();
 }
 
 // ── Cycling engine ─────────────────────────────────────────────────────
@@ -40369,7 +41569,10 @@ function _ssStop() {
   _ssOn = false;
   if (_ssTimer) { clearInterval(_ssTimer); _ssTimer = null; }
   _ssRadarStepTimers.forEach(t => clearTimeout(t)); _ssRadarStepTimers = [];
-  if (_ssHudEl) { _ssHudEl.remove(); _ssHudEl = null; }
+  // Through _ssRemoveHud rather than removing the element directly, because
+  // the countdown runs on its own timer and would otherwise keep ticking
+  // against an element that is no longer on the page.
+  _ssRemoveHud();
   if (typeof _sgRemoveActiveGraphic === 'function') _sgRemoveActiveGraphic();
   const warn = document.getElementById('ss-privacy-warn'); if (warn) warn.remove();
   document.querySelectorAll('#alerts-panel-body .alert-card.ss-current')
@@ -40552,7 +41755,12 @@ async function _sgAddGraphicFromBlob(blob, name, mime) {
     name: name || 'Graphic',
     blob, mime: mime || blob.type || 'image/png',
     addedAt: Date.now(),
-    x: 5, y: 5, w: 20, opacity: 1,
+    // Full frame by default, not a small badge in a corner. A custom graphic
+    // for this is almost always an overlay drawn against the whole screen -
+    // the same frame StormStream draws - so it should land on top of the map
+    // at the size it was designed at and be shrunk down if that is not what
+    // was wanted, rather than starting as a stamp nobody can line up.
+    x: 0, y: 0, w: 100, opacity: 1,
   };
   await _sgPut(rec);
   await _sgUiRefreshList();
@@ -40630,6 +41838,10 @@ async function _sgApplyActiveGraphic() {
   const el = document.createElement('img');
   el.id = 'sg-active-graphic';
   el.src = url;
+  // Sized against the viewport, exactly as the StormStream frame is, so a
+  // graphic drawn to the frame lines up with it rather than needing to be
+  // nudged into place by hand. Below the frame's own z-index (950), so a
+  // full-screen graphic sits behind the live text rather than over it.
   el.style.cssText = `position:fixed; left:${rec.x}%; top:${rec.y}%; width:${rec.w}%;`
     + ` opacity:${rec.opacity}; z-index:940; pointer-events:none;`;
   document.body.appendChild(el);
