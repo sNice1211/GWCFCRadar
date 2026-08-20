@@ -48,8 +48,9 @@ from PIL import Image
 # polar and a model field is Lambert, but "scattered points onto a lat/lon
 # mesh" is the same problem, and it is already solved next door.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gfs_pipeline import (HTTP, LUTS, MAX_EDGE_PX, Lock, bounds_from, log,
-                          regrid_to_latlon, write_json)  # noqa: E402
+from gfs_pipeline import (HTTP, LUTS, MAX_EDGE_PX, Lock, band_alpha,
+                          bounds_from, log, lut_for, regrid_to_latlon,
+                          write_json)  # noqa: E402
 
 OUT_DIR = os.path.expanduser("~/wxdata/radar")
 
@@ -741,13 +742,14 @@ def render(data, lat, lon, spec, out_path):
     bad = ~np.isfinite(norm)
     idx = np.clip(np.nan_to_num(norm) * 255.0, 0, 255).astype(np.uint8)
 
-    rgb = LUTS[spec["ramp"]][idx]
+    rgb = lut_for(spec["ramp"], lo, hi)[idx]
     alpha = np.full(idx.shape, 210, dtype=np.uint8)
     alpha[bad] = 0
-    # Below about 5 dBZ is clear air and ground clutter rather than weather,
-    # and painting it turns every map into a solid wash centred on the radar.
-    if spec["ramp"] == "radar":
-        alpha[idx < 18] = 0
+    # The floor used to be a raw index of 18, which on the -10 to 75 dBZ scale
+    # is minus four: nine dBZ of clear-air return was being painted in the
+    # colour of the five dBZ band, which is the haze that made every map look
+    # washed out. It comes off the band table now.
+    band_alpha(spec["ramp"], idx, alpha, lo, hi)
     if spec["ramp"] == "precip":
         alpha[idx < 4] = 0
 
@@ -1295,8 +1297,13 @@ def build_mrms():
         norm = (arr - lo) / float(hi - lo)
         keep = np.isfinite(arr) & (arr >= spec["floor"])
         idx = np.clip(np.nan_to_num(norm) * 255.0, 0, 255).astype(np.uint8)
-        rgb = LUTS[spec["ramp"]][idx]
+        rgb = lut_for(spec["ramp"], lo, hi)[idx]
         alpha = np.where(keep, 205, 0).astype(np.uint8)
+        # MRMS already declares a floor per product, which is the one to keep
+        # where it is stricter. This adds the palette's own: a reading below
+        # the first band has no colour of its own and would be painted in the
+        # first band's, which is how a whole state ends up washed pale blue.
+        band_alpha(spec["ramp"], idx, alpha, lo, hi)
         del arr, norm, keep, idx
         # One folder per scan, named for the time it was built, exactly the
         # way the radar frames and the satellite composites are. MRMS used to
