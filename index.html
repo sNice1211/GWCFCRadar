@@ -19133,6 +19133,11 @@ function updateLoadStatus(msg) {
   // makes its own element, fixes every caller at once with no other line
   // in the app needing to change.
   let el = document.getElementById('load-status');
+  // True only while el is still the original boot-screen element, which
+  // is where "still working on it" narration (Loading X…, Radar 7/12…)
+  // belongs and was always meant to be seen: brief, on a screen the user
+  // already knows is a loading screen, gone a moment later regardless.
+  const onBootScreen = !!(el && el.closest('#loading'));
   if (!el) {
     el = document.createElement('div');
     el.id = 'load-status';
@@ -19145,6 +19150,16 @@ function updateLoadStatus(msg) {
       'max-width:90vw;overflow:hidden;text-overflow:ellipsis;';
     document.body.appendChild(el);
   }
+  // Once the boot screen is gone, this pill exists only to surface the
+  // terminal outcome of a load - found nothing, failed, unavailable -
+  // never the "…" in-progress narration along the way. Every caller in
+  // the app spells its progress messages with a trailing ellipsis and
+  // its terminal ones without, so that one character is a reliable,
+  // already-established way to tell the two apart without touching any
+  // of the 90-odd call sites individually. Surfacing "Radar 7/12…" or
+  // "Intercepting severe weather alerts…" as a floating pill during
+  // ordinary use read as a stray glitch, not information.
+  if (!onBootScreen && typeof msg === 'string' && msg.trim().endsWith('…')) return;
   el.textContent = msg;
   el.style.display = msg ? '' : 'none';
 }
@@ -34769,7 +34784,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Fixed: Mesoscale Discussions now fall through to backup sources instead of giving up early, and every overlay's status messages (loading/unavailable/none active) actually show up again after the app finishes loading.";
+const APP_LATEST_UPDATE = "Fixed: the small status message no longer shows leftover progress text like Radar 7/12 or Intercepting severe weather alerts. It only shows up now for things worth knowing, like a layer coming up empty.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

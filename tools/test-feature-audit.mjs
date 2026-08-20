@@ -217,7 +217,29 @@ console.log('\n4. the drawing tools arm and disarm without throwing');
   }
 }
 
-console.log('\n5. summary');
+console.log('\n5. updateLoadStatus: terminal messages surface, in-progress ones do not');
+{
+  // The boot screen's own #load-status is long gone by now (page loaded
+  // 3.5s+ ago), so every call here exercises the post-boot fallback pill.
+  phase = 'load-status';
+  const r = await page.evaluate(() => {
+    updateLoadStatus('');   // start from a known-clear state, whatever boot left behind
+    updateLoadStatus('Radar 7/12…');
+    const duringProgress = document.getElementById('load-status')?.textContent || '';
+    updateLoadStatus('No active Mesoscale Discussions.');
+    const terminal = document.getElementById('load-status')?.textContent || '';
+    updateLoadStatus('');
+    const cleared = document.getElementById('load-status')?.style.display;
+    return { duringProgress, terminal, cleared };
+  });
+  ok('an in-progress "…" message never reaches the pill',
+     r.duringProgress === '', JSON.stringify(r));
+  ok('a terminal message (no trailing …) does reach it',
+     r.terminal === 'No active Mesoscale Discussions.', JSON.stringify(r));
+  ok('clearing with an empty string hides it', r.cleared === 'none', JSON.stringify(r));
+}
+
+console.log('\n6. summary');
 {
   const allErrors = Object.entries(errorsByPhase);
   ok('nothing threw anywhere in the whole sweep', allErrors.length === 0,
