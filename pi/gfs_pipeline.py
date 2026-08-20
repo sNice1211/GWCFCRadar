@@ -201,6 +201,150 @@ MODELS = {
                  "lev_mean_sea_level", "lev_surface",
                  r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
     },
+    # ── Same-directory variants of models already proven to build ──────────
+    # These carry the strongest evidence available without probing NOAA: the
+    # directory itself is one this pipeline already fetches from successfully
+    # every cycle, and only the filename changes, following NOAA's own
+    # resolution/product naming inside that directory. Run check_models.py
+    # against them before trusting any of it.
+    "gfs0p50": {
+        "label": "GFS 0.5 deg", "res": "0.5 deg", "cycle_h": 6, "lag_h": 5,
+        "filter": "filter_gfs_0p50.pl",
+        "dir": "/gfs.{date}/{cyc}/atmos",
+        "file": "gfs.t{cyc}z.pgrb2.0p50.f{fhr:03d}",
+        "raw": "gfs/prod/gfs.{date}/{cyc}/atmos/gfs.t{cyc}z.pgrb2.0p50.f{fhr:03d}.idx",
+        "step": 3, "out": 180,
+        "regions": {"conus": {},
+                    "tropics": {"step": 6, "out": 240, "shear": True}},
+    },
+    "gfs1p00": {
+        # The cheapest global field here by a wide margin, which is the point:
+        # a coarse look much further out for almost no bandwidth.
+        "label": "GFS 1.0 deg", "res": "1.0 deg", "cycle_h": 6, "lag_h": 5,
+        "filter": "filter_gfs_1p00.pl",
+        "dir": "/gfs.{date}/{cyc}/atmos",
+        "file": "gfs.t{cyc}z.pgrb2.1p00.f{fhr:03d}",
+        "raw": "gfs/prod/gfs.{date}/{cyc}/atmos/gfs.t{cyc}z.pgrb2.1p00.f{fhr:03d}.idx",
+        "step": 6, "out": 240,
+        "regions": {"conus": {},
+                    "tropics": {"out": 384, "shear": True}},
+    },
+    "nam32": {
+        # NAM on its wider 32 km grid: the same run as "nam" above, published
+        # over a domain that reaches well past the CONUS cut.
+        "fetch": "range",
+        "label": "NAM 32 km", "res": "32 km", "cycle_h": 6, "lag_h": 4,
+        "filter": "filter_nam.pl",
+        "dir": "/nam.{date}",
+        "file": "nam.t{cyc}z.awip32{fhr:02d}.tm00.grib2",
+        "raw": "nam/prod/nam.{date}/nam.t{cyc}z.awip32{fhr:02d}.tm00.grib2.idx",
+        "step": 3, "out": 84,
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface",
+                 r"lev_entire_atmosphere_\(considered_as_a_single_layer\)"],
+    },
+    "hrefpmmn": {
+        # Probability matched mean: the ensemble's average intensity put back
+        # onto a realistic storm-shaped field, so peaks survive the averaging
+        # that flattens a plain mean. For "how hard will it actually come
+        # down" this is the member of the HREF family worth reading.
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "HREF PMM", "res": "3 km ens", "cycle_h": 6, "lag_h": 4,
+        "dir": "/href.{date}/ensprod",
+        "file": "href.t{cyc}z.conus.pmmn.f{fhr:02d}.grib2",
+        "raw": "href/prod/href.{date}/ensprod/"
+               "href.t{cyc}z.conus.pmmn.f{fhr:02d}.grib2.idx",
+        "step": 3, "first": 1, "out": 48,
+    },
+    "hrefsprd": {
+        # How much the members disagree, which is the honest measure of how
+        # much to trust the mean beside it.
+        "fetch": "range", "fields": FINE_FIELDS,
+        "label": "HREF spread", "res": "3 km ens", "cycle_h": 6, "lag_h": 4,
+        "dir": "/href.{date}/ensprod",
+        "file": "href.t{cyc}z.conus.sprd.f{fhr:02d}.grib2",
+        "raw": "href/prod/href.{date}/ensprod/"
+               "href.t{cyc}z.conus.sprd.f{fhr:02d}.grib2.idx",
+        "step": 3, "first": 1, "out": 48,
+        "ranges": {"t2m": (0, 8), "apcp": (0, 20), "wind": (0, 20)},
+        "ramp": "spread",
+    },
+    "gefsc00": {
+        # The ensemble's control run: one unperturbed member, useful beside
+        # the mean because it is a real single forecast rather than an
+        # average of many.
+        "label": "GEFS control", "res": "0.5 deg ens", "cycle_h": 6, "lag_h": 7,
+        "filter": "filter_gefs_atmos_0p50a.pl",
+        "dir": "/gefs.{date}/{cyc}/atmos/pgrb2ap5",
+        "file": "gec00.t{cyc}z.pgrb2a.0p50.f{fhr:03d}",
+        "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
+               "gec00.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "vars": ["var_TMP", "var_UGRD", "var_VGRD", "var_PRMSL", "var_APCP"],
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface"],
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+    "gefsp01": {
+        "label": "GEFS member 1", "res": "0.5 deg ens", "cycle_h": 6, "lag_h": 7,
+        "filter": "filter_gefs_atmos_0p50a.pl",
+        "dir": "/gefs.{date}/{cyc}/atmos/pgrb2ap5",
+        "file": "gep01.t{cyc}z.pgrb2a.0p50.f{fhr:03d}",
+        "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
+               "gep01.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "vars": ["var_TMP", "var_UGRD", "var_VGRD", "var_PRMSL", "var_APCP"],
+        "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
+                 "lev_mean_sea_level", "lev_surface"],
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+    # ── Regional analyses and blends, on NOAA's regional naming ────────────
+    # Same shape as their CONUS parents above, on the per-area directories
+    # NOAA publishes them under. Lower confidence than the same-directory
+    # variants: the directory itself is the part being guessed, so a wrong
+    # one shows up as a skipped model rather than a broken build.
+    "rtmaak": {
+        "label": "RTMA Alaska (now)", "res": "3 km analysis", "cycle_h": 1, "lag_h": 1,
+        "filter": "filter_akrtma.pl",
+        "dir": "/akrtma.{date}",
+        "file": "akrtma.t{cyc}z.2dvaranl_ndfd_3p0.grb2",
+        "raw": "rtma/prod/akrtma.{date}/akrtma.t{cyc}z.2dvaranl_ndfd_3p0.grb2.idx",
+        "fetch": "range", "step": 1, "out": 0,
+    },
+    "rtmahi": {
+        "label": "RTMA Hawaii (now)", "res": "2.5 km analysis", "cycle_h": 1, "lag_h": 1,
+        "filter": "filter_hirtma.pl",
+        "dir": "/hirtma.{date}",
+        "file": "hirtma.t{cyc}z.2dvaranl_ndfd.grb2",
+        "raw": "rtma/prod/hirtma.{date}/hirtma.t{cyc}z.2dvaranl_ndfd.grb2.idx",
+        "fetch": "range", "step": 1, "out": 0,
+    },
+    "rtmapr": {
+        "label": "RTMA Puerto Rico (now)", "res": "2.5 km analysis", "cycle_h": 1, "lag_h": 1,
+        "filter": "filter_prrtma.pl",
+        "dir": "/prrtma.{date}",
+        "file": "prrtma.t{cyc}z.2dvaranl_ndfd.grb2",
+        "raw": "rtma/prod/prrtma.{date}/prrtma.t{cyc}z.2dvaranl_ndfd.grb2.idx",
+        "fetch": "range", "step": 1, "out": 0,
+    },
+    "nbmak": {
+        "label": "NBM Alaska", "res": "3 km blend", "cycle_h": 6, "lag_h": 2,
+        "filter": "filter_blend.pl",
+        "dir": "/blend.{date}/{cyc}/core",
+        "file": "blend.t{cyc}z.core.f{fhr:03d}.ak.grib2",
+        "raw": "blend/prod/blend.{date}/{cyc}/core/"
+               "blend.t{cyc}z.core.f{fhr:03d}.ak.grib2.idx",
+        "fetch": "range", "first": 3, "step": 3, "out": 120,
+    },
+    "nbmhi": {
+        "label": "NBM Hawaii", "res": "2.5 km blend", "cycle_h": 6, "lag_h": 2,
+        "filter": "filter_blend.pl",
+        "dir": "/blend.{date}/{cyc}/core",
+        "file": "blend.t{cyc}z.core.f{fhr:03d}.hi.grib2",
+        "raw": "blend/prod/blend.{date}/{cyc}/core/"
+               "blend.t{cyc}z.core.f{fhr:03d}.hi.grib2.idx",
+        "fetch": "range", "first": 3, "step": 3, "out": 120,
+    },
     "hrrr": {
         "fetch": "range",
         # Hourly and 3 km: the one worth having when something is happening
@@ -727,7 +871,14 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   # filename drifted from what's coded here and it belongs in
                   # OFF_BY_DEFAULT until re-checked, the same as any entry
                   # below that's been confirmed broken.
-                  "namak", "namhi", "nampr"]
+                  "namak", "namhi", "nampr",
+                  # Same-directory variants of models already building here,
+                  # so the address is the most nearly certain kind of guess
+                  # available without probing NOAA.
+                  "gfs0p50", "gfs1p00", "nam32",
+                  "hrefpmmn", "hrefsprd", "gefsc00", "gefsp01",
+                  # Regional analyses and blends, on NOAA's per-area naming.
+                  "rtmaak", "rtmahi", "rtmapr", "nbmak", "nbmhi"]
 
 # Defined above and deliberately not built. Each of these was checked against
 # the publisher's own directory listing and the files are not there: HWRF and
@@ -846,6 +997,11 @@ MB_PER_HOUR = {
     # estimated well under "nam" itself until check_models.py has a real
     # measurement to replace this with.
     "namak": 0.5, "namhi": 0.3, "nampr": 0.3,
+    # Coarser grids cost far less per hour than the 0.25 deg run they are cut
+    # from; the regional analyses are single frames over small areas.
+    "gfs0p50": 0.2, "gfs1p00": 0.05, "nam32": 1.2,
+    "hrefpmmn": 10.4, "hrefsprd": 10.4, "gefsc00": 0.07, "gefsp01": 0.07,
+    "rtmaak": 2.0, "rtmahi": 0.8, "rtmapr": 0.8, "nbmak": 4.0, "nbmhi": 1.5,
 }
 
 # Some servers refuse the default python-requests user agent outright, and a

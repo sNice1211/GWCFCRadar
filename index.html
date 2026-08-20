@@ -24681,7 +24681,46 @@ const RADAR_WORKER_URL = 'https://l2data.ralphies1005.workers.dev';
 // at airports, which the old path could not promise. The Cloudflare Worker
 // stays as the fallback for when a listing fails.
 const L2_CHUNKS_BUCKET = 'https://unidata-nexrad-level2-chunks.s3.amazonaws.com';
-const L2_DIRECT_CAP = 5.5 * 1024 * 1024;   // decode the low sweeps, spare the phone
+// How much of a Level 2 volume to pull before drawing. Chunks are whole
+// records ordered low sweeps first, so any prefix decodes - this is a
+// straight trade of detail against how long someone stares at an empty map,
+// and it is the single biggest cost on the path to the first picture.
+//
+// It used to be a flat 5.5 MB for everyone, which is most of a minute on a
+// phone link and is why radar could take 20+ seconds to appear. A fast
+// connection still gets the full read; a slow or metered one gets enough for
+// the low sweeps that are actually being looked at.
+function _l2ConnCap() {
+  try {
+    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (c) {
+      if (c.saveData) return 1.5 * 1024 * 1024;
+      const t = c.effectiveType || '';
+      if (t === 'slow-2g' || t === '2g') return 1.5 * 1024 * 1024;
+      if (t === '3g') return 2.5 * 1024 * 1024;
+    }
+  } catch (e) {}
+  return _isIOS ? 3.5 * 1024 * 1024 : 5.5 * 1024 * 1024;
+}
+const L2_DIRECT_CAP = _l2ConnCap();
+// History frames are looked at in motion, a few hundred milliseconds each,
+// and one that fails to decode is skipped rather than fatal - so they are
+// read far more cheaply than the live frame nobody can look away from.
+const L2_LOOP_CAP = Math.min(L2_DIRECT_CAP, 1.75 * 1024 * 1024);
+
+// One station's volume listing answers both the live load and the loop build
+// moments later, and it is the largest listing of the lot. Briefly shared
+// rather than fetched twice.
+const _s3ListCache = new Map();
+function _s3ListCached(key, fetcher) {
+  const hit = _s3ListCache.get(key);
+  if (hit && Date.now() - hit.at < 60000) return hit.p;
+  const p = fetcher();
+  _s3ListCache.set(key, { at: Date.now(), p });
+  // A failed listing must not be remembered as the answer for a minute.
+  p.catch(() => { const cur = _s3ListCache.get(key); if (cur && cur.p === p) _s3ListCache.delete(key); });
+  return p;
+}
 
 async function _s3Xml(params) {
   const r = await fetch(L2_CHUNKS_BUCKET + '/?list-type=2&' + params,
@@ -24703,13 +24742,21 @@ async function _s3VolTime(station, vol) {
 // station, because it just parsed to nothing.
 let _l2SkipNewest = null;
 
+// The station's volume directory listing, shared for a minute between the
+// live load and the loop build that follows it rather than fetched twice.
+async function _s3VolumeList(station) {
+  return _s3ListCached('vols:' + station, async () => {
+    const dirs = await _s3Xml('prefix=' + station + '/&delimiter=/&max-keys=1000');
+    return [...dirs.querySelectorAll('CommonPrefixes > Prefix')]
+      .map(p => p.textContent.replace(/\/$/, '').split('/').pop())
+      .filter(v => /^\d+$/.test(v))
+      .sort((a, b) => a - b);
+  });
+}
+
 async function _fetchVolumeDirect(stationId) {
   const station = stationId.toUpperCase();
-  const dirs = await _s3Xml('prefix=' + station + '/&delimiter=/&max-keys=1000');
-  const vols = [...dirs.querySelectorAll('CommonPrefixes > Prefix')]
-    .map(p => p.textContent.replace(/\/$/, '').split('/').pop())
-    .filter(v => /^\d+$/.test(v))
-    .sort((a, b) => a - b);
+  const vols = await _s3VolumeList(station);
   if (!vols.length) throw new Error('no volumes for ' + station);
 
   // The volume number rolls over at 999, so the highest number is only the
@@ -24720,14 +24767,21 @@ async function _fetchVolumeDirect(stationId) {
   // rollover or not, and the search is skipped entirely. That is the common
   // case, and it saves a dozen sequential round trips on a slow connection.
   let at = vols.length - 1;
-  const last = await _s3VolTime(station, vols[at]).catch(() => '');
+  // These two probes used to run one after the other, with the second only
+  // started once the first had answered. They do not depend on each other,
+  // so asking both at once removes a whole round trip from the wait before
+  // any radar appears; the oldest-volume answer is simply ignored when the
+  // newest turns out to be recent enough to settle it alone.
+  const [last, firstProbe] = await Promise.all([
+    _s3VolTime(station, vols[at]).catch(() => ''),
+    _s3VolTime(station, vols[0]).catch(() => ''),
+  ]);
   const ageMin = (() => {
     const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(last || '');
     if (!m) return Infinity;
     return (Date.now() - Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5])) / 60000;
   })();
-  const first = ageMin < 12 ? ''
-    : await _s3VolTime(station, vols[0]).catch(() => '');
+  const first = ageMin < 12 ? '' : firstProbe;
   if (first && last && first > last) {
     let lo = 0, hi = vols.length - 1;
     while (lo < hi) {
@@ -24753,7 +24807,8 @@ async function _fetchVolumeDirect(stationId) {
 // Assemble one volume's low sweeps into a decodable buffer, or null when the
 // volume is not yet complete. Split out of _fetchVolumeDirect so playback can
 // pull several recent volumes with the same, proven logic.
-async function _assembleVolume(station, vol) {
+async function _assembleVolume(station, vol, cap) {
+  const byteCap = cap || L2_DIRECT_CAP;
   const x = await _s3Xml('prefix=' + station + '/' + vol + '/&max-keys=200');
   const entries = [...x.querySelectorAll('Contents')].map(c => ({
     key: c.querySelector('Key').textContent,
@@ -24768,7 +24823,7 @@ async function _assembleVolume(station, vol) {
   for (const e of entries) {
     wanted.push(e.key);
     planned += e.size;
-    if (planned > L2_DIRECT_CAP) break;
+    if (planned > byteCap) break;
   }
   const responses = await Promise.all(wanted.map(k =>
     fetch(L2_CHUNKS_BUCKET + '/' + k, { signal: _abortSignal(30000) })));
@@ -24794,20 +24849,19 @@ async function _assembleVolume(station, vol) {
 // ArrayBuffers, which may be shorter than n near the start of a feed.
 async function _fetchRecentVolumes(station, n) {
   station = station.toUpperCase();
-  const dirs = await _s3Xml('prefix=' + station + '/&delimiter=/&max-keys=1000');
-  const vols = [...dirs.querySelectorAll('CommonPrefixes > Prefix')]
-    .map(p => p.textContent.replace(/\/$/, '').split('/').pop())
-    .filter(v => /^\d+$/.test(v))
-    .sort((a, b) => a - b);
+  const vols = await _s3VolumeList(station);   // shared with the live load
   if (!vols.length) return [];
   let at = vols.length - 1;
-  const last = await _s3VolTime(station, vols[at]).catch(() => '');
+  const [last, firstProbe] = await Promise.all([
+    _s3VolTime(station, vols[at]).catch(() => ''),
+    _s3VolTime(station, vols[0]).catch(() => ''),
+  ]);
   const ageMin = (() => {
     const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(last || '');
     if (!m) return Infinity;
     return (Date.now() - Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5])) / 60000;
   })();
-  const first = ageMin < 12 ? '' : await _s3VolTime(station, vols[0]).catch(() => '');
+  const first = ageMin < 12 ? '' : firstProbe;
   if (first && last && first > last) {
     let lo = 0, hi = vols.length - 1;
     while (lo < hi) {
@@ -24817,14 +24871,22 @@ async function _fetchRecentVolumes(station, n) {
     }
     at = lo;
   }
+  // These were pulled strictly one after another, so five history volumes
+  // meant five full downloads end to end - minutes on a slow link, all of it
+  // competing with the map for bandwidth. They do not depend on each other,
+  // so a few run at once, at the cheaper history cap. The +6 still gives room
+  // to skip half-written volumes without coming up short.
+  const candidates = [];
+  for (let back = 0; back < n + 6; back++) {
+    candidates.push(vols[(at - back + vols.length) % vols.length]);
+  }
   const out = [];
-  // Walk back through the volumes, keeping the first n complete ones. The +6
-  // gives room to skip a couple of half-written or empty volumes without
-  // coming up short.
-  for (let back = 0; back < n + 6 && out.length < n; back++) {
-    const vol = vols[(at - back + vols.length) % vols.length];
-    const buf = await _assembleVolume(station, vol).catch(() => null);
-    if (buf) out.push(buf);
+  const CONCURRENCY = 3;
+  for (let i = 0; i < candidates.length && out.length < n; i += CONCURRENCY) {
+    const batch = candidates.slice(i, i + CONCURRENCY);
+    const bufs = await Promise.all(batch.map(v =>
+      _assembleVolume(station, v, L2_LOOP_CAP).catch(() => null)));
+    for (const b of bufs) { if (b && out.length < n) out.push(b); }
   }
   return out;
 }
@@ -25395,7 +25457,9 @@ async function _l2LoopBuild(product, station, curImg) {
       try { result = await _workerProcess(bufs[i], layer); }
       catch (e) { continue; }
       if (token !== _l2Loop.token) return;
-      const img = _meshToImage(result, product);
+      // Same shared box the live frame was drawn into, so Level 2 playback
+      // holds still instead of shifting with each sweep's data extent.
+      const img = _meshToImage(result, product, _meshBox && _meshBox.bounds);
       if (!img) continue;
       const t = (result.metadata && result.metadata.timeIso)
         ? Date.parse(result.metadata.timeIso) : (_l2Loop.frames[0].time - i * 300000);
@@ -25450,7 +25514,9 @@ async function _l3BucketLoopBuild(site, code, curImg) {
         const result = await _workerProcess(buf, code);
         if (token !== _l2Loop.token) return;
         _l3MeshNormalize(result.meshData, code);
-        img = _meshToImage(result, String(code).toLowerCase());
+        // Same box as the live frame: this is what stops the loop wobbling.
+        img = _meshToImage(result, String(code).toLowerCase(),
+                           _meshBox && _meshBox.bounds);
       } catch (e) { continue; }   // one unreadable frame is not the loop failing
       if (!img) continue;
       const t = _l3BucketKeyTime(keys[i]);
@@ -25487,7 +25553,20 @@ function _l2LoopShow(idx) {
   _l2Loop.idx = idx;
   try {
     _l3Overlay.setUrl(f[idx].url);
-    if (f[idx].bounds) _l3Overlay.setBounds(f[idx].bounds);
+    // Every frame now shares one box, so this normally has nothing to do.
+    // Re-setting identical bounds still makes Leaflet recompute and reposition
+    // the overlay, which is visible as a twitch at playback speed, so it is
+    // only touched when the geography genuinely differs.
+    var b = f[idx].bounds;
+    if (b) {
+      var cur = _l3Overlay.getBounds && _l3Overlay.getBounds();
+      var same = cur
+        && Math.abs(cur.getSouth() - b[0][0]) < 1e-9
+        && Math.abs(cur.getWest()  - b[0][1]) < 1e-9
+        && Math.abs(cur.getNorth() - b[1][0]) < 1e-9
+        && Math.abs(cur.getEast()  - b[1][1]) < 1e-9;
+      if (!same) _l3Overlay.setBounds(b);
+    }
   } catch (e) {}
   const tl = document.getElementById('timeline');
   if (tl && +tl.value !== idx) tl.value = idx;
@@ -25612,9 +25691,52 @@ async function _loadL3DataInner(product, stationOverride, retried) {
 // out so playback can decode older volumes into images in the background
 // without disturbing the frame on screen. Returns { url, canvas, bounds,
 // leafletBounds, timeIso } or null when there is nothing to draw.
-function _meshToImage(result, product) {
+// ── The shared frame box, and why one is needed ────────────────────────────
+// result.bounds is the extent of the gates that actually held DATA in that
+// one sweep, not the radar's coverage. A quiet scan reports a small box and a
+// stormy one a large box, so rendering each frame into its own box and then
+// calling setBounds per frame moved and resized the picture on every step:
+// the loop visibly wobbled off centre and back as it played.
+//
+// Radar coverage is a circle centred on the antenna, so the honest stable box
+// is one centred on the site. This builds that box once from the live frame -
+// symmetric around the site, padded a little - and every frame of the loop is
+// then drawn into that same box, so the overlay never has to move again.
+// The box currently in force, keyed by site+product so switching either one
+// rebuilds it rather than reusing a box built for different geography.
+let _meshBox = null;
+
+function _meshSiteLatLon(station) {
+  if (!station || typeof NEXRAD_STATIONS === 'undefined') return null;
+  var id = String(station).toLowerCase();
+  for (var i = 0; i < NEXRAD_STATIONS.length; i++) {
+    var s = NEXRAD_STATIONS[i];
+    if (s.id === id || s.id === 'k' + id || s.id === 't' + id || s.id.slice(1) === id) {
+      return { lat: s.lat, lon: s.lon };
+    }
+  }
+  return null;
+}
+
+function _meshStableBox(result, station) {
+  var b = result && result.bounds;
+  if (!b) return null;
+  var site = _meshSiteLatLon(station);
+  // Without a known site the next best stable thing is the frame's own box:
+  // still one box for the whole loop, just not perfectly centred.
+  if (!site) return [b[0], b[1], b[2], b[3]];
+  // Reach far enough to cover the furthest data this sweep held, measured
+  // from the antenna, then pad so a later sweep that reaches a bit further
+  // still lands inside the same box rather than forcing it to change.
+  var dLon = Math.max(Math.abs(b[0] - site.lon), Math.abs(b[2] - site.lon)) * 1.08;
+  var dLat = Math.max(Math.abs(b[1] - site.lat), Math.abs(b[3] - site.lat)) * 1.08;
+  if (!(dLon > 0) || !(dLat > 0)) return [b[0], b[1], b[2], b[3]];
+  return [site.lon - dLon, site.lat - dLat, site.lon + dLon, site.lat + dLat];
+}
+
+function _meshToImage(result, product, forceBounds) {
   var meshData = result.meshData;
-  var bounds   = result.bounds;
+  var bounds   = forceBounds || result.bounds;
   if (!meshData || !bounds || meshData.length === 0) return null;
 
   var minLon = bounds[0], minLat = bounds[1], maxLon = bounds[2], maxLat = bounds[3];
@@ -25674,7 +25796,14 @@ const _MESH_LABELS = { cc: 'Corr. Coeff.', zdr: 'Diff. Refl.', vel: 'Velocity',
   ref: 'Reflectivity', kdp: 'Spec. Diff. Phase', sw: 'Spectrum Width' };
 
 function _renderMesh(result, product, station) {
-  var img = _meshToImage(result, product);
+  // Pin this site+product to one box for as long as it is on screen, so the
+  // live frame and every loop frame behind it share identical geography and
+  // the overlay never moves between frames.
+  var boxKey = String(station || '').toLowerCase() + '|' + String(product || '').toLowerCase();
+  if (!_meshBox || _meshBox.key !== boxKey) {
+    _meshBox = { key: boxKey, bounds: _meshStableBox(result, station) };
+  }
+  var img = _meshToImage(result, product, _meshBox && _meshBox.bounds);
   if (!img) {
     _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> No data returned for ' + product.toUpperCase());
     return;
@@ -35860,7 +35989,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Playback fixed properly: every single radar site and every terminal radar now loops instead of showing one frozen frame, and satellite preloads its frames so playing actually moves. Two new one-frame step buttons sit either side of the animation bar. Satellite adds the floating mesoscale sectors, and only ever lists sectors the server really serves.";
+const APP_LATEST_UPDATE = "Radar playback no longer wobbles: every frame is now drawn into one fixed box centred on the radar itself, instead of each frame getting its own box that shifted as the storm grew. Radar also loads much faster, especially on a phone. Plus 12 new models.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

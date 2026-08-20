@@ -69,20 +69,34 @@ async function boot(initLocalStorage) {
   await page.waitForTimeout(3500);
   // Three squares of known raw value on a 10 x 10 degree stage, so a filter
   // that keeps one of them keeps almost exactly a third of the pixels.
+  //
+  // The stage is built AROUND the radar site rather than at fixed absolute
+  // coordinates, because that is what real radar data is: gates in a circle
+  // centred on the antenna. Frames are now drawn into one site-centred box
+  // for the whole loop (so playback cannot wobble), and a stage sitting off
+  // to one side of its own site is geometry no real sweep produces.
   await page.evaluate(() => {
-    window.__mkMesh = (cells) => {
+    window.__mkMesh = (cells, site) => {
       const arr = [];
       cells.forEach(c => arr.push(c.x0, c.y0, c.x1, c.y0, c.x1, c.y1,
                                   c.x0, c.y1, c.v));
       return { meshData: Float32Array.from(arr),
-               bounds: [-100, 30, -90, 40],
+               bounds: [site.lon - 5, site.lat - 5, site.lon + 5, site.lat + 5],
                metadata: { timeIso: '2026-08-18T00:00:00Z' } };
     };
-    window.__threeSquares = (a, b, c) => window.__mkMesh([
-      { x0: -99, y0: 31, x1: -97, y1: 33, v: a },
-      { x0: -96, y0: 34, x1: -94, y1: 36, v: b },
-      { x0: -93, y0: 37, x1: -91, y1: 39, v: c },
-    ]);
+    // Offsets in degrees from the site: south-west, centre, north-east.
+    window.__threeSquares = (a, b, c, stationId) => {
+      const site = _meshSiteLatLon(stationId || 'ktlx') || { lat: 35, lon: -95 };
+      const sq = (dx0, dy0, dx1, dy1, v) => ({
+        x0: site.lon + dx0, y0: site.lat + dy0,
+        x1: site.lon + dx1, y1: site.lat + dy1, v,
+      });
+      return window.__mkMesh([
+        sq(-4, -4, -2, -2, a),
+        sq(-1, -1,  1,  1, b),
+        sq( 2,  2,  4,  4, c),
+      ], site);
+    };
     window.__opaque = () => {
       if (!_l3Canvas) return -1;
       const d = _l3Canvas.getContext('2d').getImageData(0, 0, 1000, 1000).data;
@@ -119,18 +133,18 @@ const { page, errors } = await boot();
 console.log('\n2. a Level 3 bucket code paints real pixels');
 {
   const n = await page.evaluate(() => {
-    _renderMesh(window.__threeSquares(10, 30, 50), 'n0b', 'KTLX');
+    _renderMesh(window.__threeSquares(10, 30, 50, 'KTLX'), 'n0b', 'KTLX');
     return window.__opaque();
   });
   ok('reflectivity under its bucket name draws', n > 100000, String(n));
   const terminals = await page.evaluate(() => {
-    _renderMesh(window.__threeSquares(10, 30, 50), 'tz0', 'TTPA');
+    _renderMesh(window.__threeSquares(10, 30, 50, 'TTPA'), 'tz0', 'TTPA');
     return window.__opaque();
   });
   ok('and the terminal dialect draws the same picture',
      terminals === n, terminals + ' vs ' + n);
   const hc = await page.evaluate(() => {
-    _renderMesh(window.__threeSquares(60, 100, 140), 'n0h', 'KTLX');
+    _renderMesh(window.__threeSquares(60, 100, 140, 'KTLX'), 'n0h', 'KTLX');
     return { n: window.__opaque(), rain: window.__sample(0),
              hail: window.__sample(1) };
   });
@@ -139,7 +153,7 @@ console.log('\n2. a Level 3 bucket code paints real pixels');
      hc.rain[1] > hc.rain[0] && hc.hail[0] > hc.hail[1],
      JSON.stringify([hc.rain, hc.hail]));
   const et = await page.evaluate(() => {
-    _renderMesh(window.__threeSquares(5, 30, 55), 'eet', 'KTLX');
+    _renderMesh(window.__threeSquares(5, 30, 55, 'KTLX'), 'eet', 'KTLX');
     return window.__opaque();
   });
   ok('echo tops paint', et > 100000, String(et));
@@ -149,7 +163,7 @@ console.log('\n3. the filter hides raw values, not paint');
 {
   const r = await page.evaluate(() => {
     _fxFilter = {}; _fxColors = {}; _fxSave();
-    _renderMesh(window.__threeSquares(10, 30, 50), 'n0b', 'KTLX');
+    _renderMesh(window.__threeSquares(10, 30, 50, 'KTLX'), 'n0b', 'KTLX');
     const all = window.__opaque();
     _fxFilter = { ref: { on: true, min: 40, max: 80 } }; _fxSave();
     _radarFxApply();
@@ -177,7 +191,7 @@ console.log('\n4. custom colors repaint from the raw value');
     // Squares at 2, 30 and 50 dBZ: the built-in scale hides anything under
     // 5 dBZ, so the weak square is invisible until the user's own colors
     // take over and paint the whole range.
-    _renderMesh(window.__threeSquares(2, 30, 50), 'n0b', 'KTLX');
+    _renderMesh(window.__threeSquares(2, 30, 50, 'KTLX'), 'n0b', 'KTLX');
     const dflt = window.__opaque();
     _fxColors = { ref: { on: true,
       stops: ['#ff0000', '#ff0000', '#ff0000', '#ff0000', '#ff0000'] } };
@@ -426,7 +440,7 @@ console.log('\n8. saved rules survive a fresh visit');
       stops: ['#ff0000', '#ff0000', '#ff0000', '#ff0000', '#ff0000'] } }),
   });
   const r = await seeded.page.evaluate(() => {
-    _renderMesh(window.__threeSquares(10, 30, 50), 'n0b', 'KTLX');
+    _renderMesh(window.__threeSquares(10, 30, 50, 'KTLX'), 'n0b', 'KTLX');
     return { n: window.__opaque(), px: window.__sample(2),
              f: !!_fxFilterFor('ref'), c: !!_fxPaletteFor('ref') };
   });

@@ -243,11 +243,129 @@ console.log('\n7. the bucket loop feeds the same machinery play/step/scrub alrea
   ok('the timeline scrub lands on the frame asked for', r.afterSeek === 1, JSON.stringify(r));
 }
 
-console.log('\n8. nothing threw along the way');
+console.log('\n8. the loop holds still: one box per site+product, not one per frame');
+{
+  // The wobble had a precise cause. result.bounds is the extent of the gates
+  // that held DATA in that one sweep, not the radar's coverage, so a quiet
+  // scan reported a small box and a stormy one a large box. Each frame was
+  // drawn into its own box and setBounds was called per frame, so the picture
+  // shifted and resized as it played, drifting off centre and back.
+  const r = await page.evaluate(() => {
+    const site = _meshSiteLatLon('ktlx');
+    const quiet  = { bounds: [site.lon - 0.4, site.lat - 0.4,
+                              site.lon + 0.4, site.lat + 0.4],
+                     meshData: new Float32Array(9), metadata: {} };
+    const stormy = { bounds: [site.lon - 4.2, site.lat - 3.9,
+                              site.lon + 3.8, site.lat + 4.1],
+                     meshData: new Float32Array(9), metadata: {} };
+    const lopsided = { bounds: [site.lon, site.lat, site.lon + 3, site.lat + 3],
+                       meshData: new Float32Array(9), metadata: {} };
+    const mid = b => ({ lon: (b[0] + b[2]) / 2, lat: (b[1] + b[3]) / 2 });
+    const boxes = [quiet, stormy, lopsided].map(f => _meshStableBox(f, 'ktlx'));
+    const centres = boxes.map(mid);
+    return {
+      site,
+      centres,
+      // Every box, whatever the sweep held, must sit on the antenna.
+      allCentred: centres.every(c => Math.abs(c.lon - site.lon) < 1e-6
+                                  && Math.abs(c.lat - site.lat) < 1e-6),
+      // A box must still contain the data that produced it.
+      containsOwn: [quiet, stormy, lopsided].every((f, i) =>
+        boxes[i][0] <= f.bounds[0] && boxes[i][1] <= f.bounds[1]
+        && boxes[i][2] >= f.bounds[2] && boxes[i][3] >= f.bounds[3]),
+      unknownSiteStillStable: !!_meshStableBox(quiet, 'not-a-radar'),
+    };
+  });
+  ok('every sweep, quiet or stormy or one-sided, yields a box on the antenna',
+     r.allCentred, JSON.stringify(r.centres));
+  ok('each box still contains the data it was built from', r.containsOwn, JSON.stringify(r));
+  ok('an unknown station still yields a usable box rather than nothing',
+     r.unknownSiteStillStable, String(r.unknownSiteStillStable));
+
+  const held = await page.evaluate(() => {
+    // Two frames of genuinely different extent, rendered the way the loop
+    // renders them: through one shared box. Their images must agree on
+    // geography exactly, so nothing moves when the loop steps between them.
+    const site = _meshSiteLatLon('ktlx');
+    const mk = (spread, v) => ({
+      meshData: Float32Array.from([
+        site.lon - spread, site.lat - spread, site.lon + spread, site.lat - spread,
+        site.lon + spread, site.lat + spread, site.lon - spread, site.lat + spread, v,
+      ]),
+      bounds: [site.lon - spread, site.lat - spread, site.lon + spread, site.lat + spread],
+      metadata: {},
+    });
+    _meshBox = null;                      // start clean, as a fresh site does
+    _renderMesh(mk(3, 40), 'n0b', 'KTLX');  // live frame establishes the box
+    const box = _meshBox && _meshBox.bounds.slice();
+    const a = _meshToImage(mk(3, 40), 'n0b', _meshBox.bounds);
+    const b = _meshToImage(mk(1, 40), 'n0b', _meshBox.bounds);   // much smaller sweep
+    return {
+      box,
+      sameGeography: JSON.stringify(a.leafletBounds) === JSON.stringify(b.leafletBounds),
+      boundsA: a.leafletBounds, boundsB: b.leafletBounds,
+    };
+  });
+  ok('a small sweep and a large one render into identical geography',
+     held.sameGeography, JSON.stringify(held));
+}
+
+console.log('\n9. the first picture costs fewer round trips and fewer bytes');
+{
+  const r = await page.evaluate(() => ({
+    direct: L2_DIRECT_CAP,
+    loop: L2_LOOP_CAP,
+    // History frames are watched in motion and skipped if unreadable, so they
+    // are read far more cheaply than the live frame.
+    loopIsCheaper: L2_LOOP_CAP < L2_DIRECT_CAP,
+    capIsSane: L2_DIRECT_CAP >= 1.5 * 1024 * 1024 && L2_DIRECT_CAP <= 5.5 * 1024 * 1024,
+    hasListCache: typeof _s3ListCached === 'function' && typeof _s3VolumeList === 'function',
+    assembleTakesCap: /function _assembleVolume\(station, vol, cap\)/.test(_assembleVolume.toString())
+      || _assembleVolume.length === 3,
+  }));
+  ok('history frames are read more cheaply than the live frame',
+     r.loopIsCheaper, JSON.stringify(r));
+  ok('the live cap stays within a sane range', r.capIsSane, String(r.direct));
+  ok('the station listing is shared rather than fetched per caller',
+     r.hasListCache, String(r.hasListCache));
+  ok('volume assembly accepts a per-call byte cap', r.assembleTakesCap, String(r.assembleTakesCap));
+
+  const cached = await page.evaluate(async () => {
+    let calls = 0;
+    const realFetch = window.fetch;
+    window.fetch = (...a) => { calls++; return Promise.reject(new Error('offline')); };
+    try {
+      // Two callers, one listing: the live load and the loop build that
+      // follows it moments later used to fetch this same large listing twice.
+      const key = 'vols:TESTSITE';
+      let made = 0;
+      const mk = () => { made++; return Promise.resolve(['0001', '0002']); };
+      const a = await _s3ListCached(key, mk);
+      const b = await _s3ListCached(key, mk);
+      return { made, sameAnswer: JSON.stringify(a) === JSON.stringify(b) };
+    } finally { window.fetch = realFetch; }
+  });
+  ok('a second caller reuses the cached listing instead of refetching',
+     cached.made === 1 && cached.sameAnswer, JSON.stringify(cached));
+
+  const notPoisoned = await page.evaluate(async () => {
+    const key = 'vols:FAILSITE';
+    let made = 0;
+    const bad = () => { made++; return Promise.reject(new Error('listing failed')); };
+    await _s3ListCached(key, bad).catch(() => {});
+    await new Promise(r2 => setTimeout(r2, 20));
+    await _s3ListCached(key, bad).catch(() => {});
+    return { made };
+  });
+  ok('a failed listing is not remembered as the answer',
+     notPoisoned.made === 2, JSON.stringify(notPoisoned));
+}
+
+console.log('\n10. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 5).join(' | '));
 await page.close();
 
-console.log('\n9. iOS keeps the satellite pool bounded, with real eviction');
+console.log("\n11. iOS keeps the satellite pool bounded, with real eviction");
 {
   const iosCtx = await browser.newContext({ userAgent: IPHONE_UA });
   const { page: ip, errors: iErr } = await boot(iosCtx);
