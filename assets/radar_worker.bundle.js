@@ -11797,6 +11797,23 @@
     const p4 = project(sinAz1, cosAz1, r2);
     return [p1, p2, p3, p4];
   };
+  var RANGE_FULL_DETAIL_KM = 120;
+  var RANGE_STEP_KM = 120;
+  var RANGE_MAX_STRIDE = 4;
+  var strideForRange = (rangeKm, gateSizeKm, full) => {
+    if (full) return 1;
+    if (!(gateSizeKm > 0) || gateSizeKm >= 0.9) return 1;
+    if (rangeKm <= RANGE_FULL_DETAIL_KM) return 1;
+    const steps = Math.floor((rangeKm - RANGE_FULL_DETAIL_KM) / RANGE_STEP_KM) + 2;
+    const beamKm = rangeKm / 57;
+    const byBeam = Math.max(1, Math.floor(beamKm / gateSizeKm));
+    return Math.max(1, Math.min(RANGE_MAX_STRIDE, steps, byBeam));
+  };
+  var readRangeOptions = (options) => ({
+    limitKm: Number.isFinite(options.range_limit_km) && options.range_limit_km > 0 ? options.range_limit_km : null,
+    gateCap: Number.isFinite(options.gate_limit) && options.gate_limit > 0 ? options.gate_limit : null,
+    full: options.full_detail === true
+  });
   var createMeshBuilder = (includeGeojson) => {
     const mesh = [];
     const features = includeGeojson ? [] : null;
@@ -11888,7 +11905,7 @@
       throw new Error(`No radar data available for layer: ${layer}`);
     }
     const numberOfRadarIterations = radarData.length;
-    const gateLimit = Number.isFinite(options.gate_limit) ? options.gate_limit : null;
+    const range = readRangeOptions(options);
     const project = createRadarProjector(radarLocation[0], radarLocation[1]);
     const includeGeojson = options.includeGeojson === true;
     const builder = createMeshBuilder(includeGeojson);
@@ -12055,35 +12072,73 @@
       const cosAz2 = Math.cos(az2Rad);
       const firstGate = radial.first_gate;
       const gateSize = radial.gate_size;
-      for (let gateIndex = 0; gateIndex < radial.gate_count - 1; gateIndex++) {
-        const rawValue = radial.moment_data[gateIndex];
-        if (rawValue === null) {
-          continue;
-        }
-        const r1 = (firstGate + gateIndex * gateSize) * 1e3;
-        const r2 = (firstGate + (gateIndex + 1) * gateSize) * 1e3;
-        let value = rawValue;
-        if (layer === "KDP") {
-          if (value === "rf") {
-          } else {
-            value = computeKdpFromPhi(radial.moment_data, gateIndex, gateSize);
+      const lastGate = radial.gate_count - 1;
+      let capIndex = lastGate;
+      if (range.limitKm !== null && gateSize > 0) {
+        capIndex = Math.min(
+          capIndex,
+          Math.ceil((range.limitKm - firstGate) / gateSize)
+        );
+      }
+      if (range.gateCap !== null) capIndex = Math.min(capIndex, range.gateCap);
+      if (capIndex < 1) continue;
+      for (let gateIndex = 0; gateIndex < capIndex; ) {
+        const rangeKm = firstGate + gateIndex * gateSize;
+        const stride = Math.max(1, Math.min(
+          strideForRange(rangeKm, gateSize, range.full),
+          capIndex - gateIndex
+        ));
+        let value = null;
+        for (let k = 0; k < stride; k++) {
+          const rawValue = radial.moment_data[gateIndex + k];
+          if (rawValue === null || rawValue === void 0) continue;
+          let v = rawValue;
+          if (layer === "KDP" && v !== "rf") {
+            v = computeKdpFromPhi(radial.moment_data, gateIndex + k, gateSize);
           }
+          if (v == null) continue;
+          if (value == null || value === "rf") {
+            value = v;
+            continue;
+          }
+          if (v === "rf") continue;
+          if (layer === "CC") value = Math.min(value, v);
+          else if (layer === "VEL") value = Math.abs(v) > Math.abs(value) ? v : value;
+          else value = Math.max(value, v);
         }
         if (value == null) {
+          gateIndex += stride;
           continue;
-        }
-        if (gateLimit !== null && gateIndex >= gateLimit) {
-          break;
         }
         if (layer === "VEL" && value !== "rf" && Number.isFinite(value)) {
           value *= 1.94384;
         }
+        const r1 = rangeKm * 1e3;
+        const r2 = (firstGate + (gateIndex + stride) * gateSize) * 1e3;
         const coords = buildPolygon(project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2);
         builder.pushQuad(coords, value);
+        gateIndex += stride;
       }
     }
     return builder.finalize();
   };
+  var SRV_LEVELS = [
+    null,
+    -64,
+    -50,
+    -36,
+    -26,
+    -20,
+    -10,
+    -1,
+    0,
+    10,
+    20,
+    26,
+    36,
+    50,
+    64
+  ];
   var processLevel3Data = (radar, radarLocation, options = {}) => {
     const radialPackets = Array.isArray(radar.radialPackets) ? radar.radialPackets : [];
     const packet19 = radialPackets.find((entry) => entry && Array.isArray(entry.radials));
@@ -12094,7 +12149,22 @@
     const firstBin = packet19.firstBin ?? 0;
     const numberBins = packet19.numberBins ?? 0;
     const radials = packet19.radials || [];
-    const gateLimit = Number.isFinite(options.gate_limit) ? options.gate_limit : 0;
+    const range = readRangeOptions(options);
+    const code41 = radar.productDescription?.code;
+    const scaleFactor = code41 === 56 || code41 === 170 || code41 === 172 ? 1e3 : 250;
+    const binKm = rangeScaleKm * scaleFactor / 1e3;
+    const isVelocity = code41 === 25 || code41 === 27 || code41 === 55 || code41 === 56 || code41 === 99;
+    const isCorrelation = code41 === 161;
+    const decodeBin = (raw) => {
+      if (raw == null) return null;
+      if (code41 === 56) {
+        if (raw === 15) return "rf";
+        const level = SRV_LEVELS[raw];
+        return level === void 0 ? raw : level;
+      }
+      if ((code41 === 170 || code41 === 172) && raw === "rf") return 0;
+      return raw;
+    };
     const numberOfRadarIterations = radials.length;
     const project = createRadarProjector(radarLocation[0], radarLocation[1]);
     const includeGeojson = options.includeGeojson === true;
@@ -12113,44 +12183,43 @@
       const sinAz2 = Math.sin(az2Rad);
       const cosAz2 = Math.cos(az2Rad);
       const bins = radial.bins || [];
-      for (let binIndex = 0; binIndex < Math.min(bins.length, numberBins); binIndex++) {
-        var value = bins[binIndex];
+      const binCount = Math.min(bins.length, numberBins);
+      let cap = binCount;
+      if (range.limitKm !== null && rangeScaleKm > 0) {
+        cap = Math.min(cap, Math.ceil(
+          (range.limitKm * 1e3 / scaleFactor - firstBin) / rangeScaleKm
+        ));
+      }
+      if (range.gateCap !== null) cap = Math.min(cap, range.gateCap);
+      if (cap < 1) continue;
+      for (let binIndex = 0; binIndex < cap; ) {
+        const rangeKm = (firstBin + binIndex * rangeScaleKm) * scaleFactor / 1e3;
+        const stride = Math.max(1, Math.min(
+          strideForRange(rangeKm, binKm, range.full),
+          cap - binIndex
+        ));
+        let value = null;
+        for (let k = 0; k < stride; k++) {
+          const v = decodeBin(bins[binIndex + k]);
+          if (v == null) continue;
+          if (value == null || value === "rf") {
+            value = v;
+            continue;
+          }
+          if (v === "rf") continue;
+          if (isCorrelation) value = Math.min(value, v);
+          else if (isVelocity) value = Math.abs(v) > Math.abs(value) ? v : value;
+          else value = Math.max(value, v);
+        }
         if (value == null) {
+          binIndex += stride;
           continue;
-        }
-        let scaleFactor = 250;
-        if (radar.productDescription.code === 56) {
-          scaleFactor = 1e3;
-          if (value === 15) value = "rf";
-          else if (value == 14) value = 64;
-          else if (value == 13) value = 50;
-          else if (value == 12) value = 36;
-          else if (value == 11) value = 26;
-          else if (value == 10) value = 20;
-          else if (value == 9) value = 10;
-          else if (value == 8) value = 0;
-          else if (value == 7) value = -1;
-          else if (value == 6) value = -10;
-          else if (value == 5) value = -20;
-          else if (value == 4) value = -26;
-          else if (value == 3) value = -36;
-          else if (value == 2) value = -50;
-          else if (value == 1) value = -64;
-          else if (value == 0) value = null;
-        } else if (radar.productDescription.code === 170 || radar.productDescription.code === 172) {
-          scaleFactor = 1e3;
-          if (value == "rf") value = 0;
-        }
-        if (value == null) {
-          continue;
-        }
-        if (gateLimit && binIndex >= gateLimit) {
-          break;
         }
         const r1 = (firstBin + binIndex * rangeScaleKm) * scaleFactor;
-        const r2 = (firstBin + (binIndex + 1) * rangeScaleKm) * scaleFactor;
+        const r2 = (firstBin + (binIndex + stride) * rangeScaleKm) * scaleFactor;
         const coords = buildPolygon(project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2);
         builder.pushQuad(coords, value);
+        binIndex += stride;
       }
     }
     return builder.finalize();

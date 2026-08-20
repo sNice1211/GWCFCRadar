@@ -27927,7 +27927,7 @@ let _radarWorkerPending = null;  // { resolve, reject } for current request
 // is a new URL, and a page from before the build keeps the URL its decoder
 // answers to. A mismatched pair is how "Parse failed" appears on one device
 // while the same click works everywhere else.
-var RADAR_WORKER_V = '26f87905';
+var RADAR_WORKER_V = '010f98da';
 
 function _getRadarWebWorker() {
   if (_radarWebWorker) return _radarWebWorker;
@@ -27955,9 +27955,28 @@ function _killRadarWorker() {
   _radarWorkerPending = null;
 }
 
+// How far a single-site sweep is drawn, in kilometres.
+//
+// A NEXRAD reflectivity sweep reaches 460 km, and that is what this asks for.
+// The old cap was a flat 460 GATES, which sounds like the same thing and is
+// not: a gate is a kilometre long on the legacy resolutions and 250 metres on
+// the super-resolution that every modern VCP uses at the lowest tilt. So in
+// practice the app drew 115 km, a quarter of what the radar measured, which
+// is why it looked short next to every other radar app.
+//
+// The worker keeps the polygon count down by lengthening cells with range
+// instead of by stopping early. That costs nothing real: the beam is about a
+// degree wide, so it is 4 km across at 230 km, and 250 m radial cells out
+// there are finer than anything the radar can resolve.
+const RADAR_RANGE_KM = 460;
+// Velocity is Doppler, so it only reaches as far as the radar can unfold it:
+// about 300 km at best, and there is nothing beyond that to draw.
+const RADAR_VEL_RANGE_KM = 300;
+
 function _workerProcess(buffer, layer, extraOptions) {
-  // Limit gates to 460 per radial (~230 km) - cuts memory and CPU ~50% vs full scan
-  var options = Object.assign({ gate_limit: 460 }, extraOptions);
+  var far = (layer === 'VEL' || layer === 'SRV' || /^N.U$|^N.V$/.test(String(layer || '')))
+    ? RADAR_VEL_RANGE_KM : RADAR_RANGE_KM;
+  var options = Object.assign({ range_limit_km: far }, extraOptions);
   return new Promise(function(resolve, reject) {
     // One slot, so a new request must fully retire the old one first. The
     // slot used to be overwritten in place, and then the OLD reply settled
@@ -28759,7 +28778,34 @@ function _meshToImage(result, product, forceBounds) {
   var minLon = bounds[0], minLat = bounds[1], maxLon = bounds[2], maxLat = bounds[3];
   var lonRange = maxLon - minLon;
   var latRange = maxLat - minLat;
+
+  // The canvas is sized to the box rather than fixed at a thousand pixels.
+  //
+  // It used to be fixed, and that was fine while every sweep was cut off at
+  // 115 km: a thousand pixels across 230 km is 230 m each, which is about the
+  // size of a super-resolution gate, so the picture was as sharp as the data.
+  // Now that a sweep can reach 460 km, the same thousand pixels would be
+  // stretched across 920 km and every echo would be four times blockier than
+  // it used to be. Maxing the range would have cost the detail.
+  //
+  // So it aims for a quarter of a kilometre per pixel, which is the gate size
+  // itself: finer draws detail the radar never had, coarser throws away
+  // detail it did. The ceiling is memory. A canvas is a decoded bitmap, four
+  // bytes a pixel, and playback holds a pool of them, so a phone gets a lower
+  // one than a computer.
+  //
+  // The box only grows when there is really echo out at that range, because
+  // it is built from where the data was. A quiet scan still gets the sharp
+  // near-field picture it always had.
+  var midLat = (minLat + maxLat) / 2;
+  var kmAcross = Math.max(
+    lonRange * 111.32 * Math.cos(midLat * Math.PI / 180),
+    latRange * 110.57);
+  var MESH_MAX_PX = (typeof _isIOS !== 'undefined' && _isIOS) ? 1600 : 2400;
   var SIZE = 1000;
+  if (kmAcross > 0) {
+    SIZE = Math.max(1000, Math.min(MESH_MAX_PX, Math.round(kmAcross / 0.25)));
+  }
 
   var canvas = document.createElement('canvas');
   canvas.width = canvas.height = SIZE;
@@ -39009,7 +39055,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Soundings now come from SounderPy and are analysed by SHARPpy on the Pi: hundreds of levels instead of twelve, with effective inflow, SHIP, DCAPE and the rest. There is a source picker in the panel head, and it can look back up to two days. If the Pi has not been updated yet it quietly falls back to the old level images and says so. Four bugs that could leave the panel stuck on 'not enough levels' are fixed as well.";
+const APP_LATEST_UPDATE = "Single-site radar now reaches the full 460 km instead of 115. The old limit was counted in gates rather than kilometres, and a gate is only a quarter of a kilometre on the resolution every modern scan uses, so the app was drawing a quarter of what the radar measured. Level 2 and Level 3 both reach all the way now, and the picture is drawn at a higher resolution to match.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

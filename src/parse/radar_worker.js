@@ -77,6 +77,68 @@ const buildPolygon = (project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2) => {
     return [p1, p2, p3, p4];
 };
 
+// ── How far out to draw, and at what detail ───────────────────────────────
+//
+// A NEXRAD reflectivity sweep reaches 460 km. At super-resolution it is
+// sampled every 250 m, so that is 1832 cells on each of 720 radials: 1.3
+// million polygons for one picture, which no phone is going to hold.
+//
+// The cap used to be a flat count of 460 GATES, which is a completely
+// different distance depending on how wide a gate is. On the legacy 1 km
+// gates it meant 460 km, the whole sweep. On the 250 m super-resolution
+// gates that every modern VCP uses at the lowest tilt, it meant 115 km - a
+// quarter of what the radar measured, and the reason this looked short next
+// to every other radar app.
+//
+// So the cap is a DISTANCE now, set to the full reach of the product, and
+// the thing that keeps the polygon count down is detail thinning with range
+// instead. That is not a compromise made to save memory, it is what the beam
+// already does: about one degree wide, it is 2 km across at 115 km and 4 km
+// at 230 km, so 250 m radial cells out there are finer than anything the
+// radar can resolve. Merging them loses nothing that was ever there.
+//
+// Full detail is kept inside RANGE_FULL_DETAIL_KM, which covers every storm
+// anyone interrogates closely, and beyond that the cells lengthen in steps.
+const RANGE_FULL_DETAIL_KM = 120;
+const RANGE_STEP_KM = 120;      // every further step of this adds one gate
+const RANGE_MAX_STRIDE = 4;     // never coarser than this, however far out
+
+// How many gates to merge into one cell at this range.
+//
+// Range is in kilometres and gateSizeKm is how long one gate is. A gate that
+// is already a kilometre long is not thinned at all: it is coarser than the
+// beam is wide out to 57 km, and past that the sweep is short enough to draw
+// whole anyway.
+const strideForRange = (rangeKm, gateSizeKm, full) => {
+    if (full) return 1;
+    if (!(gateSizeKm > 0) || gateSizeKm >= 0.9) return 1;
+    if (rangeKm <= RANGE_FULL_DETAIL_KM) return 1;
+    // 120 to 240 km merges two gates, 240 to 360 merges three, and so on.
+    // The +2 is what makes the first band past full detail a pair rather than
+    // a single: floor() of anything just over the boundary is still nought.
+    const steps = Math.floor((rangeKm - RANGE_FULL_DETAIL_KM) / RANGE_STEP_KM) + 2;
+    // Never merge past the point where a cell is longer than the beam is
+    // wide: that would be visible as blockiness rather than as fidelity
+    // nobody could see anyway.
+    const beamKm = rangeKm / 57;
+    const byBeam = Math.max(1, Math.floor(beamKm / gateSizeKm));
+    return Math.max(1, Math.min(RANGE_MAX_STRIDE, steps, byBeam));
+};
+
+// What the caller asked for, resolved once per scan.
+//
+// `range_limit_km` is the real control. `gate_limit` is still honoured
+// because it is what the page used to send, but it is now a ceiling on the
+// gate index rather than the only limit, so an old caller cannot silently
+// shorten the range back to a quarter of the sweep.
+const readRangeOptions = (options) => ({
+    limitKm: Number.isFinite(options.range_limit_km) && options.range_limit_km > 0
+        ? options.range_limit_km : null,
+    gateCap: Number.isFinite(options.gate_limit) && options.gate_limit > 0
+        ? options.gate_limit : null,
+    full: options.full_detail === true,
+});
+
 const createMeshBuilder = (includeGeojson) => {
     const mesh = [];
     const features = includeGeojson ? [] : null;
@@ -180,7 +242,7 @@ const processRadarData = (radar, radarLocation, extent, layer, options = {}) => 
     }
 
     const numberOfRadarIterations = radarData.length;
-    const gateLimit = Number.isFinite(options.gate_limit) ? options.gate_limit : null;
+    const range = readRangeOptions(options);
     const project = createRadarProjector(radarLocation[0], radarLocation[1]);
     const includeGeojson = options.includeGeojson === true;
     const builder = createMeshBuilder(includeGeojson);
@@ -373,48 +435,72 @@ const processRadarData = (radar, radarLocation, extent, layer, options = {}) => 
 
         const firstGate = radial.first_gate;
         const gateSize = radial.gate_size;
+        const lastGate = radial.gate_count - 1;
 
-        for (let gateIndex = 0; gateIndex < radial.gate_count - 1; gateIndex++) {
-            const rawValue = radial.moment_data[gateIndex];
-            if (rawValue === null) {
-                continue;
-            }
+        // Where the sweep is allowed to stop. With nothing asked for, that is
+        // wherever the radar stopped measuring, which is the whole point of
+        // this change: the full 460 km rather than a quarter of it.
+        let capIndex = lastGate;
+        if (range.limitKm !== null && gateSize > 0) {
+            capIndex = Math.min(capIndex,
+                Math.ceil((range.limitKm - firstGate) / gateSize));
+        }
+        if (range.gateCap !== null) capIndex = Math.min(capIndex, range.gateCap);
+        if (capIndex < 1) continue;
 
-            const r1 = (firstGate + gateIndex * gateSize) * 1000;
-            const r2 = (firstGate + (gateIndex + 1) * gateSize) * 1000;
+        for (let gateIndex = 0; gateIndex < capIndex; ) {
+            const rangeKm = firstGate + gateIndex * gateSize;
+            const stride = Math.max(1, Math.min(
+                strideForRange(rangeKm, gateSize, range.full),
+                capIndex - gateIndex));
 
-            let value = rawValue;
-            if (layer === 'KDP') {
-                if (value === 'rf') {
-                    // Keep range-folded sentinel for existing renderer behavior.
-                } else {
-                    value = computeKdpFromPhi(radial.moment_data, gateIndex, gateSize);
+            // One value for the merged cell, and which one is not a detail.
+            //
+            // On correlation coefficient it has to be the MINIMUM: a debris
+            // ball under a tornado is a hole of LOW CC, and a merge that took
+            // the maximum would erase exactly the signature a warning gets
+            // written from. On velocity it is the largest magnitude either
+            // way, so an inbound-outbound couplet survives instead of the two
+            // halves cancelling. Everywhere else the maximum is right, since
+            // a core is what a merged cell should still show.
+            let value = null;
+            for (let k = 0; k < stride; k++) {
+                const rawValue = radial.moment_data[gateIndex + k];
+                if (rawValue === null || rawValue === undefined) continue;
+                let v = rawValue;
+                if (layer === 'KDP' && v !== 'rf') {
+                    v = computeKdpFromPhi(radial.moment_data, gateIndex + k, gateSize);
                 }
+                if (v == null) continue;
+                if (value == null || value === 'rf') { value = v; continue; }
+                if (v === 'rf') continue;
+                if (layer === 'CC') value = Math.min(value, v);
+                else if (layer === 'VEL') value = Math.abs(v) > Math.abs(value) ? v : value;
+                else value = Math.max(value, v);
             }
 
-            if (value == null) {
-                continue;
-            }
-
-            // GWCFC fix: gate_limit caps how far OUT to draw, so it bounds
-            // the gate index. Compared against the VALUE, "dBZ < 460" is true
-            // of every echo ever measured and the whole product vanished.
-            if (gateLimit !== null && gateIndex >= gateLimit) {
-                break;
-            }
+            if (value == null) { gateIndex += stride; continue; }
 
             if (layer === 'VEL' && value !== 'rf' && Number.isFinite(value)) {
                 // Convert m/s to knots to match palette units
                 value *= 1.94384;
             }
 
+            const r1 = rangeKm * 1000;
+            const r2 = (firstGate + (gateIndex + stride) * gateSize) * 1000;
             const coords = buildPolygon(project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2);
             builder.pushQuad(coords, value);
+            gateIndex += stride;
         }
     }
 
     return builder.finalize();
 };
+
+// Storm relative velocity ships four bits per bin, which is a code into this
+// table rather than a speed. Index 0 means no data and 15 means range folded.
+const SRV_LEVELS = [null, -64, -50, -36, -26, -20, -10, -1, 0,
+                    10, 20, 26, 36, 50, 64];
 
 const processLevel3Data = (radar, radarLocation, options = {}) => {
     const radialPackets = Array.isArray(radar.radialPackets) ? radar.radialPackets : [];
@@ -427,7 +513,32 @@ const processLevel3Data = (radar, radarLocation, options = {}) => {
     const firstBin = packet.firstBin ?? 0;
     const numberBins = packet.numberBins ?? 0;
     const radials = packet.radials || [];
-    const gateLimit = Number.isFinite(options.gate_limit) ? options.gate_limit : 0;
+    const range = readRangeOptions(options);
+
+    // The product code, not a name the page passed in, because the file says
+    // what it is and the page only says what it asked for.
+    const code = radar.productDescription?.code;
+    // How long one bin is, in metres. Most products count in 250 m steps;
+    // storm relative velocity and the digital accumulations count in whole
+    // kilometres. This never changed inside the loop, so it does not belong
+    // there.
+    const scaleFactor = (code === 56 || code === 170 || code === 172) ? 1000 : 250;
+    const binKm = (rangeScaleKm * scaleFactor) / 1000;
+    const isVelocity = code === 25 || code === 27 || code === 55
+                       || code === 56 || code === 99;
+    const isCorrelation = code === 161;
+
+    // One bin's raw code turned into the number the palette reads.
+    const decodeBin = (raw) => {
+        if (raw == null) return null;
+        if (code === 56) {
+            if (raw === 15) return 'rf';
+            const level = SRV_LEVELS[raw];
+            return level === undefined ? raw : level;
+        }
+        if ((code === 170 || code === 172) && raw === 'rf') return 0;
+        return raw;
+    };
 
     const numberOfRadarIterations = radials.length;
     const project = createRadarProjector(radarLocation[0], radarLocation[1]);
@@ -450,53 +561,45 @@ const processLevel3Data = (radar, radarLocation, options = {}) => {
         const cosAz2 = Math.cos(az2Rad);
         const bins = radial.bins || [];
 
-        for (let binIndex = 0; binIndex < Math.min(bins.length, numberBins); binIndex++) {
-            var value = bins[binIndex];
-            if (value == null) {
-                continue;
+        const binCount = Math.min(bins.length, numberBins);
+        // How far out this radial is drawn. With nothing asked for, all of it:
+        // a long-range base reflectivity product carries 460 km and used to be
+        // cut to 115 by a cap counted in bins rather than in kilometres.
+        let cap = binCount;
+        if (range.limitKm !== null && rangeScaleKm > 0) {
+            cap = Math.min(cap, Math.ceil(
+                ((range.limitKm * 1000) / scaleFactor - firstBin) / rangeScaleKm));
+        }
+        if (range.gateCap !== null) cap = Math.min(cap, range.gateCap);
+        if (cap < 1) continue;
+
+        for (let binIndex = 0; binIndex < cap; ) {
+            const rangeKm = ((firstBin + binIndex * rangeScaleKm) * scaleFactor) / 1000;
+            const stride = Math.max(1, Math.min(
+                strideForRange(rangeKm, binKm, range.full), cap - binIndex));
+
+            // Same rule as Level 2: lowest wins on correlation coefficient,
+            // because a debris ball is a HOLE of low values and a merge that
+            // took the highest would erase the one thing worth seeing.
+            let value = null;
+            for (let k = 0; k < stride; k++) {
+                const v = decodeBin(bins[binIndex + k]);
+                if (v == null) continue;
+                if (value == null || value === 'rf') { value = v; continue; }
+                if (v === 'rf') continue;
+                if (isCorrelation) value = Math.min(value, v);
+                else if (isVelocity) value = Math.abs(v) > Math.abs(value) ? v : value;
+                else value = Math.max(value, v);
             }
 
-            // Few Products are weird. Perhaps the parser is incorrect? Apply quirk fixes:
-            let scaleFactor = 250;
-            //console.log("Product code:", radar.productDescription.code);
-
-            if (radar.productDescription.code === 56) {
-                // SRV
-                scaleFactor = 1000;
-                if (value === 15) value = 'rf';
-                else if (value == 14) value = 64;
-                else if (value == 13) value = 50;
-                else if (value == 12) value = 36;
-                else if (value == 11) value = 26;
-                else if (value == 10) value = 20;
-                else if (value == 9) value = 10;
-                else if (value == 8) value = 0;
-                else if (value == 7) value = -1;
-                else if (value == 6) value = -10;
-                else if (value == 5) value = -20;
-                else if (value == 4) value = -26;
-                else if (value == 3) value = -36;
-                else if (value == 2) value = -50;
-                else if (value == 1) value = -64;
-                else if (value == 0) value = null;
-            } else if (radar.productDescription.code === 170 || radar.productDescription.code === 172) {
-                // DAA & DTA
-                scaleFactor = 1000;
-                if (value == 'rf') value = 0;
-            }
-
-            if (value == null) {
-                continue;
-            }
-            if (gateLimit && binIndex >= gateLimit) {
-                break;
-            }
+            if (value == null) { binIndex += stride; continue; }
 
             const r1 = (firstBin + (binIndex * rangeScaleKm)) * scaleFactor;
-            const r2 = (firstBin + ((binIndex + 1) * rangeScaleKm)) * scaleFactor;
+            const r2 = (firstBin + ((binIndex + stride) * rangeScaleKm)) * scaleFactor;
 
             const coords = buildPolygon(project, sinAz1, cosAz1, sinAz2, cosAz2, r1, r2);
             builder.pushQuad(coords, value);
+            binIndex += stride;
         }
     }
 

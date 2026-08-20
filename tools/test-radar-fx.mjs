@@ -97,16 +97,23 @@ async function boot(initLocalStorage) {
         sq( 2,  2,  4,  4, c),
       ], site);
     };
+    // The canvas is sized to the box it draws now, rather than fixed at a
+    // thousand pixels, so that a sweep reaching 460 km is not four times
+    // blockier than one reaching 115. Nothing here may assume a size: read
+    // the one the renderer chose and work in fractions of it.
     window.__opaque = () => {
       if (!_l3Canvas) return -1;
-      const d = _l3Canvas.getContext('2d').getImageData(0, 0, 1000, 1000).data;
+      const S = _l3Canvas.width;
+      const d = _l3Canvas.getContext('2d').getImageData(0, 0, S, S).data;
       let n = 0;
       for (let i = 3; i < d.length; i += 4) if (d[i] > 10) n++;
       return n;
     };
     // Sample the center of square k (0..2) as [r,g,b,a].
     window.__sample = (k) => {
-      const cx = [200, 500, 800][k], cy = [800, 500, 200][k];
+      const S = _l3Canvas.width;
+      const cx = Math.round([0.2, 0.5, 0.8][k] * S);
+      const cy = Math.round([0.8, 0.5, 0.2][k] * S);
       return [..._l3Canvas.getContext('2d').getImageData(cx, cy, 1, 1).data];
     };
   });
