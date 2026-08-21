@@ -162,7 +162,10 @@ class _Fake(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        code, body = self.ROUTES.get(self.path, (404, b"not found"))
+        # Query dropped: the probe appends a cache buster, and matching on
+        # the whole path would make every route miss.
+        code, body = self.ROUTES.get(self.path.split("?")[0],
+                                     (404, b"not found"))
         self.send_response(code)
         if self.CORS:
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -229,7 +232,7 @@ ok("and with the header it is accepted, which is the index.html case",
    pub.answers(json_cors, timeout=5) is True)
 
 ok("the --check knock is the same knock, so the two cannot disagree",
-   "alive = answers(url" in src)
+   "answers(url, timeout=10)" in src)
 
 
 print("\n8. the tunnel's address is read out of the log, not Cloudflare's")
@@ -327,6 +330,94 @@ pub.current_url(patience=0)
 pub.log = _real_log
 ok("and an empty log is reported as an empty log, which is a different fault",
    "no tunnel address has been written" in " ".join(msgs), " ".join(msgs))
+
+
+print("\n10. the probe asks the way curl asks, not the way a script asks")
+# The finding this section exists for. diagnose.sh could read the tunnel
+# perfectly with curl while this file was being told no, minutes apart, and
+# the difference between them was never the tunnel. urllib introduces itself
+# as "Python-urllib/3.x" unless told otherwise, and Cloudflare treats a bare
+# scripting agent very differently from a browser, especially in a burst.
+asked = []
+
+
+class _Nosy(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        asked.append((self.path, self.headers.get("User-Agent")))
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(LISTING)))
+        self.end_headers()
+        self.wfile.write(LISTING)
+
+
+_nosy = ThreadingHTTPServer(("127.0.0.1", 0), _Nosy)
+threading.Thread(target=_nosy.serve_forever, daemon=True).start()
+servers.append(_nosy)
+pub.answers(f"http://127.0.0.1:{_nosy.server_address[1]}", timeout=5)
+path, ua = asked[0]
+ok("it does not announce itself as Python-urllib",
+   "Python-urllib" not in (ua or ""), str(ua))
+ok("it gives a name that says what it is", "gwcfc" in (ua or "").lower(), str(ua))
+# diagnose.sh proves something between here and the Pi holds on to answers:
+# it fetches the same file twice, plain and busted, and gets two different
+# files. A cached error would otherwise read as a dead address for as long
+# as it was cached, long after the address came back.
+ok("and it busts the cache, since something in between really does cache",
+   "_=" in path, path)
+
+print("\n11. retrying does not cause the failure it is retrying")
+# Four dead addresses knocked on twice each, every five seconds, is dozens of
+# requests a minute at an edge that answers a burst from a script by refusing
+# it. The retry loop was manufacturing its own bad news.
+knocks = []
+
+
+class _Counting(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        knocks.append(1)
+        self.send_response(404)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"no")
+
+
+_count = ThreadingHTTPServer(("127.0.0.1", 0), _Counting)
+threading.Thread(target=_count.serve_forever, daemon=True).start()
+servers.append(_count)
+base = f"http://127.0.0.1:{_count.server_address[1]}"
+_real_candidates = pub.candidates
+pub.candidates = lambda path=None: [base + s for s in ("/a", "/b", "/c", "/d")]
+knocks.clear()
+began = time.monotonic()
+pub.current_url(patience=16)
+took = time.monotonic() - began
+pub.candidates = _real_candidates
+# One pass over everything, then only the newest is asked again. Four passes
+# at the old rate would be 32 knocks; this has to be far under that.
+ok("every address gets one chance", len(knocks) >= 8, str(len(knocks)))
+ok("and then only the newest is asked again", len(knocks) <= 18,
+   f"{len(knocks)} knocks in {took:.0f}s")
+
+print("\n12. and the check does not knock twice for one answer")
+ok("an address the log already proved is not re-probed",
+   "True if proven else answers(url" in src)
+ok("a pinned address, which has had no such proof, still is",
+   "else answers(url, timeout=10)" in src)
+# When a no is wrong, a yes-or-no cannot say why. Three separate causes have
+# now read as "dead": a refused burst, a cached error, a name not yet
+# routable. So there is a way to see what actually came back.
+ok("there is a way to print what every address actually returns",
+   "def why()" in src)
+ok("which asks each door once, slowly, rather than in a burst",
+   "gently, for the same reason" in src)
+
 
 for s in servers:
     s.shutdown()

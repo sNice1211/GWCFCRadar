@@ -266,6 +266,27 @@ def main():
     out(f"   cloudflared has started {starts(text)} times in this log, on")
     out(f"   {len(publish_url._tunnel_urls(text))} different addresses. Every start rolls a new one.")
 
+    # The publisher is the one thing in the chain with no visible output, so
+    # when the site is told nothing at all it is the only place the reason
+    # can be. It is a service, so its words are in the journal.
+    out()
+    out("   what the publisher last said:")
+    said_any = False
+    try:
+        import subprocess
+        j = subprocess.run(
+            ["journalctl", "--user", "-u", "gwcfc-publish", "-n", "6",
+             "--no-pager", "-o", "cat"],
+            capture_output=True, text=True, timeout=20)
+        for line in (j.stdout or "").splitlines():
+            if line.strip():
+                said_any = True
+                out(f"     {line.strip()[:150]}")
+    except Exception:
+        pass
+    if not said_any:
+        out("     nothing, which means it has not run since the last reboot")
+
     out()
     out("== What that means")
     if local[0] != 200:
