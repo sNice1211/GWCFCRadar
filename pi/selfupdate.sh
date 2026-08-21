@@ -67,6 +67,55 @@ CHANGED=1
 [ "$CHANGED" = 1 ] && \
   echo "updated $(git rev-parse --short "$BEFORE") -> $(git rev-parse --short "$AFTER")"
 
+# Only the long running one. Restarting the timers here would fire them all at
+# once on every update, which is a stampede rather than a refresh.
+# serve.py, and anything serve.py imports. sounding_service.py is the second
+# kind: serve.py imports it to answer /sounding, so a change to it is a change
+# to the running server even though serve.py itself did not move.
+if [ "$CHANGED" = 1 ] && git diff --name-only "$BEFORE" "$AFTER" \
+   | grep -qE '^pi/(serve|sounding_service)\.py$'; then
+  systemctl --user restart gwcfc-serve.service && echo "restarted serve"
+fi
+
+# If the unit files themselves changed, the installer is what writes them.
+# It used to only SAY so, which assumed a person would read the log and run
+# it - and nobody may be able to log into this machine at all. So it runs,
+# detached, because the installer can take minutes and this unit has a five
+# minute timeout.
+#
+# The wanting and the running are separate on purpose, through a marker file
+# outside the repository. If this run is killed before the launch happens,
+# CHANGED=1 never comes again for this commit - but the marker is already on
+# disk, so the next minute's run still launches the installer. The marker is
+# only removed once a launch actually succeeded.
+WANT_INSTALL="$HOME/.gwcfc-install-wanted"
+if [ "$CHANGED" = 1 ] && git diff --name-only "$BEFORE" "$AFTER" \
+   | grep -q '^pi/install\.sh$'; then
+  touch "$WANT_INSTALL"
+fi
+# The state check, not just the edge. The commit that adds a new unit is
+# applied by the PREVIOUS self-updater - the one running when it lands - and
+# that one may only have announced the change. So do not rely on having seen
+# the commit go by: if the installer defines a unit this machine does not
+# have, an install is wanted, whenever and however that came to be.
+if [ ! -f "$HOME/.config/systemd/user/gwcfc-snd.timer" ] \
+   && grep -q 'gwcfc-snd\.timer' "$REPO/pi/install.sh" 2>/dev/null; then
+  touch "$WANT_INSTALL"
+fi
+if [ -f "$WANT_INSTALL" ]; then
+  echo "install.sh changed: running it to register anything new"
+  if command -v systemd-run >/dev/null 2>&1 && \
+     systemd-run --user --collect --unit "gwcfc-reinstall-$(date +%s)" \
+       /usr/bin/env bash "$REPO/pi/install.sh" >/dev/null 2>&1; then
+    echo "  running detached; journalctl --user -u 'gwcfc-reinstall-*' shows it"
+    rm -f "$WANT_INSTALL"
+  elif ( nohup bash "$REPO/pi/install.sh" </dev/null \
+           >>"$HOME/.gwcfc-install.log" 2>&1 & ); then
+    echo "  running in the background; log: ~/.gwcfc-install.log"
+    rm -f "$WANT_INSTALL"
+  fi
+fi
+
 # Whether to look at the Python packages at all on this run.
 #
 # This used to happen only when a commit had just landed, which is fine for
@@ -100,7 +149,7 @@ touch "$STAMP" 2>/dev/null || true
 # New Python dependency, occasionally. Cheap to check and it is the failure
 # that looks like a broken pipeline rather than a missing package: the radar
 # service failing on a MetPy import is exactly how this bit the last time.
-for mod in eccodes metpy netCDF4 xarray siphon cfgrib; do
+for mod in eccodes metpy netCDF4 xarray siphon cfgrib matplotlib; do
   "$VENV/bin/python" -c "import $mod" >/dev/null 2>&1 || {
     echo "installing missing $mod"
     "$VENV/bin/pip" install --quiet "$mod" || echo "  could not install $mod"
@@ -127,20 +176,3 @@ for mod in sounderpy sharppy; do
   }
 done
 
-# Only the long running one. Restarting the timers here would fire them all at
-# once on every update, which is a stampede rather than a refresh.
-# serve.py, and anything serve.py imports. sounding_service.py is the second
-# kind: serve.py imports it to answer /sounding, so a change to it is a change
-# to the running server even though serve.py itself did not move. Watching
-# only serve.py meant a rewritten sounding service sat on disk, unused, while
-# the old one kept answering.
-if git diff --name-only "$BEFORE" "$AFTER" \
-   | grep -qE '^pi/(serve|sounding_service)\.py$'; then
-  systemctl --user restart gwcfc-serve.service && echo "restarted serve"
-fi
-
-# If the unit files themselves changed, the installer is what writes them, so
-# say so rather than pretending an update was complete when it was not.
-if git diff --name-only "$BEFORE" "$AFTER" | grep -q '^pi/install\.sh$'; then
-  echo "install.sh changed: run 'bash pi/install.sh' to pick up new units"
-fi

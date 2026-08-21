@@ -70,8 +70,16 @@ for p in python3-venv python3-numpy python3-pillow python3-requests libeccodes-t
 done
 if [ ${#NEED[@]} -gt 0 ]; then
   echo "   installing: ${NEED[*]}"
-  sudo apt-get update -qq
-  sudo apt-get install -y "${NEED[@]}"
+  # This script is also run by the self-updater, with no terminal attached.
+  # Plain sudo would sit waiting for a password nobody is there to type, and
+  # the whole install would hang forever. -n makes it fail instead, and a
+  # failed apt is a warning: everything below still runs, and the missing
+  # packages are named so they can be installed next time someone is here.
+  SUDO="sudo"
+  [ -t 0 ] || SUDO="sudo -n"
+  if ! $SUDO apt-get update -qq || ! $SUDO apt-get install -y "${NEED[@]}"; then
+    warn "could not install ${NEED[*]} (no terminal for sudo?), continuing"
+  fi
 else
   ok "already present"
 fi
@@ -105,6 +113,12 @@ fi
 if ! "$VENV/bin/python" -c "import netCDF4" >/dev/null 2>&1; then
   "$VENV/bin/pip" install --quiet netCDF4 || \
     warn "netCDF4 would not install; satellite composites will not build"
+fi
+# matplotlib draws the sounding images. piwheels ships an ARM wheel, so this
+# is a download rather than the hour-long native build it looks like.
+if ! "$VENV/bin/python" -c "import matplotlib" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet matplotlib || \
+    warn "matplotlib would not install; sounding images will not build"
 fi
 # ── SounderPy and SHARPpy, installed WITHOUT their dependency lists ─────
 #
@@ -371,6 +385,37 @@ Persistent=false
 WantedBy=timers.target
 EOF
 
+# The sounding images: SounderPy fetches the full RAP profile for each
+# upper-air site, SHARPpy computes the parameter suite, matplotlib draws the
+# skew-T, and the page just shows the PNG. A leading dash because a pass in
+# which every fetch fails is a bad hour upstream, not a broken unit.
+cat > "$UNITS/gwcfc-snd.service" <<EOF
+[Unit]
+Description=Build SounderPy/SHARPpy sounding images
+
+[Service]
+Type=oneshot
+ExecStart=-$VENV/bin/python $REPO/pi/sounding_pipeline.py
+TimeoutStartSec=900
+Nice=15
+EOF
+
+cat > "$UNITS/gwcfc-snd.timer" <<'EOF'
+[Unit]
+Description=Sounding images every fifteen minutes
+
+[Timer]
+# Offset from the radar (:0/5) and satellite (:2/10) timers, so the three
+# big fetchers do not all land on one home connection at once. The pass
+# budget inside the pipeline covers the whole network in about an hour,
+# which is the RAP's own cadence, so running more often would build nothing.
+OnCalendar=*:4/15
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat > "$UNITS/gwcfc-cyclones.service" <<EOF
 [Unit]
 Description=Fetch DeepMind cyclone tracks and genesis fields
@@ -457,6 +502,7 @@ systemctl --user restart gwcfc-tunnel.service      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
 systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-sat.timer      >/dev/null 2>&1
+systemctl --user enable --now gwcfc-snd.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
 systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1
