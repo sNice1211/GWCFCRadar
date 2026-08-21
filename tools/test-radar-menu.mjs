@@ -79,9 +79,12 @@ await page.goto('file://' + join(ROOT, 'index.html'),
                 { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(4000);
 
+// The bubble's LABEL, not its whole text. Every bubble carries an info
+// button and a drag handle now, and reading the lot back gives "Level 2" the
+// braille grip glyph on the end of it.
 const row = () => page.evaluate(() =>
   [...document.querySelectorAll('#sub-bubbles .sub-bubble')]
-    .map(e => e.textContent.trim()));
+    .map(e => ((e.querySelector('.sb-label') || e).textContent || '').trim()));
 
 console.log('\n1. the page boots');
 ok('no uncaught errors while starting', errors.length === 0, errors[0]);

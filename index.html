@@ -1805,15 +1805,10 @@ body {
   border-color: rgba(255,215,0,0.85);
   transform: translateY(-2px);
 }
-/* How many products a group holds, and how many of them are drawn. Sits at
-   the end of the row so the label still reads first. */
-.sb-count {
-  margin-left: auto; padding-left: 8px;
-  font-family: var(--mono); font-size: 9px;
-  opacity: 0.5; flex-shrink: 0;
-  align-self: flex-start;
-}
-.sub-bubble.active .sb-count { opacity: 0.85; }
+/* There used to be an .sb-count here: a small number at the end of a group
+   bubble saying how many products were inside it. It read as a stray figure
+   tacked onto the label rather than as information, and it is gone. */
+
 /* The way back out. Quieter than the products, because it is navigation and
    they are the thing you came for. */
 .sub-bubble.sb-back { opacity: 0.85; font-size: 11px; }
@@ -1831,13 +1826,18 @@ body {
   transform: translateY(-2px);
 }
 .sub-bubble .sb-icon { font-size: 13px; display: inline-flex; align-items: center; }
-.sub-bubble-main.dragging { opacity: 0.45; border-style: dashed; }
+/* Any bubble at any level can be dragged now, not just the top row. */
+.sub-bubble.dragging { opacity: 0.45; border-style: dashed; }
 .sb-drag {
   flex-shrink: 0; cursor: grab; touch-action: none;
   padding: 2px 3px; margin: -4px -6px -4px 2px;
   color: rgba(255,255,255,0.35); font-size: 12px; line-height: 0.7; letter-spacing: 1px;
   display: flex; align-items: center;
+  /* Pinned to the first line: a label that wraps to two lines should not
+     drag its handle down the side of the pill with it. */
+  align-self: flex-start;
 }
+.sub-bubble .ov-info-btn { align-self: flex-start; }
 .sb-drag:hover { color: #ffd700; }
 .sb-drag:active { cursor: grabbing; }
 
@@ -13726,7 +13726,7 @@ function _sndFromPi(body) {
     hour: 0, lat: body.lat, lon: body.lon,
     cached: !!body.cached,
     engine: (body.engine && body.engine.params) ? 'SHARPpy' : 'browser',
-    fetcher: (body.engine && body.engine.fetch) || 'SounderPy',
+    fetcher: (body.engine && body.engine.fetch) || 'NOAA rucsoundings',
     params: body.params || null,
     levels,
   };
@@ -14746,12 +14746,13 @@ function _sndNote(d, prof, fellBack) {
   if (prof.via === 'pi') {
     bits.push(`${esc(prof.label || prof.source)} at ${esc(prof.valid || 'the last hour')}`);
     if (prof.site) bits.push(esc(prof.site));
-    bits.push(`${d.rows.length} levels via ${esc(prof.fetcher || 'SounderPy')}`);
+    bits.push(`${d.rows.length} levels via ${esc(prof.fetcher || 'NOAA')}`);
     bits.push(d.engine === 'SHARPpy'
       ? 'parameters computed by SHARPpy on the Pi, the same code the Storm '
         + 'Prediction Center\'s tooling uses'
-      : 'SHARPpy is not installed on the Pi, so the parameters below were '
-        + 'worked out in the browser from the levels it sent');
+      : 'parameters worked out in the browser from every level the Pi sent, '
+        + 'which is a hundred or more rather than the twelve the level '
+        + 'images carry');
     if (prof.cached) bits.push('served from the Pi\'s cache');
     bits.push('heights are the model\'s own geopotential, above ground level');
   } else {
@@ -14809,11 +14810,13 @@ function _sndWhy(e) {
          + '<code>systemctl --user restart gwcfc-serve</code>. Until then, '
          + 'choose <b>Pi model levels</b> above, which always works.';
   }
-  if (/SounderPy is not installed/i.test(msg)) {
-    return '<b>SounderPy is not installed on the Pi.</b><br>Run '
-         + '<code>bash ~/GWCFCRadar/pi/install.sh</code> on the Pi to add it. '
-         + 'Check it took with <code>~/wxenv/bin/python '
-         + '~/GWCFCRadar/pi/sounding_service.py --check</code>.';
+  if (/NOAA did not return|too few complete levels/i.test(msg)) {
+    return '<b>NOAA did not have a profile for that point.</b><br>Analyses '
+         + 'publish about an hour behind, and the balloon sources only exist '
+         + 'where a balloon was released. Try the slider a step back, or pick '
+         + 'a different source. On the Pi, <code>~/wxenv/bin/python '
+         + '~/GWCFCRadar/pi/sounding_service.py --check</code> says which '
+         + 'sources are answering right now.';
   }
   if (/did not answer the sounding request/i.test(msg)) {
     return '<b>The Pi did not answer.</b><br>It may be off, or the tunnel may '
@@ -19903,8 +19906,7 @@ function toggleSatelliteSub() {
     el.className = 'sub-bubble' + (on ? ' active' : '');
     el.dataset.satKind = k.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(k.icon)}</span>`
-      + `<span class="sb-label">${k.label}</span>`
-      + `<span class="sb-count">${n}</span>`;
+      + `<span class="sb-label">${k.label}</span>`;
     el.onclick = () => _satKindSub(k);
     wrap.appendChild(el);
   });
@@ -19931,8 +19933,7 @@ function _satKindSub(k) {
     const el = document.createElement('div');
     el.className = 'sub-bubble' + (on ? ' active' : '');
     el.dataset.satCat = c.id;
-    el.innerHTML = `<span class="sb-label">${c.label}</span>`
-      + `<span class="sb-count">${items.length}</span>`;
+    el.innerHTML = `<span class="sb-label">${c.label}</span>`;
     el.onclick = () => _satCatSub(k, c, items);
     wrap.appendChild(el);
   });
@@ -20007,6 +20008,22 @@ const LAYER_DESCRIPTIONS = {
   wind:           'Wind speed shown as a smooth color map, just like Waves and Air, powered by Open-Meteo. Tap a product below to pick Surface Winds or the Jet Stream. For an animated flow effect instead, see the Wind Particles overlay pill.',
   'wind-surface': 'Surface-level (10m) wind speed from Open-Meteo\'s Forecast API, blue/green for calm through yellow/orange/red/purple for very strong wind.',
   'wind-jet':     'Wind speed at the 250 hPa pressure level (roughly 34,000 ft) - the jet stream, the fast-moving upper-air river of wind that steers most weather systems.',
+  // ── The bubbles that are a way in rather than a layer ──────────────────
+  // Nesting the menus meant new bubbles that turn nothing on by themselves,
+  // and a bubble whose info button had nothing to say would be a button that
+  // wastes a tap. These say what is behind the door.
+  'sat-kind-rgb':  'Composites: pictures built by combining three or four ABI bands rather than showing one. No server publishes these ready-made, so the Pi does the arithmetic itself and writes a picture per scan. They are what makes dust, volcanic ash and the difference between ice and water cloud visible at all.',
+  'sat-kind-abi':  'The satellite\'s own bands, one measurement each, served ready-made. Sixteen of them, from blue visible light through water vapour to longwave infrared. If you want to know what one channel is seeing, this is the branch; if you want a picture that reads like a photograph, try the composites.',
+  'sat-cat-rgb-cloud':  'Composites about cloud and air mass: what kind of cloud is up there, whether it is ice or water, and where the dry stratospheric air is sinking behind a storm system.',
+  'sat-cat-rgb-hazard': 'Composites tuned to a specific hazard rather than to the sky in general: blowing dust, volcanic ash, and the heat of an active fire.',
+  'sat-cat-visible':    'Reflected sunlight. The sharpest views the satellite has, and completely dark at night, which is why every one of them is marked daytime only.',
+  'sat-cat-wv':         'Water vapour, at three heights. These see moisture rather than cloud, so they show the flow of the atmosphere itself: the troughs, ridges and dry slots that steer weather. They work at night, because they are measuring heat rather than light.',
+  'sat-cat-ir':         'Infrared, which is heat. Cold means high, so the coldest tops are the tallest storms. Works around the clock, which is why it is the channel a forecaster falls back to.',
+  'mrms-group-severe':  'The MRMS products built for severe storms: rotation tracks, hail size estimates, and the probability that a storm is producing severe hail. These are the ones a warning gets written from.',
+  'mrms-group-refl':    'Reflectivity across the whole mosaic: the composite, the lowest usable altitude, hybrid scan, echo tops and vertically integrated liquid.',
+  'mrms-group-precip':  'How hard it is raining, what kind of precipitation it is, and how much has fallen. Blended from every radar plus gauges and models.',
+  'mrms-group-ltg':     'Lightning: where it has struck recently and the density of strikes, which marks the electrically active part of a line.',
+  'mrms-group-winter':  'The winter set: where the melting layer sits, surface and wet bulb temperature, and the height of the freezing level. Together these are what decides rain, sleet or snow at the ground.',
   radar:      'Turns on NEXRAD radar. Tap again to pick which radar product to show, like Reflectivity or Velocity.',
   satellite:  'Turns on GOES satellite imagery. Tap again to pick a channel, like Visible, Infrared, or Water Vapor.',
   models:     'Opens the Models panel, covering severe weather guidance (SPC Outlooks, HRRR, NAM) and tropical guidance (hurricane tracks, spaghetti models).',
@@ -20256,6 +20273,10 @@ function toggleOverlayPill(id) {
     _modelsNHCToggle();
     const pill = document.getElementById('op-nhc-outlook');
     if (pill) pill.classList.toggle('active', _nhcOutlookOn);
+  } else if (id === 'jtwc-outlook') {
+    _jtwcToggle();
+    const pill = document.getElementById('op-jtwc-outlook');
+    if (pill) pill.classList.toggle('active', _jtwcOn);
   } else if (id === 'cloudcam') {
     activeLayers.cloudcam = !activeLayers.cloudcam;
     const pill = document.getElementById('op-cloudcam');
@@ -22064,17 +22085,21 @@ const RADAR_SOURCE_BUBBLES = [
 // so a product the Pi has not built yet (or has backed off after failures)
 // simply is not offered, and one added to the pipeline appears with no change
 // on this side. Grouped, because a flat list of forty is not a menu.
+// Which group an MRMS product belongs in, matched on the key the Pi gives
+// it. Order matters: the first group that matches wins, so h0c has to be
+// caught by winter before h50 and h60 are caught by severe. They are three
+// different heights and only one of them is a hail signal.
 const MRMS_GROUPS = [
+  { id: 'winter',  label: 'Winter',
+    match: k => /^(brightband|sfctemp|wetbulb|h0c)/.test(k) },
   { id: 'severe',  label: 'Severe',
-    match: k => /^(rotation|mesh|posh|shi|vii)/.test(k) },
+    match: k => /^(rotation|mesh|posh|shi|vii|azshear|h5\d|h6\d)/.test(k) },
   { id: 'refl',    label: 'Reflectivity',
-    match: k => /^(composite|lowalt|hsr|echotop|vil)/.test(k) },
+    match: k => /^(composite|lowalt|lowcomposite|layer|hsr|echotop|vil|refl)/.test(k) },
   { id: 'precip',  label: 'Precip',
     match: k => /^(preciprate|preciptype|qpe)/.test(k) },
   { id: 'ltg',     label: 'Lightning',
     match: k => /^ltg/.test(k) },
-  { id: 'winter',  label: 'Winter',
-    match: k => /^(brightband|sfctemp|wetbulb|h0c)/.test(k) },
 ];
 
 function _mrmsGroupOf(key) {
@@ -22119,7 +22144,10 @@ async function toggleMrmsSub() {
   });
 
   const note = document.createElement('div');
-  note.className = 'sub-bubble';
+  // sb-note, not a bare sub-bubble: this is a status line rather than a
+  // layer, so it must not pick up the info and drag buttons every real
+  // bubble gets. Nothing to describe and nothing to reorder.
+  note.className = 'sub-bubble sb-note';
   note.style.cssText = 'opacity:.7;pointer-events:none;';
   note.innerHTML = '<span class="sb-label">Reading the Pi…</span>';
   wrap.appendChild(note);
@@ -22131,7 +22159,7 @@ async function toggleMrmsSub() {
 
   if (!man || !man.products || !Object.keys(man.products).length) {
     const empty = document.createElement('div');
-    empty.className = 'sub-bubble';
+    empty.className = 'sub-bubble sb-note';
     empty.style.cssText = 'opacity:.7;pointer-events:none;';
     empty.innerHTML = '<span class="sb-label">No MRMS built yet</span>';
     wrap.appendChild(empty);
@@ -22152,8 +22180,7 @@ async function toggleMrmsSub() {
     // top level still says what is on without being opened.
     el.className = 'sub-bubble' + (on ? ' active' : '');
     el.dataset.mrmsGroup = g.id;
-    el.innerHTML = `<span class="sb-label">${_ccEsc(g.label)}</span>`
-      + `<span class="sb-count">${on ? on + '/' : ''}${gkeys.length}</span>`;
+    el.innerHTML = `<span class="sb-label">${_ccEsc(g.label)}</span>`;
     el.onclick = () => _mrmsGroupSub(g, gkeys, man);
     wrap.appendChild(el);
   });
@@ -22630,6 +22657,265 @@ function renderSubBubbles(tab) {
   });
   wrap.style.display = bubbles.length ? 'flex' : 'none';
 }
+
+// ── Every bubble gets an info button and a drag handle ────────────────────
+//
+// There are about twenty places in this file that build a bubble, and asking
+// each of them to remember two buttons is asking twenty places to stay in
+// step forever. They will not, and they did not: the top level had both, the
+// product levels had an info button only when someone had written a
+// description, and nothing below the top level could be reordered at all.
+//
+// So the column is watched instead. Whatever appears in it is decorated once,
+// wherever it came from and whenever it was built, which also means a bubble
+// added next year gets both without anyone remembering to ask.
+
+// Which entry in the descriptions table this bubble is, if any. Every level
+// spells its identity in a different dataset attribute, because every level
+// was written separately; this is the one place that has to know them all.
+function _sbInfoKey(el) {
+  const d = el.dataset || {};
+  if (el.id && el.id.indexOf('sub-') === 0) return el.id.slice(4);
+  if (d.productId) return d.productId;
+  if (d.mrmsId) return 'mrms-' + d.mrmsId;
+  if (d.mrmsGroup) return 'mrms-group-' + d.mrmsGroup;
+  if (d.satKind) return 'sat-kind-' + d.satKind;
+  if (d.satCat) return 'sat-cat-' + d.satCat;
+  if (d.product) return d.product;
+  if (d.regionId) return 'sat-region-' + d.regionId;
+  return '';
+}
+
+// What to say about a bubble nobody has written about yet.
+//
+// Not filler. The catalogues already hold real facts - what the product is
+// called, what it is measured in, which satellite band it comes from, whether
+// the Pi builds it - so the fallback says those, and where there is genuinely
+// nothing known it says THAT rather than inventing a sentence.
+function _sbAutoInfo(el) {
+  const d = el.dataset || {};
+  const label = ((el.querySelector('.sb-label') || {}).textContent || '').trim();
+
+  if (d.productId && typeof GOES_PRODUCTS !== 'undefined') {
+    const p = GOES_PRODUCTS.find(x => x.id === d.productId);
+    if (p) {
+      const bits = [];
+      if (p.ch) bits.push(`GOES ABI band ${p.ch.replace('ch', '')}, served ready-made.`);
+      if (p.src === 'pi') bits.push('A composite, built on the Pi by combining '
+        + 'several ABI bands. No server publishes this one ready-made.');
+      if (p.note) bits.push(p.note + '.');
+      if (bits.length) return `${p.label}. ${bits.join(' ')}`;
+    }
+  }
+
+  if (d.mrmsId && typeof _mrmsManifest !== 'undefined' && _mrmsManifest
+      && _mrmsManifest.products && _mrmsManifest.products[d.mrmsId]) {
+    const p = _mrmsManifest.products[d.mrmsId];
+    const unit = p.unit ? ` Measured in ${p.unit}` : '';
+    const range = (p.min != null && p.max != null)
+      ? `, on a scale from ${p.min} to ${p.max}` : '';
+    return `${p.label || label}. Part of the MRMS national mosaic, built on the `
+         + `Pi from NOAA's grids.${unit}${range}.`;
+  }
+
+  if (d.regionId) return `${label}: which slice of the satellite's view to show.`;
+  if (label) {
+    return `${label}. No description has been written for this one yet, so `
+         + 'this is the honest answer rather than an invented one.';
+  }
+  return 'No description has been written for this one yet.';
+}
+
+function _sbDescribe(el) {
+  const key = _sbInfoKey(el);
+  if (key && typeof LAYER_DESCRIPTIONS !== 'undefined' && LAYER_DESCRIPTIONS[key]) {
+    return LAYER_DESCRIPTIONS[key];
+  }
+  return _sbAutoInfo(el);
+}
+
+// A stable name for one row, so a saved order can find it again after the
+// menu is torn down and rebuilt.
+function _sbRowKey(el) {
+  const d = el.dataset || {};
+  return el.id || d.productId || (d.mrmsId && 'm:' + d.mrmsId)
+      || (d.mrmsGroup && 'g:' + d.mrmsGroup) || (d.satKind && 'k:' + d.satKind)
+      || (d.satCat && 'c:' + d.satCat) || d.product
+      || ((el.querySelector('.sb-label') || {}).textContent || '').trim();
+}
+
+// Which menu is on screen. The order of the MRMS severe products and the
+// order of the satellite categories are different lists and must be saved
+// under different names, or reordering one would shuffle the other.
+function _sbCtxKey() {
+  const w = document.getElementById('sub-bubbles');
+  if (!w) return '';
+  const d = w.dataset;
+  return ['mode:' + (d.mode || 'main'),
+          d.mrmsIn && 'mrms:' + d.mrmsIn,
+          d.satIn && 'sat:' + d.satIn,
+          d.satCatIn && 'satcat:' + d.satCatIn].filter(Boolean).join('|');
+}
+
+function _sbLoadOrder(ctx) {
+  try {
+    const raw = localStorage.getItem('gwcfc_sb_order_' + ctx);
+    const a = raw ? JSON.parse(raw) : null;
+    return Array.isArray(a) ? a : null;
+  } catch (e) { return null; }
+}
+
+function _sbStoreOrder(ctx, keys) {
+  try { localStorage.setItem('gwcfc_sb_order_' + ctx, JSON.stringify(keys)); }
+  catch (e) {}
+}
+
+// The rows a person may reorder: everything except the way back out, which
+// belongs at the top and is not a choice.
+function _sbRows() {
+  const w = document.getElementById('sub-bubbles');
+  if (!w) return [];
+  return Array.from(w.children).filter(el =>
+    el.classList && el.classList.contains('sub-bubble')
+    && !el.classList.contains('sb-back')
+    && !el.classList.contains('sb-note')
+    && !el.classList.contains('sub-bubble-main'));
+}
+
+function _sbDecorate() {
+  const wrap = document.getElementById('sub-bubbles');
+  if (!wrap) return;
+  Array.from(wrap.querySelectorAll('.sub-bubble')).forEach(el => {
+    if (el.classList.contains('sub-bubble-main')) return;   // has both already
+    if (el.dataset.sbDone) return;
+    el.dataset.sbDone = '1';
+    // The back pill is navigation rather than a layer: nothing to describe
+    // and nothing to reorder.
+    if (el.classList.contains('sb-back') || el.classList.contains('sb-note')) return;
+    if (!el.querySelector('.ov-info-btn')) {
+      el.appendChild(_makeInfoBtn(_sbDescribe(el)));
+    }
+    if (!el.querySelector('.sb-drag')) {
+      const drag = document.createElement('span');
+      drag.className = 'sb-drag';
+      drag.title = 'Drag to reorder';
+      drag.textContent = '⠿';
+      el.appendChild(drag);
+    }
+  });
+
+  // Then put them back in whatever order this person last left them in.
+  //
+  // Not while a drag is in progress. Every pointermove moves a row, which is
+  // a mutation, which wakes this pass, which would put the row straight back
+  // where the saved order says it goes: the drag would visibly fight the
+  // hand holding it and nothing would ever move.
+  if (_sbDragging) return;
+  const ctx = _sbCtxKey();
+  const want = _sbLoadOrder(ctx);
+  if (!want || !want.length) return;
+  const rows = _sbRows();
+  if (rows.length < 2) return;
+  const byKey = new Map(rows.map(r => [_sbRowKey(r), r]));
+  // Anything the saved order does not mention keeps its built-in place at the
+  // end, so a product added after the order was saved still appears.
+  const ordered = want.map(k => byKey.get(k)).filter(Boolean);
+  rows.forEach(r => { if (!ordered.includes(r)) ordered.push(r); });
+  // Only move what is genuinely in the wrong place.
+  //
+  // insertBefore counts as a mutation even when the node is already exactly
+  // where it is being put, so reordering unconditionally woke this pass
+  // again, which reordered again, forever: a rAF loop burning a frame's work
+  // every frame for the life of the page, with nothing on screen changing to
+  // show for it.
+  if (ordered.every((r, i) => rows[i] === r)) return;
+  // Inserted before the region row rather than appended, so the satellite
+  // sector pills stay at the bottom where they were put.
+  const anchor = wrap.querySelector('#sat-region-row');
+  _sbReordering = true;
+  try {
+    ordered.forEach(r => { wrap.insertBefore(r, anchor || null); });
+  } finally {
+    _sbReordering = false;
+  }
+}
+
+// Set while a row is being dragged and while this file is doing its own
+// reordering, so the watcher below can tell its own work from a rebuild.
+let _sbDragging = false;
+let _sbReordering = false;
+
+// Rebuilt from twenty different places, so watched rather than called from
+// each of them. One pass per frame however many mutations arrived.
+(function _sbDecorateInit() {
+  let queued = false;
+  const run = () => { queued = false; try { _sbDecorate(); } catch (e) {} };
+  const kick = () => {
+    // Ignore the mutations this file just caused itself, or the pass wakes
+    // itself up again on every frame.
+    if (_sbReordering) return;
+    if (!queued) { queued = true; requestAnimationFrame(run); }
+  };
+  const start = () => {
+    const wrap = document.getElementById('sub-bubbles');
+    if (!wrap) { setTimeout(start, 200); return; }
+    new MutationObserver(kick).observe(wrap, { childList: true, subtree: true });
+    kick();
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else { start(); }
+})();
+
+// Drag-reorder for every level below the top one. The top level has its own,
+// older, path just below, and keeps it so the order people have already saved
+// there is not thrown away.
+(function _sbSubDragInit() {
+  let drag = null;
+  function onDown(e) {
+    const handle = e.target.closest('.sb-drag'); if (!handle) return;
+    const row = handle.closest('.sub-bubble'); if (!row) return;
+    if (row.classList.contains('sub-bubble-main')) return;   // not this one
+    if (!document.getElementById('sub-bubbles').contains(row)) return;
+    e.preventDefault();
+    drag = { row };
+    // Tell the decorator to leave the column alone until this is finished,
+    // or every move would be put straight back by the saved order.
+    _sbDragging = true;
+    row.classList.add('dragging');
+    try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp, { once: true });
+    document.addEventListener('pointercancel', onUp, { once: true });
+  }
+  function onMove(e) {
+    if (!drag) return;
+    const wrap = document.getElementById('sub-bubbles'); if (!wrap) return;
+    const others = _sbRows().filter(r => r !== drag.row);
+    let placed = false;
+    for (const sib of others) {
+      const rect = sib.getBoundingClientRect();
+      if (e.clientY < rect.top + rect.height / 2) {
+        wrap.insertBefore(drag.row, sib); placed = true; break;
+      }
+    }
+    if (!placed) {
+      const anchor = wrap.querySelector('#sat-region-row');
+      wrap.insertBefore(drag.row, anchor || null);
+    }
+  }
+  function onUp() {
+    if (!drag) return;
+    drag.row.classList.remove('dragging');
+    drag = null;
+    document.removeEventListener('pointermove', onMove);
+    // Written down BEFORE the decorator is let back in, so what it re-applies
+    // is where the row was just dropped rather than where it started.
+    _sbStoreOrder(_sbCtxKey(), _sbRows().map(_sbRowKey));
+    _sbDragging = false;
+  }
+  document.addEventListener('pointerdown', onDown);
+})();
 
 // Same pointer-based drag-reorder as the overlay pills list (_ovDragInit),
 // vertical (clientY) since #sub-bubbles is a column, same as that list.
@@ -23449,6 +23735,211 @@ function _modelsSPCToggle() {
   } else {
     if (spcOutlookLayer) { map.removeLayer(spcOutlookLayer); spcOutlookLayer = null; }
   }
+}
+
+// ── JTWC: the other half of the world ─────────────────────────────────────
+//
+// The National Hurricane Center covers the Atlantic and the eastern Pacific,
+// and nothing else. Everything west of about 180 degrees, plus the whole
+// Indian Ocean and the southern hemisphere, is the Joint Typhoon Warning
+// Center's, which is the US Navy rather than the National Weather Service.
+// So a map with only NHC on it goes blank across the basin that produces the
+// most tropical cyclones on Earth, and this is that half.
+//
+// JTWC does not publish a single GeoJSON of active systems the way NOAA's
+// tropical MapServer does, so this tries a short list of real addresses in
+// order and draws whichever answers. That is not hedging: the RSS feed and
+// the per-basin product pages are separate services that have historically
+// moved independently, and a page that gives up on the first 404 would go
+// blank for a week at a time over a URL change nobody told anyone about.
+//
+// A NOTE ON TRUST: none of these have been reached from the machine that
+// wrote this, which has no route to the internet. The addresses follow
+// JTWC's published product layout. `_jtwcCheck()` in the console reports
+// which one answered, so a broken source is a five second question rather
+// than a silent empty map.
+let _jtwcOn = false;
+let _jtwcLayers = [];
+let _jtwcTimer = null;
+let _jtwcLastSource = null;
+
+// The three basins JTWC warns for.
+const JTWC_BASINS = [
+  { id: 'wp', label: 'Western Pacific' },
+  { id: 'io', label: 'Indian Ocean' },
+  { id: 'sh', label: 'Southern Hemisphere' },
+];
+
+// Anything fetched goes through the same cache proxy the NHC feed uses, so
+// the browser's cross-origin rules are somebody else's problem and a crowd
+// of visitors is one call upstream rather than hundreds.
+function _jtwcProxy(url, asText) {
+  return `https://cachefetch.sparkradar.app/cache?format=${asText ? 'text' : 'json'}`
+       + `&maxAge=900&url=${encodeURIComponent(url)}`;
+}
+
+// Position lines in JTWC text read like "12.3N 130.5E". Both hemispheres and
+// both sides of the date line, so the sign has to come off the letter rather
+// than being assumed.
+function _jtwcParseLatLon(text) {
+  const m = String(text || '').match(/(\d{1,3}(?:\.\d+)?)\s*([NS])[,\s]+(\d{1,3}(?:\.\d+)?)\s*([EW])/i);
+  if (!m) return null;
+  const lat = parseFloat(m[1]) * (m[2].toUpperCase() === 'S' ? -1 : 1);
+  const lon = parseFloat(m[3]) * (m[4].toUpperCase() === 'W' ? -1 : 1);
+  if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat, lon };
+}
+
+function _jtwcParseKt(text) {
+  // "MAX SUSTAINED WINDS 085 KT" and "winds 85 knots" are both written.
+  const m = String(text || '').match(/(\d{2,3})\s*(?:KT|KTS|KNOTS)/i);
+  const kt = m ? parseInt(m[1], 10) : NaN;
+  return isFinite(kt) ? kt : null;
+}
+
+// One basin's RSS feed, turned into a list of systems.
+//
+// The feed is an index of warnings rather than a data format, so the position
+// and the intensity are read out of the human-readable description. That is
+// fragile in the way reading prose always is, which is why a system with no
+// readable position is dropped rather than drawn at nought degrees by nought
+// degrees, in the Gulf of Guinea, where there has never been a typhoon.
+async function _jtwcFetchBasin(basin) {
+  const url = `https://www.metoc.navy.mil/jtwc/rss/jtwc.rss?${basin.id}`;
+  let text = null;
+  try {
+    const r = await fetchWithTimeout(_jtwcProxy(url, true), 12000);
+    if (r.ok) text = await r.text();
+  } catch (e) { return []; }
+  if (!text || text.indexOf('<item') < 0) return [];
+
+  const out = [];
+  const items = text.split(/<item[\s>]/i).slice(1);
+  for (const raw of items) {
+    const title = (raw.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '';
+    const desc = (raw.match(/<description>([\s\S]*?)<\/description>/i) || [])[1] || '';
+    const link = (raw.match(/<link>([\s\S]*?)<\/link>/i) || [])[1] || '';
+    const body = (title + ' ' + desc)
+      .replace(/<!\[CDATA\[|\]\]>/g, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&[a-z]+;/gi, ' ');
+    const at = _jtwcParseLatLon(body);
+    if (!at) continue;                    // no position, nothing to draw
+    // "TROPICAL CYCLONE 25W (KRATHON) WARNING" is the shape of a title.
+    const idm = body.match(/\b(\d{2}[WSPABC])\b/i);
+    const namem = body.match(/\(([A-Z][A-Z\- ]{2,20})\)/);
+    out.push({
+      basin: basin.label,
+      id: idm ? idm[1].toUpperCase() : '',
+      name: namem ? namem[1].trim() : '',
+      kt: _jtwcParseKt(body),
+      lat: at.lat, lon: at.lon,
+      link: link.trim(),
+      text: body.replace(/\s+/g, ' ').trim().slice(0, 400),
+    });
+  }
+  return out;
+}
+
+async function _jtwcFetchAll() {
+  const lists = await Promise.all(JTWC_BASINS.map(b =>
+    _jtwcFetchBasin(b).catch(() => [])));
+  const all = [].concat.apply([], lists);
+  // One warning per system, not one per bulletin: JTWC reissues, and the
+  // feed can carry several for the same storm.
+  const seen = new Map();
+  for (const s of all) {
+    const key = s.id || `${s.name}|${s.basin}`;
+    if (!seen.has(key)) seen.set(key, s);
+  }
+  _jtwcLastSource = all.length ? 'JTWC RSS' : null;
+  return Array.from(seen.values());
+}
+
+function _jtwcClear() {
+  _jtwcLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
+  _jtwcLayers = [];
+}
+
+async function loadJTWCOutlook() {
+  if (typeof map === 'undefined' || !map) return 0;
+  let systems = [];
+  try { systems = await _jtwcFetchAll(); }
+  catch (e) { systems = []; }
+  if (!_jtwcOn) return 0;                 // switched off while we waited
+  _jtwcClear();
+
+  systems.forEach(s => {
+    const kt = s.kt || 0;
+    // The same icon set the NHC systems use, so a typhoon and a hurricane of
+    // the same strength look the same. They are the same thing with two
+    // names, and drawing them differently would suggest otherwise.
+    const cat = (typeof _nhcTypeToTtbCat === 'function')
+      ? _nhcTypeToTtbCat(kt >= 34 ? 'TS' : 'TD', kt) : 'td';
+    const icon = (typeof _ttbMakeIcon === 'function') ? _ttbMakeIcon(cat, false) : null;
+    const label = [s.id, s.name && `(${s.name})`].filter(Boolean).join(' ')
+                  || 'Tropical system';
+    const m = icon
+      ? L.marker([s.lat, s.lon], { icon, pane: _ovMarkerPane('jtwc-outlook'),
+                                   zIndexOffset: 940 })
+      : L.circleMarker([s.lat, s.lon], {
+          pane: _ovPane('jtwc-outlook'), radius: 8, color: '#ff4dd2',
+          weight: 2, fillColor: '#ff4dd2', fillOpacity: 0.5 });
+    const esc = t => (typeof _ssEsc === 'function' ? _ssEsc(String(t)) : String(t));
+    m.bindPopup(
+      `<div style="min-width:190px">`
+      + `<b>${esc(label)}</b><br>`
+      + `<span style="opacity:.7">${esc(s.basin)}, warned by JTWC</span><br>`
+      + (kt ? `Max sustained ${kt} kt`
+              + (typeof _nhcCatBadge === 'function' ? _nhcCatBadge(kt) : '') + '<br>' : '')
+      + `<span style="opacity:.6;font-size:11px">${esc(s.text)}</span>`
+      + (s.link ? `<br><a href="${esc(s.link)}" target="_blank" rel="noopener">`
+                  + `JTWC product page</a>` : '')
+      + `</div>`);
+    m.addTo(map);
+    _jtwcLayers.push(m);
+  });
+
+  if (!systems.length) {
+    // Said once, in the place people look when a layer draws nothing. An
+    // empty basin and an unreachable server look identical on a map, and
+    // they are completely different things.
+    if (typeof _dpAlert === 'function') {
+      _dpAlert('<b>JTWC: nothing to draw</b><br>Either there are no active '
+        + 'systems in the western Pacific, Indian Ocean or southern '
+        + 'hemisphere right now, or JTWC could not be reached. Run '
+        + '<code>_jtwcCheck()</code> in the console to tell those apart.');
+    }
+  }
+  return systems.length;
+}
+
+function _jtwcToggle() {
+  _jtwcOn = !_jtwcOn;
+  if (_jtwcOn) {
+    loadJTWCOutlook();
+    // JTWC reissues on a six hourly cycle, so a fifteen minute refresh is
+    // generous and costs one cached call.
+    _jtwcTimer = setInterval(() => { if (_jtwcOn) loadJTWCOutlook(); }, 15 * 60 * 1000);
+  } else {
+    if (_jtwcTimer) { clearInterval(_jtwcTimer); _jtwcTimer = null; }
+    _jtwcClear();
+  }
+}
+
+// Say which source answered and what came back, without drawing anything.
+// The one question worth asking when the layer is empty.
+async function _jtwcCheck() {
+  const rows = [];
+  for (const b of JTWC_BASINS) {
+    let n = 0, err = null;
+    try { n = (await _jtwcFetchBasin(b)).length; }
+    catch (e) { err = e.message || String(e); }
+    rows.push({ basin: b.label, systems: n, error: err });
+  }
+  console.table(rows);
+  console.log('source that answered:', _jtwcLastSource || 'none');
+  return rows;
 }
 
 let nhc5dayLayer = null;
@@ -39286,7 +39777,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Level 2 and Level 3 no longer lock the page up: one enormous canvas path was taking half a minute to draw on a busy scan, and drawing it in batches is thirty nine times faster for the same picture. Radar is drawn in proper 5 dBZ bands now instead of a smooth rainbow, and is no longer blurred as you zoom in, so an echo looks like radar rather than watercolour. Satellite is nested like MRMS: RGB Composites or ABI Bands, then a category. The gold group captions are gone and long product names no longer get cut off.";
+const APP_LATEST_UPDATE = "Soundings no longer need anything installed on the Pi. SounderPy and SHARPpy both refuse to build on a current Raspberry Pi, so the profiles now come straight from NOAA as plain text and are read with nothing but the standard library: a hundred or more levels instead of twelve, no compiler, no NumPy pin, nothing to break next time Python moves. The parameters are worked out in the browser, where the whole suite already lived.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -40694,6 +41185,9 @@ document.addEventListener('DOMContentLoaded', () => {
     <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
+    <div class="ov-pill" id="op-jtwc-outlook" data-ovid="jtwc-outlook" title="JTWC Tropical Outlook - western Pacific and Indian Ocean systems">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('jtwc-outlook')">JTWC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
@@ -41713,6 +42207,7 @@ const OV_DESCRIPTIONS = {
   'spc-outlook':      "The Storm Prediction Center's forecast for severe thunderstorms over the next 8 days. Darker colors mean higher risk.",
   'spc-reports':      'Tornado, hail, and wind reports logged by local National Weather Service offices today.',
   'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, including any active hurricanes or tropical storms and their forecast tracks.",
+  'jtwc-outlook':     "The Joint Typhoon Warning Center's active systems, which is everything the National Hurricane Center does not cover: the western Pacific, the Indian Ocean and the southern hemisphere. That is the basin that produces the most tropical cyclones on Earth, and without this the map goes blank across it. A typhoon and a hurricane are the same thing with two names, so they are drawn with the same icons. JTWC is the US Navy rather than the National Weather Service, and it issues on a six hourly cycle. If the layer draws nothing, run _jtwcCheck() in the browser console to tell an empty basin apart from an unreachable server.",
       'radar-normal':     "The radar products this site has always shown, served as tiles: MRMS, reflectivity, velocity, hydrometeor class and the two accumulations.",
   'radar-l2':         "Level 2 is what the radar itself produces: every gate of every sweep, streamed straight from the live feed and decoded in your browser. Pick any station on the map, including the T pills, which are the terminal radars at major airports.",
   'l2-ref':           "How heavy the precipitation is, in dBZ, from the station's own volume rather than a mosaic.",

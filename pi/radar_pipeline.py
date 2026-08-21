@@ -49,8 +49,8 @@ from PIL import Image
 # mesh" is the same problem, and it is already solved next door.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gfs_pipeline import (HTTP, LUTS, MAX_EDGE_PX, Lock, band_alpha,
-                          bounds_from, log, lut_for, regrid_to_latlon,
-                          write_json)  # noqa: E402
+                          bounds_from, disk_ok, free_mb, hours_for_disk, log,
+                          lut_for, regrid_to_latlon, write_json)  # noqa: E402
 
 OUT_DIR = os.path.expanduser("~/wxdata/radar")
 
@@ -776,6 +776,11 @@ def prune(site_dir, hours=KEEP_HOURS, cap=None):
     if not os.path.isdir(site_dir):
         return
     cap = MAX_FRAMES if cap is None else cap
+    # Three days if the card can hold three days. This is where the promise
+    # meets the disk, and the disk wins: an SD card that runs out takes apt,
+    # git and the virtual environment down with it, and none of the errors it
+    # then produces point anywhere near the frames that filled it.
+    hours = hours_for_disk(site_dir, hours)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     import shutil
     kept = []
@@ -983,6 +988,17 @@ def write_index(level, sites):
 # published every two minutes, covering the whole CONUS at 1 km: where storms
 # have rotated over the last hour, and the largest hail they have produced.
 MRMS_BASE = "https://mrms.ncep.noaa.gov/data/2D"
+
+# What one pass of MRMS is allowed to cost.
+#
+# The catalogue is seventy products and about half of them want rebuilding
+# every five minutes, which is the same five minutes the radar frames are
+# built in. Without a ceiling one busy pass would spend the entire window
+# downloading mosaics and the radar loop would have a hole in it, which is
+# far worse than a mosaic being five minutes stale: a stale mosaic is still a
+# picture, a missing radar frame is a gap in the animation that never fills.
+MRMS_PASS_SECS = float(os.environ.get("GWCFC_MRMS_PASS_SECS", "120"))
+MRMS_PASS_MAX = int(os.environ.get("GWCFC_MRMS_PASS_MAX", "14"))
 # ── The MRMS catalogue ──────────────────────────────────────────────────────
 # Every entry is one national grid published at a fixed address, so adding a
 # product is a dict entry and nothing else: build_mrms below reads, shrinks,
@@ -1045,6 +1061,63 @@ MRMS_PRODUCTS = {
     "shi":      {"path": "SHI", "label": "Severe Hail Index",
                  "unit": "", "range": (0, 200), "ramp": "heat",
                  "floor": 5.0, "every": 5},
+    # Rotation tracks are a maximum held over a window, which is what makes
+    # them a track. The instantaneous shear is a different question and the
+    # one you watch while a storm is happening: this is what is rotating NOW
+    # rather than what rotated at some point in the last hour.
+    "azshear02": {"path": "MergedAzShear_0-2kmAGL",
+                  "label": "AzShear 0-2 km (live)", "unit": "s^-1",
+                  "range": (0.002, 0.014), "ramp": "heat",
+                  "floor": 0.003, "every": 5},
+    "azshear36": {"path": "MergedAzShear_3-6kmAGL",
+                  "label": "AzShear 3-6 km (live)", "unit": "s^-1",
+                  "range": (0.002, 0.014), "ramp": "heat",
+                  "floor": 0.003, "every": 5},
+    "rotation240": {"path": "RotationTrackML240min",
+                    "label": "Rotation Tracks 4h", "unit": "s^-1",
+                    "range": (0.002, 0.014), "ramp": "heat",
+                    "floor": 0.003, "every": 30},
+    "rotation360": {"path": "RotationTrackML360min",
+                    "label": "Rotation Tracks 6h", "unit": "s^-1",
+                    "range": (0.002, 0.014), "ramp": "heat",
+                    "floor": 0.003, "every": 30},
+    "rotationll120": {"path": "RotationTrackLL120min",
+                      "label": "Low Level Rotation 2h", "unit": "s^-1",
+                      "range": (0.002, 0.014), "ramp": "heat",
+                      "floor": 0.003, "every": 15},
+    "rotationll1440": {"path": "RotationTrackLL1440min",
+                       "label": "Low Level Rotation 24h", "unit": "s^-1",
+                       "range": (0.002, 0.014), "ramp": "heat",
+                       "floor": 0.003, "every": 60},
+    "mesh240":  {"path": "MESH_Max_240min", "label": "Hail Swaths 4h",
+                 "unit": "mm", "range": (0, 100), "ramp": "radar",
+                 "floor": 6.0, "every": 30},
+    "mesh360":  {"path": "MESH_Max_360min", "label": "Hail Swaths 6h",
+                 "unit": "mm", "range": (0, 100), "ramp": "radar",
+                 "floor": 6.0, "every": 30},
+    # How much liquid is held up per kilometre of depth rather than in the
+    # whole column. Density is the better hail signal of the two, because a
+    # tall storm and a dense one both give a large VIL and only one of them
+    # is throwing hail.
+    "vildensity": {"path": "VIL_Density", "label": "VIL Density",
+                   "unit": "g/m3", "range": (0, 8), "ramp": "heat",
+                   "floor": 0.3, "every": 5},
+    # How high a strong echo reaches above the freezing level. Hail grows in
+    # the part of a storm that is both cold and full of water, so 50 dBZ
+    # standing well above the minus twenty line is one of the cleanest hail
+    # signatures the mosaic carries.
+    "h50above0": {"path": "H50_Above_0C", "label": "50 dBZ above 0 C",
+                  "unit": "km", "range": (0, 10), "ramp": "heat",
+                  "floor": 0.2, "every": 5},
+    "h50abovem20": {"path": "H50_Above_-20C", "label": "50 dBZ above -20 C",
+                    "unit": "km", "range": (0, 8), "ramp": "heat",
+                    "floor": 0.2, "every": 5},
+    "h60above0": {"path": "H60_Above_0C", "label": "60 dBZ above 0 C",
+                  "unit": "km", "range": (0, 8), "ramp": "heat",
+                  "floor": 0.2, "every": 5},
+    "h60abovem20": {"path": "H60_Above_-20C", "label": "60 dBZ above -20 C",
+                    "unit": "km", "range": (0, 6), "ramp": "heat",
+                    "floor": 0.2, "every": 5},
     # ── The national radar picture, merged from every site.
     "composite": {"path": "MergedReflectivityQCComposite",
                   "label": "Composite Reflectivity", "unit": "dBZ",
@@ -1055,6 +1128,42 @@ MRMS_PRODUCTS = {
     "hsr":       {"path": "SeamlessHSR", "label": "Hybrid Scan Reflectivity",
                   "unit": "dBZ", "range": (-10, 75), "ramp": "radar",
                   "floor": 5.0, "every": 5},
+    # Reflectivity at the temperatures that matter rather than at a height.
+    # A forecaster does not ask "what is the echo at four kilometres", they
+    # ask "how much of this storm is above freezing", because that is where
+    # ice grows. These carry the height of a given reflectivity relative to
+    # the model isotherm, which is the same question answered directly.
+    "refl0c":   {"path": "Reflectivity_0C_Height",
+                 "label": "Reflectivity at 0 C", "unit": "dBZ",
+                 "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
+    "reflm10c": {"path": "Reflectivity_-10C_Height",
+                 "label": "Reflectivity at -10 C", "unit": "dBZ",
+                 "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
+    "reflm20c": {"path": "Reflectivity_-20C_Height",
+                 "label": "Reflectivity at -20 C", "unit": "dBZ",
+                 "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
+    # Composites over a slab rather than the whole column. The low one is the
+    # closest thing the mosaic has to what a single radar's lowest tilt sees,
+    # without that radar's cone of silence overhead.
+    "lowcomposite": {"path": "LowLevelCompositeReflectivity",
+                     "label": "Low Level Composite", "unit": "dBZ",
+                     "range": (-10, 75), "ramp": "radar", "floor": 5.0,
+                     "every": 5},
+    "layerlow":   {"path": "LayerCompositeReflectivity_Low",
+                   "label": "Layer Composite, Low", "unit": "dBZ",
+                   "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
+    "layerhigh":  {"path": "LayerCompositeReflectivity_High",
+                   "label": "Layer Composite, High", "unit": "dBZ",
+                   "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 15},
+    "layersuper": {"path": "LayerCompositeReflectivity_Super",
+                   "label": "Layer Composite, Highest", "unit": "dBZ",
+                   "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 15},
+    # Where the hybrid scan is actually reading from. Useful for the same
+    # reason a legend is: it says how much of what you are looking at is a
+    # beam a hundred metres up and how much is one three kilometres up.
+    "hsrheight": {"path": "SeamlessHSRHeight", "label": "Hybrid Scan Height",
+                  "unit": "km", "range": (0, 12), "ramp": "viridis",
+                  "floor": 0.05, "every": 15},
     # ── How tall the storms are, and how much they hold aloft.
     "echotop18": {"path": "EchoTop_18", "label": "Echo Top 18 dBZ",
                   "unit": "km", "range": (0, 20), "ramp": "viridis",
@@ -1100,9 +1209,43 @@ MRMS_PRODUCTS = {
     "qpe72": {"path": "RadarOnly_QPE_72H", "label": "Rainfall 72 hr",
               "unit": "mm", "range": (0, 400), "ramp": "precip",
               "floor": 0.5, "every": 60},
+    "qpe48": {"path": "RadarOnly_QPE_48H", "label": "Rainfall 48 hr",
+              "unit": "mm", "range": (0, 350), "ramp": "precip",
+              "floor": 0.5, "every": 60},
+    "qpe12z": {"path": "RadarOnly_QPE_Since12Z",
+               "label": "Rainfall since 12Z", "unit": "mm",
+               "range": (0, 200), "ramp": "precip", "floor": 0.5, "every": 30},
+    # Radar alone measures rain by inference; gauges measure it by catching
+    # it. The multi-sensor products are the radar field pulled toward what the
+    # gauges actually caught, which is the number a flood warning is written
+    # from. Pass 2 is the later, better corrected one.
+    "qpemulti01": {"path": "MultiSensor_QPE_01H_Pass2",
+                   "label": "Rainfall 1 hr (gauge corrected)", "unit": "mm",
+                   "range": (0, 50), "ramp": "precip", "floor": 0.3, "every": 15},
+    "qpemulti03": {"path": "MultiSensor_QPE_03H_Pass2",
+                   "label": "Rainfall 3 hr (gauge corrected)", "unit": "mm",
+                   "range": (0, 100), "ramp": "precip", "floor": 0.5, "every": 30},
+    "qpemulti06": {"path": "MultiSensor_QPE_06H_Pass2",
+                   "label": "Rainfall 6 hr (gauge corrected)", "unit": "mm",
+                   "range": (0, 150), "ramp": "precip", "floor": 0.5, "every": 30},
+    "qpemulti12": {"path": "MultiSensor_QPE_12H_Pass2",
+                   "label": "Rainfall 12 hr (gauge corrected)", "unit": "mm",
+                   "range": (0, 200), "ramp": "precip", "floor": 0.5, "every": 60},
     "qpemulti24": {"path": "MultiSensor_QPE_24H_Pass2",
                    "label": "Rainfall 24 hr (gauge corrected)", "unit": "mm",
                    "range": (0, 250), "ramp": "precip", "floor": 0.5, "every": 60},
+    "qpemulti72": {"path": "MultiSensor_QPE_72H_Pass2",
+                   "label": "Rainfall 72 hr (gauge corrected)", "unit": "mm",
+                   "range": (0, 400), "ramp": "precip", "floor": 0.5, "every": 60},
+    # How unusual the rain is, rather than how much of it there was. Two
+    # inches is a wet afternoon in Louisiana and a once in a decade event in
+    # Arizona, and the recurrence interval is what tells those apart.
+    "qpeari01": {"path": "RadarOnly_QPE_01H_ARI", "label": "1 hr rain, ARI",
+                 "unit": "yr", "range": (0, 100), "ramp": "heat",
+                 "floor": 1.0, "every": 15},
+    "qpeari24": {"path": "RadarOnly_QPE_24H_ARI", "label": "24 hr rain, ARI",
+                 "unit": "yr", "range": (0, 100), "ramp": "heat",
+                 "floor": 1.0, "every": 60},
     # ── Lightning.
     "ltgprob30": {"path": "LightningProbabilityNext30minGrid",
                   "label": "Lightning Prob. 30 min", "unit": "%",
@@ -1113,11 +1256,27 @@ MRMS_PRODUCTS = {
     "ltgdensity": {"path": "LightningDensityNLDN30min",
                    "label": "Lightning Density 30 min", "unit": "fl/km2/min",
                    "range": (0, 10), "ramp": "heat", "floor": 0.05, "every": 5},
+    "ltgdensity1": {"path": "LightningDensityNLDN01min",
+                    "label": "Lightning Density 1 min", "unit": "fl/km2/min",
+                    "range": (0, 5), "ramp": "heat", "floor": 0.02, "every": 5},
+    # A lightning jump is a sudden rise in flash rate, and it tends to come
+    # before a storm turns severe rather than after. That makes it one of the
+    # few genuinely leading signals in the whole mosaic.
+    "ltgjump": {"path": "LightningJumpGrid", "label": "Lightning Jump",
+                "unit": "", "range": (0, 10), "ramp": "heat",
+                "floor": 0.5, "every": 5},
     # ── Winter and the melting layer: where rain becomes snow, and the
     # temperatures that decide it. These are the signed ones.
     "brightband": {"path": "BrightBandTopHeight", "label": "Melting Layer Top",
                    "unit": "m", "range": (0, 5000), "ramp": "viridis",
                    "floor": 1.0, "every": 15},
+    # The bottom of the melting layer matters as much as the top: rain
+    # reaching the ground rather than snow depends on how far below the layer
+    # the ground is, and the top alone does not say that.
+    "brightbandbot": {"path": "BrightBandBottomHeight",
+                      "label": "Melting Layer Bottom", "unit": "m",
+                      "range": (0, 5000), "ramp": "viridis",
+                      "floor": 1.0, "every": 15},
     "sfctemp": {"path": "Model_SurfaceTemp", "label": "Surface Temp (model)",
                 "unit": "C", "range": (-40, 45), "ramp": "temp",
                 "floor": -1e9, "signed": True, "every": 15},
@@ -1252,9 +1411,40 @@ def build_mrms():
         prev_man = {}
     man = {"updated": now.isoformat(), "products": dict(prev_man)}
     built = 0
-    for name, spec in MRMS_PRODUCTS.items():
+
+    # A budget for the pass, and a rotating start so it is fair.
+    #
+    # The catalogue is seventy products now, and about half of them want
+    # rebuilding every five minutes, which is the same five minutes the radar
+    # frames are built in. Without a ceiling one busy pass would spend the
+    # whole window downloading mosaics and the radar loop would simply have a
+    # hole in it, which is far worse than a mosaic being five minutes stale.
+    #
+    # The cursor is what makes the ceiling fair. Walking the catalogue from
+    # the top every time means a budget that runs out half way through leaves
+    # the second half never built at all: the products at the end would not
+    # exist rather than being slow. Starting where the last pass stopped means
+    # everything comes round.
+    names = list(MRMS_PRODUCTS)
+    start = int((state.get("__cursor__") or {}).get("at", 0)) % max(1, len(names))
+    names = names[start:] + names[:start]
+    pass_started = time.time()
+    stopped_at = start
+
+    for i, name in enumerate(names):
+        spec = MRMS_PRODUCTS[name]
+        if built >= MRMS_PASS_MAX or (time.time() - pass_started) > MRMS_PASS_SECS:
+            stopped_at = (start + i) % len(names)
+            log(f"mrms: pass budget reached after {built} products, "
+                f"resuming at {name} next time")
+            break
         if not _mrms_due(name, spec, state, now):
             continue
+        if not disk_ok(out):
+            log(f"mrms: only {free_mb(out):.0f} MB free, skipping the rest of "
+                "this pass. Frames will be pruned harder until there is room.")
+            stopped_at = (start + i) % len(names)
+            break
         url = f"{MRMS_BASE}/{spec['path']}/MRMS_{spec['path']}.latest.grib2.gz"
         t0 = time.time()
         try:
@@ -1327,6 +1517,11 @@ def build_mrms():
         secs = round(time.time() - t0, 1)
         state[name] = {"last": now.isoformat(), "fails": 0, "secs": secs}
         log(f"  mrms {name}: built in {secs}s")
+    else:
+        # The loop finished without hitting the budget, so the whole
+        # catalogue was considered and the next pass starts from the top.
+        stopped_at = 0
+    state["__cursor__"] = {"at": stopped_at}
     _mrms_prune(out)
 
     # The frame list is read back off the disk rather than appended to as
@@ -1382,6 +1577,7 @@ def _mrms_prune(out, hours=None):
         return
     import shutil
     hours = MRMS_KEEP_HOURS if hours is None else hours
+    hours = hours_for_disk(out, hours)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     dirs = []
     for d in sorted(os.listdir(out)):

@@ -121,9 +121,11 @@ console.log('\n1. the top level is the groups, not thirty-eight products');
      ['severe', 'refl', 'precip', 'ltg', 'winter'].every(g => r.groups.includes(g)),
      JSON.stringify(r.groups));
   ok('there is exactly one Back', r.backs === 1, String(r.backs));
-  ok('each group says how many products it holds',
-     r.counts.length === r.groups.length && r.counts.every(c => /\d/.test(c)),
-     JSON.stringify(r.counts));
+  // There used to be a count chip on each group saying how many products
+  // were inside it. It read as a stray figure tacked onto the label rather
+  // than as information, and it was taken out on purpose.
+  ok('and no stray count chip on the labels',
+     r.counts.length === 0, JSON.stringify(r.counts));
 }
 
 console.log('\n2. opening a group shows that group, and only that group');
@@ -211,8 +213,10 @@ console.log('\n4. toggling inside a group draws it, and the top level knows');
      r.active.includes('severe'), JSON.stringify(r.active));
   ok('and a group with nothing drawn is not',
      !r.active.includes('winter'), JSON.stringify(r.active));
-  ok('the count says how many of the group are on',
-     r.counts.some(c => /^2\/\d/.test(c)), JSON.stringify(r.counts));
+  // Which of them are on is said by the active styling, not by a number:
+  // the lit pill is the answer and the chip was saying it twice.
+  ok('and it says so by lighting up rather than by a number',
+     r.counts.length === 0, JSON.stringify(r.counts));
 }
 
 console.log('\n5. Back from the group list leaves MRMS, one level at a time');

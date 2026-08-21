@@ -49,7 +49,8 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gfs_pipeline import (HTTP, MAX_EDGE_PX, bounds_from, log,  # noqa: E402
+from gfs_pipeline import (HTTP, MAX_EDGE_PX, bounds_from, disk_ok,  # noqa: E402
+                          free_mb, hours_for_disk, log,
                           regrid_to_latlon, write_json)
 
 OUT_DIR = os.path.expanduser("~/wxdata/satellite")
@@ -461,6 +462,11 @@ def prune(sector_dir, hours=KEEP_HOURS):
     if not os.path.isdir(sector_dir):
         return
     import shutil
+    # What the card can afford, not what was asked for. A composite is
+    # several bands reprojected into one PNG and they are the largest
+    # pictures this Pi writes, so the satellite folder is usually the first
+    # place a full disk shows up.
+    hours = hours_for_disk(sector_dir, hours)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     kept = []
     for d in sorted(os.listdir(sector_dir)):

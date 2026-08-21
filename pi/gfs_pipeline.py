@@ -2021,6 +2021,63 @@ def log(msg):
     print(f"{datetime.now(timezone.utc):%H:%M:%S} {msg}", flush=True)
 
 
+# ── The disk, which is the one resource that does not fail gracefully ───────
+#
+# Everything else here degrades: a model that will not download leaves the
+# last one on screen, a radar site that times out is skipped, a product that
+#404s backs itself off. A full SD card does none of that. It takes apt down,
+# it takes git down, it takes the venv down, and the errors it produces are
+# about writing files rather than about weather, so they point nowhere near
+# the pipeline that filled it.
+#
+# Three days of frames is a promise the disk has to be able to keep. This is
+# what makes it ask first. Retention is what fits, not what was wanted.
+DISK_FLOOR_MB = float(os.environ.get("GWCFC_DISK_FLOOR_MB", "1500"))
+
+
+def free_mb(path):
+    """Megabytes free on the filesystem holding path.
+
+    Unknowable is treated as plenty: a guard that cannot read the disk should
+    not be the reason nothing gets built.
+    """
+    try:
+        st = os.statvfs(path if os.path.exists(path) else os.path.dirname(path) or ".")
+        return (st.f_bavail * st.f_frsize) / (1024.0 * 1024.0)
+    except (OSError, ValueError):
+        return float("inf")
+
+
+def hours_for_disk(path, want_hours):
+    """The retention window the disk can actually afford right now.
+
+    Stepped rather than smooth, because a window that drifts a little every
+    pass would delete frames one at a time forever and never settle. Each
+    step is a decision: plenty of room keeps the full window, tight room
+    keeps a day, nearly full keeps a few hours, and full keeps the last
+    couple so there is still something to show while space is recovered.
+    """
+    free = free_mb(path)
+    if free >= DISK_FLOOR_MB * 2:
+        return want_hours
+    if free >= DISK_FLOOR_MB:
+        return min(want_hours, 24.0)
+    if free >= DISK_FLOOR_MB / 2:
+        return min(want_hours, 6.0)
+    return min(want_hours, 2.0)
+
+
+def disk_ok(path, need_mb=None):
+    """Whether there is room to write something new.
+
+    Called before a build rather than after: skipping one product is a gap in
+    a loop, and filling the card is a machine that needs a keyboard and a
+    monitor to fix.
+    """
+    need = DISK_FLOOR_MB / 3.0 if need_mb is None else float(need_mb)
+    return free_mb(path) >= need
+
+
 # ── Colour ramps ────────────────────────────────────────────────────────────
 # Kept here rather than pulled from matplotlib, because matplotlib would be a
 # figure, axes and a savefig per image: 328 of those is minutes of work on a Pi

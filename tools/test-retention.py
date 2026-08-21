@@ -48,12 +48,27 @@ def ok(name, cond, extra=""):
 
 radar_src = open(RADAR, encoding="utf-8").read()
 sat_src = open(SAT, encoding="utf-8").read()
+gfs_src = open(os.path.join(ROOT, "pi", "gfs_pipeline.py"), encoding="utf-8").read()
+
+# The pruners ask the disk how long a window it can afford before they use
+# one, so the real guard is compiled in beside them rather than stubbed. The
+# temporary directories below sit on a disk with room, so it answers with the
+# window that was asked for and these tests measure the pruning itself. What
+# the guard does when the disk is FULL is tools/test-disk-guard.py's job.
+DISK = {"os": os}
+for _n in ast.parse(gfs_src).body:
+    _name = getattr(_n, "name", None) or (
+        getattr(_n.targets[0], "id", "") if isinstance(_n, ast.Assign) else "")
+    if _name in ("DISK_FLOOR_MB", "free_mb", "hours_for_disk", "disk_ok"):
+        exec(ast.get_source_segment(gfs_src, _n), DISK)
 
 
 def compile_from(src, names, extra=None):
     """The named top-level functions, compiled alone with only what they need."""
     ns = {"os": os, "datetime": datetime, "timedelta": timedelta,
-          "timezone": timezone, "shutil": shutil}
+          "timezone": timezone, "shutil": shutil,
+          "hours_for_disk": DISK["hours_for_disk"],
+          "free_mb": DISK["free_mb"], "disk_ok": DISK["disk_ok"]}
     ns.update(extra or {})
     tree = ast.parse(src)
     for node in tree.body:
