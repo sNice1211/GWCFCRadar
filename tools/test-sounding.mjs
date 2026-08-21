@@ -1079,6 +1079,69 @@ console.log('\n13f. the Pi says why it is empty, in the browser');
      `${JSON.stringify(r.quiet)} ${JSON.stringify(r.nothing)}`);
 }
 
+console.log('\n13g. the verdict, and the meters under the numbers');
+{
+  // A sounding is a wall of numbers, and the first question anybody actually
+  // has is "is anything going to happen here". The numbers already answered
+  // that and never said it out loud. These check the sentence is real rather
+  // than decorative: that it changes with the profile, and that it refuses to
+  // cry severe over a profile that is capped shut.
+  const r = await page.evaluate(() => {
+    const severe = {
+      sb:{label:'SB',cape:2480,cin:-32}, ml:{label:'ML',cape:1980,cin:-58},
+      sfc:{t:29,td:22}, shear6:52, srh1:212, stp:2.4, scp:7.2, ship:1.6,
+      dcape:1080,
+    };
+    const capped = {
+      sb:{label:'SB',cape:3000,cin:-220}, ml:{label:'ML',cape:2600,cin:-240},
+      sfc:{t:31,td:20}, shear6:55, srh1:250, stp:3.0, scp:8, ship:2,
+    };
+    const quiet = {
+      sb:{label:'SB',cape:20,cin:-2}, ml:{label:'ML',cape:5,cin:-1},
+      sfc:{t:14,td:3}, shear6:8, srh1:12, stp:0, scp:0, ship:0,
+    };
+    const plain = {
+      sb:{label:'SB',cape:900,cin:-20}, ml:{label:'ML',cape:700,cin:-25},
+      sfc:{t:26,td:18}, shear6:14, srh1:30, stp:0, scp:0, ship:0,
+    };
+    return {
+      severe: _sndVerdictHTML(severe), capped: _sndVerdictHTML(capped),
+      quiet: _sndVerdictHTML(quiet), plain: _sndVerdictHTML(plain),
+      qs: _sndQuick(severe),
+      mZero: _sndMeterPct(0, 1000, 2500),
+      mWarm: _sndMeterPct(1000, 1000, 2500),
+      mHot: _sndMeterPct(2500, 1000, 2500),
+      mOver: _sndMeterPct(99999, 1000, 2500),
+      mNull: _sndMeterPct(null, 1000, 2500),
+    };
+  });
+  ok('a dangerous profile is called dangerous',
+     /lv4/.test(r.severe) && /Dangerous/.test(r.severe), r.severe);
+  ok('and says what it supports, not just a word',
+     /tornado/i.test(r.severe), r.severe);
+  ok('large hail is named when SHIP says so', /hail/i.test(r.severe), r.severe);
+  // The one that matters most. 3000 J/kg under 220 J/kg of inhibition is a
+  // blue sky afternoon, and shouting severe over it would be the panel lying
+  // with total confidence.
+  ok('a capped profile is NOT called severe, however good the rest looks',
+     /Capped/.test(r.capped) && !/lv4/.test(r.capped), r.capped);
+  ok('and the cap is named as the reason', /inhibition/i.test(r.capped), r.capped);
+  ok('nothing to work with reads as quiet',
+     /Quiet/.test(r.quiet) && /lv0/.test(r.quiet), r.quiet);
+  ok('and an ordinary storm day is neither quiet nor dangerous',
+     !/lv0/.test(r.plain) && !/lv4/.test(r.plain), r.plain);
+  // A bar is only worth drawing if it means the same thing on every tile,
+  // which is what anchoring warm and hot to fixed marks buys.
+  ok('the meter is empty at zero', r.mZero === 0, String(r.mZero));
+  ok('half full at the warm threshold', r.mWarm === 50, String(r.mWarm));
+  ok('four fifths at the hot one', r.mHot === 80, String(r.mHot));
+  ok('and never past full, however extreme', r.mOver === 100, String(r.mOver));
+  ok('a missing value draws nothing rather than NaN', r.mNull === 0, String(r.mNull));
+  ok('every quick tile carries one',
+     (r.qs.match(/snd-meter/g) || []).length === 4,
+     String((r.qs.match(/snd-meter/g) || []).length));
+}
+
 console.log('\n14. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));
