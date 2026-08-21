@@ -103,9 +103,38 @@ print("\n2. the expensive sector is not on a timer")
 ok("Full Disk is on demand only", SECTORS["fulldisk"].get("on_demand") is True)
 ok("CONUS and both mesoscale boxes are not",
    not any(SECTORS[s].get("on_demand") for s in ("conus", "meso1", "meso2")))
-ok("only true colour, the one that needs the half kilometre band, is day only",
-   {k for k, r in RECIPES.items() if r.get("daytime_only")} == {"truecolor"},
-   str({k for k, r in RECIPES.items() if r.get("daytime_only")}))
+# Bands 1 to 6 are reflective: they see sunlight bouncing off things, so at
+# night they read zero. A recipe that builds a whole output channel out of
+# one of them has nothing to draw in the dark, and building it anyway stores
+# a flat rectangle every ten minutes all night.
+REFLECTIVE = {1, 2, 3, 4, 5, 6}
+
+
+def dark_channels(r):
+    """Output channels that go flat at night, for this recipe."""
+    return [i for i, ch in enumerate(r["rgb"])
+            if all(band in REFLECTIVE for band, _ in ch["terms"])]
+
+
+day = {k for k, r in RECIPES.items() if r.get("daytime_only")}
+ok("true colour is day only, since all three channels are sunlight",
+   "truecolor" in day and len(dark_channels(RECIPES["truecolor"])) == 3,
+   str(dark_channels(RECIPES["truecolor"])))
+ok("and so is Day Cloud Phase, whose green and blue are sunlight too",
+   "cloudphase" in day and len(dark_channels(RECIPES["cloudphase"])) == 2,
+   str(dark_channels(RECIPES["cloudphase"])))
+# Fire Temperature is the deliberate exception: its red is band 7 at 3.9
+# microns, which sees hot ground in the dark, so a fire really does show at
+# night. Marking it day only would throw away its best use.
+ok("fire temperature is not day only, because band 7 sees heat in the dark",
+   "firetemp" not in day and 0 not in dark_channels(RECIPES["firetemp"]),
+   str(dark_channels(RECIPES["firetemp"])))
+# The infrared recipes work all night and must not have been swept up.
+ok("the infrared recipes are never day gated",
+   not (day & {"airmass", "dust", "ash", "nightmicro"}), str(day))
+ok("nothing is day gated that has no sunlight channel at all",
+   all(dark_channels(RECIPES[k]) for k in day),
+   str({k: dark_channels(RECIPES[k]) for k in day if not dark_channels(RECIPES[k])}))
 
 print("\n3. one folder holds both mesoscale boxes, and they are told apart")
 ns = funcs("_doy_prefixes", "latest_band_keys", "_s3_list")
@@ -135,15 +164,15 @@ fake_listing(listing)
 got1 = ns["latest_band_keys"]("noaa-goes16", "meso1", (7, 13, 15), now)
 ok("a mesoscale box finds a complete scan", got1 is not None)
 ok("and takes only its own box's files",
-   got1 and all("RadM1-" in k for k in got1[1].values()),
-   str(got1 and list(got1[1].values())))
+   got1 and all("RadM1-" in k for k in got1[2].values()),
+   str(got1 and list(got1[2].values())))
 ok("and takes the newest scan, not the first one listed",
-   got1 and got1[0] == "20262321201000", str(got1 and got1[0]))
+   got1 and got1[1] == "20262321201000", str(got1 and got1[1]))
 
 got2 = ns["latest_band_keys"]("noaa-goes16", "meso2", (7, 13, 15), now)
 ok("the other box finds its own files, from the same listing",
-   got2 and all("RadM2-" in k for k in got2[1].values()),
-   str(got2 and list(got2[1].values())))
+   got2 and all("RadM2-" in k for k in got2[2].values()),
+   str(got2 and list(got2[2].values())))
 
 print("\n4. a half published scan is skipped, not half drawn")
 # The newest scan is missing band 15, which every recipe using it needs.
@@ -152,11 +181,69 @@ partial = [k for k in listing
 fake_listing(partial)
 got = ns["latest_band_keys"]("noaa-goes16", "meso1", (7, 13, 15), now)
 ok("it falls back to the older scan that is complete",
-   got and got[0] == "20262321200000", str(got and got[0]))
+   got and got[1] == "20262321200000", str(got and got[1]))
 
 fake_listing([])
 ok("an empty listing is no scan, not a crash",
    ns["latest_band_keys"]("noaa-goes16", "conus", (13,), now) is None)
+
+print("\n4b. a retired satellite's empty bucket is not the end of the search")
+# GOES-19 took the East post from GOES-16, and the noaa-goes16 bucket did not
+# break when that happened: it just stopped gaining files. A listing of the
+# current hour there is empty, and empty used to mean "give up". It has to
+# mean "ask the next one", or every handover looks like an outage.
+asked = []
+
+
+def two_buckets(live):
+    def lister(bucket, prefix, timeout=30):
+        asked.append(bucket)
+        return listing if bucket == live else []
+    ns["_s3_list"] = lister
+
+
+two_buckets("noaa-goes19")
+del asked[:]
+got3 = ns["latest_band_keys"](["noaa-goes19", "noaa-goes16"], "meso1",
+                              (7, 13, 15), now)
+ok("the current satellite answers and is used", got3 and got3[0] == "noaa-goes19",
+   str(got3 and got3[0]))
+ok("and the retired one is never asked when it does not need to be",
+   "noaa-goes16" not in asked, str(asked))
+
+two_buckets("noaa-goes16")
+del asked[:]
+got4 = ns["latest_band_keys"](["noaa-goes19", "noaa-goes16"], "meso1",
+                              (7, 13, 15), now)
+ok("an empty current bucket falls through to the older one",
+   got4 and got4[0] == "noaa-goes16", str(got4 and got4[0]))
+ok("and the bands really come from the bucket that answered",
+   got4 and all("RadM1-" in k for k in got4[2].values()))
+
+# The bands are downloaded from wherever the listing came from, so the bucket
+# has to travel with them. Reading band files out of the empty bucket would
+# fail on every one of them.
+ok("which is why the bucket is returned rather than assumed",
+   len(got4) == 3, str(got4 and len(got4)))
+
+two_buckets("nobody")
+ok("and when neither has it, that is still no scan rather than a crash",
+   ns["latest_band_keys"](["noaa-goes19", "noaa-goes16"], "meso1",
+                          (7, 13, 15), now) is None)
+
+ok("a bare bucket name still works, so old callers do not break",
+   (two_buckets("noaa-goes16") or
+    ns["latest_band_keys"]("noaa-goes16", "meso1", (7, 13, 15), now)) is not None)
+
+SATS = const("SATS")
+ok("GOES-East lists the current satellite first",
+   SATS["east"]["buckets"][0] == "noaa-goes19", str(SATS["east"]["buckets"]))
+ok("and still knows where the old archive is",
+   "noaa-goes16" in SATS["east"]["buckets"], str(SATS["east"]["buckets"]))
+ok("every post has at least one bucket and no duplicates",
+   all(s["buckets"] and len(set(s["buckets"])) == len(s["buckets"])
+       for s in SATS.values()),
+   str({k: v["buckets"] for k, v in SATS.items()}))
 
 print("\n5. a filename stamp is the instant it says it is")
 ns2 = funcs("_stamp_utc", "_sun_elevation", "_stretch")

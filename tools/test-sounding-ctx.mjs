@@ -191,7 +191,7 @@ console.log('\n6. the model menu still works after the button came out');
       regionSel: !!document.getElementById('sev-region-sel'),
       varSel: !!document.getElementById('sev-var-sel'),
       // Removing a child must not have taken the row it sat in with it.
-      row: !!document.querySelector('#sev-dropdowns .sev-dd-wrap'),
+      row: !!document.querySelector('.sev-dropdowns .sev-dd-wrap'),
     };
   });
   ok('the Run Models panel is intact', r.panel && r.row, JSON.stringify(r));

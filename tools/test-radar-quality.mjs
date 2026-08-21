@@ -265,6 +265,87 @@ console.log('\n7. long product names are not cut off mid-word');
      r.overflowX === 'hidden', r.overflowX);
 }
 
+console.log('\n7b. the pixel renderer draws the same picture, only truer');
+{
+  const r = await page.evaluate(() => {
+    // A real polar sweep, so the gates lean over and grow the way they do on
+    // the sky. A grid of little squares would not have tested the thing that
+    // matters, which is whether the slanted outline is walked properly.
+    function sweep(nRad, nGate, maxDeg) {
+      const S = 9, md = new Float32Array(nRad * nGate * S);
+      let k = 0;
+      for (let rr = 0; rr < nRad; rr++) {
+        const a0 = (rr / nRad) * 2 * Math.PI, a1 = ((rr + 1) / nRad) * 2 * Math.PI;
+        for (let g = 0; g < nGate; g++) {
+          const r0 = maxDeg * g / nGate, r1 = maxDeg * (g + 1) / nGate;
+          md[k]   = -97 + r0 * Math.cos(a0); md[k+1] = 35 + r0 * Math.sin(a0);
+          md[k+2] = -97 + r1 * Math.cos(a0); md[k+3] = 35 + r1 * Math.sin(a0);
+          md[k+4] = -97 + r1 * Math.cos(a1); md[k+5] = 35 + r1 * Math.sin(a1);
+          md[k+6] = -97 + r0 * Math.cos(a1); md[k+7] = 35 + r0 * Math.sin(a1);
+          md[k+8] = 5 + ((rr + g) % 13) * 5;
+          k += S;
+        }
+      }
+      return md;
+    }
+    const cov = (cv) => {
+      const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+      const u = new Uint32Array(d.buffer);
+      let n = 0; const seen = new Set();
+      for (let i = 0; i < u.length; i++) if (u[i] !== 0) { n++; seen.add(u[i]); }
+      return { painted: n, colors: seen.size };
+    };
+    const out = {};
+    for (const [nRad, nGate, maxDeg, name] of
+         [[720, 230, 4.1, 'far'], [360, 120, 0.35, 'near']]) {
+      const md = sweep(nRad, nGate, maxDeg);
+      const res = { meshData: md,
+                    bounds: [-97 - maxDeg, 35 - maxDeg, -97 + maxDeg, 35 + maxDeg],
+                    metadata: {} };
+      const nu = cov(_meshToImage(res, 'ref', res.bounds).canvas);
+      // Make one colour a hair translucent and the old canvas path renderer
+      // takes over, which is how the two are compared on identical data.
+      const real = window._meshRGBA;
+      window._meshRGBA = (css) => { const v = real(css); return v ? { u32: v.u32, a: 254 } : v; };
+      const old = cov(_meshToImage(res, 'ref', res.bounds).canvas);
+      window._meshRGBA = real;
+      out[name] = { nu, old, cells: md.length / 9 };
+    }
+    return out;
+  });
+
+  for (const where of ['far', 'near']) {
+    const { nu, old } = r[where];
+    // Not a pixel by pixel match, because the two rasterisers round edges
+    // differently, but the amount of map covered has to agree. A pixel
+    // renderer that quietly dropped gates would show up here as a shortfall.
+    const ratio = nu.painted / Math.max(1, old.painted);
+    ok(`${where}: it covers the same ground as the canvas renderer`,
+       ratio > 0.97 && ratio < 1.03, `${ratio.toFixed(3)} (${nu.painted} vs ${old.painted})`);
+    ok(`${where}: and it really painted something`, nu.painted > 10000, String(nu.painted));
+  }
+  // The near field is the case that could silently break: close to the radar
+  // a gate is smaller than one pixel, and a scanline walk over something
+  // finer than its own grid can come out empty.
+  ok('the near field is not thinned out by sub-pixel gates',
+     r.near.nu.painted / Math.max(1, r.near.old.painted) > 0.97,
+     `${r.near.nu.painted} vs ${r.near.old.painted}`);
+
+  // And the part that is not merely equal but better. Reflectivity is
+  // thirteen discrete bands here. The canvas renderer anti-aliases every
+  // band edge, blending neighbouring bands into thousands of in-between
+  // shades - and an in-between shade is a reading the radar never took. A
+  // pixel that is half "35 dBZ green" and half "40 dBZ yellow" gets painted
+  // a colour that means neither. Writing pixels directly cannot do that.
+  ok('the picture holds only the bands the data actually has',
+     r.far.nu.colors <= 16, String(r.far.nu.colors));
+  ok('where the canvas renderer invented thousands of in-between shades',
+     r.far.old.colors > 1000, String(r.far.old.colors));
+  ok('which is the same blur the pixelated rendering fixed, one layer down',
+     r.near.nu.colors <= 16 && r.near.old.colors > 1000,
+     `${r.near.nu.colors} vs ${r.near.old.colors}`);
+}
+
 console.log('\n8. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));

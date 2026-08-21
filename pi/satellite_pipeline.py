@@ -65,10 +65,23 @@ KEEP_HOURS = float(os.environ.get("GWCFC_SAT_KEEP_HOURS", "72"))
 # frames a faster sector produces inside it.
 MAX_FRAMES = int(os.environ.get("GWCFC_SAT_MAX_FRAMES", "500"))
 
-# GOES-East and GOES-West. The bucket name is the whole difference.
+# GOES-East and GOES-West, as lists rather than single names.
+#
+# "GOES-East" is a post, not a spacecraft, and the satellite standing in it
+# gets replaced. GOES-19 took over East from GOES-16, and when that happened
+# the noaa-goes16 bucket did not break or disappear: it simply stopped
+# gaining new files. Code pointed at it kept listing the current hour, kept
+# getting an empty answer, and kept reporting "no complete scan found", which
+# reads like a network problem and is not one.
+#
+# So each post lists the buckets that have held it, newest first. The first
+# one with a scan in it wins, which means the handover costs nothing, and the
+# retired satellite's archive still answers if the new one has a gap.
 SATS = {
-    "east": {"bucket": "noaa-goes16", "label": "GOES-East", "lon": -75.0},
-    "west": {"bucket": "noaa-goes18", "label": "GOES-West", "lon": -137.0},
+    "east": {"buckets": ["noaa-goes19", "noaa-goes16"],
+             "label": "GOES-East", "lon": -75.0},
+    "west": {"buckets": ["noaa-goes18", "noaa-goes17"],
+             "label": "GOES-West", "lon": -137.0},
 }
 
 # ABI product per sector. RadC is CONUS, RadM1/RadM2 the two floating
@@ -136,9 +149,21 @@ RGB_RECIPES = {
             {"terms": [(5, 1.0)], "range": (0.0, 0.75), "gamma": 1.0},
         ],
     },
+    # Day Cloud Phase is a daytime product, and the name is not decoration.
+    # Its green comes from band 2 and its blue from band 5, and both of those
+    # are reflective: at night they read zero, the green and blue channels go
+    # flat, and what gets built and stored is a red rectangle. Ten minutes
+    # apart, all night, every night. Skipping it costs nothing, because there
+    # was never a picture there to lose.
+    #
+    # Fire Temperature is deliberately NOT marked, even though it also uses
+    # reflective bands for green and blue. Its red is band 7 at 3.9 microns,
+    # which sees hot ground in the dark, so a fire really does show at night.
+    # That is arguably the most useful time to look at it.
     "cloudphase": {
         "label": "Day Cloud Phase", "sectors": ("conus", "meso1", "meso2"),
         "bands": (2, 5, 13),
+        "daytime_only": True,
         "rgb": [
             {"terms": [(13, 1.0)], "range": (219.65, 280.65), "invert": True},
             {"terms": [(2, 1.0)], "range": (0.0, 0.78), "gamma": 1.0},
@@ -173,44 +198,59 @@ def _doy_prefixes(sector_abi, now, meso=None, back_hours=2):
 
 
 def _s3_list(bucket, prefix, timeout=30):
+    # A refused or throttled listing used to look exactly like an empty one,
+    # so a credentials or network problem was reported as "no scan found" and
+    # sent whoever read it looking in the wrong place. Say which it was.
     url = f"https://{bucket}.s3.amazonaws.com/?list-type=2&prefix={prefix}"
-    r = HTTP.get(url, timeout=timeout)
+    try:
+        r = HTTP.get(url, timeout=timeout)
+    except Exception as e:
+        log(f"  s3 {bucket}: {e}")
+        return []
     if r.status_code != 200:
+        log(f"  s3 {bucket}/{prefix}: HTTP {r.status_code}")
         return []
     return re.findall(r"<Key>([^<]+)</Key>", r.text)
 
 
-def latest_band_keys(bucket, sector, bands, now=None):
-    """One S3 key per wanted band, all from the same scan, or None.
+def latest_band_keys(buckets, sector, bands, now=None):
+    """The bucket, scan stamp, and one S3 key per band, or None.
 
     Bands are published as separate files that share a start time in the
     name, so the scan is chosen first and the bands picked out of it. A scan
     missing any wanted band is skipped rather than half drawn.
+
+    Takes a list of buckets because the satellite standing in a post gets
+    replaced and the retired one's bucket stays up, empty of new scans. The
+    first bucket with a complete scan wins.
     """
     now = now or datetime.now(timezone.utc)
+    if isinstance(buckets, str):
+        buckets = [buckets]
     spec = SECTORS[sector]
     meso = spec.get("meso")
     # RadM1 or RadM2 for a mesoscale box; RadC or RadF otherwise. This is the
     # part of the filename that says which sector a file belongs to.
     want_tag = f"RadM{meso}-" if meso else f"{spec['abi'].rsplit('-', 1)[-1]}-"
-    for prefix in _doy_prefixes(spec["abi"], now, meso):
-        keys = _s3_list(bucket, prefix)
-        if not keys:
-            continue
-        # Group by the scan start stamp embedded in every filename.
-        scans = {}
-        for k in keys:
-            if want_tag not in k:
+    for bucket in buckets:
+        for prefix in _doy_prefixes(spec["abi"], now, meso):
+            keys = _s3_list(bucket, prefix)
+            if not keys:
                 continue
-            m = re.search(r"_s(\d{14})", k)
-            b = re.search(r"-M\dC(\d\d)_", k)
-            if not m or not b:
-                continue
-            scans.setdefault(m.group(1), {})[int(b.group(1))] = k
-        for stamp in sorted(scans, reverse=True):
-            have = scans[stamp]
-            if all(b in have for b in bands):
-                return stamp, {b: have[b] for b in bands}
+            # Group by the scan start stamp embedded in every filename.
+            scans = {}
+            for k in keys:
+                if want_tag not in k:
+                    continue
+                m = re.search(r"_s(\d{14})", k)
+                b = re.search(r"-M\dC(\d\d)_", k)
+                if not m or not b:
+                    continue
+                scans.setdefault(m.group(1), {})[int(b.group(1))] = k
+            for stamp in sorted(scans, reverse=True):
+                have = scans[stamp]
+                if all(b in have for b in bands):
+                    return bucket, stamp, {b: have[b] for b in bands}
     return None
 
 
@@ -346,11 +386,12 @@ def build_rgb(sat_key, sector, recipe_key, now=None):
     if sector not in recipe["sectors"]:
         return False
 
-    found = latest_band_keys(sat["bucket"], sector, recipe["bands"], now)
+    found = latest_band_keys(sat["buckets"], sector, recipe["bands"], now)
     if not found:
-        log(f"  sat {sat_key}/{sector}/{recipe_key}: no complete scan found")
+        log(f"  sat {sat_key}/{sector}/{recipe_key}: no complete scan in "
+            + " or ".join(sat["buckets"]))
         return False
-    stamp, keys = found
+    bucket, stamp, keys = found
 
     # The scan may not have moved on since the last pass. Rebuilding the same
     # picture costs the full download of every band it needs, so it is not
@@ -374,7 +415,7 @@ def build_rgb(sat_key, sector, recipe_key, now=None):
     data, lats, lons = {}, None, None
     for b in recipe["bands"]:
         try:
-            vals, la, lo = _read_abi(sat["bucket"], keys[b])
+            vals, la, lo = _read_abi(bucket, keys[b])
         except Exception as e:
             log(f"  sat {sat_key}/{sector}/{recipe_key}: band {b}: {e}")
             return False
@@ -579,15 +620,16 @@ def check(now=None):
         for sector, spec in SECTORS.items():
             wanted = sorted({b for r in RGB_RECIPES.values()
                              if sector in r["sectors"] for b in r["bands"]})
-            found = latest_band_keys(sat["bucket"], sector, wanted, now)
+            found = latest_band_keys(sat["buckets"], sector, wanted, now)
             if not found:
-                print(f"  MISS {sat_key:5s} {sector:9s} "
-                      f"no scan with all of {wanted}")
+                tried = " or ".join(sat["buckets"])
+                print(f"  MISS {sat_key:5s} {sector:9s} no scan with all "
+                      f"of {wanted} in {tried}")
                 bad += 1
                 continue
-            stamp, keys = found
+            bucket, stamp, keys = found
             print(f"  ok   {sat_key:5s} {sector:9s} scan {stamp}, "
-                  f"{len(keys)} bands")
+                  f"{len(keys)} bands, from {bucket}")
     print("\nEvery sector answered." if not bad
           else f"\n{bad} sector(s) did not answer.")
     return 1 if bad else 0
