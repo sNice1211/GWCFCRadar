@@ -226,6 +226,38 @@ ok("a drift made only of merge commits is recovered from",
 ok("but real work is still refused, and named so it can be looked at",
    "has work of its own" in fixsh and "What is only here" in fixsh)
 
+print("\n9. the network itself is treated as a fault that can be fixed")
+net = open(os.path.join(ROOT, "pi", "fixnet.sh")).read()
+# "Name or service not known" was reported for an address Cloudflare had made
+# seconds earlier. That is not a wrong address, it is a question nobody
+# answered, and restarting the tunnel forever cannot fix a name server.
+ok("there is a script for the connection itself", len(net) > 800)
+ok("it tells IPv4 and IPv6 apart, since only one of them was broken",
+   "IPv4 does NOT reach" in net and "IPv6 does NOT reach" in net)
+# A plain TCP connect to a literal address needs no DNS, which is the only
+# way to tell "the network is down" from "nobody answered the question".
+ok("it probes by address, so a broken resolver cannot skew the answer",
+   "/dev/tcp/" in net)
+ok("and checks whether names resolve as its own separate question",
+   "getent hosts cloudflare.com" in net)
+ok("it writes the setting where this Pi actually keeps it",
+   "nmcli" in net and "systemd-resolved" in net and "resolv.conf" in net)
+# Guessing wrong here means a change that lasts until the next DHCP lease.
+ok("rather than one place and a hope", "dhcpcd.conf" in net)
+ok("if IPv4 is the broken half, cloudflared is told to stop using it",
+   "--edge-ip-version 6" in net)
+ok("through a drop-in, so install.sh rewriting the unit does not undo it",
+   "gwcfc-tunnel.service.d" in net)
+ok("and it is undone by itself once IPv4 works again",
+   "IPv4 works again" in net)
+ok("it says how to undo it by hand too", "delete" in net and "to undo" in net)
+# systemctl --user under sudo is root's session, which has none of these
+# units in it, and would silently do nothing.
+ok("user units are restarted as the user, not as root",
+   "SUDO_USER" in net and "as_user" in net)
+ok("fix.sh offers it exactly when names are what is broken",
+   "fixnet.sh" in fixsh and "getent hosts" in fixsh)
+
 print()
 if failed:
     print(f"{failed} FAILED, {passed} passed")
