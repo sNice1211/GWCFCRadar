@@ -105,7 +105,29 @@ def _looks_like_listing(body):
     return b"Directory listing for" in body
 
 
-def answers(url, timeout=8):
+def _probe(url, path, timeout):
+    """(status, headers, body) from one knock, or None if nothing answered.
+
+    An error status is still an answer and is still worth reading: what
+    matters is WHO sent it, and the difference between "Cloudflare says it
+    cannot reach your tunnel" and "nothing is listening at all" lives in
+    exactly that distinction.
+    """
+    try:
+        req = urllib.request.Request(url.rstrip("/") + path, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.headers, r.read(_PROBE_BYTES)
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(_PROBE_BYTES)
+        except Exception:
+            body = b""
+        return e.code, e.headers, body
+    except Exception:
+        return None
+
+
+def answers(url, timeout=5):
     """
     Does this address reach the Pi's OWN file server?
 
@@ -118,65 +140,116 @@ def answers(url, timeout=8):
     instead. The site was then told to fetch the Pi's files from Cloudflare's
     API, and every Pi-backed feature went dark while the Pi sat there healthy.
 
-    So the answer now has to look like this server rather than merely exist:
-    the CORS header the page depends on, plus a body that is either the model
-    index really being JSON or the root really being http.server's directory
-    listing. Cloudflare's API sends neither of those bodies at these paths.
+    So the answer has to look like this server rather than merely exist. Two
+    doors, and only one of them has to open:
+
+      - the root really being the directory listing http.server writes. That
+        string is unmistakable and is there from the very first boot, before
+        a single model has been built, so it is asked first and on its own.
+      - the model index really being JSON, for the case where something has
+        put an index.html in the served directory and there is no listing to
+        read. That one also wants the CORS header, because JSON alone is a
+        much weaker signature than the listing text.
+
+    The CORS header is deliberately NOT required of the first door. It is the
+    permission the browser needs and serve.py always sends it, but requiring
+    it of the strongest signature would mean any proxy that dropped the header
+    could make a perfectly good address look dead, and this function refusing
+    a good address is just as bad as it accepting a wrong one.
     """
-    base = url.rstrip("/")
-    for path, recognise in (("/models/latest.json", _looks_like_json),
-                            ("/", _looks_like_listing)):
-        try:
-            req = urllib.request.Request(base + path, method="GET")
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                if (r.status == 200 and _cors_ok(r.headers)
-                        and recognise(r.read(_PROBE_BYTES))):
-                    return True
-        except Exception:
-            continue           # try the other door before giving up
+    got = _probe(url, "/", timeout)
+    if got and got[0] == 200 and _looks_like_listing(got[2]):
+        return True
+    got = _probe(url, "/models/latest.json", timeout)
+    if got and got[0] == 200 and _looks_like_json(got[2]) and _cors_ok(got[1]):
+        return True
     return False
 
 
-def current_url(path=None):
-    """
-    The address the tunnel is on now, proven rather than assumed.
+def candidates(path=None):
+    """Every address worth knocking on, newest first, without repeats.
 
     The path is resolved when called rather than defaulted at import, so the
     log location is one thing rather than a copy frozen at load time.
 
-    The log is append-only, so the newest match is USUALLY the live one, and
-    that is where this used to stop. A quick tunnel breaks that assumption
-    in the worst way: it reconnects on its own and writes another address,
-    and a second later the one that was newest a moment ago is dead. Reading
-    the last line published a dead address over a working one and the site
-    lost the Pi while the tunnel sat there running.
-
-    So the candidates are walked newest first and the first one that
-    actually answers is the answer. If none answer, nothing is published,
-    because a published address that does not work is worse than leaving
-    the previous one alone.
+    Only a handful. The unit appends to this log and never truncates it, so
+    after a few months it holds dozens of retired addresses, and none of them
+    are worth a network round trip.
     """
     try:
         with open(path or TUNNEL_LOG, errors="ignore") as f:
             found = _tunnel_urls(f.read())
     except OSError:
-        return None
-    if not found:
-        return None
-    # Newest first, without repeats, and only a handful: a long-lived log
-    # can hold dozens of retired addresses and none of them are worth a
-    # network round trip.
+        return []
     seen, ordered = set(), []
     for u in reversed(found):
         if u not in seen:
             seen.add(u)
             ordered.append(u)
-    for u in ordered[:6]:
-        if answers(u):
-            if u != ordered[0]:
-                log(f"the newest address in the log is dead, using {u}")
-            return u
-    log("no address in the log answers, so nothing is published")
+    return ordered[:4]
+
+
+def log_tail(n=6, path=None):
+    """The tunnel's own last words, for when nothing it said worked."""
+    try:
+        with open(path or TUNNEL_LOG, errors="ignore") as f:
+            lines = [ln.rstrip() for ln in f.read().splitlines() if ln.strip()]
+    except OSError:
+        return []
+    return lines[-n:]
+
+
+def current_url(path=None, patience=0):
+    """
+    The address the tunnel is on now, proven rather than assumed.
+
+    The log is append-only, so the newest match is USUALLY the live one, and
+    that is where this used to stop. A quick tunnel breaks that assumption in
+    the worst way: it reconnects on its own and writes another address, and a
+    second later the one that was newest a moment ago is dead. Reading the
+    last line published a dead address over a working one and the site lost
+    the Pi while the tunnel sat there running.
+
+    So the candidates are walked newest first and the first one that actually
+    answers is the answer. If none answer, nothing is published, because a
+    published address that does not work is worse than leaving the previous
+    one alone.
+
+    And then it waits, which is the part that is easy to leave out.
+
+    A quick tunnel is not usable the instant cloudflared prints its address.
+    The name has to reach the edge first, and for those few seconds the
+    address is real, correct, and answers with an error. The old check
+    accepted any reply at all, so it never noticed; tightening it turned that
+    same window into "nothing answers, publishing nothing", which is a
+    healthy tunnel refused for being young. Both are wrong. So it is asked
+    again, for as long as the caller is willing to wait, re-reading the log
+    each time because the address may not even have been written yet.
+    """
+    deadline = time.monotonic() + max(0, patience)
+    said = False
+    seen_any = 0
+    while True:
+        ordered = candidates(path)
+        seen_any = max(seen_any, len(ordered))
+        for u in ordered:
+            if answers(u):
+                if ordered and u != ordered[0]:
+                    log(f"the newest address in the log is dead, using {u}")
+                return u
+        if time.monotonic() >= deadline:
+            break
+        if not said:
+            log("nothing answers yet. A tunnel that has just started takes a "
+                "moment to become routable, so this waits rather than "
+                "publishing nothing.")
+            said = True
+        time.sleep(5)
+    if not seen_any:
+        log(f"no tunnel address has been written to {path or TUNNEL_LOG} yet")
+    else:
+        log(f"none of the {seen_any} newest addresses in the log answer, "
+            "so nothing is published")
     return None
 
 
@@ -308,11 +381,10 @@ def pinned_url():
     return url
 
 
-def publish_if_changed(force=False):
-    url = pinned_url() or current_url()
+def publish_if_changed(force=False, patience=0):
+    url = pinned_url() or current_url(patience=patience)
     if not url:
-        log("no address in the tunnel log yet")
-        return False
+        return False           # current_url already said why, specifically
     try:
         with open(STATE) as f:
             if f.read().strip() == url and not force:
@@ -344,21 +416,45 @@ def publish_if_changed(force=False):
     return ok
 
 
-def check():
-    """Report where things stand, in words, without changing anything."""
-    url = pinned_url() or current_url()
-    src = 'pinned' if pinned_url() else 'from the log'
-    print(f"  tunnel address : {url + ' (' + src + ')' if url else 'NONE FOUND in ' + TUNNEL_LOG}")
+def check(patience=45):
+    """Report where things stand, in words, without changing anything.
+
+    Patient by default, because the commonest moment to run this is right
+    after restarting the tunnel, and a tunnel that has just started is not
+    routable for a few seconds. Reporting a failure then is reporting
+    impatience.
+    """
+    pin = pinned_url()
+    url = pin or current_url(patience=patience)
     if not url:
-        print("    the tunnel may still be starting. systemctl --user status gwcfc-tunnel")
+        # Two very different faults, and the old wording said the first about
+        # both of them: "NONE FOUND in ~/tunnel.log" is simply untrue when
+        # the log is full of addresses that no longer answer.
+        found = candidates()
+        if found:
+            print("  tunnel address : none that answer. The newest in the log is")
+            print(f"                   {found[0]}")
+            print("    That address is in the log but nothing is behind it, so the")
+            print("    tunnel is not running even though the log remembers it.")
+        else:
+            print(f"  tunnel address : none has been written to {TUNNEL_LOG}")
+            print("    cloudflared has not printed one, so it is not connecting.")
+        tail = log_tail(6)
+        if tail:
+            print("    the tunnel's own last words:")
+            for line in tail:
+                print(f"      {line[:150]}")
+        print("    FIX: systemctl --user restart gwcfc-tunnel gwcfc-publish")
         return 1
+    src = 'pinned' if pin else 'from the log'
+    print(f"  tunnel address : {url} ({src})")
     # Knock on the door, and use the same knock the publisher uses, so this
     # check and the thing it is checking can never disagree. The log is
     # append-only across restarts, so after a reboot with a dead tunnel the
     # last address in it still reads as current, and this once said
     # "match: yes" about an address nothing answered. Agreeing with the
     # database means nothing unless the Pi is what is on the other end.
-    alive = answers(url, timeout=20)
+    alive = answers(url, timeout=10)
     print("  answers        : " + ("yes, the tunnel is alive" if alive else
         "NO. Nothing that looks like this Pi answers there, so the tunnel is "
         "not actually running.\n    FIX: systemctl --user restart "
@@ -424,9 +520,14 @@ def main():
         return 0
     watch = "--watch" in sys.argv
     if not watch:
-        return 0 if publish_if_changed(force="--force" in sys.argv) else 1
+        # A one-shot run gets one chance, so it is the one that most needs to
+        # wait for a tunnel that is still coming up.
+        return 0 if publish_if_changed(force="--force" in sys.argv,
+                                       patience=60) else 1
     # The tunnel can take a while to come up, and can be restarted underneath
-    # us, so this keeps looking rather than checking once and giving up.
+    # us, so this keeps looking rather than checking once and giving up. No
+    # patience is needed inside a single pass here: the loop below IS the
+    # patience, and a pass that waits would only delay noticing a restart.
     fixed = pinned_url()
     log(f"address is pinned to {fixed}, republishing only if it is lost"
         if fixed else "watching the tunnel log")

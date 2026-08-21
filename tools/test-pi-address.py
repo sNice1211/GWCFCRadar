@@ -28,7 +28,9 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -203,16 +205,31 @@ other = serve({"/": (200, b"<html><body>somebody else's website</body></html>")}
 ok("and so is any other site that happens to answer on /",
    pub.answers(other, timeout=5) is False)
 
-plain = serve({"/models/latest.json": (200, LATEST), "/": (200, LISTING)},
-              cors=False)
-ok("a server with no CORS header is refused, since a browser could not read it",
-   pub.answers(plain, timeout=5) is False)
-
 ok("nothing listening at all is refused",
    pub.answers("http://127.0.0.1:1", timeout=2) is False)
 
-ok("and the --check knock is the same knock, so the two cannot disagree",
-   "answers(url, timeout=20)" in src)
+# The two doors are deliberately not held to the same standard, because they
+# are not equally distinctive. Requiring the CORS header of the strongest
+# signature would mean any proxy that dropped a header could make a perfectly
+# good address look dead, and refusing a good address is exactly as bad as
+# accepting a wrong one.
+INDEXED = b"<html><body>an index.html is in the way</body></html>"
+listing_only = serve({"/": (200, LISTING)}, cors=False)
+ok("the directory listing is signature enough on its own",
+   pub.answers(listing_only, timeout=5) is True)
+
+json_no_cors = serve({"/": (200, INDEXED),
+                      "/models/latest.json": (200, LATEST)}, cors=False)
+ok("but bare JSON is not, so that door also wants the browser's permission",
+   pub.answers(json_no_cors, timeout=5) is False)
+
+json_cors = serve({"/": (200, INDEXED),
+                   "/models/latest.json": (200, LATEST)})
+ok("and with the header it is accepted, which is the index.html case",
+   pub.answers(json_cors, timeout=5) is True)
+
+ok("the --check knock is the same knock, so the two cannot disagree",
+   "alive = answers(url" in src)
 
 
 print("\n8. the tunnel's address is read out of the log, not Cloudflare's")
@@ -237,6 +254,79 @@ ok("dash, www and the other service names are refused too",
 ok("order is kept, so the newest can still be preferred",
    pub._tunnel_urls("https://one-a.trycloudflare.com https://two-b.trycloudflare.com")
    == ["https://one-a.trycloudflare.com", "https://two-b.trycloudflare.com"])
+
+
+print("\n9. a tunnel that has just started is waited for, not written off")
+# Tightening the check above created a new way to be wrong. A quick tunnel is
+# not routable the instant cloudflared prints its address: the name has to
+# reach Cloudflare's edge first, and for those few seconds the address is
+# real, correct, and answers with an error. The old lenient check never
+# noticed. The strict one turned that window into "nothing answers, so
+# nothing is published", which is a healthy tunnel refused for being young.
+class _Late(BaseHTTPRequestHandler):
+    """Answers with an edge error until READY_AT, then like the Pi."""
+    READY_AT = [0.0]
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if time.monotonic() < self.READY_AT[0]:
+            self.send_response(530)          # what Cloudflare sends meanwhile
+            body = b"error code: 1033"
+        else:
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            body = LISTING
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+_Late.READY_AT[0] = time.monotonic() + 6
+_late = ThreadingHTTPServer(("127.0.0.1", 0), _Late)
+threading.Thread(target=_late.serve_forever, daemon=True).start()
+servers.append(_late)
+late_url = f"http://127.0.0.1:{_late.server_address[1]}"
+
+ok("an address that is not routable YET is not accepted straight away",
+   pub.answers(late_url, timeout=3) is False)
+
+logfile = os.path.join(tempfile.mkdtemp(), "tunnel.log")
+with open(logfile, "w") as fh:
+    fh.write("INF Requesting tunnel from https://api.trycloudflare.com/tunnel\n")
+    fh.write(f"INF |  {late_url}  |\n")
+# candidates() only recognises trycloudflare names, so the local stand-in is
+# fed straight to current_url through a log it can read. Point TUNNEL_LOG at
+# it and let the real waiting code run.
+pub.TUNNEL_LOG = logfile
+pub.candidates = lambda path=None: [late_url]
+started = time.monotonic()
+got = pub.current_url(patience=30)
+waited = time.monotonic() - started
+ok("but it IS accepted once the edge catches up", got == late_url, str(got))
+ok("having actually waited rather than returned instantly", waited >= 5,
+   f"{waited:.1f}s")
+
+# And the giving-up message has to be true. "NONE FOUND in ~/tunnel.log" was
+# said about a log absolutely full of addresses, which sends whoever reads it
+# to look for a missing log rather than a dead tunnel.
+pub.candidates = lambda path=None: [cf]
+msgs = []
+_real_log = pub.log
+pub.log = lambda m: msgs.append(m)
+pub.current_url(patience=0)
+pub.log = _real_log
+joined = " ".join(msgs)
+ok("when addresses exist but none answer, it says exactly that",
+   "none of the 1" in joined and "answer" in joined, joined)
+pub.candidates = lambda path=None: []
+msgs = []
+pub.log = lambda m: msgs.append(m)
+pub.current_url(patience=0)
+pub.log = _real_log
+ok("and an empty log is reported as an empty log, which is a different fault",
+   "no tunnel address has been written" in " ".join(msgs), " ".join(msgs))
 
 for s in servers:
     s.shutdown()
