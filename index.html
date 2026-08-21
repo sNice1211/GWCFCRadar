@@ -3205,6 +3205,28 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
 /* A fallback is not an error, but it is not nothing either: the numbers on
    screen came from somewhere other than what was asked for, and that has to
    be readable without expanding the panel. */
+/* The four views, as tabs rather than one long column. */
+.snd-tabs {
+  display: flex; gap: 4px; padding: 6px 10px 0; flex-wrap: wrap;
+}
+.snd-tab {
+  font-family: 'Comfortaa', sans-serif; font-size: 10px; font-weight: 600;
+  padding: 5px 10px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; background: transparent;
+  color: rgba(212,232,255,0.6);
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.snd-tab:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+.snd-tab.on {
+  background: rgba(0,140,186,0.14);
+  border-color: rgba(0,140,186,0.45);
+  color: var(--accent2);
+}
+.snd-pane[hidden] { display: none; }
+/* The note is the Source pane's whole content, so it is always visible in
+   there rather than only when something fell back. */
+.snd-pane[data-pane="source"] .snd-note { display: block; padding: 8px 12px 12px; }
+
 .snd-fell { color: #ffc44d; opacity: 0.95; }
 #snd-panel .snd-note:has(.snd-fell) { display: block; }
 /* The image the Pi rendered: the full SHARPpy layout as one PNG. Shown
@@ -14064,7 +14086,10 @@ async function _sndSitesManifest() {
                           { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null).catch(() => null);
   if (!man || !man.sites || !Object.keys(man.sites).length) {
-    throw new Error('the Pi has not built any site soundings yet');
+    // The pipeline says why, when it managed to say anything at all.
+    let said = '';
+    try { said = _piStatusLine(await _piStatus('soundings')); } catch (e) {}
+    throw new Error(said || 'the Pi has not built any site soundings yet');
   }
   _sndSitesMan = man; _sndSitesAt = Date.now();
   return man;
@@ -15232,6 +15257,49 @@ function _sndPanelIsOpen() {
 }
 
 // Opened from the map's right-click menu, at whichever point was clicked.
+// One pane at a time, and the chart is never the one hidden by default.
+function _sndTab(el, which) {
+  if (!el) return;
+  el.querySelectorAll('.snd-pane').forEach(p => {
+    p.hidden = (p.dataset.pane !== which);
+  });
+  el.querySelectorAll('.snd-tab').forEach(t => {
+    t.classList.toggle('on', t.dataset.tab === which);
+  });
+  el._tab = which;
+}
+
+// What the Pi's own pipelines last said about themselves.
+//
+// A feature that has never built leaves no manifest, and "not built yet" is
+// equally true of a first run, a missing package and a dead upstream. The
+// pipelines now write a status file beside their data saying which, and this
+// is the browser reading it - so the reason reaches whoever is looking at the
+// map rather than only a log on a machine nobody can log into.
+const _piStatusCache = new Map();
+async function _piStatus(kind) {
+  const hit = _piStatusCache.get(kind);
+  if (hit && Date.now() - hit.at < 60000) return hit.val;
+  const base = (typeof _hdBase !== 'undefined' && _hdBase) || null;
+  if (!base) return null;
+  const val = await fetch(`${base}/${kind}/status.json?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  _piStatusCache.set(kind, { at: Date.now(), val });
+  return val;
+}
+
+// That status as a sentence worth showing, or nothing when all is well.
+function _piStatusLine(st) {
+  if (!st || !st.reason) return '';
+  const esc = s => (typeof _ssEsc === 'function' ? _ssEsc(String(s)) : String(s));
+  let out = (st.ok ? '' : 'The Pi could not build this: ') + esc(st.reason);
+  if (st.fix) {
+    out += ` On the Pi, run: ${esc(st.fix)}`;
+  }
+  return out;
+}
+
 async function openSounding(lat, lon) {
   // The reader needs the Pi's address, which is only looked up once something
   // Pi-backed is used. A sounding may be the first such thing this session.
@@ -15267,12 +15335,36 @@ async function openSounding(lat, lon) {
           </div>
         </div>
       </div>
-      <div class="snd-quick"></div>
-      <div class="snd-tables"></div>
-      <div class="snd-note"></div>
-      <div class="snd-pimg"></div>`;
+      <nav class="snd-tabs" aria-label="Sounding views">
+        <button type="button" class="snd-tab on" data-tab="chart">Chart</button>
+        <button type="button" class="snd-tab" data-tab="numbers">Numbers</button>
+        <button type="button" class="snd-tab" data-tab="image">Pi Image</button>
+        <button type="button" class="snd-tab" data-tab="source">Source</button>
+      </nav>
+      <div class="snd-pane" data-pane="chart">
+        <div class="snd-quick"></div>
+      </div>
+      <div class="snd-pane" data-pane="numbers" hidden>
+        <div class="snd-tables"></div>
+      </div>
+      <div class="snd-pane" data-pane="image" hidden>
+        <div class="snd-pimg"></div>
+      </div>
+      <div class="snd-pane" data-pane="source" hidden>
+        <div class="snd-note"></div>
+      </div>`;
     document.body.appendChild(el);
     el.querySelector('.snd-x').onclick = () => { el.classList.remove('open'); };
+    // Four short views instead of one long column.
+    //
+    // Everything used to be stacked: chart, then the quick numbers, then the
+    // full tables, then where it came from, then the Pi's image. At card size
+    // that is a scroll several screens deep, and the chart - the thing being
+    // looked at - was pushed off the top by the tables under it. They are the
+    // same four things, one at a time, with the chart always on top.
+    el.querySelectorAll('.snd-tab').forEach(t => {
+      t.onclick = () => _sndTab(el, t.dataset.tab);
+    });
     // Expanding shows the hodograph and the full tables, which are hidden at
     // card size because six things at 380px wide is six unreadable things.
     el.querySelector('.snd-big').onclick = () => {
@@ -20209,12 +20301,19 @@ async function _goesPiManifest(sat, sector) {
   // rather than "try again".
   if (man) _goesPiMan.set(key, { at: Date.now(), man });
   _goesPiLast = { sat, sector, status, at: Date.now() };
+  // Asked for only when there is nothing to show, so a healthy Pi is never
+  // made to answer a second request per manifest.
+  if (!man || !man.products || !Object.keys(man.products).length) {
+    try { _goesPiStatus = await _piStatus('satellite'); } catch (e) {}
+  }
   return man;
 }
 
 // What the last manifest fetch actually did, so the page can say why there is
 // no picture instead of only that there is none.
 let _goesPiLast = null;
+// The satellite pipeline's own status, fetched alongside the manifest.
+let _goesPiStatus = null;
 
 // A composite that will not draw has four different causes and four different
 // fixes, and "Not built on the Pi yet" covers all of them badly. This names
@@ -20247,10 +20346,16 @@ function _goesPiWhy() {
   if (last && last.status >= 400) {
     return `The Pi answered ${last.status} for ${where}.`;
   }
+  // The Pi's own account of the last run, when it left one. This is what
+  // turns "not built yet" into "netCDF4 is not installed, run this".
+  const st = _goesPiStatus;
+  const said = _piStatusLine(st);
+  if (said && st && !st.ok) return said;
   return `${p.label} has not been built for ${where} yet. It is on the `
        + 'satellite timer, so it should appear within about ten minutes. '
        + (p.note ? p.note + '. ' : '')
-       + 'If it never does, check gwcfc-sat on the Pi.';
+       + (said ? ' The Pi says: ' + said : '')
+       + ' If it never does, run this on the Pi: bash ~/GWCFCRadar/pi/doctor.sh';
 }
 
 // The Pi writes one folder per scan, named for its own time, and lists them
@@ -41033,7 +41138,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "New MapTiler key, so the basemaps load again. If the map was showing blank or grey tiles, that was the old key being out of requests; it should be back to normal now.";
+const APP_LATEST_UPDATE = "Found why Pi soundings never worked: SounderPy was installed correctly the whole time and simply could not be imported, because it loads two drawing libraries this Pi deliberately does not have. It is stood in for now, so the import completes. The sounding panel is also reorganised into four tabs instead of one long scroll, and when the Pi cannot build something it now says which package is missing and the exact command to fix it, in the browser.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

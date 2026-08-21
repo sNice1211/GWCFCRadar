@@ -59,6 +59,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import importlib
+import types
 from datetime import datetime, timedelta, timezone
 
 CACHE_DIR = os.path.expanduser("~/wxdata/soundings")
@@ -373,6 +375,114 @@ def _as_list(x, unit=None):
         return []
 
 
+# ── Importing SounderPy on a machine that never draws anything ────────────
+#
+# This is the bug that kept the soundings dark, and it is not obvious from
+# any error anyone would see. SounderPy is installed with --no-deps, because
+# its dependency list includes cartopy and pyart: hours of C++ building on an
+# ARM board, hundreds of megabytes of build cache, for code that only ever
+# draws pictures. This Pi does not draw with SounderPy. It asks SounderPy for
+# numbers and draws them itself with matplotlib.
+#
+# The catch is that SounderPy imports those libraries at MODULE scope, for
+# functions nobody here calls. So `import sounderpy` raised ImportError, the
+# fetch reported "SounderPy is not installed", somebody ran the install again,
+# pip said it was already there, and round it went. The package was installed
+# perfectly. It simply could not be imported.
+#
+# So the drawing-only libraries are stood in for. Every module below was found
+# by importing SounderPy and writing down what it asked for, one at a time:
+#
+#   cartopy, pyart          maps and radar plots. Drawing, never called here.
+#   metpy.plots.USCOUNTIES  a county map layer, which needs cartopy anyway.
+#
+# Everything that touches DATA is installed for real and is deliberately not
+# in this list: siphon fetches, netCDF4 reads, bs4 parses listings,
+# ecape_parcel is a real calculation. Stubbing one of those would not save a
+# build, it would silently break a fetch, so the line is drawn at "does this
+# module make a picture".
+_SPY_DRAWING_ONLY = ("cartopy", "cartopy.crs", "cartopy.feature", "cartopy.io",
+                     "pyart")
+_spy_cached = None
+
+
+class _AnythingMeta(type):
+    """Attribute access on the CLASS, not just on an instance.
+
+    cartopy is used as `ccrs.PlateCarree()` - an attribute read off the
+    class itself, before anything is instantiated. A plain __getattr__ is an
+    instance method and never sees that, so the class needs one of its own.
+    """
+
+    def __getattr__(cls, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return cls
+
+
+class _Anything(metaclass=_AnythingMeta):
+    """Whatever a plotting library was going to hand over.
+
+    It has to be a CLASS and not a function, which is the whole subtlety
+    here. MetPy does `class MetPyMapFeature(Feature)` with a name taken
+    straight out of cartopy, and a function cannot be subclassed: handing
+    back a function produced "TypeError: function() argument 'code' must be
+    code, not str", which says nothing at all about the real problem. A
+    permissive class can be subclassed, called, instantiated and read from,
+    which covers every way a module-scope import is likely to use one.
+    """
+
+    def __init__(self, *a, **k):
+        pass
+
+    def __call__(self, *a, **k):
+        return _Anything()
+
+    def __getattr__(self, name):
+        return _Anything()
+
+
+class _DrawingStub(types.ModuleType):
+    """Stands in for a plotting library on a machine that never draws."""
+
+    __path__ = []
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return _Anything
+
+
+def import_sounderpy():
+    """SounderPy, with its drawing-only imports satisfied. Cached."""
+    global _spy_cached
+    if _spy_cached is not None:
+        return _spy_cached
+    for name in _SPY_DRAWING_ONLY:
+        if name not in sys.modules:
+            try:
+                importlib.import_module(name)      # real one wins if present
+            except Exception:
+                sys.modules[name] = _DrawingStub(name)
+    # A county boundary layer, and only defined by MetPy when cartopy is real.
+    try:
+        import metpy.plots as _mp
+        if not hasattr(_mp, "USCOUNTIES"):
+            _mp.USCOUNTIES = None
+    except Exception:
+        pass
+    try:
+        import sounderpy as spy
+    except Exception as e:
+        raise RuntimeError(
+            "SounderPy will not import on this Pi. It is probably installed "
+            "but missing something it reads data with: try "
+            "'~/wxenv/bin/pip install siphon netCDF4 bs4 ecape_parcel cdsapi'. "
+            f"({e.__class__.__name__}: {e})")
+    _spy_cached = spy
+    return spy
+
+
 def fetch_sounderpy(source, lat, lon, when=None):
     """One profile from SounderPy: a hundred levels or more.
 
@@ -385,12 +495,7 @@ def fetch_sounderpy(source, lat, lon, when=None):
     to answer every /sounding request, and an import that throws at module
     scope takes the door down with it rather than one request.
     """
-    try:
-        import sounderpy as spy
-    except Exception as e:
-        raise RuntimeError(
-            "SounderPy is not installed on this Pi. Run install.sh again, "
-            f"then check with --check. ({e.__class__.__name__})")
+    spy = import_sounderpy()
 
     now = datetime.now(timezone.utc)
     if when:

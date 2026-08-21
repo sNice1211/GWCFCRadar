@@ -538,6 +538,20 @@ def run_pass(only=None, now=None):
     n = write_manifest(now)
     log(f"soundings: {built} built, {failed} failed, {n} site(s) in the "
         f"manifest, {time.time() - t0:.0f}s")
+    # Every site failing is a different problem from a quiet pass, and the
+    # page cannot tell them apart from an empty manifest alone.
+    if n:
+        write_status(ok=True, sites=n, built=built, failed=failed, reason="")
+    elif failed:
+        write_status(ok=False, sites=0, built=0, failed=failed,
+                     reason=f"all {failed} sites failed to build. The upstream "
+                            "model source may be down, or SounderPy may not be "
+                            "able to reach it.",
+                     fix="~/wxenv/bin/python ~/GWCFCRadar/pi/sounding_pipeline.py --check")
+    else:
+        write_status(ok=True, sites=0, built=0, failed=0,
+                     reason="no sites built yet. The first pass takes a few "
+                            "minutes per site.")
     return 0
 
 
@@ -598,6 +612,41 @@ def check():
     return 0
 
 
+# What a build needs, asked once and up front.
+#
+# Without this, a missing matplotlib fails every one of sixty-eight sites
+# separately, each caught by the per-site handler, each counted as a failure
+# and backed off - so a single missing package looks like the whole upper-air
+# network being unreachable, and the log is sixty-eight copies of the same
+# import error. Asked once, it is one sentence and one command.
+def missing_deps():
+    out = []
+    for mod, why in (("numpy", "the arithmetic"),
+                     ("matplotlib", "draws the sounding image"),
+                     ("metpy", "does the skew-T projection and the parcel"),
+                     ("sounderpy", "fetches the profile")):
+        try:
+            __import__(mod)
+        except Exception as e:
+            out.append((mod, why, f"{e.__class__.__name__}: {e}"))
+    return out
+
+
+# What the last pass did, written where the PAGE can read it. A pass that
+# cannot run leaves no manifest, and "the Pi has not built any site soundings
+# yet" is equally true of a missing package and a first run.
+def write_status(**fields):
+    try:
+        os.makedirs(OUT_DIR, exist_ok=True)
+        fields["at"] = datetime.now(timezone.utc).isoformat()
+        tmp = os.path.join(OUT_DIR, "status.json.tmp")
+        with open(tmp, "w") as fh:
+            json.dump(fields, fh)
+        os.replace(tmp, os.path.join(OUT_DIR, "status.json"))
+    except Exception:
+        pass
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--site", action="append", help="one site id, repeatable")
@@ -606,6 +655,32 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.check:
         return check()
+
+    gone = missing_deps()
+    # SHARPpy is deliberately not in that list: without it the parameters go
+    # missing and the sounding is still a sounding. The four above are the
+    # ones without which there is no picture at all.
+    if gone:
+        for mod, why, err in gone:
+            log(f"soundings: {mod} is not installed, and it {why} ({err})")
+        # SounderPy has to go in with --no-deps, because it lists two plotting
+        # libraries this machine never uses and they are long C++ builds on
+        # ARM. Printing the plain command would send whoever reads it down
+        # exactly the install that already failed once.
+        plain = [m for m, _w, _e in gone if m != "sounderpy"]
+        cmds = []
+        if plain:
+            cmds.append("~/wxenv/bin/pip install " + " ".join(plain))
+        if any(m == "sounderpy" for m, _w, _e in gone):
+            cmds.append("~/wxenv/bin/pip install --no-deps sounderpy")
+        log("soundings: install with")
+        for c in cmds:
+            log("  " + c)
+        write_status(ok=False, reason="missing " + ", ".join(
+            m for m, _w, _e in gone),
+            fix=" ; ".join(cmds), sites=0)
+        return 1
+
     if a.render_test:
         return render_test()
     return run_pass(only=[s.upper() for s in a.site] if a.site else None)

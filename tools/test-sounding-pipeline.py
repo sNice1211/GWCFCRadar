@@ -231,6 +231,79 @@ ok("selfupdate heals a missing matplotlib", "matplotlib" in upd)
 ok("selfupdate notices the unit is missing even without seeing the commit",
    "gwcfc-snd" in upd and "WANT_INSTALL" in upd)
 
+print("\n9. a missing package is one sentence, not sixty-eight failures")
+# Without an upfront check, a missing matplotlib fails every site separately,
+# each caught by the per-site handler and counted as a failure. The log is
+# sixty-eight copies of one import error and the manifest is empty, which
+# reads as the whole upper-air network being unreachable.
+src = open(os.path.join(ROOT, "pi", "sounding_pipeline.py")).read()
+ok("there is an upfront dependency check", "def missing_deps" in src)
+ok("it names matplotlib, which draws the image", '"matplotlib"' in src)
+ok("and sounderpy, which fetches the profile", '"sounderpy"' in src)
+# SHARPpy is deliberately not required: without it the parameters go missing
+# and the sounding is still a sounding.
+ok("but not SHARPpy, because a sounding without parameters is still one",
+   '("sounderpy", "fetches the profile")' in src
+   and '"sharppy", "' not in src.split("def missing_deps")[1].split("def ")[0])
+# Parsed rather than sliced out of the text by character count: an earlier
+# version of this counted 900 characters from the check, and a longer error
+# message pushed the return past the window and failed a working guard.
+import ast as _ast
+_main = next(n for n in _ast.parse(src).body
+             if isinstance(n, _ast.FunctionDef) and n.name == "main")
+_guard = _ast.get_source_segment(src, next(
+    n for n in _main.body
+    if isinstance(n, _ast.If) and "missing_deps" not in _ast.dump(n.test)
+    and "gone" in _ast.dump(n.test)))
+ok("a missing package stops the pass rather than failing every site",
+   "return 1" in _guard, _guard[:120])
+ok("and the message carries the command that fixes it",
+   "pip install" in _guard, _guard[:120])
+# SounderPy has to go in with --no-deps: the plain command is the install
+# that already failed, so printing it would send somebody round the loop.
+ok("and SounderPy's command is the one that actually works",
+   "--no-deps sounderpy" in _guard, _guard[:200])
+
+print("\n10. and the page can read why, without anyone logging in")
+ok("the pass writes a status file", "def write_status" in src)
+ok("beside the data, where serve.py already serves it",
+   'os.path.join(OUT_DIR, "status.json")' in src)
+ok("a run that built nothing says whether that is a fault",
+   'ok=True, sites=0' in src and 'ok=False, sites=0' in src)
+# A quiet pass and a broken one both leave an empty manifest. Only one of
+# them is worth telling somebody about.
+ok("all sites failing is told apart from a first run",
+   "all {failed} sites failed" in src)
+satsrc = open(os.path.join(ROOT, "pi", "satellite_pipeline.py")).read()
+ok("the satellite pipeline does the same", "def missing_deps" in satsrc
+   and "def write_status" in satsrc)
+ok("naming netCDF4, without which no composite can decode",
+   '"netCDF4"' in satsrc)
+# Night is not a fault: the daytime recipes are skipped on purpose.
+ok("and a quiet night is not reported as a failure",
+   "daytime composites are skipped" in satsrc)
+
+print("\n11. one command that checks the whole chain")
+doc = open(os.path.join(ROOT, "pi", "doctor.sh")).read()
+ok("there is a doctor script", len(doc) > 500)
+for probe, why in [
+    ("netCDF4", "the satellite decoder"),
+    ("matplotlib", "the sounding renderer"),
+    ("sounderpy", "the profile fetcher"),
+    ("gwcfc-snd", "the sounding timer"),
+    ("gwcfc-sat", "the satellite timer"),
+    ("status.json", "what the pipelines last said"),
+]:
+    ok(f"it checks {probe} ({why})", probe in doc)
+ok("it probes the local server rather than trusting the disk",
+   "127.0.0.1:8080" in doc)
+# A list of problems with no commands is a list of things to worry about.
+ok("and ends with the exact commands to run",
+   "Run these, in this order" in doc and "FIXES" in doc)
+ok("without suggesting the same command twice",
+   "seen[$0]++" in doc)
+ok("it changes nothing by itself", "It only looks." in doc)
+
 shutil.rmtree(HOMEDIR, ignore_errors=True)
 print()
 if failed:
