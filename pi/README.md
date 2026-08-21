@@ -74,6 +74,23 @@ break it prints the exact command that repairs it. It reads the last error
 lines out of the journal too, so an empty feature says why it is empty rather
 than only that it is.
 
+## When the tunnel carries no traffic
+
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/tunnel_doctor.py
+
+`fix.sh` runs this by itself whenever the address does not work, so it is
+rarely typed. It exists because a tunnel that carries nothing has three quite
+different causes that look identical from the browser, and the tell that
+separates them is not an error message: it is the absence of one line.
+
+cloudflared asks for its address over port 443, like any web page, and then
+connects on port **7844**, which almost nothing else uses and home filtering
+software blocks more often than any other port. When that happens cloudflared
+is given a perfectly real address, never connects, prints no error at all,
+and every request to that address gets an edge error. The Pi looks broken, is
+not broken, and nothing done on the Pi will help. So the port is knocked on
+directly, and a silent drop is told apart from a refusal.
+
 ## When the site cannot read the Pi
 
     bash ~/GWCFCRadar/pi/diagnose.sh

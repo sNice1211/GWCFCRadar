@@ -152,7 +152,14 @@ step "5 of 5   Where things stand"
 note "waiting for the tunnel to come up. This part takes about a minute."
 sleep 10
 if [ -x "$PY" ]; then
-  "$PY" "$REPO/pi/publish_url.py" --check
+  # And if the address does not work, go straight on to WHY, rather than
+  # ending on a failure and a second command to type. The three reasons a
+  # tunnel carries no traffic have completely different fixes and cannot be
+  # told apart from the address alone.
+  "$PY" "$REPO/pi/publish_url.py" --check || {
+    printf '\n'
+    "$PY" "$REPO/pi/tunnel_doctor.py"
+  }
 fi
 
 # Left behind on the first run only, because the whole point of this file is
