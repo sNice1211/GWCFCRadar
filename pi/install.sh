@@ -106,24 +106,59 @@ if ! "$VENV/bin/python" -c "import netCDF4" >/dev/null 2>&1; then
   "$VENV/bin/pip" install --quiet netCDF4 || \
     warn "netCDF4 would not install; satellite composites will not build"
 fi
-# SounderPy and SHARPpy are deliberately NOT installed.
+# ── SounderPy and SHARPpy, installed WITHOUT their dependency lists ─────
 #
-# Both were tried and both refuse to build on a current Pi, for reasons that
-# have nothing to do with weather:
+# Both were tried the ordinary way first and both failed, and neither failure
+# was about the package itself:
 #
-#   SHARPpy   pins a NumPy old enough to need distutils.msvccompiler, a module
-#             Python removed. It cannot build on 3.13 at all.
-#   SounderPy pulls in arm-pyart and cartopy, which are large C and C++ source
-#             builds on ARM: a long compile and a lot of disk, on a machine
-#             where the disk is the thing that runs out.
+#   SHARPpy   pins a NumPy old enough to need distutils.msvccompiler, which
+#             Python removed. pip therefore tries to BUILD that NumPy from
+#             source and dies before SHARPpy is even unpacked. The failure is
+#             in a dependency SHARPpy does not need: its own code runs
+#             against the NumPy already on this Pi.
+#   SounderPy lists arm-pyart and cartopy, which are for DRAWING soundings.
+#             Nothing on this Pi draws anything: the page draws the chart and
+#             this only ever fetches numbers. They are long C and C++ builds
+#             on ARM, and several hundred megabytes of build cache on a
+#             machine whose disk has already run out once, for code that will
+#             never be called.
 #
-# Neither was ever needed. NOAA serves the same profiles as plain text at
-# rucsoundings.noaa.gov, and pi/sounding_service.py reads them with nothing
-# but the standard library. The parameters are worked out in the browser,
-# where the whole thermodynamic suite already lives.
+# --no-deps installs the package and nothing else. What they actually use at
+# runtime is installed by name below, from wheels that exist for ARM.
 #
-# If you want SHARPpy's own numbers anyway it is still used when present, so
-# installing it by hand into the venv is a bonus rather than a requirement.
+# If either still refuses, nothing is lost: pi/sounding_service.py falls back
+# to NOAA's plain text soundings, which need no packages at all.
+say "Sounding libraries"
+
+# What SounderPy really uses to FETCH, as opposed to what it lists.
+for m in xarray siphon cfgrib; do
+  "$VENV/bin/python" -c "import $m" >/dev/null 2>&1 || \
+    "$VENV/bin/pip" install --quiet "$m" || \
+      warn "$m would not install; SounderPy may not fetch every source"
+done
+
+if ! "$VENV/bin/python" -c "import sounderpy" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet --no-deps sounderpy || \
+    warn "SounderPy would not install; the text soundings answer instead"
+fi
+if ! "$VENV/bin/python" -c "import sharppy" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet --no-deps sharppy || \
+    warn "SHARPpy would not install; the browser works the parameters out"
+fi
+
+# Installed and IMPORTABLE are different questions when --no-deps is used: a
+# package can unpack cleanly and then fail the moment anything touches it,
+# which is a failure that otherwise only shows up when somebody clicks. So
+# the import is tried here rather than trusted.
+{ "$VENV/bin/python" - <<'SNDCHECK'
+for m in ("sounderpy", "sharppy"):
+    try:
+        __import__(m)
+        print(f"   {m:10} ok")
+    except Exception as e:
+        print(f"   {m:10} MISSING ({e.__class__.__name__}: {e})"[:110])
+SNDCHECK
+} || true
 
 # Braced and forgiven, because set -e would otherwise abandon the whole install
 # over one optional module.
