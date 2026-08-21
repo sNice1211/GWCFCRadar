@@ -103,9 +103,38 @@ print("\n2. the expensive sector is not on a timer")
 ok("Full Disk is on demand only", SECTORS["fulldisk"].get("on_demand") is True)
 ok("CONUS and both mesoscale boxes are not",
    not any(SECTORS[s].get("on_demand") for s in ("conus", "meso1", "meso2")))
-ok("only true colour, the one that needs the half kilometre band, is day only",
-   {k for k, r in RECIPES.items() if r.get("daytime_only")} == {"truecolor"},
-   str({k for k, r in RECIPES.items() if r.get("daytime_only")}))
+# Bands 1 to 6 are reflective: they see sunlight bouncing off things, so at
+# night they read zero. A recipe that builds a whole output channel out of
+# one of them has nothing to draw in the dark, and building it anyway stores
+# a flat rectangle every ten minutes all night.
+REFLECTIVE = {1, 2, 3, 4, 5, 6}
+
+
+def dark_channels(r):
+    """Output channels that go flat at night, for this recipe."""
+    return [i for i, ch in enumerate(r["rgb"])
+            if all(band in REFLECTIVE for band, _ in ch["terms"])]
+
+
+day = {k for k, r in RECIPES.items() if r.get("daytime_only")}
+ok("true colour is day only, since all three channels are sunlight",
+   "truecolor" in day and len(dark_channels(RECIPES["truecolor"])) == 3,
+   str(dark_channels(RECIPES["truecolor"])))
+ok("and so is Day Cloud Phase, whose green and blue are sunlight too",
+   "cloudphase" in day and len(dark_channels(RECIPES["cloudphase"])) == 2,
+   str(dark_channels(RECIPES["cloudphase"])))
+# Fire Temperature is the deliberate exception: its red is band 7 at 3.9
+# microns, which sees hot ground in the dark, so a fire really does show at
+# night. Marking it day only would throw away its best use.
+ok("fire temperature is not day only, because band 7 sees heat in the dark",
+   "firetemp" not in day and 0 not in dark_channels(RECIPES["firetemp"]),
+   str(dark_channels(RECIPES["firetemp"])))
+# The infrared recipes work all night and must not have been swept up.
+ok("the infrared recipes are never day gated",
+   not (day & {"airmass", "dust", "ash", "nightmicro"}), str(day))
+ok("nothing is day gated that has no sunlight channel at all",
+   all(dark_channels(RECIPES[k]) for k in day),
+   str({k: dark_channels(RECIPES[k]) for k in day if not dark_channels(RECIPES[k])}))
 
 print("\n3. one folder holds both mesoscale boxes, and they are told apart")
 ns = funcs("_doy_prefixes", "latest_band_keys", "_s3_list")

@@ -115,13 +115,24 @@ console.log('\n1. the cost grows with the work, not with the square of it');
   // machine's noise will cross by accident.
   ok('four times the cells is not sixteen times the time',
      ratio < 10, `${r.a.ms.toFixed(0)} -> ${r.c.ms.toFixed(0)} ms, ratio ${ratio.toFixed(1)}`);
-  ok('and the middle point sits between them rather than off the scale',
-     r.b.ms < r.c.ms * 1.2 && r.b.ms > r.a.ms * 0.8,
-     `${r.a.ms.toFixed(0)}, ${r.b.ms.toFixed(0)}, ${r.c.ms.toFixed(0)}`);
-  // The absolute number is a property of this machine, so it is only checked
-  // loosely: eighty thousand cells took twenty nine SECONDS before.
-  ok('and eighty thousand cells is seconds away from what it used to be',
-     r.c.ms < 5000, `${r.c.ms.toFixed(0)} ms`);
+  // The curve is deliberately NOT checked for a rising middle any more.
+  // It used to rise cleanly because per cell work dominated everything. Now
+  // that the gates go straight into a pixel buffer, per cell work is so small
+  // that the fixed costs of a frame - allocating a 1600 by 1600 buffer and
+  // encoding a PNG out of it - are the bigger half, and those do not care how
+  // many gates there were. So the middle point wanders around inside the
+  // noise, and a test that demanded it sit in order was testing the
+  // measurement rather than the code.
+  //
+  // What is worth pinning is the ceiling, and it can be pinned hard now.
+  // Eighty thousand cells took twenty nine SECONDS at the start of this, and
+  // 1540 ms with the batched path renderer. Anything above a fifth of a
+  // second means the pixel path stopped being used.
+  ok('and eighty thousand cells is now well inside a fifth of a second',
+     r.c.ms < 200, `${r.c.ms.toFixed(0)} ms`);
+  // A frame every 56 ms is eighteen a second, which is a loop that plays.
+  ok('so a busy frame is fast enough to animate',
+     r.c.ms < 120, `${r.c.ms.toFixed(0)} ms`);
 }
 
 console.log('\n2. the fix is in the code, not in the machine being fast');
@@ -129,13 +140,32 @@ console.log('\n2. the fix is in the code, not in the machine being fast');
   const html = await page.evaluate(() => document.documentElement.outerHTML.length);
   const src = readFileSync(join(ROOT, 'index.html'), 'utf8');
   ok('the page is what was measured', html > 0);
-  // A single fill() at the end of an unbounded loop is the bug. The batch
-  // flush inside the loop is the fix, and it has to be there in the source.
-  ok('there is a batch size, and it is bounded',
+  // The gates go into a pixel buffer, not through the canvas path renderer.
+  ok('the pixels are written directly',
+     /createImageData\(SIZE, SIZE\)/.test(src) && /new Uint32Array\(imgData\.data\.buffer\)/.test(src));
+  ok('and put back in one go rather than per gate',
+     (src.match(/ctx\.putImageData\(imgData, 0, 0\)/g) || []).length === 1);
+  // The shape has to be the real leaning slice of a ring. Filling bounding
+  // boxes would be faster still and would draw every distant gate as a fat
+  // upright block, which is the blockiness the high resolution work removed.
+  ok('the real gate outline is walked, not its bounding box',
+     /function _meshFillQuad/.test(src) && /yc - ay/.test(src));
+  // Close in, a gate is smaller than a pixel. A scanline walk over something
+  // finer than its own sampling grid can come out empty, and losing those
+  // would quietly erase the near field.
+  ok('a gate smaller than a pixel still gets a pixel',
+     /Smaller than a pixel/.test(src));
+  // The path renderer stays for translucent palettes, where per gate pixel
+  // writes would stack the same see-through colour twice on an overlap.
+  ok('a see-through palette still takes the blending path',
+     /res\.a !== 255/.test(src) && /if \(opaque && colors\.length\)/.test(src));
+  // And where it is still used it runs at the batch size that measured
+  // fastest, rather than the one that merely beat an unbounded path.
+  ok('the fallback batch is the one that measured fastest',
      /var BATCH = (\d+);/.test(src)
-     && +src.match(/var BATCH = (\d+);/)[1] <= 8000,
+     && +src.match(/var BATCH = (\d+);/)[1] <= 500,
      (src.match(/var BATCH = (\d+);/) || [])[1]);
-  ok('and the path is flushed inside the loop, not only after it',
+  ok('and it is still flushed inside the loop, not only after it',
      /if \(\+\+pending >= BATCH\) \{ ctx\.fill\(\); ctx\.beginPath\(\); pending = 0; \}/.test(src));
 }
 

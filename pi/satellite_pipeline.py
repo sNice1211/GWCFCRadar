@@ -149,9 +149,21 @@ RGB_RECIPES = {
             {"terms": [(5, 1.0)], "range": (0.0, 0.75), "gamma": 1.0},
         ],
     },
+    # Day Cloud Phase is a daytime product, and the name is not decoration.
+    # Its green comes from band 2 and its blue from band 5, and both of those
+    # are reflective: at night they read zero, the green and blue channels go
+    # flat, and what gets built and stored is a red rectangle. Ten minutes
+    # apart, all night, every night. Skipping it costs nothing, because there
+    # was never a picture there to lose.
+    #
+    # Fire Temperature is deliberately NOT marked, even though it also uses
+    # reflective bands for green and blue. Its red is band 7 at 3.9 microns,
+    # which sees hot ground in the dark, so a fire really does show at night.
+    # That is arguably the most useful time to look at it.
     "cloudphase": {
         "label": "Day Cloud Phase", "sectors": ("conus", "meso1", "meso2"),
         "bands": (2, 5, 13),
+        "daytime_only": True,
         "rgb": [
             {"terms": [(13, 1.0)], "range": (219.65, 280.65), "invert": True},
             {"terms": [(2, 1.0)], "range": (0.0, 0.78), "gamma": 1.0},
