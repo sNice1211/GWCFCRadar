@@ -49,8 +49,8 @@ from PIL import Image
 # mesh" is the same problem, and it is already solved next door.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gfs_pipeline import (HTTP, LUTS, MAX_EDGE_PX, Lock, band_alpha,
-                          bounds_from, log, lut_for, regrid_to_latlon,
-                          write_json)  # noqa: E402
+                          bounds_from, disk_ok, free_mb, hours_for_disk, log,
+                          lut_for, regrid_to_latlon, write_json)  # noqa: E402
 
 OUT_DIR = os.path.expanduser("~/wxdata/radar")
 
@@ -776,6 +776,11 @@ def prune(site_dir, hours=KEEP_HOURS, cap=None):
     if not os.path.isdir(site_dir):
         return
     cap = MAX_FRAMES if cap is None else cap
+    # Three days if the card can hold three days. This is where the promise
+    # meets the disk, and the disk wins: an SD card that runs out takes apt,
+    # git and the virtual environment down with it, and none of the errors it
+    # then produces point anywhere near the frames that filled it.
+    hours = hours_for_disk(site_dir, hours)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     import shutil
     kept = []
@@ -1435,6 +1440,11 @@ def build_mrms():
             break
         if not _mrms_due(name, spec, state, now):
             continue
+        if not disk_ok(out):
+            log(f"mrms: only {free_mb(out):.0f} MB free, skipping the rest of "
+                "this pass. Frames will be pruned harder until there is room.")
+            stopped_at = (start + i) % len(names)
+            break
         url = f"{MRMS_BASE}/{spec['path']}/MRMS_{spec['path']}.latest.grib2.gz"
         t0 = time.time()
         try:
@@ -1567,6 +1577,7 @@ def _mrms_prune(out, hours=None):
         return
     import shutil
     hours = MRMS_KEEP_HOURS if hours is None else hours
+    hours = hours_for_disk(out, hours)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     dirs = []
     for d in sorted(os.listdir(out)):

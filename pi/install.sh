@@ -30,6 +30,38 @@ say() { printf '\n\033[1;36m==\033[0m %s\n' "$*"; }
 ok()  { printf '   \033[32mok\033[0m %s\n' "$*"; }
 warn(){ printf '   \033[33m!!\033[0m %s\n' "$*"; }
 
+# ── 0. the disk, checked before anything is downloaded ──────────────────────
+# A full SD card is the one failure here that does not look like itself. apt
+# reports a write error against a Debian mirror, pip reports an OSError about
+# a package directory, and git reports "unable to write loose object file".
+# Three unrelated-looking messages, one cause, and none of them says the word
+# "disk" first. So it is asked about up front, in plain numbers, and the
+# commands that free the usual culprits are printed rather than described.
+say "Disk space"
+FREE_MB=$(df -Pm / | awk 'NR==2 {print $4}')
+echo "   $FREE_MB MB free on /"
+if [ "${FREE_MB:-0}" -lt 800 ]; then
+  warn "that is not enough to install into, and probably not enough to run"
+  echo
+  echo "   The usual culprits, largest first:"
+  echo "     sudo apt clean                    # downloaded .debs"
+  echo "     rm -rf ~/.cache/pip               # pip's wheel cache"
+  echo "     sudo journalctl --vacuum-size=50M # systemd logs"
+  echo "     du -sh ~/wxdata/* | sort -h       # what the weather data costs"
+  echo
+  echo "   Weather frames rebuild themselves, so deleting old ones is safe:"
+  echo "     find ~/wxdata -maxdepth 3 -type d -name '20*_*' -mmin +1440 \\"
+  echo "       -exec rm -rf {} +               # frames older than a day"
+  echo
+  warn "stopping here rather than half installing into a full disk"
+  exit 1
+elif [ "${FREE_MB:-0}" -lt 2500 ]; then
+  warn "tight. The pipelines will shorten their own retention to fit, so this"
+  warn "will work, but playback will not reach back as far as three days."
+else
+  ok "enough room for the full three day window"
+fi
+
 # ── 1. system packages ──────────────────────────────────────────────────────
 say "System packages"
 NEED=()
