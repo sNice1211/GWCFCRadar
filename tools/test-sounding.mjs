@@ -995,6 +995,90 @@ console.log('\n13d. the soundings the Pi rendered as images');
      r.forced.site);
 }
 
+console.log('\n13e. the panel is four views, not one long column');
+{
+  const r = await page.evaluate(async () => {
+    const el = document.getElementById('snd-panel');
+    const tabs = Array.from(el.querySelectorAll('.snd-tab')).map(t => t.dataset.tab);
+    const shown = () => Array.from(el.querySelectorAll('.snd-pane'))
+      .filter(p => !p.hidden).map(p => p.dataset.pane);
+    const atOpen = shown();
+    _sndTab(el, 'numbers');
+    const onNumbers = shown();
+    const lit = Array.from(el.querySelectorAll('.snd-tab.on')).map(t => t.dataset.tab);
+    _sndTab(el, 'source');
+    const onSource = shown();
+    // Each pane really holds the thing its tab promises.
+    const homes = {
+      chart:   !!el.querySelector('.snd-pane[data-pane="chart"] .snd-quick'),
+      numbers: !!el.querySelector('.snd-pane[data-pane="numbers"] .snd-tables'),
+      image:   !!el.querySelector('.snd-pane[data-pane="image"] .snd-pimg'),
+      source:  !!el.querySelector('.snd-pane[data-pane="source"] .snd-note'),
+    };
+    // The chart canvas must never be inside a pane, or switching tabs would
+    // hide the sounding itself.
+    const chartOutside = !el.querySelector('.snd-pane #snd-skewt');
+    _sndTab(el, 'chart');
+    return { tabs, atOpen, onNumbers, lit, onSource, homes, chartOutside };
+  });
+  ok('there are four views', r.tabs.join(',') === 'chart,numbers,image,source',
+     r.tabs.join(','));
+  ok('and the chart is the one open to begin with',
+     r.atOpen.length === 1 && r.atOpen[0] === 'chart', r.atOpen.join(','));
+  ok('choosing one shows only it', r.onNumbers.length === 1
+     && r.onNumbers[0] === 'numbers', r.onNumbers.join(','));
+  ok('and lights only its tab', r.lit.length === 1 && r.lit[0] === 'numbers',
+     r.lit.join(','));
+  ok('switching again swaps it', r.onSource.join(',') === 'source', r.onSource.join(','));
+  ok('every view holds what its tab promises',
+     Object.values(r.homes).every(Boolean), JSON.stringify(r.homes));
+  // The skew-T lives above the tabs on purpose: it is the thing being looked
+  // at, and putting it in a pane would let a tab hide it.
+  ok('and the sounding itself is never hidden by a tab', r.chartOutside);
+}
+
+console.log('\n13f. the Pi says why it is empty, in the browser');
+{
+  const r = await page.evaluate(async () => {
+    const realFetch = window.fetch;
+    window.fetch = async (url) => {
+      const u = String(url);
+      if (u.includes('/soundings/manifest.json')) {
+        return new Response(JSON.stringify({ sites: {} }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (u.includes('/soundings/status.json')) {
+        return new Response(JSON.stringify({
+          ok: false, reason: 'missing matplotlib',
+          fix: '~/wxenv/bin/pip install matplotlib' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return realFetch(url);
+    };
+    _hdBase = 'https://pi.example';
+    _sndSitesMan = null;
+    if (typeof _piStatusCache !== 'undefined') _piStatusCache.clear();
+    let msg = '';
+    try { await _sndPrebuilt(35.4, -97.6, 0); }
+    catch (e) { msg = String(e.message || e); }
+    // And a healthy Pi says nothing at all.
+    const quiet = _piStatusLine({ ok: true, reason: '' });
+    const nothing = _piStatusLine(null);
+    window.fetch = realFetch;
+    _sndSitesMan = null;
+    if (typeof _piStatusCache !== 'undefined') _piStatusCache.clear();
+    return { msg, quiet, nothing };
+  });
+  // "The Pi has not built any soundings yet" is equally true of a first run,
+  // a missing package and a dead upstream. Only one of those has something
+  // to do about it, and the person looking at the map cannot read the log.
+  ok('a missing package is named rather than shrugged at',
+     /matplotlib/.test(r.msg), r.msg);
+  ok('with the command that fixes it', /pip install/.test(r.msg), r.msg);
+  ok('and a healthy Pi produces no noise', r.quiet === '' && r.nothing === '',
+     `${JSON.stringify(r.quiet)} ${JSON.stringify(r.nothing)}`);
+}
+
 console.log('\n14. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));

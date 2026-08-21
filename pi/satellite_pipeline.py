@@ -635,6 +635,44 @@ def check(now=None):
     return 1 if bad else 0
 
 
+# What a build actually needs, asked once and up front.
+#
+# netCDF4 is the reader for the raw band files. Without it every band of every
+# recipe fails separately, deep inside build_rgb, with a message about one
+# file - so a missing package presents as sixty unrelated-looking failures and
+# a run that quietly builds nothing. Asked once, it is one sentence naming the
+# package and the command that installs it.
+def missing_deps():
+    out = []
+    for mod, why in (("netCDF4", "reads the raw GOES band files"),
+                     ("numpy", "the arithmetic"),
+                     ("PIL", "writes the PNG")):
+        try:
+            __import__(mod)
+        except Exception as e:
+            out.append((mod, why, f"{e.__class__.__name__}: {e}"))
+    return out
+
+
+# What the last run did, written where the PAGE can read it.
+#
+# Everything above this only ever reached a log file on a machine nobody logs
+# into. A build that cannot run leaves no manifest, the page says "not built
+# yet", and that sentence is true for a missing package, a dead bucket and a
+# first run alike. Writing the reason down beside the data means the browser
+# can say which.
+def write_status(**fields):
+    try:
+        os.makedirs(OUT_DIR, exist_ok=True)
+        fields["at"] = datetime.now(timezone.utc).isoformat()
+        tmp = os.path.join(OUT_DIR, "status.json.tmp")
+        with open(tmp, "w") as fh:
+            json.dump(fields, fh)
+        os.replace(tmp, os.path.join(OUT_DIR, "status.json"))
+    except Exception:
+        pass
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--sector", action="append",
@@ -648,6 +686,17 @@ def main(argv=None):
 
     if a.check:
         return check()
+
+    gone = missing_deps()
+    if gone:
+        for mod, why, err in gone:
+            log(f"satellite: {mod} is not installed, and it {why} ({err})")
+        log("satellite: install it with")
+        log(f"  ~/wxenv/bin/pip install {' '.join(m for m, _w, _e in gone)}")
+        write_status(ok=False, reason="missing " + ", ".join(m for m, _w, _e in gone),
+                     fix=f"~/wxenv/bin/pip install {' '.join(m for m, _w, _e in gone)}",
+                     built=0)
+        return 1
 
     sats = a.sat or list(SATS)
     sectors = a.sector or [s for s, spec in SECTORS.items()
@@ -665,6 +714,17 @@ def main(argv=None):
                 continue
             total += build_sector(sat_key, sector, a.only)
     log(f"satellite: {total} composite(s) in {time.time() - t0:.0f}s")
+    # Nothing built is not automatically a fault: at night the daytime
+    # recipes are skipped on purpose and a scan already on disk is not
+    # rebuilt. So the status says what happened rather than calling it an
+    # error, and the page can tell "working, nothing new" from "broken".
+    if total:
+        write_status(ok=True, built=total, reason="")
+    else:
+        write_status(ok=True, built=0,
+                     reason="nothing new to build on this pass. At night the "
+                            "daytime composites are skipped, and a scan "
+                            "already on disk is not built twice.")
     return 0
 
 

@@ -149,7 +149,8 @@ touch "$STAMP" 2>/dev/null || true
 # New Python dependency, occasionally. Cheap to check and it is the failure
 # that looks like a broken pipeline rather than a missing package: the radar
 # service failing on a MetPy import is exactly how this bit the last time.
-for mod in eccodes metpy netCDF4 xarray siphon cfgrib matplotlib; do
+for mod in eccodes metpy netCDF4 xarray siphon cfgrib matplotlib \
+           bs4 ecape_parcel cdsapi; do
   "$VENV/bin/python" -c "import $mod" >/dev/null 2>&1 || {
     echo "installing missing $mod"
     "$VENV/bin/pip" install --quiet "$mod" || echo "  could not install $mod"

@@ -145,7 +145,15 @@ fi
 say "Sounding libraries"
 
 # What SounderPy really uses to FETCH, as opposed to what it lists.
-for m in xarray siphon cfgrib; do
+#
+# This list was not guessed. SounderPy was imported with each missing module
+# stubbed in turn and the names written down: siphon, netCDF4, bs4,
+# ecape_parcel and cdsapi all get touched at import, and every one of them
+# either fetches data or calculates with it. cartopy and pyart are on that
+# same list and are NOT here, because they only draw, and drawing is what
+# this machine does with matplotlib instead. sounding_service stands in for
+# those two so the import still completes.
+for m in xarray siphon cfgrib netCDF4 bs4 ecape_parcel cdsapi; do
   "$VENV/bin/python" -c "import $m" >/dev/null 2>&1 || \
     "$VENV/bin/pip" install --quiet "$m" || \
       warn "$m would not install; SounderPy may not fetch every source"

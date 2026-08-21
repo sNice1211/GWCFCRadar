@@ -84,7 +84,7 @@ ok("nor NumPy, which SHARPpy drags in",
 # module scope takes the door with it.
 ok("so importing it costs nothing but the standard library",
    top_imports <= {"argparse", "json", "math", "os", "sys", "time",
-                   "datetime", "urllib"},
+                   "datetime", "urllib", "importlib", "types"},
    str(sorted(top_imports)))
 
 # It really does import, here, now, with nothing installed.
@@ -175,15 +175,27 @@ print("\n2c. SounderPy is the good path, and its absence is not a crash")
 # be a sentence somebody can act on.
 fn = ast.get_source_segment(svc_src, next(
     n for n in svc_tree.body if getattr(n, "name", "") == "fetch_sounderpy"))
-ok("the import is inside the function", "import sounderpy as spy" in fn)
-ok("and a missing library is a sentence, not a traceback",
-   "is not installed on this Pi" in fn)
+imp = ast.get_source_segment(svc_src, next(
+    n for n in svc_tree.body if getattr(n, "name", "") == "import_sounderpy"))
+# The import lives in its own function now rather than inline, because it has
+# to stand in for the plotting libraries first. Still inside a function, which
+# is the property that matters: serve.py imports this file to answer every
+# request, and an import that throws at module scope takes the door with it.
+ok("the import is inside a function, not at module scope",
+   "import sounderpy as spy" in imp
+   and "import sounderpy" not in svc_src.split("def ")[0])
+ok("and the fetch goes through it rather than importing again",
+   "import_sounderpy()" in fn and "import sounderpy" not in fn)
+ok("a missing library is a sentence, not a traceback",
+   "will not import on this Pi" in imp)
 try:
     svc.fetch_sounderpy("rap", 35.4, -97.6)
     ok("which is what really happens with it missing", False)
 except RuntimeError as e:
+    # It names what to install. "Reinstall it" was the old advice and it was
+    # useless: the package WAS installed, and could not import.
     ok("which is what really happens with it missing",
-       "not installed" in str(e), str(e)[:90])
+       "pip install" in str(e), str(e)[:90])
 
 # Units are the one thing a profile cannot be checked for by looking at it.
 for unit in ("hPa", "meter", "degC", "knot"):
@@ -240,8 +252,13 @@ msgs = []
 for r in raises:
     seg = ast.get_source_segment(svc_src, r) or ""
     msgs.append(seg)
-ok("all of them are RuntimeError, so the caller can tell them from a bug",
-   all("RuntimeError" in m for m in msgs), str(msgs)[:200])
+# The stand-in class raises AttributeError on a dunder on purpose, because
+# that is what Python's own machinery expects when an attribute is absent -
+# turning it into a RuntimeError would confuse the interpreter rather than
+# the caller. So the rule is about failures a CALLER sees.
+caller_msgs = [m for m in msgs if "AttributeError" not in m]
+ok("every failure a caller sees is a RuntimeError, not a bare exception",
+   all("RuntimeError" in m for m in caller_msgs), str(caller_msgs)[:200])
 ok("the empty-answer one names the point that was asked about",
    any("lat" in m or "{lat}" in m for m in msgs), str(msgs)[:160])
 # Two completely different failures that were reported with one sentence. A
@@ -545,6 +562,64 @@ ok("and when the sounding service it imports changes",
    "sounding_service" in sup and re.search(
        r"grep -qE '\^pi/\(serve\|sounding_service\)", sup) is not None,
    "not watched")
+
+print("\n12. SounderPy imports on a machine that never draws")
+# The bug that kept the soundings dark for days, and which no error message
+# pointed at. SounderPy is installed with --no-deps because its dependency
+# list includes cartopy and pyart: hours of C++ on ARM for code that only
+# draws pictures. But SounderPy imports them at MODULE scope, so
+# `import sounderpy` raised ImportError, the fetch said "SounderPy is not
+# installed", somebody reinstalled it, pip said it was already there, and
+# round it went. The package was installed perfectly and simply could not
+# be imported.
+src = open(SVC, encoding="utf-8").read()
+ok("there is one place that imports SounderPy", "def import_sounderpy" in src)
+ok("and the fetch uses it rather than a bare import",
+   "spy = import_sounderpy()" in src
+   and "import sounderpy as spy" not in ast.get_source_segment(
+       src, next(n for n in ast.parse(src).body
+                 if getattr(n, "name", "") == "fetch_sounderpy")))
+ok("cartopy and pyart are stood in for, since they only draw",
+   '"cartopy"' in src and '"pyart"' in src)
+# The line has to be drawn at "does this module make a picture". Stubbing
+# something that reads data would not save a build, it would break a fetch
+# in a way nothing would catch.
+for real in ("siphon", "netCDF4", "bs4", "ecape_parcel"):
+    seg = src.split("_SPY_DRAWING_ONLY = (")[1].split(")")[0]
+    ok(f"{real} is NOT stubbed, because it touches data", real not in seg)
+ok("the county layer MetPy only defines with cartopy is handled",
+   "USCOUNTIES" in src)
+
+# The stub has to be a CLASS. MetPy does `class MetPyMapFeature(Feature)`
+# with a name straight out of cartopy, and a function cannot be subclassed:
+# returning one produced "TypeError: function() argument 'code' must be
+# code, not str", which says nothing about the real problem.
+ns = {}
+tree2 = ast.parse(src)
+for node in tree2.body:
+    if isinstance(node, ast.ClassDef) and node.name in ("_AnythingMeta", "_Anything"):
+        exec(ast.get_source_segment(src, node), ns)
+Any = ns.get("_Anything")
+ok("the stand-in is a class, so it can be subclassed", isinstance(Any, type))
+if Any:
+    class _Sub(Any):          # exactly what MetPy does
+        pass
+    ok("subclassing it works, which is what MetPy needs", issubclass(_Sub, Any))
+    ok("calling it works, for ccrs.PlateCarree()", Any() is not None)
+    # Read off the CLASS, not an instance: cartopy is used as ccrs.X() before
+    # anything is instantiated, and a plain __getattr__ never sees that.
+    ok("and reading an attribute off the class works too",
+       Any.PlateCarree is not None)
+    ok("which is the case a plain instance __getattr__ would have missed",
+       Any.AnythingAtAll() is not None)
+ok("a dunder is still refused, so Python's own machinery is not confused",
+   Any is None or not hasattr(Any, "__definitely_not_real__"))
+
+ok("the failure message names what to install, not 'reinstall it'",
+   "pip install siphon netCDF4 bs4 ecape_parcel cdsapi" in src)
+ok("and install.sh installs exactly those",
+   all(m in open(os.path.join(ROOT, "pi", "install.sh")).read()
+       for m in ("siphon", "netCDF4", "bs4", "ecape_parcel", "cdsapi")))
 
 print()
 if failed:
