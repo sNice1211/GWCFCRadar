@@ -47,7 +47,14 @@ html = open(HTML, encoding="utf-8").read()
 PRODUCTS = None
 for node in ast.parse(src).body:
     if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "MRMS_PRODUCTS":
-        PRODUCTS = ast.literal_eval(node.value)
+        # eval rather than literal_eval: a product can name a constant for
+        # the NOAA tree it lives in (FLASH is published separately from the
+        # 2D mosaics), and literal_eval refuses anything that is not a
+        # literal. The namespace is the two base URLs and nothing else, so
+        # this stays a reader rather than an importer.
+        PRODUCTS = eval(ast.get_source_segment(src, node.value),
+                        {"__builtins__": {}},
+                        {"MRMS_BASE": "2D", "FLASH_BASE": "FLASH"})
 assert PRODUCTS, "MRMS_PRODUCTS not found"
 
 
@@ -67,6 +74,12 @@ ok("every label is written for a person, not copied from the path",
    str([k for k, v in PRODUCTS.items() if v["label"] == v["path"]]))
 bad_range = [k for k, v in PRODUCTS.items() if not (v["range"][1] > v["range"][0])]
 ok("and a range that runs the right way", not bad_range, str(bad_range))
+# A grid whose NOAA name ends in Height is a height, so reporting it in dBZ
+# means one of the two is wrong and the reading on the map is a lie. This
+# caught three products pointing at Height paths while labelled reflectivity.
+lying = [k for k, v in PRODUCTS.items()
+         if v["path"].endswith("Height") and v["unit"] == "dBZ"]
+ok("no product reports a height grid in decibels", not lying, str(lying))
 
 
 print("\n2. the additions are the ones that were actually missing")
@@ -101,7 +114,7 @@ m = re.search(r"const MRMS_GROUPS = \[(.*?)\n\];", html, re.S)
 ok("the page's group table can be read", bool(m))
 rules = re.findall(r"id: '(\w+)',\s*label: '[^']+',\s*\n\s*match: k => /(.+?)/\.test\(k\)",
                    m.group(1)) if m else []
-ok("and it has all five groups", len(rules) == 5, str([r[0] for r in rules]))
+ok("and it has all six groups", len(rules) == 6, str([r[0] for r in rules]))
 
 
 def group_of(key):
@@ -127,6 +140,19 @@ ok("reflectivity at an isotherm is reflectivity",
    group_of("refl0c") == "refl", group_of("refl0c"))
 ok("gauge corrected rain is precip",
    group_of("qpemulti01") == "precip", group_of("qpemulti01"))
+# POH and POSH are the same question asked at two severities, so a pattern
+# that caught only the longer name would leave the shorter one in Other.
+ok("probability of hail sits with probability of severe hail",
+   group_of("poh") == "severe" and group_of("posh") == "severe",
+   f"{group_of('poh')}, {group_of('posh')}")
+ok("quality controlled base reflectivity is reflectivity",
+   group_of("baseqc") == "refl", group_of("baseqc"))
+# Streamflow is what the ground did with the rain, which is a different
+# question from how much fell, so it must not land in precip.
+ok("the hydrology products are their own group",
+   all(group_of(k) == "flood" for k in PRODUCTS if k.startswith(("crest", "sac", "hp"))),
+   str({k: group_of(k) for k in PRODUCTS
+        if k.startswith(("crest", "sac", "hp")) and group_of(k) != "flood"}))
 counts = {gid: sum(1 for k in PRODUCTS if group_of(k) == gid) for gid, _ in rules}
 # No group so large it is a wall of names again, which is the problem the
 # nesting was built to solve in the first place.

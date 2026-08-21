@@ -46,7 +46,13 @@ tree = ast.parse(src)
 catalogue = None
 for node in tree.body:
     if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "MRMS_PRODUCTS":
-        catalogue = ast.literal_eval(node.value)
+        # eval rather than literal_eval: a product can name a constant for
+        # the NOAA tree it lives in, and literal_eval refuses anything that
+        # is not a literal. The namespace is the two base URLs and nothing
+        # else, so this stays a reader rather than an importer.
+        catalogue = eval(ast.get_source_segment(src, node.value),
+                         {"__builtins__": {}},
+                         {"MRMS_BASE": "2D", "FLASH_BASE": "FLASH"})
 if catalogue is None:
     print("could not find MRMS_PRODUCTS")
     sys.exit(1)

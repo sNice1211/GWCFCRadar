@@ -988,6 +988,10 @@ def write_index(level, sites):
 # published every two minutes, covering the whole CONUS at 1 km: where storms
 # have rotated over the last hour, and the largest hail they have produced.
 MRMS_BASE = "https://mrms.ncep.noaa.gov/data/2D"
+# FLASH is MRMS rainfall run through hydrologic models, and NOAA publishes it
+# in its own tree rather than beside the 2D mosaics. A product says which one
+# it lives in; everything without a "base" is a 2D mosaic.
+FLASH_BASE = "https://mrms.ncep.noaa.gov/data/FLASH"
 
 # What one pass of MRMS is allowed to cost.
 #
@@ -1055,6 +1059,13 @@ MRMS_PRODUCTS = {
     "mesh1440": {"path": "MESH_Max_1440min", "label": "Hail Swaths 24h",
                  "unit": "mm", "range": (0, 100), "ramp": "radar",
                  "floor": 6.0, "every": 60},
+    # POH is the chance of hail at all; POSH is the chance of hail big enough
+    # to be severe. Two different questions and the answers diverge widely:
+    # a summer storm is often near certain for the first and near zero for
+    # the second.
+    "poh":      {"path": "POH", "label": "Prob. of Hail",
+                 "unit": "%", "range": (0, 100), "ramp": "heat",
+                 "floor": 5.0, "every": 5},
     "posh":     {"path": "POSH", "label": "Prob. of Severe Hail",
                  "unit": "%", "range": (0, 100), "ramp": "heat",
                  "floor": 5.0, "every": 5},
@@ -1085,6 +1096,10 @@ MRMS_PRODUCTS = {
                       "label": "Low Level Rotation 2h", "unit": "s^-1",
                       "range": (0.002, 0.014), "ramp": "heat",
                       "floor": 0.003, "every": 15},
+    "rotationll240": {"path": "RotationTrackLL240min",
+                      "label": "Low Level Rotation 4h", "unit": "s^-1",
+                      "range": (0.002, 0.014), "ramp": "heat",
+                      "floor": 0.003, "every": 30},
     "rotationll1440": {"path": "RotationTrackLL1440min",
                        "label": "Low Level Rotation 24h", "unit": "s^-1",
                        "range": (0.002, 0.014), "ramp": "heat",
@@ -1125,21 +1140,25 @@ MRMS_PRODUCTS = {
     "lowalt":    {"path": "MergedReflectivityAtLowestAltitude",
                   "label": "Reflectivity, Lowest Altitude", "unit": "dBZ",
                   "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
+    "baseqc":    {"path": "MergedBaseReflectivityQC",
+                  "label": "Base Reflectivity (QC)", "unit": "dBZ",
+                  "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
     "hsr":       {"path": "SeamlessHSR", "label": "Hybrid Scan Reflectivity",
                   "unit": "dBZ", "range": (-10, 75), "ramp": "radar",
                   "floor": 5.0, "every": 5},
     # Reflectivity at the temperatures that matter rather than at a height.
     # A forecaster does not ask "what is the echo at four kilometres", they
     # ask "how much of this storm is above freezing", because that is where
-    # ice grows. These carry the height of a given reflectivity relative to
-    # the model isotherm, which is the same question answered directly.
-    "refl0c":   {"path": "Reflectivity_0C_Height",
-                 "label": "Reflectivity at 0 C", "unit": "dBZ",
+    # ice grows. The 0 C grid is also the top of the melting layer by
+    # definition, so it is the seamless composite to read the bright band
+    # against rather than through.
+    "refl0c":   {"path": "Reflectivity_0C",
+                 "label": "Reflectivity at 0 C (Melting Top)", "unit": "dBZ",
                  "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
-    "reflm10c": {"path": "Reflectivity_-10C_Height",
+    "reflm10c": {"path": "Reflectivity_-10C",
                  "label": "Reflectivity at -10 C", "unit": "dBZ",
                  "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
-    "reflm20c": {"path": "Reflectivity_-20C_Height",
+    "reflm20c": {"path": "Reflectivity_-20C",
                  "label": "Reflectivity at -20 C", "unit": "dBZ",
                  "range": (-10, 75), "ramp": "radar", "floor": 5.0, "every": 5},
     # Composites over a slab rather than the whole column. The low one is the
@@ -1243,6 +1262,15 @@ MRMS_PRODUCTS = {
     "qpeari01": {"path": "RadarOnly_QPE_01H_ARI", "label": "1 hr rain, ARI",
                  "unit": "yr", "range": (0, 100), "ramp": "heat",
                  "floor": 1.0, "every": 15},
+    "qpeari03": {"path": "RadarOnly_QPE_03H_ARI", "label": "3 hr rain, ARI",
+                 "unit": "yr", "range": (0, 100), "ramp": "heat",
+                 "floor": 1.0, "every": 30},
+    "qpeari06": {"path": "RadarOnly_QPE_06H_ARI", "label": "6 hr rain, ARI",
+                 "unit": "yr", "range": (0, 100), "ramp": "heat",
+                 "floor": 1.0, "every": 30},
+    "qpeari12": {"path": "RadarOnly_QPE_12H_ARI", "label": "12 hr rain, ARI",
+                 "unit": "yr", "range": (0, 100), "ramp": "heat",
+                 "floor": 1.0, "every": 60},
     "qpeari24": {"path": "RadarOnly_QPE_24H_ARI", "label": "24 hr rain, ARI",
                  "unit": "yr", "range": (0, 100), "ramp": "heat",
                  "floor": 1.0, "every": 60},
@@ -1262,6 +1290,12 @@ MRMS_PRODUCTS = {
     # A lightning jump is a sudden rise in flash rate, and it tends to come
     # before a storm turns severe rather than after. That makes it one of the
     # few genuinely leading signals in the whole mosaic.
+    "ltgdensity5": {"path": "LightningDensityNLDN05min",
+                    "label": "Lightning Density 5 min", "unit": "fl/km2/min",
+                    "range": (0, 8), "ramp": "heat", "floor": 0.02, "every": 5},
+    "ltgdensity15": {"path": "LightningDensityNLDN15min",
+                     "label": "Lightning Density 15 min", "unit": "fl/km2/min",
+                     "range": (0, 10), "ramp": "heat", "floor": 0.03, "every": 5},
     "ltgjump": {"path": "LightningJumpGrid", "label": "Lightning Jump",
                 "unit": "", "range": (0, 10), "ramp": "heat",
                 "floor": 0.5, "every": 5},
@@ -1273,6 +1307,51 @@ MRMS_PRODUCTS = {
     # The bottom of the melting layer matters as much as the top: rain
     # reaching the ground rather than snow depends on how far below the layer
     # the ground is, and the top alone does not say that.
+    # ── Flooding, which radar only answers half of ─────────────────────
+    #
+    # Rainfall is not flooding. An inch on dry sand does nothing and an inch
+    # on saturated clay above a small catchment is a wall of water, so the
+    # question a flood warning turns on is what the ground DOES with the rain
+    # rather than how much of it fell.
+    #
+    # FLASH runs three hydrologic models on the MRMS rainfall and publishes
+    # the answers: CREST and SAC route water through soil and channels and
+    # can say how saturated the ground already is, and Hydrophobic assumes
+    # none of it soaks in at all, which is the worst case and the fastest to
+    # believe on burn scars and pavement.
+    #
+    # Unit streamflow is streamflow divided by catchment area, and it is the
+    # one to compare between places: raw streamflow is always largest on the
+    # biggest river whether or not anything unusual is happening.
+    #
+    # These live under a different NOAA directory from the 2D mosaics, which
+    # is what the "base" key is for.
+    "crestflow": {"path": "CREST_MAXSTREAMFLOW", "base": FLASH_BASE,
+                  "label": "CREST Streamflow", "unit": "m3/s",
+                  "range": (0, 500), "ramp": "precip", "floor": 1.0, "every": 15},
+    "crestunit": {"path": "CREST_MAXUNITSTREAMFLOW", "base": FLASH_BASE,
+                  "label": "CREST Unit Streamflow", "unit": "m3/s/km2",
+                  "range": (0, 5), "ramp": "heat", "floor": 0.05, "every": 15},
+    "crestsoil": {"path": "CREST_MAXSOILSAT", "base": FLASH_BASE,
+                  "label": "CREST Soil Saturation", "unit": "%",
+                  "range": (0, 100), "ramp": "moisture", "floor": 1.0,
+                  "every": 30},
+    "sacflow":   {"path": "SAC_MAXSTREAMFLOW", "base": FLASH_BASE,
+                  "label": "SAC Streamflow", "unit": "m3/s",
+                  "range": (0, 500), "ramp": "precip", "floor": 1.0, "every": 15},
+    "sacunit":   {"path": "SAC_MAXUNITSTREAMFLOW", "base": FLASH_BASE,
+                  "label": "SAC Unit Streamflow", "unit": "m3/s/km2",
+                  "range": (0, 5), "ramp": "heat", "floor": 0.05, "every": 15},
+    "sacsoil":   {"path": "SAC_MAXSOILSAT", "base": FLASH_BASE,
+                  "label": "SAC Soil Saturation", "unit": "%",
+                  "range": (0, 100), "ramp": "moisture", "floor": 1.0,
+                  "every": 30},
+    "hpflow":    {"path": "QPE_MAXSTREAMFLOW", "base": FLASH_BASE,
+                  "label": "Hydrophobic Streamflow", "unit": "m3/s",
+                  "range": (0, 500), "ramp": "precip", "floor": 1.0, "every": 15},
+    "hpunit":    {"path": "QPE_MAXUNITSTREAMFLOW", "base": FLASH_BASE,
+                  "label": "Hydrophobic Unit Streamflow", "unit": "m3/s/km2",
+                  "range": (0, 5), "ramp": "heat", "floor": 0.05, "every": 15},
     "brightbandbot": {"path": "BrightBandBottomHeight",
                       "label": "Melting Layer Bottom", "unit": "m",
                       "range": (0, 5000), "ramp": "viridis",
@@ -1445,7 +1524,8 @@ def build_mrms():
                 "this pass. Frames will be pruned harder until there is room.")
             stopped_at = (start + i) % len(names)
             break
-        url = f"{MRMS_BASE}/{spec['path']}/MRMS_{spec['path']}.latest.grib2.gz"
+        base = spec.get("base", MRMS_BASE)
+        url = f"{base}/{spec['path']}/MRMS_{spec['path']}.latest.grib2.gz"
         t0 = time.time()
         try:
             got = _mrms_read(url)

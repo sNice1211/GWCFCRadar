@@ -15196,7 +15196,11 @@ async function _spagCycSync() {
       o.textContent = CYC_VARIANTS[v] || v;
       sel.appendChild(o);
     });
+    // Same correction at the other end. A select whose value is not in its
+    // own options silently shows the first one, so leaving the variable
+    // behind makes the control a liar rather than a control.
     if (have.includes(chosen)) sel.value = chosen;
+    else if (have.length) { _cycVariant = have[0]; sel.value = have[0]; }
   }
   if (status) {
     // What this run actually holds, per variant: how many storms, how many
@@ -15350,15 +15354,24 @@ function _cycDrawTrack(points, style, key, label) {
 }
 
 async function _cycEnable() {
-  _cycOn = true;
+  // NOT set until there is something to show.
+  //
+  // This used to be the first line, so a run the Pi did not have left the
+  // layer "on" with nothing drawn: the button read "Hide tracks" over an
+  // empty map, and the next press DISABLED rather than retrying. Pressing it
+  // again and again alternated between two kinds of nothing, which is
+  // exactly what a broken feature looks like from the outside.
   const idx = await _cycFresh();
   if (!idx) {
+    _cycOn = false;
+    _spagCycSync();
     if (typeof showToast === 'function') {
       showToast('No cyclone data from the Pi yet. It builds every three '
               + 'hours, and only when DeepMind have published a run.', 4000);
     }
     return;
   }
+  _cycOn = true;
   _cycClear();
   const base = _hdBase;
   const man = idx.man;
@@ -15384,7 +15397,13 @@ async function _cycEnable() {
   // have, rather than filtering to nothing and drawing an empty map.
   const names = Object.values(man.tracks || {})
     .map(m => m.variant).filter((v, i, a) => v && a.indexOf(v) === i);
+  // Falling back is not enough on its own: the chosen variant has to MOVE to
+  // the one being drawn. It used to be read here and left alone, so the
+  // panel showed the first variant in the run while _cycVariant still held
+  // an absent one, and every later question ("which is chosen?") got the
+  // wrong answer from a control that looked right.
   const pick = names.includes(_cycVariant) ? _cycVariant : names[0];
+  if (pick && pick !== _cycVariant) _cycVariant = pick;
   const want = Object.entries(man.tracks || {})
     .filter(([, m]) => m.variant === pick);
   for (const [name, meta] of want) {
@@ -20039,6 +20058,7 @@ const LAYER_DESCRIPTIONS = {
   'mrms-group-refl':    'Reflectivity across the whole mosaic: the composite, the lowest usable altitude, hybrid scan, echo tops and vertically integrated liquid.',
   'mrms-group-precip':  'How hard it is raining, what kind of precipitation it is, and how much has fallen. Blended from every radar plus gauges and models.',
   'mrms-group-ltg':     'Lightning: where it has struck recently and the density of strikes, which marks the electrically active part of a line.',
+  'mrms-group-flood':   'What the ground does with the rain, rather than how much fell. An inch on dry sand does nothing and an inch on saturated clay above a small catchment is a wall of water, so this is the half of flooding that rainfall alone cannot answer. Three models run on the MRMS rainfall: CREST and SAC route water through soil and channels and can say how saturated the ground already is, and Hydrophobic assumes none of it soaks in at all, which is the worst case and the one to believe on burn scars and pavement. Unit streamflow is the one to compare between places: raw streamflow is always largest on the biggest river whether or not anything unusual is happening.',
   'mrms-group-winter':  'The winter set: where the melting layer sits, surface and wet bulb temperature, and the height of the freezing level. Together these are what decides rain, sleet or snow at the ground.',
   radar:      'Turns on NEXRAD radar. Tap again to pick which radar product to show, like Reflectivity or Velocity.',
   satellite:  'Turns on GOES satellite imagery. Tap again to pick a channel, like Visible, Infrared, or Water Vapor.',
@@ -22109,13 +22129,18 @@ const MRMS_GROUPS = [
   { id: 'winter',  label: 'Winter',
     match: k => /^(brightband|sfctemp|wetbulb|h0c)/.test(k) },
   { id: 'severe',  label: 'Severe',
-    match: k => /^(rotation|mesh|posh|shi|vii|azshear|h5\d|h6\d)/.test(k) },
+    match: k => /^(rotation|mesh|pos?h|shi|vii|azshear|h5\d|h6\d)/.test(k) },
   { id: 'refl',    label: 'Reflectivity',
-    match: k => /^(composite|lowalt|lowcomposite|layer|hsr|echotop|vil|refl)/.test(k) },
+    match: k => /^(composite|lowalt|lowcomposite|layer|hsr|echotop|vil|refl|baseqc)/.test(k) },
   { id: 'precip',  label: 'Precip',
     match: k => /^(preciprate|preciptype|qpe)/.test(k) },
   { id: 'ltg',     label: 'Lightning',
     match: k => /^ltg/.test(k) },
+  // Flooding is its own question and not a kind of precipitation. Rainfall
+  // is what fell; this is what the ground did with it, which is what a flood
+  // warning actually turns on.
+  { id: 'flood',   label: 'Flooding',
+    match: k => /^(crest|sac|hp)(flow|unit|soil)/.test(k) },
 ];
 
 function _mrmsGroupOf(key) {
@@ -39793,7 +39818,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Soundings are back on SounderPy and SHARPpy. Both refused to install because of dependencies they do not actually need: SHARPpy pins a NumPy that cannot build on current Python, and SounderPy lists two plotting libraries for a Pi that never plots anything. They are installed without those lists now, with what they really use named separately. NOAA plain text stays as the fallback.";
+const APP_LATEST_UPDATE = "AI Cyclones work again: turning them on when a run was missing left the button saying Hide tracks over an empty map, and the model picker could disagree with what was actually drawn. MRMS now covers the full list, 87 products in six groups, with Flooding as its own group for streamflow and soil saturation. Probability of Hail and QC Base Reflectivity no longer land in Other, and three products that were reporting a height grid in decibels are fixed.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

@@ -355,6 +355,74 @@ console.log('\n11. it closes, and says so when there is nothing loaded');
      + 'charts', /spaghetti models/i.test(r.empty), r.empty.slice(0, 120));
 }
 
+console.log('\nZ. a run the Pi does not have leaves the button honest');
+{
+  const r = await page.evaluate(async () => {
+    // The failure people actually hit: the Pi has no run yet. This used to
+    // set _cycOn true before finding that out, so the button read "Hide
+    // tracks" over an empty map and the NEXT press disabled rather than
+    // retrying. Pressing again and again alternated between two kinds of
+    // nothing, which is what a broken feature looks like from outside.
+    const real = window._cycFresh;
+    window._cycFresh = async () => null;
+    _cycDisable();
+    await _cycEnable();
+    const afterFail = { on: _cycOn, layers: _cycLayers.length };
+    // And a second press must TRY AGAIN rather than turn something off.
+    let tried = 0;
+    window._cycFresh = async () => { tried++; return null; };
+    await _cycEnable();
+    window._cycFresh = real;
+    return { afterFail, tried };
+  });
+  ok('a run that is not there leaves the layer off, not on-with-nothing',
+     r.afterFail.on === false, JSON.stringify(r.afterFail));
+  ok('and nothing is drawn', r.afterFail.layers === 0, String(r.afterFail.layers));
+  // It asks more than once per press, because the status line under the
+  // panel refreshes from the same place. What matters is that it ASKS at all
+  // rather than flipping a flag: a retry is a retry.
+  ok('so pressing again really tries again rather than toggling nothing',
+     r.tried >= 1, String(r.tried));
+}
+
+console.log('\nZb. the chosen variant follows what is really drawn');
+{
+  const r = await page.evaluate(async () => {
+    // A saved choice the run does not carry. The code falls back for the
+    // DRAWING, and used to leave the variable pointing at the absent one, so
+    // the panel showed one thing and every later question was answered with
+    // another.
+    const real = window._cycFresh;
+    const man = { tracks: {
+      'fnv3_mean':    { variant: 'FNV3P0', path: 'a.json' },
+      'fnv3_members': { variant: 'FNV3P0', path: 'b.json' },
+    } };
+    window._cycFresh = async () => ({ run: 'r', man });
+    _cycVariant = 'OPER';                    // not in this run
+    _cycDisable();
+    await _cycEnable();
+    const drawn = _cycVariant;
+    await _spagCycSync();
+    const sel = document.getElementById('cyc-variant-sel');
+    const out = { drawn, afterSync: _cycVariant,
+                  selValue: sel ? sel.value : null,
+                  options: sel ? [...sel.options].map(o => o.value) : [] };
+    window._cycFresh = real;
+    _cycDisable();
+    return out;
+  });
+  ok('the chosen variant moves to one the run actually has',
+     r.drawn === 'FNV3P0', r.drawn);
+  ok('and stays there after the panel is rebuilt',
+     r.afterSync === 'FNV3P0', r.afterSync);
+  // A select whose value is not among its own options silently shows the
+  // first one, so a variable left behind makes the control a liar.
+  ok('the control shows what is chosen rather than defaulting silently',
+     r.selValue === r.afterSync, `${r.selValue} vs ${r.afterSync}`);
+  ok('and only offers what the run holds', r.options.join() === 'FNV3P0',
+     JSON.stringify(r.options));
+}
+
 console.log('\n12. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));

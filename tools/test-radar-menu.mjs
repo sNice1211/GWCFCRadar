@@ -23,7 +23,7 @@
  * menu code is what is under test, not the map.
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -63,9 +63,27 @@ const ok = (name, cond, extra) => {
   else { fail++; console.log('  FAIL ' + name + (extra ? '  <' + extra + '>' : '')); }
 };
 
-const browser = await chromium.launch({
-  executablePath: process.env.CHROME_PATH || undefined,
-});
+// Left to itself Playwright looks for the browser it downloaded at install
+// time, and on a machine where Chromium was put there by someone else that
+// download never happened, so the suite dies before it tests anything. The
+// other browser suites hard code the folder, which breaks every time the
+// version bumps, so this looks for whatever chromium is actually there.
+function chromePath() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+  const root = '/opt/pw-browsers';
+  try {
+    for (const d of readdirSync(root)) {
+      // chromium_headless_shell is a different build and often absent, so
+      // only the full chromium folders count.
+      if (!d.startsWith('chromium-')) continue;
+      const p = join(root, d, 'chrome-linux', 'chrome');
+      if (existsSync(p)) return p;
+    }
+  } catch { /* not this kind of machine; let Playwright try its own */ }
+  return undefined;
+}
+
+const browser = await chromium.launch({ executablePath: chromePath() });
 const page = await browser.newPage();
 const errors = [];
 page.on('pageerror', e => errors.push(e.message));
