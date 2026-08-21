@@ -273,14 +273,25 @@ def fetch_profile(source, lat, lon, when=None):
     text = None
     last_err = None
     used = None
+    reached = False        # did the request get as far as an HTTP reply?
     for src in tries:
         try:
             text = _http_text(_sounding_url(src, lat, lon, when))
+            reached = True
         except urllib.error.HTTPError as e:
-            last_err = f"HTTP {e.code}"
+            # An HTTP status IS a reply: the host is there and answering.
+            reached = True
+            last_err = f"HTTP {e.code} {e.reason}"
+            continue
+        except urllib.error.URLError as e:
+            # No reply at all: DNS, TLS, refused, timed out. The reason is
+            # the whole diagnosis and it used to be thrown away, leaving
+            # "URLError" and a sentence about publishing schedules that has
+            # nothing to do with a connection that never opened.
+            last_err = f"could not reach the host ({e.reason})"
             continue
         except Exception as e:
-            last_err = e.__class__.__name__
+            last_err = f"{e.__class__.__name__}: {e}"
             continue
         if text and text.count("\n") > 5:
             used = src
@@ -289,11 +300,20 @@ def fetch_profile(source, lat, lon, when=None):
         text = None
 
     if not text:
+        # Two completely different failures, and they were being reported
+        # with one sentence. A server that answered and had nothing is a
+        # question about timing; a host that never answered is a question
+        # about the network or the address, and telling someone to wait an
+        # hour for that is sending them the wrong way.
+        why = ("Analyses publish about an hour behind, so the newest hour is "
+               "often not there yet." if reached else
+               "Nothing answered at " + SOUNDING_URL + ". That is a network "
+               "or an address problem rather than a timing one: check the Pi "
+               "can reach it at all.")
         raise RuntimeError(
-            f"NOAA did not return a {spec['label']} for {lat}, {lon}"
+            f"No {spec['label']} for {lat}, {lon}"
             + (f" at {when}Z" if when else "")
-            + f" ({last_err}). Analyses publish about an hour behind, so the "
-            "newest hour is often not there yet.")
+            + f": {last_err}. {why}")
 
     prof, station = parse_gsd(text)
     n = len(prof["p"])
