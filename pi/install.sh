@@ -405,7 +405,14 @@ systemctl --user daemon-reload
 # Only the quick tunnel writes this log, and only it is confused by old lines
 # in it. A named tunnel does not use it at all.
 [ "$NAMED_TUNNEL" = "1" ] || : > "$HOME/tunnel.log"
-systemctl --user enable --now gwcfc-serve.service  >/dev/null 2>&1
+# enable THEN restart, for the same reason the tunnel does below: this used
+# to be "enable --now", which on a service that is ALREADY RUNNING does
+# nothing at all. So serve.py kept running whatever file it was started with,
+# for as long as the Pi stayed up. Pulling new code and running the installer
+# looked like a successful update and changed nothing: the /sounding door was
+# in the file on disk and not in the process answering requests.
+systemctl --user enable  gwcfc-serve.service       >/dev/null 2>&1
+systemctl --user restart gwcfc-serve.service       >/dev/null 2>&1
 # enable THEN restart, as two separate steps. These used to be
 # "restart || enable --now", and restart succeeds on a unit that exists but
 # was never enabled, so the enable half never ran: the tunnel worked all day

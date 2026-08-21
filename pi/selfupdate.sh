@@ -44,7 +44,13 @@ done
 
 # Only the long running one. Restarting the timers here would fire them all at
 # once on every update, which is a stampede rather than a refresh.
-if git diff --name-only "$BEFORE" "$AFTER" | grep -q '^pi/serve\.py$'; then
+# serve.py, and anything serve.py imports. sounding_service.py is the second
+# kind: serve.py imports it to answer /sounding, so a change to it is a change
+# to the running server even though serve.py itself did not move. Watching
+# only serve.py meant a rewritten sounding service sat on disk, unused, while
+# the old one kept answering.
+if git diff --name-only "$BEFORE" "$AFTER" \
+   | grep -qE '^pi/(serve|sounding_service)\.py$'; then
   systemctl --user restart gwcfc-serve.service && echo "restarted serve"
 fi
 
