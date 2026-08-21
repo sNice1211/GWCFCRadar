@@ -169,6 +169,91 @@ ok("and every source names a real NOAA dataset",
 ok("and the analysis has a previous cycle to fall back on",
    svc.SOURCES["rap"]["fallback"] == "Bak40")
 
+print("\n2c. Open-Meteo answers when NOAA will not")
+# rucsoundings.noaa.gov still resolves and no longer answers: DNS returns an
+# address, port 443 refuses. The rest of NOAA is fine from the same machine,
+# so that is one dead service rather than a network. Open-Meteo serves the
+# same thing as pressure level fields and the app already talks to it for the
+# wind and temperature layers, so it is a host known to be reachable.
+import urllib.request as _ur
+
+def _served(payload):
+    """Stand in for the network, so this tests the parsing not the weather."""
+    class _R:
+        def read(self, *a): return json.dumps(payload).encode()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    return lambda req, timeout=None: _R()
+
+LEVELS = svc.OM_LEVELS
+hourly = {"time": ["2026-08-21T17:00", "2026-08-21T18:00", "2026-08-21T19:00"],
+          "temperature_2m": [30, 31, 32], "dew_point_2m": [21, 21, 21],
+          "surface_pressure": [975, 975, 975],
+          "wind_speed_10m": [12, 12, 12], "wind_direction_10m": [180, 180, 180]}
+for n, lev in enumerate(LEVELS):
+    hourly[f"temperature_{lev}hPa"] = [25 - n * 3] * 3
+    hourly[f"relative_humidity_{lev}hPa"] = [70] * 3
+    hourly[f"wind_speed_{lev}hPa"] = [20 + n * 3] * 3
+    hourly[f"wind_direction_{lev}hPa"] = [200 + n] * 3
+    hourly[f"geopotential_height_{lev}hPa"] = [300 + n * 800] * 3
+
+_real_open = _ur.urlopen
+_ur.urlopen = _served({"hourly": hourly})
+try:
+    om = svc.fetch_open_meteo("rap", 35.4, -97.6, "2026082118")
+finally:
+    _ur.urlopen = _real_open
+
+ok("it builds a profile", om["levels"] >= 10, str(om["levels"]))
+ok("more levels than the Pi's twelve images carry", om["levels"] > 12,
+   str(om["levels"]))
+# The surface is where the ground is, not the 1000 mb level. On high terrain
+# those are hundreds of metres apart and the 1000 mb field is extrapolated
+# into rock.
+ok("the surface is the ground, not the thousand millibar level",
+   om["profile"]["p"][0] == 975.0, str(om["profile"]["p"][:3]))
+ok("and levels below the ground are left out rather than drawn underground",
+   1000 not in om["profile"]["p"], str(om["profile"]["p"][:3]))
+# Strictly falling: two entries at one pressure make a layer of zero depth,
+# and every layer average in the panel divides by that depth.
+ok("pressure falls all the way up, with no level repeated",
+   all(b < a for a, b in zip(om["profile"]["p"], om["profile"]["p"][1:])),
+   str(om["profile"]["p"][:6]))
+ok("real geopotential heights come with it, so the depths are measured",
+   om["profile"]["z"][1] is not None, str(om["profile"]["z"][:3]))
+# Open-Meteo publishes humidity at pressure levels and not dew point, and a
+# sounding is read as the gap between the two lines.
+ok("humidity becomes a dew point, below the temperature as it must be",
+   all(td <= t + 0.01 for t, td in zip(om["profile"]["T"], om["profile"]["Td"])),
+   str(list(zip(om["profile"]["T"][:3], om["profile"]["Td"][:3]))))
+ok("a southerly surface wind blows north", om["profile"]["v"][0] > 0,
+   str(om["profile"]["v"][0]))
+ok("the hour asked for is the hour returned",
+   om["valid"].startswith("2026-08-21T18"), om["valid"])
+ok("and it says which model answered", "open-meteo" in om["upstream"],
+   om["upstream"])
+
+# A balloon is not a model. Asking Open-Meteo for one and getting a model
+# back would be quietly answering a different question.
+try:
+    svc.fetch_open_meteo("obs", 35.4, -97.6)
+    ok("an observed sounding is refused rather than faked", False)
+except RuntimeError as e:
+    ok("an observed sounding is refused rather than faked",
+       "balloon" in str(e), str(e))
+
+# Both sources failing must report BOTH reasons, not whichever was last.
+_ur.urlopen = _served({"hourly": {}})
+try:
+    svc.fetch_profile("rap", 35.4, -97.6)
+    ok("both failing says so", False)
+except RuntimeError as e:
+    msg = str(e)
+    ok("when both fail, both reasons are given",
+       "Open-Meteo" in msg and "NOAA" in msg, msg[:200])
+finally:
+    _ur.urlopen = _real_open
+
 print("\n3. the cache is keyed by place, not by pixel")
 a = svc._cache_key("rap", 35.4012, -97.6033, None)
 b = svc._cache_key("rap", 35.4038, -97.5975, None)
@@ -200,7 +285,7 @@ ok("the empty-answer one names the point that was asked about",
 # that never answered is a question about the network or the address, and
 # telling somebody to wait an hour for that sends them the wrong way.
 fn_src = ast.get_source_segment(svc_src, next(
-    n for n in svc_tree.body if getattr(n, "name", "") == "fetch_profile"))
+    n for n in svc_tree.body if getattr(n, "name", "") == "fetch_noaa"))
 ok("a server that answered and had nothing says analyses publish behind",
    "publish about an hour behind" in fn_src)
 ok("a host that never answered says so instead",

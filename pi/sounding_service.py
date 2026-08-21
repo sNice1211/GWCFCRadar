@@ -91,6 +91,34 @@ SOURCES = {
 SOUNDING_URL = "https://rucsoundings.noaa.gov/get_soundings.cgi"
 FETCH_TIMEOUT = int(os.environ.get("GWCFC_SND_FETCH_TIMEOUT", "25"))
 
+# ── The second source, and why there are two ───────────────────────────────
+#
+# rucsoundings.noaa.gov still resolves and no longer answers: DNS returns an
+# address, port 443 refuses the connection. The rest of NOAA is fine from the
+# same machine, so this is that one service rather than the network.
+#
+# Open-Meteo serves the same thing as pressure level fields, and the app
+# already talks to it for the wind, temperature and marine layers, so it is a
+# host this Pi is known to reach rather than one hoped about. Nineteen levels
+# instead of a hundred, which is fewer than a balloon and still more than the
+# twelve the Pi's own images carry, and it brings real geopotential heights,
+# which removes an approximation from every layer depth on the panel.
+#
+# Both are tried, best first. A source that comes back is a source that comes
+# back, and neither being available is not a thing to find out one at a time.
+OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+
+# The pressure levels Open-Meteo publishes, thickest air first.
+OM_LEVELS = [1000, 975, 950, 925, 900, 850, 800, 700, 600, 500,
+             400, 300, 250, 200, 150, 100, 70, 50, 30]
+
+# Which Open-Meteo model answers for each source name here.
+OM_MODELS = {
+    "rap": "best_match", "rap-now": "best_match", "rap-fcst": "best_match",
+    "hrrr": "gfs_hrrr", "nam": "gfs_seamless", "gfs": "gfs_seamless",
+    "obs": None,          # a balloon is not a model; only NOAA has those
+}
+
 # How long an answer stays good. A RAP analysis is hourly, so re-fetching the
 # same point inside the hour is paying twice for one number; a forecast for a
 # fixed hour never changes at all once published.
@@ -259,8 +287,143 @@ def _http_text(url):
         return r.read(2 * 1024 * 1024).decode("utf-8", "replace")
 
 
-def fetch_profile(source, lat, lon, when=None):
-    """One profile from NOAA, as plain numbers.
+def _dewpoint(t_c, rh):
+    """Dew point from temperature and relative humidity, Magnus.
+
+    Open-Meteo publishes humidity at pressure levels and not dew point, and a
+    sounding is read as dew point: the gap between the two lines IS the
+    picture. Bolton's coefficients, the same ones the browser uses on the
+    other path, so the two agree rather than disagreeing by a tenth.
+    """
+    if t_c is None or rh is None:
+        return None
+    rh = max(min(float(rh), 100.0), 0.1)
+    a, b = 17.625, 243.04
+    g = math.log(rh / 100.0) + (a * float(t_c)) / (b + float(t_c))
+    try:
+        return round((b * g) / (a - g), 2)
+    except ZeroDivisionError:
+        return None
+
+
+def fetch_open_meteo(source, lat, lon, when=None):
+    """One profile from Open-Meteo's pressure level fields."""
+    model = OM_MODELS.get(source, "best_match")
+    if model is None:
+        raise RuntimeError("Open-Meteo has models, not balloons, so it cannot "
+                           "answer an observed sounding.")
+    fields = ["temperature_2m", "dew_point_2m", "surface_pressure",
+              "wind_speed_10m", "wind_direction_10m"]
+    for lev in OM_LEVELS:
+        fields += [f"temperature_{lev}hPa", f"relative_humidity_{lev}hPa",
+                   f"wind_speed_{lev}hPa", f"wind_direction_{lev}hPa",
+                   f"geopotential_height_{lev}hPa"]
+    q = {
+        "latitude": f"{float(lat):.4f}", "longitude": f"{float(lon):.4f}",
+        "hourly": ",".join(fields),
+        # Knots, so nothing downstream has to know what unit this arrived in.
+        "wind_speed_unit": "kn",
+        "timezone": "UTC",
+        # Two days back, so the slider can look at a storm after the fact.
+        "past_days": "2", "forecast_days": "2",
+    }
+    if model != "best_match":
+        q["models"] = model
+
+    url = OPEN_METEO_URL + "?" + urllib.parse.urlencode(q)
+    try:
+        body = json.loads(_http_text(url))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Open-Meteo answered HTTP {e.code} {e.reason}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"could not reach Open-Meteo ({e.reason})")
+    except ValueError:
+        raise RuntimeError("Open-Meteo sent something that is not JSON")
+
+    hourly = (body or {}).get("hourly") or {}
+    times = hourly.get("time") or []
+    if not times:
+        raise RuntimeError("Open-Meteo returned no hours for this point")
+
+    # Which hour. The one asked for, or the last one that is not in the
+    # future: a forecast hour is published, an unobserved hour is not.
+    want = (datetime.strptime(str(when), "%Y%m%d%H").replace(tzinfo=timezone.utc)
+            if when else datetime.now(timezone.utc))
+    stamp = want.strftime("%Y-%m-%dT%H:00")
+    idx = times.index(stamp) if stamp in times else None
+    if idx is None:
+        past = [i for i, t in enumerate(times) if t <= stamp]
+        idx = past[-1] if past else 0
+
+    def at(name):
+        col = hourly.get(name)
+        if not isinstance(col, list) or idx >= len(col):
+            return None
+        v = col[idx]
+        return None if v is None else float(v)
+
+    prof = {"p": [], "z": [], "T": [], "Td": [], "u": [], "v": []}
+
+    def push(p, z, t, td, spd, direc):
+        if p is None or t is None or td is None:
+            return
+        if spd is None or direc is None:
+            u = v = None
+        else:
+            rad = math.radians(direc)
+            u = round(-spd * math.sin(rad), 3)
+            v = round(-spd * math.cos(rad), 3)
+        prof["p"].append(round(p, 2))
+        prof["z"].append(None if z is None else round(z, 1))
+        prof["T"].append(round(t, 2))
+        prof["Td"].append(round(td, 2))
+        prof["u"].append(u)
+        prof["v"].append(v)
+
+    # The surface first, and it is not a pressure level: it is where the
+    # ground actually is, which on high terrain is well above the 1000 mb
+    # level that would otherwise be the bottom of the chart.
+    sfc_p = at("surface_pressure")
+    push(sfc_p, None, at("temperature_2m"), at("dew_point_2m"),
+         at("wind_speed_10m"), at("wind_direction_10m"))
+
+    for lev in OM_LEVELS:
+        # A level below the ground is not a level. On the Rockies the 1000
+        # and 925 mb fields are extrapolated into rock, and drawing them puts
+        # the bottom of the sounding underground.
+        #
+        # At or above, not just above: a station whose surface pressure lands
+        # exactly on a published level would otherwise appear twice, once as
+        # the ground and once as the level, and a profile with two entries at
+        # one pressure has a layer of zero depth in it. Every layer average
+        # divides by that depth.
+        if sfc_p is not None and lev >= sfc_p - 0.5:
+            continue
+        t = at(f"temperature_{lev}hPa")
+        push(lev, at(f"geopotential_height_{lev}hPa"), t,
+             _dewpoint(t, at(f"relative_humidity_{lev}hPa")),
+             at(f"wind_speed_{lev}hPa"), at(f"wind_direction_{lev}hPa"))
+
+    if len(prof["p"]) < 5:
+        raise RuntimeError(
+            f"Open-Meteo returned only {len(prof['p'])} complete levels, "
+            "which is too few to read as a sounding.")
+
+    label = (SOURCES.get(source) or {}).get("label", source)
+    return {
+        "source": source,
+        "label": f"{label} via Open-Meteo",
+        "lat": float(lat), "lon": float(lon),
+        "valid": times[idx] + "Z",
+        "site": "",
+        "levels": len(prof["p"]),
+        "upstream": "open-meteo/" + model,
+        "profile": prof,
+    }
+
+
+def fetch_noaa(source, lat, lon, when=None):
+    """One profile from NOAA's GSD text, as plain numbers.
 
     `when` is a UTC hour as YYYYMMDDHH for a past analysis, or None for now.
     Raises with a readable message rather than returning a half answer.
@@ -342,6 +505,35 @@ def fetch_profile(source, lat, lon, when=None):
         "profile": prof,
     }
 
+
+
+def fetch_profile(source, lat, lon, when=None):
+    """One profile, from whichever source answers.
+
+    Open-Meteo first, because it is the one this Pi is known to reach: the
+    app already talks to it for the wind and temperature layers. NOAA's text
+    soundings second, because when they work they are a hundred levels rather
+    than nineteen and include real balloons, which no model can give.
+
+    Both failing is reported as both failing, with each reason, rather than
+    as whichever happened to be tried last.
+    """
+    order = [("Open-Meteo", fetch_open_meteo), ("NOAA", fetch_noaa)]
+    # A balloon is not a model, so an observed sounding can only come from
+    # NOAA and there is no point asking Open-Meteo for one.
+    if source == "obs":
+        order = [("NOAA", fetch_noaa)]
+    why = []
+    for name, fn in order:
+        try:
+            return fn(source, lat, lon, when)
+        except RuntimeError as e:
+            why.append(f"{name}: {e}")
+        except Exception as e:
+            why.append(f"{name}: {e.__class__.__name__}: {e}")
+    raise RuntimeError("No sounding for "
+                       f"{lat}, {lon}" + (f" at {when}Z" if when else "")
+                       + ". " + "  ".join(why))
 
 
 def sharppy_params(prof):
