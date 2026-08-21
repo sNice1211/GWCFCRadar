@@ -340,8 +340,10 @@ console.log('\n6c. Model Colors: per-field custom palettes for Pi chart pictures
     return { hasFields, firstIsT2m, savedRaw, pal };
   });
   ok('the field picker is populated from HD_FIELDS', r.hasFields, String(r.hasFields));
+  // A stop is a value AND a colour now, so the palette is objects rather
+  // than bare hex. The colour still has to be the one that was picked.
   ok('turning custom colors on for a field records it',
-     r.pal && r.pal[0] === '#123456', JSON.stringify(r.pal));
+     r.pal && (r.pal[0].c || r.pal[0]) === '#123456', JSON.stringify(r.pal));
   ok('the choice persists to localStorage',
      /"t2m"/.test(r.savedRaw) && /123456/.test(r.savedRaw), r.savedRaw);
 
@@ -386,8 +388,14 @@ console.log('\n6d. gradient editor: variable stop count, invert, presets, live p
   ok('radar: adding a stop grows both the swatch row and the saved array',
      radar.afterAdd === 6 && radar.stopsAfterAdd === 6, JSON.stringify(radar));
   ok('radar: removing a stop shrinks it back', radar.afterRemove === 5, String(radar.afterRemove));
-  ok('radar: invert reverses the stop order',
-     radar.inverted.join() === radar.original.slice().reverse().join(), JSON.stringify(radar));
+  // Invert flips the COLOURS and leaves the anchors where they are. Once a
+  // stop is pinned to a value, reversing the array itself would move every
+  // edge as well, which is not what inverting a colour table means: an
+  // inverted reflectivity scale should still change colour at 35 and 50.
+  ok('radar: invert reverses the colours and keeps the anchors',
+     radar.inverted.map(s => s.c || s).join()
+       === radar.original.slice().reverse().join(),
+     JSON.stringify(radar.inverted));
   ok('radar: picking a preset replaces the stops and turns colors on',
      radar.preset.join() === '#000000,#404040,#808080,#c0c0c0,#ffffff' && radar.presetOn === true,
      JSON.stringify(radar));
