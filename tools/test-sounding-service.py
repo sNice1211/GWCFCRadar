@@ -195,8 +195,22 @@ ok("all of them are RuntimeError, so the caller can tell them from a bug",
    all("RuntimeError" in m for m in msgs), str(msgs)[:200])
 ok("the empty-answer one names the point that was asked about",
    any("lat" in m or "{lat}" in m for m in msgs), str(msgs)[:160])
-ok("the empty-answer one explains that analyses publish behind",
-   any("behind" in m for m in msgs))
+# Two completely different failures that were reported with one sentence. A
+# server that answered and had nothing is a question about timing; a host
+# that never answered is a question about the network or the address, and
+# telling somebody to wait an hour for that sends them the wrong way.
+fn_src = ast.get_source_segment(svc_src, next(
+    n for n in svc_tree.body if getattr(n, "name", "") == "fetch_profile"))
+ok("a server that answered and had nothing says analyses publish behind",
+   "publish about an hour behind" in fn_src)
+ok("a host that never answered says so instead",
+   "Nothing answered at" in fn_src and "network" in fn_src)
+ok("and the two are chosen apart by whether a reply arrived at all",
+   "reached = True" in fn_src and "if reached else" in fn_src)
+# URLError.reason IS the diagnosis. Thrown away it leaves the word
+# "URLError" and nothing to act on.
+ok("the real reason is carried rather than just the exception name",
+   "e.reason" in fn_src, "reason discarded")
 ok("nothing raises a bare Exception with no message",
    not any(m.strip() in ("raise", "raise Exception") for m in msgs))
 
