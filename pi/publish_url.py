@@ -425,7 +425,15 @@ def check(patience=45):
     impatience.
     """
     pin = pinned_url()
-    url = pin or current_url(patience=patience)
+    # Whether this address was PROVEN alive a moment ago, rather than merely
+    # read out of a file. It changes what a failure below means, and the two
+    # meanings are miles apart.
+    proven = False
+    if pin:
+        url = pin
+    else:
+        url = current_url(patience=patience)
+        proven = url is not None
     if not url:
         # Two very different faults, and the old wording said the first about
         # both of them: "NONE FOUND in ~/tunnel.log" is simply untrue when
@@ -455,10 +463,23 @@ def check(patience=45):
     # "match: yes" about an address nothing answered. Agreeing with the
     # database means nothing unless the Pi is what is on the other end.
     alive = answers(url, timeout=10)
-    print("  answers        : " + ("yes, the tunnel is alive" if alive else
-        "NO. Nothing that looks like this Pi answers there, so the tunnel is "
-        "not actually running.\n    FIX: systemctl --user restart "
-        "gwcfc-serve gwcfc-tunnel gwcfc-publish"))
+    if alive:
+        print("  answers        : yes, the tunnel is alive")
+    elif proven:
+        # This exact contradiction is itself the finding, and printing the
+        # flat "not actually running" over the top of it threw the finding
+        # away. The address answered seconds ago, on the line above, and does
+        # not now. Something is moving underneath, and that is a different
+        # fault with a different fix from an address that never worked.
+        print("  answers        : it answered a moment ago and does not now.")
+        print("    The address is not steady. Either cloudflared keeps")
+        print("    restarting, which rolls a new address every time, or the")
+        print("    connection to Cloudflare is dropping and coming back.")
+    else:
+        print("  answers        : NO. Nothing that looks like this Pi answers")
+        print("    there, so the tunnel is not actually running.")
+        print("    FIX: systemctl --user restart gwcfc-serve gwcfc-tunnel "
+              "gwcfc-publish")
     try:
         with urllib.request.urlopen(
                 f"https://firestore.googleapis.com/v1/projects/{PROJECT}"

@@ -175,7 +175,52 @@ try:
        open(os.path.join(pibox, "f.txt")).read().strip() == "half finished edit",
        open(os.path.join(pibox, "f.txt")).read().strip())
 
-    print("\n5. the ordinary paths are untouched")
+    print("\n5. a merge commit written here is recovered from, though")
+    # The commonest way this Pi gets stuck, and the old guard refused it
+    # forever: a plain `git pull` on a branch that had moved writes a MERGE
+    # commit, authored here, existing on no remote branch. It carries no work
+    # of its own, only a join, so resetting past it can lose nothing.
+    git(pibox, "reset", "-q", "--hard", "origin/main")
+    git(pibox, "reset", "-q", "--hard", "HEAD~1")
+    git(pibox, "merge", "-q", "--no-ff", "-m", "Merge branch 'main'",
+        "origin/main")
+    open(os.path.join(work, "f.txt"), "w").write("eight\n")
+    git(work, "commit", "-qam", "eight")
+    git(work, "push", "-q", "origin", "main")
+    only_here = git(pibox, "log", "--oneline", "--no-merges",
+                    "origin/main..HEAD").stdout.strip()
+    ok("the setup really is a merge and nothing else", only_here == "",
+       only_here)
+    out = run_update(pibox)
+    ok("it is recovered rather than refused forever",
+       open(os.path.join(pibox, "f.txt")).read().strip() == "eight",
+       out.strip()[:200])
+    ok("and it says so, since silently resetting a repo is alarming",
+       "merge commits with no work" in out, out.strip()[:200])
+
+    print("\n6. but a merge is not a licence to reset past real work")
+    # The dangerous near-miss: a merge commit sitting on top of a commit that
+    # WAS authored here. Reachable, real, and gone forever if the rule above
+    # were written as "merges are safe" rather than "only merges are safe".
+    git(pibox, "reset", "-q", "--hard", "origin/main")
+    open(os.path.join(pibox, "h.txt"), "w").write("written on the pi\n")
+    git(pibox, "add", "-A")
+    git(pibox, "commit", "-qm", "real pi work under a merge")
+    git(pibox, "reset", "-q", "--hard", "HEAD")
+    open(os.path.join(work, "f.txt"), "w").write("nine\n")
+    git(work, "commit", "-qam", "nine")
+    git(work, "push", "-q", "origin", "main")
+    git(pibox, "fetch", "-q", "origin", "main")
+    git(pibox, "merge", "-q", "--no-ff", "-m", "Merge branch 'main'",
+        "origin/main")
+    open(os.path.join(work, "f.txt"), "w").write("ten\n")
+    git(work, "commit", "-qam", "ten")
+    git(work, "push", "-q", "origin", "main")
+    run_update(pibox)
+    ok("the work under the merge survives",
+       os.path.exists(os.path.join(pibox, "h.txt")))
+
+    print("\n7. the ordinary paths are untouched")
     ok("a fetch that fails is not treated as a reason to reset",
        "fetch failed four times, will try again next time" in open(SCRIPT).read())
     ok("but one dropped pack is retried first, since home wifi does that",

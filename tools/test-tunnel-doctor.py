@@ -153,12 +153,78 @@ ok("and it says outright when the network is the culprit",
 ok("with a way to prove it that needs nobody's permission",
    "hotspot" in src)
 
-print("\n7. fix.sh goes straight on to why")
+print("\n7. when the tunnel says it IS connected, it stops guessing")
+# The case that sent this round in circles. cloudflared reported itself
+# connected, the port was open, ordinary https worked, and the address still
+# did not answer. Every theory left is a different HTTP status, and a
+# boolean cannot tell them apart. So the statuses are read out loud.
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # noqa
+
+
+def _one(status, body, cors=False, cfray=False):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(status)
+            if cors:
+                self.send_header("Access-Control-Allow-Origin", "*")
+            if cfray:
+                self.send_header("cf-ray", "8a1b2c3d4e5f-ORD")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+    s = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s, f"http://127.0.0.1:{s.server_address[1]}/"
+
+
+srv_ok, url_ok = _one(200, b"<title>Directory listing for /</title>",
+                      cors=True, cfray=True)
+line = td.describe(*td.fetch(url_ok, timeout=5))
+ok("a good answer is reported with its status", "HTTP 200" in line, line)
+ok("and says the reply came through Cloudflare rather than direct",
+   "via Cloudflare" in line, line)
+ok("and that a browser would be allowed to read it",
+   "with the browser header" in line, line)
+ok("and shows what the body actually was, not a verdict about it",
+   "Directory listing" in line, line)
+srv_ok.shutdown()
+
+srv_bad, url_bad = _one(502, b"error code: 1033", cfray=True)
+line = td.describe(*td.fetch(url_bad, timeout=5))
+ok("an edge error is reported as itself", "HTTP 502" in line, line)
+ok("with the code that says which end failed", "1033" in line, line)
+srv_bad.shutdown()
+
+line = td.describe(*td.fetch("http://127.0.0.1:1/", timeout=2))
+ok("and nothing listening is not dressed up as a status",
+   line.startswith("no answer"), line)
+
+# Every restart of cloudflared rolls a brand new address, so the number of
+# starts IS the churn, and churn is a fault the site can never keep up with.
+ok("how often cloudflared has restarted is counted",
+   td.starts(HEALTHY + STUCK) == 2, str(td.starts(HEALTHY + STUCK)))
+src2 = open(os.path.join(ROOT, "pi", "tunnel_doctor.py")).read()
+ok("an address that works sometimes is called flapping, not broken",
+   "answers sometimes and not others" in src2)
+ok("and the real cure for flapping is named", "NAMED_TUNNEL.md" in src2)
+ok("serve.py is checked directly, so its end is ruled in or out",
+   "straight to serve.py" in src2)
+
+print("\n8. fix.sh goes straight on to why")
 fixsh = open(os.path.join(ROOT, "pi", "fix.sh")).read()
 ok("a failed address check runs the tunnel doctor by itself",
    "tunnel_doctor.py" in fixsh)
 ok("rather than ending on a failure and another command to type",
    "--check ||" in fixsh)
+# The Pi got stuck unable to update at all, from a merge commit a plain
+# `git pull` wrote. Refusing that forever is worse than the drift.
+ok("a drift made only of merge commits is recovered from",
+   "--no-merges" in fixsh and "loses nothing" in fixsh)
+ok("but real work is still refused, and named so it can be looked at",
+   "has work of its own" in fixsh and "What is only here" in fixsh)
 
 print()
 if failed:

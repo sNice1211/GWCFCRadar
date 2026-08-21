@@ -75,10 +75,35 @@ else
   elif [ "$PULLED" = 1 ]; then
     good "updated $BEFORE to $AFTER on $BRANCH"
   elif [ "$DIVERGED" = 1 ]; then
-    bad "this checkout has commits of its own, so it cannot fast-forward"
-    note "nothing was changed, because throwing those away is not this"
-    note "script's decision to make. Run the one that knows how to recover:"
-    note "  bash $REPO/pi/selfupdate.sh"
+    # There is one shape of divergence that is provably lossless to undo, and
+    # it is by far the commonest one here: a plain `git pull` on a branch that
+    # had moved created a MERGE commit, authored on this machine and existing
+    # nowhere else. It carries no work of its own, only a join.
+    #
+    # The test is exact rather than hopeful. If every extra commit reachable
+    # from here is a merge, then this checkout contains no change that was
+    # written here, and resetting onto origin can lose nothing, because there
+    # is nothing here to lose. Anything else, including a single real commit,
+    # falls through and is left alone.
+    OWN=$(git log --oneline --no-merges "origin/$BRANCH..HEAD" 2>/dev/null)
+    DIRTY=$(git status --porcelain 2>/dev/null)
+    if [ -z "$OWN" ] && [ -z "$DIRTY" ]; then
+      note "this checkout had drifted, but only by merge commits with no work"
+      note "of their own, so putting it back on origin/$BRANCH loses nothing."
+      if git reset --hard --quiet "origin/$BRANCH" 2>/dev/null; then
+        AFTER=$(git rev-parse --short HEAD 2>/dev/null)
+        PULLED=1
+        good "recovered onto $AFTER, and it can update itself again"
+      else
+        bad "could not reset onto origin/$BRANCH"
+      fi
+    else
+      bad "this checkout has work of its own, so it cannot fast-forward"
+      note "nothing was changed, because throwing it away is not this"
+      note "script's decision to make. What is only here:"
+      [ -n "$OWN" ] && printf '%s\n' "$OWN" | head -5 | sed 's/^/          /'
+      [ -n "$DIRTY" ] && note "  and uncommitted edits to $(printf '%s\n' "$DIRTY" | wc -l) file(s)"
+    fi
   else
     bad "could not get the newest code"
     printf '%s\n' "$OUT" | tail -n 2 | sed 's/^/        /'

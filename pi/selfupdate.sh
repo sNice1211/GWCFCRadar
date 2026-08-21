@@ -74,6 +74,19 @@ if ! git merge --ff-only --quiet "origin/$BRANCH" 2>/dev/null; then
       fi
     done
   fi
+  # One more shape that is provably lossless, and the commonest one here: a
+  # plain `git pull` on a branch that had moved writes a MERGE commit,
+  # authored on this machine and existing nowhere else, so the check above
+  # refuses it forever. A merge carries no work of its own, only a join. If
+  # every extra commit is a merge, this checkout contains nothing that was
+  # written here, and resetting can lose nothing because there is nothing
+  # here to lose. A single real commit and this does not apply.
+  if [ "$RECOVER" = 0 ] && [ -z "$(git status --porcelain 2>/dev/null)" ] \
+     && [ -z "$(git log --oneline --no-merges "origin/$BRANCH..HEAD" 2>/dev/null)" ] \
+     && [ -n "$(git rev-list "origin/$BRANCH..HEAD" 2>/dev/null)" ]; then
+    echo "drifted only by merge commits with no work of their own"
+    RECOVER=1
+  fi
   if [ "$RECOVER" = 1 ]; then
     echo "diverged from origin/$BRANCH, but nothing here is unique to this"
     echo "machine, so resetting onto it."
