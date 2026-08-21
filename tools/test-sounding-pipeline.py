@@ -303,6 +303,18 @@ ok("and ends with the exact commands to run",
 ok("without suggesting the same command twice",
    "seen[$0]++" in doc)
 ok("it changes nothing by itself", "It only looks." in doc)
+# "Nothing built" names the symptom, not the cause, and the cause is already
+# in the journal. Reading it back is the difference between knowing a build
+# failed and knowing why.
+ok("an empty feature has its last log lines read back", "journalctl" in doc)
+ok("with the error lines picked out of the noise",
+   "no module" in doc.lower() and "traceback" in doc.lower())
+for unit in ("gwcfc-models", "gwcfc-radar", "gwcfc-sat", "gwcfc-snd"):
+    ok(f"{unit} explains itself when empty", f"last_words {unit}" in doc)
+# A feature can also be stale rather than absent, which looks identical from
+# the browser and is a different fault.
+ok("a stale build is told apart from one that never ran",
+   "builds have stopped" in doc and "nothing new in half an hour" in doc)
 
 shutil.rmtree(HOMEDIR, ignore_errors=True)
 print()

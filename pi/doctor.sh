@@ -148,16 +148,58 @@ PYEOF
 
 count_dirs() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l; }
 
+# What a unit's last run actually said.
+#
+# "Nothing built" names the symptom and not the cause, and the cause is
+# already written down in the journal: a failed import, a refused download, a
+# full disk. Reading the last few lines back here is the difference between
+# knowing a build failed and knowing why, which is the whole point of this
+# script. Errors first, because a run that fails prints one line that matters
+# among fifty that do not.
+last_words() {   # unit, how many lines
+  local unit="$1" n="${2:-12}" out
+  out=$(journalctl --user -u "$unit" -n 200 --no-pager -o cat 2>/dev/null \
+        | grep -iE "error|traceback|failed|no module|refused|timed out|no space" \
+        | tail -"$n")
+  [ -z "$out" ] && out=$(journalctl --user -u "$unit" -n "$n" --no-pager -o cat 2>/dev/null)
+  if [ -n "$out" ]; then
+    note "last words from $unit:"
+    printf '%s\n' "$out" | sed 's/^/          /'
+  else
+    note "$unit has never logged anything, so it has probably never run"
+  fi
+}
+
 if [ -s "$DATA/models/latest.json" ]; then
-  good "models: latest.json present ($(wc -c < "$DATA/models/latest.json") bytes)"
+  AGE=$(( ($(date +%s) - $(stat -c %Y "$DATA/models/latest.json" 2>/dev/null || echo 0)) / 60 ))
+  if [ "$AGE" -gt 180 ]; then
+    warn "models: latest.json is ${AGE} min old, so builds have stopped"
+    last_words gwcfc-models.service
+    fix "systemctl --user start gwcfc-models.service"
+  else
+    good "models: latest.json present, ${AGE} min old"
+  fi
 else
-  bad "models: no latest.json"
+  bad "models: no latest.json, so no model has ever built"
+  last_words gwcfc-models.service
   fix "systemctl --user start gwcfc-models.service"
 fi
 
 RN=$(count_dirs "$DATA/radar")
-[ "$RN" -gt 0 ] && good "radar: $RN product folder(s)" || {
-  bad "radar: nothing built"; fix "systemctl --user start gwcfc-radar.service"; }
+if [ "$RN" -gt 0 ]; then
+  NEW=$(find "$DATA/radar" -name '*.png' -mmin -30 2>/dev/null | wc -l)
+  if [ "$NEW" -gt 0 ]; then
+    good "radar: $RN product folder(s), $NEW frame(s) in the last half hour"
+  else
+    warn "radar: $RN product folder(s) but nothing new in half an hour"
+    last_words gwcfc-radar.service
+    fix "systemctl --user start gwcfc-radar.service"
+  fi
+else
+  bad "radar: nothing built"
+  last_words gwcfc-radar.service
+  fix "systemctl --user start gwcfc-radar.service"
+fi
 
 SATMAN=$(find "$DATA/satellite" -name manifest.json 2>/dev/null | wc -l)
 if [ "$SATMAN" -gt 0 ]; then
@@ -185,6 +227,7 @@ for sat in sorted(os.listdir(root)):
 PYEOF
 else
   bad "satellite: no manifest anywhere, so nothing has ever built"
+  last_words gwcfc-sat.service
   fix "$PY $REPO/pi/satellite_pipeline.py --sector conus"
 fi
 show_status satellite "satellite"
@@ -206,6 +249,7 @@ else:
 PYEOF
 else
   bad "soundings: no manifest, so no site has ever built"
+  last_words gwcfc-snd.service
   fix "$PY $REPO/pi/sounding_pipeline.py --site OUN"
 fi
 show_status soundings "soundings"
