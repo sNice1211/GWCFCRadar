@@ -3098,157 +3098,298 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
    it when a proper look is wanted. */
 #snd-panel {
   position: fixed; right: 12px; bottom: 132px; z-index: 1200; display: none;
-  width: min(380px, calc(100vw - 24px));
-  background: rgba(8,12,20,0.97); border: 1px solid rgba(255,255,255,0.14);
-  border-radius: 12px; box-shadow: 0 10px 34px rgba(0,0,0,0.6);
+  width: min(392px, calc(100vw - 24px));
+  /* Glass rather than a flat slab. The panel sits ON the map and the map is
+     the thing being asked about, so a little of it showing through keeps the
+     sounding attached to the place it describes. */
+  background:
+    linear-gradient(180deg, rgba(14,20,32,0.93) 0%, rgba(8,11,19,0.96) 100%);
+  backdrop-filter: blur(18px) saturate(1.25);
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  border: 1px solid rgba(140,190,240,0.16);
+  border-radius: 16px;
+  box-shadow:
+    0 24px 60px rgba(0,0,0,0.62),
+    0 2px 0 rgba(255,255,255,0.05) inset,
+    0 0 0 1px rgba(0,0,0,0.4);
   font-family: var(--sans); color: #e8edf5;
   overflow: hidden;
 }
-#snd-panel.open { display: block; }
+#snd-panel.open { display: block; animation: sndIn 0.22s cubic-bezier(.2,.9,.3,1); }
+@keyframes sndIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+/* An expanded panel is centred, and centring is a transform, so the opening
+   animation must not fight it by animating transform too. */
+#snd-panel.big.open { animation: sndFade 0.2s ease; }
+@keyframes sndFade { from { opacity: 0; } to { opacity: 1; } }
 
 /* Expanded: still a panel, just a big one, so the map is never fully gone. */
 #snd-panel.big {
   right: 50%; bottom: 50%; transform: translate(50%, 50%);
-  width: min(1100px, calc(100vw - 32px));
+  width: min(1140px, calc(100vw - 32px));
   max-height: calc(100vh - 32px); overflow: auto;
 }
+#snd-panel::-webkit-scrollbar { width: 10px; }
+#snd-panel::-webkit-scrollbar-thumb {
+  background: rgba(140,190,240,0.22); border-radius: 8px;
+  border: 3px solid transparent; background-clip: padding-box;
+}
 
+/* ── Head ──────────────────────────────────────────────────────────────── */
 .snd-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,0.1);
-  cursor: move;
+  padding: 9px 11px 8px; cursor: move; position: relative;
+  background: linear-gradient(180deg, rgba(80,150,220,0.11), rgba(80,150,220,0));
+  border-bottom: 1px solid rgba(140,190,240,0.14);
 }
-.snd-title { font-weight: 700; font-size: 12px; white-space: nowrap; }
-.snd-where { font-family: var(--mono); font-size: 10px; opacity: 0.6; }
-.snd-head-spacer { flex: 1; }
-.snd-hour-wrap { display: flex; align-items: center; gap: 6px; }
-.snd-hour-lbl { font-family: var(--mono); font-size: 10px; opacity: 0.7; min-width: 40px; }
-.snd-hour { width: 90px; accent-color: var(--accent2); }
+/* A thread of colour along the top. It is the one place the panel is allowed
+   to be purely decorative, and it makes the card read as a device rather
+   than a box. */
+.snd-head::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 2px;
+  background: linear-gradient(90deg, #37d6ff, #7c8cff 45%, #ff7a5c 100%);
+  opacity: 0.85;
+}
+.snd-title {
+  font-weight: 700; font-size: 12px; white-space: nowrap; letter-spacing: 0.2px;
+  text-shadow: 0 0 14px rgba(90,190,255,0.35);
+}
+.snd-where {
+  font-family: var(--mono); font-size: 9.5px; opacity: 0.72;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+  padding: 2px 6px; border-radius: 999px; white-space: nowrap;
+}
+/* Two rows at card size, one when expanded.
+   Six controls plus a coordinate do not fit across 392px, and when they did
+   not fit they did not wrap: they overflowed, and the two that fell off the
+   end were Expand and Close, which is the panel eating its own way out.
+   So the head wraps on purpose. The spacer is given a full-width basis and
+   no height, which is the flexbox way of saying "break the line here", and
+   the order below puts the buttons on the first row where they belong. */
+.snd-head { flex-wrap: wrap; }
+.snd-title { order: 1; }
+.snd-where { order: 2; margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.snd-big { order: 3; }
+.snd-x { order: 4; }
+.snd-head-spacer { order: 5; flex: 1 1 100%; height: 0; }
+.snd-src { order: 6; }
+.snd-hour-wrap { order: 7; display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
+#snd-panel.big .snd-head { flex-wrap: nowrap; }
+#snd-panel.big .snd-title,
+#snd-panel.big .snd-where { order: 0; margin-right: 0; }
+#snd-panel.big .snd-head-spacer { order: 0; flex: 1 1 auto; height: auto; }
+#snd-panel.big .snd-src,
+#snd-panel.big .snd-hour-wrap { order: 0; flex: 0 0 auto; }
+#snd-panel.big .snd-big { order: 0; }
+#snd-panel.big .snd-x { order: 0; }
+.snd-hour-lbl {
+  font-family: var(--mono); font-size: 10px; opacity: 0.75; min-width: 40px;
+  font-variant-numeric: tabular-nums;
+}
+.snd-hour { width: 100%; min-width: 60px; accent-color: #37d6ff; }
 #snd-panel.big .snd-hour { width: 190px; }
-/* The source picker. Narrow on purpose: the head is already carrying a
-   coordinate, a slider and two buttons at 380px wide. */
 .snd-src {
-  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
-  color: #e8edf5; border-radius: 6px; font-size: 10px; padding: 3px 4px;
+  background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16);
+  color: #e8edf5; border-radius: 8px; font-size: 10px; padding: 4px 5px;
   max-width: 112px; font-family: var(--sans); cursor: pointer;
 }
+.snd-src:hover { background: rgba(255,255,255,0.13); }
 #snd-panel.big .snd-src { max-width: none; font-size: 11px; }
 .snd-src option { background: #0b1018; color: #e8edf5; }
 .snd-x, .snd-big {
-  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.16);
   color: #e8edf5; cursor: pointer; font-size: 12px; line-height: 1;
-  border-radius: 6px; width: 24px; height: 24px; flex-shrink: 0; padding: 0;
+  border-radius: 8px; width: 25px; height: 25px; flex-shrink: 0; padding: 0;
+  transition: background 0.15s ease, transform 0.12s ease;
 }
-.snd-x:hover, .snd-big:hover { background: rgba(255,255,255,0.2); }
+.snd-x:hover, .snd-big:hover { background: rgba(255,255,255,0.22); transform: translateY(-1px); }
+.snd-x:hover { background: rgba(255,90,70,0.35); }
 
-/* Compact: skew-T only, hodograph and the big tables appear when expanded.
-   Two charts and four tables at 380px wide is six unreadable things. */
-.snd-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 8px; }
+/* ── The verdict strip ─────────────────────────────────────────────────── */
+/* A sounding is a wall of numbers, and the first question anyone actually has
+   is "so is anything going to happen here". The numbers already answer it;
+   they just never said so out loud. This is that answer, in the same words a
+   forecaster would use, with the panel's accent colour following it. */
+.snd-verdict {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 11px; font-size: 10.5px; line-height: 1.35;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  background: rgba(255,255,255,0.02);
+}
+.snd-verdict:empty { display: none; }
+.snd-badge {
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  letter-spacing: 0.9px; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap; flex-shrink: 0;
+  border: 1px solid currentColor;
+}
+.snd-badge.lv0 { color: #8fa6c0; }
+.snd-badge.lv1 { color: #6fe0c0; }
+.snd-badge.lv2 { color: #ffc44d; }
+.snd-badge.lv3 { color: #ff9a4d; }
+.snd-badge.lv4 {
+  color: #ff5f52; box-shadow: 0 0 16px rgba(255,95,82,0.35);
+  animation: sndPulse 2.2s ease-in-out infinite;
+}
+@keyframes sndPulse { 50% { box-shadow: 0 0 26px rgba(255,95,82,0.6); } }
+.snd-verdict-text { opacity: 0.9; min-width: 0; }
+
+/* ── Charts ────────────────────────────────────────────────────────────── */
+.snd-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 10px; }
 #snd-panel.big .snd-grid {
   grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
 }
-.snd-card { min-width: 0; }
-.snd-card canvas { display: block; width: 100%; }
-#snd-skewt { height: 230px; }
+.snd-card {
+  min-width: 0; background: rgba(255,255,255,0.028);
+  border: 1px solid rgba(255,255,255,0.07); border-radius: 12px;
+  padding: 8px 9px 6px;
+}
+.snd-card canvas { display: block; width: 100%; border-radius: 6px; }
+#snd-skewt { height: 236px; }
 #snd-panel.big #snd-skewt { height: min(60vh, 580px); }
 #snd-hodo { height: 200px; }
 #snd-panel.big #snd-hodo { height: min(36vh, 360px); }
 /* The hodograph is hidden small, because at 380px it is a smudge. */
-.snd-right { display: none; flex-direction: column; gap: 8px; min-width: 0; }
+.snd-right { display: none; flex-direction: column; gap: 10px; min-width: 0; }
 #snd-panel.big .snd-right { display: flex; }
 .snd-card-title {
-  font-size: 9.5px; letter-spacing: 0.7px; text-transform: uppercase;
-  opacity: 0.5; margin-bottom: 4px;
+  font-size: 9px; letter-spacing: 1.1px; text-transform: uppercase;
+  color: rgba(160,205,245,0.62); margin-bottom: 6px; font-weight: 700;
 }
 
-/* Small: one row of the numbers that matter. Expanded: the full tables. */
+/* ── Quick tiles ───────────────────────────────────────────────────────── */
+/* Four numbers, each with a bar showing where it sits on its own scale. A
+   number alone means nothing to anyone still learning what 1800 J/kg is; the
+   bar says "most of the way along" without needing the thresholds memorised. */
 .snd-quick {
   display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px; padding: 0 8px 8px;
+  gap: 7px; padding: 0 10px 10px;
 }
 #snd-panel.big .snd-quick { display: none; }
 .snd-q {
-  background: rgba(255,255,255,0.05); border-radius: 7px; padding: 5px 6px;
-  text-align: center; min-width: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.03));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 11px; padding: 6px 7px 7px;
+  text-align: center; min-width: 0; position: relative; overflow: hidden;
 }
 .snd-q span {
-  display: block; font-size: 8.5px; letter-spacing: 0.4px;
-  text-transform: uppercase; opacity: 0.5; white-space: nowrap;
+  display: block; font-size: 8.5px; letter-spacing: 0.5px;
+  text-transform: uppercase; opacity: 0.52; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
 }
-.snd-q b { font-family: var(--mono); font-size: 13px; }
+.snd-q b {
+  font-family: var(--mono); font-size: 15px; font-weight: 700;
+  font-variant-numeric: tabular-nums; line-height: 1.25;
+}
+.snd-meter {
+  height: 3px; border-radius: 2px; margin-top: 5px;
+  background: rgba(255,255,255,0.1); overflow: hidden;
+}
+.snd-meter i {
+  display: block; height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, #37d6ff, #6fe0c0);
+  transition: width 0.35s cubic-bezier(.2,.9,.3,1);
+}
+.snd-q.warm .snd-meter i { background: linear-gradient(90deg, #6fe0c0, #ffc44d); }
+.snd-q.hot .snd-meter i  { background: linear-gradient(90deg, #ffc44d, #ff5f52); }
 
+/* ── Tables ────────────────────────────────────────────────────────────── */
 .snd-tables { display: none; }
 #snd-panel.big .snd-tables {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 12px; padding: 0 12px 14px;
+}
+/* Each table gets its own card, so four of them side by side read as four
+   things rather than one long ruled sheet. */
+#snd-panel.big .snd-tables > .snd-tbl {
+  background: rgba(255,255,255,0.028);
+  border: 1px solid rgba(255,255,255,0.07); border-radius: 12px;
+  padding: 4px 6px 6px;
 }
 .snd-tbl { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 11px; }
 .snd-tbl th {
-  text-align: left; font-weight: 700; font-size: 10px; letter-spacing: 0.6px;
-  text-transform: uppercase; color: var(--accent2, #7fd4ee);
-  padding: 2px 6px 4px; border-bottom: 1px solid rgba(255,255,255,0.14);
+  text-align: left; font-weight: 700; font-size: 9.5px; letter-spacing: 0.9px;
+  text-transform: uppercase; color: #7fd4ee;
+  padding: 5px 6px 5px; border-bottom: 1px solid rgba(127,212,238,0.28);
 }
-.snd-tbl td { padding: 2.5px 6px; border-bottom: 1px solid rgba(255,255,255,0.05); }
-.snd-tbl td:first-child { opacity: 0.68; }
+.snd-tbl td { padding: 3px 6px; border-bottom: 1px solid rgba(255,255,255,0.045); }
+.snd-tbl tr:last-child td { border-bottom: none; }
+.snd-tbl tbody tr:hover td, .snd-tbl tr:hover td { background: rgba(255,255,255,0.035); }
+.snd-tbl td:first-child { opacity: 0.66; }
 .snd-tbl td.snd-num { text-align: right; font-variant-numeric: tabular-nums; }
 /* The colours a forecaster already reads these numbers in: warm for the
    values that mean more storm, cool for the ones that mean less. */
 .snd-hot  { color: #ff7a5c; font-weight: 700; }
 .snd-warm { color: #ffc44d; }
 .snd-cool { color: #7fd4ee; }
+
+/* ── Tabs ──────────────────────────────────────────────────────────────── */
+.snd-tabs {
+  display: flex; gap: 4px; padding: 8px 10px 0; flex-wrap: wrap;
+}
+.snd-tab {
+  font-family: var(--sans); font-size: 10px; font-weight: 700;
+  padding: 6px 11px; border-radius: 999px; cursor: pointer;
+  border: 1px solid transparent; background: rgba(255,255,255,0.04);
+  color: rgba(212,232,255,0.62); letter-spacing: 0.3px;
+  transition: background 0.15s ease, color 0.15s ease,
+              border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.snd-tab:hover { background: rgba(255,255,255,0.09); color: var(--text); }
+.snd-tab.on {
+  background: linear-gradient(180deg, rgba(55,214,255,0.2), rgba(55,214,255,0.09));
+  border-color: rgba(55,214,255,0.5);
+  color: #b8ecff;
+  box-shadow: 0 0 16px rgba(55,214,255,0.22);
+}
+.snd-pane[hidden] { display: none; }
+/* The note is the Source pane's whole content, so it is always visible in
+   there rather than only when something fell back. */
+.snd-pane[data-pane="source"] .snd-note { display: block; padding: 10px 12px 14px; }
+
 .snd-note {
-  padding: 0 10px 9px; font-family: var(--mono); font-size: 9px; opacity: 0.45;
-  display: none;
+  padding: 0 10px 9px; font-family: var(--mono); font-size: 9px; opacity: 0.5;
+  display: none; line-height: 1.6;
 }
 #snd-panel.big .snd-note { display: block; padding: 0 14px 16px; font-size: 10.5px; }
 /* A fallback is not an error, but it is not nothing either: the numbers on
    screen came from somewhere other than what was asked for, and that has to
    be readable without expanding the panel. */
-/* The four views, as tabs rather than one long column. */
-.snd-tabs {
-  display: flex; gap: 4px; padding: 6px 10px 0; flex-wrap: wrap;
-}
-.snd-tab {
-  font-family: 'Comfortaa', sans-serif; font-size: 10px; font-weight: 600;
-  padding: 5px 10px; border-radius: 8px; cursor: pointer;
-  border: 1px solid transparent; background: transparent;
-  color: rgba(212,232,255,0.6);
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-.snd-tab:hover { background: rgba(255,255,255,0.05); color: var(--text); }
-.snd-tab.on {
-  background: rgba(0,140,186,0.14);
-  border-color: rgba(0,140,186,0.45);
-  color: var(--accent2);
-}
-.snd-pane[hidden] { display: none; }
-/* The note is the Source pane's whole content, so it is always visible in
-   there rather than only when something fell back. */
-.snd-pane[data-pane="source"] .snd-note { display: block; padding: 8px 12px 12px; }
-
 .snd-fell { color: #ffc44d; opacity: 0.95; }
 #snd-panel .snd-note:has(.snd-fell) { display: block; }
+
 /* The image the Pi rendered: the full SHARPpy layout as one PNG. Shown
    whenever a prebuilt site sounding is what answered, at panel width, and a
    click opens the file itself full size. */
-.snd-pimg { padding: 0 10px 10px; }
+.snd-pimg { padding: 0 10px 12px; }
 .snd-pimg:empty { display: none; }
 .snd-pimg-head {
-  font-family: var(--mono); font-size: 9.5px; opacity: 0.6; margin: 2px 0 5px;
+  font-family: var(--mono); font-size: 9.5px; opacity: 0.6; margin: 4px 0 6px;
 }
 .snd-pimg img {
-  width: 100%; border-radius: 9px; cursor: zoom-in; display: block;
+  width: 100%; border-radius: 11px; cursor: zoom-in; display: block;
   border: 1px solid rgba(255,255,255,0.09);
+  box-shadow: 0 6px 22px rgba(0,0,0,0.45);
 }
 .snd-err {
-  padding: 12px 10px; font-family: var(--mono); font-size: 10.5px;
-  color: #ffb4a2; line-height: 1.5;
+  padding: 14px 12px; font-family: var(--mono); font-size: 10.5px;
+  color: #ffb4a2; line-height: 1.55;
+  background: rgba(255,90,70,0.05);
+  border-left: 2px solid rgba(255,90,70,0.5);
+  margin: 0 10px 10px; border-radius: 0 8px 8px 0;
 }
 .snd-err b { color: #fff; }
 @media (max-width: 640px) {
   #snd-panel { right: 8px; bottom: 108px; width: calc(100vw - 16px); }
   #snd-skewt { height: 200px; }
+  .snd-quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #snd-panel.open { animation: none; }
+  .snd-badge.lv4 { animation: none; }
+  .snd-meter i { transition: none; }
 }
 
 /* ── HD Models panel ── */
@@ -15323,6 +15464,7 @@ async function openSounding(lat, lon) {
         <button class="snd-big" title="Expand">&#11036;</button>
         <button class="snd-x" title="Close">&#10005;</button>
       </div>
+      <div class="snd-verdict"></div>
       <div class="snd-grid">
         <div class="snd-card">
           <div class="snd-card-title">Skew-T log-P</div>
@@ -15436,14 +15578,106 @@ function _sndPaint(el, d, prof) {
 // The four numbers worth having at card size. Which four is not a guess: CAPE
 // and shear are what say whether storms happen and whether they organise, and
 // the other two are the ones a warning is written from.
+//
+// Each one also gets a bar showing how far along its own scale it sits. A bare
+// number means nothing to anyone who has not memorised what 1800 J/kg is, and
+// the thresholds that colour it are already known here, so drawing them costs
+// nothing and turns four numbers into four answers.
+function _sndMeterPct(v, warm, hot) {
+  if (v == null || !isFinite(v)) return 0;
+  // Scaled so the warm threshold lands at half and hot at four fifths, which
+  // puts the two marks a forecaster actually reads at the same place on every
+  // bar regardless of the units underneath.
+  const a = Math.abs(v);
+  if (a <= warm) return Math.round(50 * (a / warm));
+  if (a <= hot) return Math.round(50 + 30 * ((a - warm) / (hot - warm)));
+  return Math.min(100, Math.round(80 + 20 * ((a - hot) / hot)));
+}
+
 function _sndQuick(d) {
   const par = (d.ml && d.ml.cape > 0) ? d.ml : d.sb;
-  const q = (label, value, cls) =>
-    `<div class="snd-q"><span>${label}</span><b class="${cls || ''}">${value}</b></div>`;
-  return q('CAPE', _sndFmt(par && par.cape), _sndClass(par && par.cape, 1000, 2500))
-       + q('CIN', _sndFmt(par && par.cin), _sndClass(par && par.cin, 50, 150))
-       + q('0-6 shear', _sndFmt(d.shear6, 0), _sndClass(d.shear6, 35, 50))
-       + q('0-1 SRH', _sndFmt(d.srh1, 0), _sndClass(d.srh1, 100, 250));
+  const q = (label, value, cls, v, warm, hot) => {
+    const pct = _sndMeterPct(v, warm, hot);
+    const tone = cls === 'snd-hot' ? 'hot' : cls === 'snd-warm' ? 'warm' : '';
+    return `<div class="snd-q ${tone}"><span>${label}</span>`
+         + `<b class="${cls || ''}">${value}</b>`
+         + `<div class="snd-meter"><i style="width:${pct}%"></i></div></div>`;
+  };
+  const cape = par && par.cape, cin = par && par.cin;
+  return q('CAPE', _sndFmt(cape), _sndClass(cape, 1000, 2500), cape, 1000, 2500)
+       + q('CIN', _sndFmt(cin), _sndClass(cin, 50, 150), cin, 50, 150)
+       + q('0-6 shear', _sndFmt(d.shear6, 0), _sndClass(d.shear6, 35, 50),
+           d.shear6, 35, 50)
+       + q('0-1 SRH', _sndFmt(d.srh1, 0), _sndClass(d.srh1, 100, 250),
+           d.srh1, 100, 250);
+}
+
+// What all of it adds up to, in the words a forecaster would use.
+//
+// A sounding is a wall of numbers and the first question anybody actually has
+// is "so is anything going to happen here". The numbers already answer that;
+// they have just never said it out loud, and reading it off them is a skill
+// this panel can hand over rather than assume.
+//
+// The thresholds are the ordinary SPC ones. Nothing here is a forecast: it is
+// a plain reading of what these particular parameters say, which is why it
+// names the reason next to the verdict rather than only a word.
+function _sndVerdict(d) {
+  if (!d) return null;
+  const par = (d.ml && d.ml.cape > 0) ? d.ml : d.sb;
+  const cape = (par && isFinite(par.cape)) ? par.cape : 0;
+  const cin = (par && isFinite(par.cin)) ? Math.abs(par.cin) : 0;
+  const shear = isFinite(d.shear6) ? d.shear6 : 0;
+  const stp = isFinite(d.stp) ? d.stp : 0;
+  const scp = isFinite(d.scp) ? d.scp : 0;
+  const ship = isFinite(d.ship) ? d.ship : 0;
+
+  // Capped means capped, however good everything above it looks. A profile
+  // with 3000 CAPE and 200 J/kg of inhibition is a blue sky afternoon, and
+  // saying "severe" over it would be the panel lying confidently.
+  if (cape < 100) {
+    return { lv: 0, word: 'Quiet',
+             why: 'Almost no instability, so nothing to build a storm from.' };
+  }
+  if (cin >= 150) {
+    return { lv: 0, word: 'Capped',
+             why: `${Math.round(cin)} J/kg of inhibition. The instability is `
+                + 'there and cannot be reached without something to lift it.' };
+  }
+
+  const bits = [];
+  if (stp >= 1 || (scp >= 4 && shear >= 40)) {
+    bits.push('supercells with a tornado threat');
+  } else if (scp >= 2 && shear >= 35) {
+    bits.push('organised supercells');
+  } else if (shear >= 30 && cape >= 1000) {
+    bits.push('organised multicells');
+  } else if (cape >= 500) {
+    bits.push('ordinary thunderstorms');
+  } else {
+    bits.push('weak, short lived showers');
+  }
+  if (ship >= 1) bits.push('large hail');
+  if (isFinite(d.dcape) && d.dcape >= 1000) bits.push('strong downdraft winds');
+
+  let lv = 1;
+  if (cape >= 500 && shear >= 30) lv = 2;
+  if (scp >= 2 && shear >= 35) lv = 3;
+  if (stp >= 1 || scp >= 6) lv = 4;
+  const word = ['Quiet', 'Marginal', 'Active', 'Organised', 'Dangerous'][lv];
+  return {
+    lv, word,
+    why: `${_sndFmt(cape)} J/kg with ${_sndFmt(shear, 0)} kt of deep shear. `
+       + `Supports ${bits.join(', ')}.`,
+  };
+}
+
+function _sndVerdictHTML(d) {
+  const v = _sndVerdict(d);
+  if (!v) return '';
+  const esc = s => (typeof _ssEsc === 'function' ? _ssEsc(String(s)) : String(s));
+  return `<span class="snd-badge lv${v.lv}">${esc(v.word)}</span>`
+       + `<span class="snd-verdict-text">${esc(v.why)}</span>`;
 }
 
 // One profile, from wherever the picker says, with a fallback that is quiet
@@ -15597,6 +15831,10 @@ async function _sndRefresh(el, hr) {
 
     _sndPaint(el, d, prof);
     el.querySelector('.snd-quick').innerHTML = _sndQuick(d);
+    // The one line answering the question everybody actually opened this
+    // panel to ask, above the numbers it was read off.
+    const vd = el.querySelector('.snd-verdict');
+    if (vd) vd.innerHTML = _sndVerdictHTML(d);
     el.querySelector('.snd-tables').innerHTML = _sndTables(d);
     note.innerHTML = _sndNote(d, prof, fellBack);
     // The image the Pi rendered, when there is one: the full SHARPpy layout,
@@ -15616,6 +15854,8 @@ async function _sndRefresh(el, hr) {
   } catch (e) {
     if (seq !== el._seq) return;
     el.querySelector('.snd-quick').innerHTML = '';
+    const vdx = el.querySelector('.snd-verdict');
+    if (vdx) vdx.innerHTML = '';
     el.querySelector('.snd-tables').innerHTML =
       `<div class="snd-err">${_sndWhy(e)}</div>`;
     note.textContent = '';
@@ -41138,7 +41378,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Soundings on the Pi were blocked by a check that was wrong about its own machine. SounderPy is installed there without its two drawing libraries on purpose, because this Pi draws with something else, so asking for it plainly always fails and always has. The check reported it missing, printed the command to install it, and that install worked and changed nothing, so it said the same thing the next time. It now asks the way the rest of the app asks. The built-in drawing test also no longer needs the fetching library at all, which is the whole point of a test that tells those two apart.";
+const APP_LATEST_UPDATE = "The sounding panel is rebuilt. It now opens with a plain sentence saying what the profile actually means, from \"Quiet\" to \"Dangerous\", with the reason next to it, so the wall of numbers answers the question you opened it to ask before you read any of them. It refuses to cry severe over a capped profile, which is the case where a number alone misleads most. Each of the four headline values now has a bar under it showing how far along its own scale it sits, the tables are proper cards, and the whole panel is glass with the controls on two rows so nothing gets pushed off the edge.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
