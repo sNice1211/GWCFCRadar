@@ -13506,6 +13506,9 @@ const SND_SOURCES = [
   { id: 'nam',    pi: 'nam',      label: 'NAM' },
   { id: 'gfs',    pi: 'gfs',      label: 'GFS' },
   { id: 'levels', pi: null,       label: 'Pi model levels' },
+  // The one that works with no Pi at all, and the reason the panel can
+  // always draw something. Last in the list because it is the last resort.
+  { id: 'web',    pi: null,       label: 'Web (no Pi needed)' },
 ];
 // How far back the SounderPy sources can be asked to look, in hours. An
 // analysis is hourly, so these are the hours themselves rather than a
@@ -13640,6 +13643,143 @@ async function _sndProfile(lat, lon, fhr) {
   return { hour, run: man.run, lat, lon, missing, tainted, asked,
            via: 'levels', engine: 'browser',
            levels: levelsOut };
+}
+
+// ── A sounding that does not need the Pi at all ───────────────────────────
+//
+// Every other path in this panel ends at the Pi. The SounderPy door is on the
+// Pi; the level images are built by the Pi and served by the Pi. That is fine
+// while the Pi is reachable and healthy, and it is nothing at all when it is
+// not - and "not" covers more than the Pi being off. NOAA retired the plain
+// text sounding service the fallback used, so the door can be up and still
+// have nothing behind it, and fixing that needs a terminal on the Pi.
+//
+// So this is the floor: pressure level data straight from Open-Meteo, in the
+// browser, no key and no Pi. It is not as good as SounderPy, and it is not
+// meant to be. SounderPy gives hundreds of levels of the real model output
+// and SHARPpy analyses them the way the Storm Prediction Center's own tooling
+// does; this gives nineteen standard levels plus the surface, which is about
+// what a printed sounding has ever shown and is enough to read one properly.
+//
+// It sits LAST, behind both Pi paths, so a healthy Pi is always preferred and
+// nothing here changes what a working setup does. It is what stops "the Pi
+// cannot answer" from meaning "there is no sounding".
+const SND_OM_LEVELS = [1000, 975, 950, 925, 900, 850, 800, 700, 600, 500,
+                       400, 300, 250, 200, 150, 100, 70, 50, 30];
+
+// Which model to ask for. Open-Meteo names its own blends rather than the raw
+// model, and seamless means "the best available at each hour", which is the
+// same idea as asking the Pi for RAP and getting Bak40 when Op40 has not
+// published.
+const SND_OM_MODELS = {
+  auto: 'best_match', rap: 'best_match', gfs: 'gfs_seamless',
+  hrrr: 'gfs_hrrr', nam: 'ncep_nbm_conus', obs: 'best_match',
+};
+
+async function _sndOpenMeteo(lat, lon, hoursBack, source) {
+  const fields = [];
+  for (const lv of SND_OM_LEVELS) {
+    fields.push(`temperature_${lv}hPa`, `relative_humidity_${lv}hPa`,
+                `wind_speed_${lv}hPa`, `wind_direction_${lv}hPa`,
+                `geopotential_height_${lv}hPa`);
+  }
+  fields.push('temperature_2m', 'dew_point_2m', 'surface_pressure',
+              'wind_speed_10m', 'wind_direction_10m');
+  const model = SND_OM_MODELS[source] || 'best_match';
+  const q = new URLSearchParams({
+    latitude: (+lat).toFixed(4), longitude: (+lon).toFixed(4),
+    hourly: fields.join(','),
+    wind_speed_unit: 'kn',
+    // Past days only when actually looking back, because asking for them
+    // always makes the answer bigger for no reason.
+    past_days: hoursBack > 0 ? String(Math.min(2, Math.ceil(hoursBack / 24))) : '0',
+    forecast_days: '2',
+    models: model,
+  });
+  const url = `https://api.open-meteo.com/v1/forecast?${q.toString()}`;
+
+  let r;
+  try {
+    r = await fetch(url, { cache: 'no-store' });
+  } catch (e) {
+    throw new Error('could not reach Open-Meteo, so there is no sounding '
+      + 'source left. Check the connection.');
+  }
+  if (!r.ok) throw new Error(`Open-Meteo answered HTTP ${r.status}`);
+  const body = await r.json().catch(() => null);
+  const H = body && body.hourly;
+  if (!H || !H.time) throw new Error('Open-Meteo sent back no hourly data');
+
+  // Which hour. The series runs from past_days ago to forecast_days ahead, so
+  // the wanted hour is found by time rather than by counting from either end,
+  // which is the kind of arithmetic that silently reads yesterday.
+  const want = new Date(Date.now() - (hoursBack || 0) * 3600e3);
+  want.setUTCMinutes(0, 0, 0);
+  let idx = -1, best = Infinity;
+  for (let i = 0; i < H.time.length; i++) {
+    const gap = Math.abs(new Date(H.time[i] + ':00Z').getTime() - want.getTime());
+    if (gap < best) { best = gap; idx = i; }
+  }
+  if (idx < 0) throw new Error('Open-Meteo had no hour near the one asked for');
+
+  const at = (name) => {
+    const arr = H[name];
+    const v = arr ? arr[idx] : null;
+    return (typeof v === 'number' && isFinite(v)) ? v : null;
+  };
+  // Dew point from temperature and relative humidity, Magnus formula. The
+  // pressure level fields give humidity rather than dew point, and every
+  // parcel calculation in this panel wants dew point.
+  const dewFrom = (t, rh) => {
+    if (t == null || rh == null || rh <= 0) return null;
+    const a = 17.625, b = 243.04;
+    const g = Math.log(Math.max(1, Math.min(100, rh)) / 100) + (a * t) / (b + t);
+    return (b * g) / (a - g);
+  };
+
+  const levels = [];
+  const sfcP = at('surface_pressure');
+  const sfcT = at('temperature_2m');
+  if (sfcP != null && sfcT != null) {
+    const spd = at('wind_speed_10m'), dir = at('wind_direction_10m');
+    levels.push({
+      p: sfcP, t: sfcT, td: at('dew_point_2m'), zMSL: body.elevation ?? null,
+      u: (spd != null && dir != null) ? -spd * Math.sin(dir * Math.PI / 180) : null,
+      v: (spd != null && dir != null) ? -spd * Math.cos(dir * Math.PI / 180) : null,
+    });
+  }
+  for (const lv of SND_OM_LEVELS) {
+    // A pressure level below the ground is not a level of this sounding. On
+    // high terrain several of the 1000 to 900 mb levels are underground, and
+    // keeping them puts a fictional warm layer beneath the surface. The half
+    // millibar guard is what stops the surface being listed twice, which
+    // would make a zero depth layer that every shear calculation divides by.
+    if (sfcP != null && lv >= sfcP - 0.5) continue;
+    const t = at(`temperature_${lv}hPa`);
+    if (t == null) continue;
+    const spd = at(`wind_speed_${lv}hPa`), dir = at(`wind_direction_${lv}hPa`);
+    levels.push({
+      p: lv, t,
+      td: dewFrom(t, at(`relative_humidity_${lv}hPa`)),
+      zMSL: at(`geopotential_height_${lv}hPa`),
+      // Meteorological convention: a wind FROM 270 blows toward the east, so
+      // u is positive. The minus signs are the convention, not a bug.
+      u: (spd != null && dir != null) ? -spd * Math.sin(dir * Math.PI / 180) : null,
+      v: (spd != null && dir != null) ? -spd * Math.cos(dir * Math.PI / 180) : null,
+    });
+  }
+  if (levels.length < 5) {
+    throw new Error(`Open-Meteo returned only ${levels.length} usable levels `
+      + 'here, which is too few to read as a sounding');
+  }
+
+  const validIso = H.time[idx] + ':00Z';
+  return {
+    via: 'openmeteo', engine: 'browser', fetcher: 'Open-Meteo',
+    source: model, label: 'Open-Meteo ' + model.replace(/_/g, ' '),
+    run: validIso, valid: validIso, site: '',
+    hour: 0, lat: +lat, lon: +lon, levels,
+  };
 }
 
 // ── The Pi's /sounding door: SounderPy to fetch, SHARPpy to analyse ────────
@@ -14660,9 +14800,31 @@ function _sndQuick(d) {
 async function _sndFetchFor(el, lat, lon, hr) {
   const pick = SND_SOURCES.find(s => s.id === _sndSource) || SND_SOURCES[0];
 
+  if (pick.id === 'web') {             // explicitly the no-Pi source
+    return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'auto'),
+             fellBack: null };
+  }
   if (pick.pi) {                       // an explicit SounderPy source
-    const prof = await _sndPiSounding(lat, lon, pick.pi, hr || 0);
-    return { prof, fellBack: null };
+    // Falls back rather than dead ending. Picking "HRRR" used to mean "HRRR
+    // from the Pi or nothing at all", so on a Pi that cannot answer, choosing
+    // a named model turned a working panel into a permanent error message -
+    // while Auto, one item up the same list, drew a sounding fine. Naming a
+    // model is a preference, not an instruction to fail.
+    try {
+      const prof = await _sndPiSounding(lat, lon, pick.pi, hr || 0);
+      return { prof, fellBack: null };
+    } catch (e) {
+      const why = String((e && e.message) || e);
+      try {
+        return { prof: await _sndOpenMeteo(lat, lon, hr || 0, pick.pi),
+                 fellBack: why };
+      } catch (e2) {
+        // The Pi's reason is the useful one. The web source failing too is
+        // worth saying, but it is not what the person needs to go and fix.
+        throw new Error(why + ' (and the web source could not answer either: '
+          + String((e2 && e2.message) || e2) + ')');
+      }
+    }
   }
   if (pick.id === 'levels') {          // explicitly the level images
     return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
@@ -14679,6 +14841,10 @@ async function _sndFetchFor(el, lat, lon, hr) {
     return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
              fellBack: el._autoWhy || null };
   }
+  if (el && el._autoVia === 'web') {
+    return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'auto'),
+             fellBack: el._autoWhy || null };
+  }
 
   let why = null;
   if (!_sndPiDown) {
@@ -14688,9 +14854,32 @@ async function _sndFetchFor(el, lat, lon, hr) {
     } catch (e) { why = String((e && e.message) || e); }
   }
   why = why || 'this Pi does not have the sounding service';
-  const prof = await _sndProfile(lat, lon, hr == null ? 0 : hr);
-  if (el) { el._autoVia = 'levels'; el._autoWhy = why; }
-  return { prof, fellBack: why };
+
+  // Then the Pi's level images, then the web. Auto used to stop at the level
+  // images, so a Pi that was unreachable, or that had not built a sounding
+  // run yet, left the panel with nothing to draw and an error where a
+  // sounding should be. There is always something to draw now.
+  try {
+    const prof = await _sndProfile(lat, lon, hr == null ? 0 : hr);
+    if (el) { el._autoVia = 'levels'; el._autoWhy = why; }
+    return { prof, fellBack: why };
+  } catch (e) {
+    const why2 = String((e && e.message) || e);
+    let prof;
+    try {
+      prof = await _sndOpenMeteo(lat, lon, hr || 0, 'auto');
+    } catch (e3) {
+      // Everything is down. Report the PI's reason, not the web source's.
+      // The web source failing means the connection is out, which the person
+      // can already see; the Pi's reason is the one with something to do
+      // about it, and letting the last error win buried it.
+      throw new Error(why2);
+    }
+    // Settled on the web source, so the slider keeps meaning hours back
+    // rather than changing under the hand on the next refresh.
+    if (el) { el._autoVia = 'web'; el._autoWhy = why + ' Then: ' + why2; }
+    return { prof, fellBack: why + ' Then the level images: ' + why2 };
+  }
 }
 
 async function _sndRefresh(el, hr) {
@@ -14755,6 +14944,13 @@ function _sndNote(d, prof, fellBack) {
         + 'images carry');
     if (prof.cached) bits.push('served from the Pi\'s cache');
     bits.push('heights are the model\'s own geopotential, above ground level');
+  } else if (prof.via === 'openmeteo') {
+    bits.push(`${esc(prof.label || 'Open-Meteo')} at ${esc(prof.valid || 'the last hour')}`);
+    bits.push(`${d.rows.length} standard pressure levels, fetched by the `
+      + 'browser without going through the Pi');
+    bits.push('parcel traces, heights and helicity worked out in the browser');
+    bits.push('dew point is derived from relative humidity rather than '
+      + 'reported directly');
   } else {
     bits.push(`Run ${esc(prof.run)}`);
     bits.push(`${d.rows.length} model levels read off the Pi's images`);
@@ -14763,7 +14959,11 @@ function _sndNote(d, prof, fellBack) {
   }
   let out = bits.join(' - ') + '.';
   if (fellBack) {
-    out += `<br><span class="snd-fell">Fell back to the level images: `
+    // Naming the destination rather than always saying "the level images",
+    // which was wrong whenever the fall was further than that.
+    const to = prof.via === 'openmeteo' ? 'the web source'
+             : prof.via === 'levels' ? 'the level images' : 'another source';
+    out += `<br><span class="snd-fell">Fell back to ${to}: `
          + `${esc(fellBack)}.</span>`;
   }
   return out;
@@ -39970,7 +40170,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Radar draws about thirty times faster. A full range sweep took over a second and a half to paint, which froze the tab on every frame; it now takes under sixty milliseconds, so loops actually play. The picture is sharper too: the old renderer blended neighbouring dBZ bands into thousands of in-between shades, and an in-between shade is a reading the radar never took. Satellite is fixed as well, it was asking GOES-16 for scans after GOES-19 took over as GOES-East.";
+const APP_LATEST_UPDATE = "Soundings work again, and now work even when the Pi cannot answer. Every sounding path used to end at the Pi, so when its sounding service had nothing behind it there was no sounding at all. There is now a web source that needs no Pi, sitting last behind SounderPy and the Pi levels, so a healthy Pi is still preferred. Picking a named model like HRRR also used to mean that model or nothing; it falls back now instead of dead ending.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

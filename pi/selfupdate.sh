@@ -62,18 +62,68 @@ if ! git merge --ff-only --quiet "origin/$BRANCH" 2>/dev/null; then
 fi
 
 AFTER=$(git rev-parse HEAD)
-if [ "$BEFORE" = "$AFTER" ]; then
-  exit 0                      # already current, and nothing is worth saying
+CHANGED=1
+[ "$BEFORE" = "$AFTER" ] && CHANGED=0
+[ "$CHANGED" = 1 ] && \
+  echo "updated $(git rev-parse --short "$BEFORE") -> $(git rev-parse --short "$AFTER")"
+
+# Whether to look at the Python packages at all on this run.
+#
+# This used to happen only when a commit had just landed, which is fine for
+# "a new commit needs a new package" and useless for the case that actually
+# bites: pip losing its connection to PyPI halfway through an install. That
+# leaves the venv missing something, no commit is coming to trigger a retry,
+# and nothing notices until somebody clicks a point on the map and gets an
+# error. Nobody may be able to log in to fix it.
+#
+# So it also runs on a timer of its own. Not every minute: importing xarray
+# and metpy takes real seconds on a Pi and this shares a machine with the
+# radar builds. Every half hour is often enough that a dropped install heals
+# itself well before anyone notices, and rare enough to cost nothing.
+# Deliberately outside the repository. A stamp file inside it would show up
+# as an untracked file in git status, which is exactly what the recovery
+# above refuses to reset over, so the Pi would be stranded by the very file
+# meant to keep it healthy.
+STAMP="$HOME/.gwcfc-deps-checked"
+DEPS=0
+[ "$CHANGED" = 1 ] && DEPS=1
+if [ "$DEPS" = 0 ]; then
+  if [ ! -f "$STAMP" ] || [ -n "$(find "$STAMP" -mmin +30 2>/dev/null)" ]; then
+    DEPS=1
+  fi
 fi
-echo "updated $(git rev-parse --short "$BEFORE") -> $(git rev-parse --short "$AFTER")"
+if [ "$DEPS" = 0 ]; then
+  exit 0                      # current, checked recently, nothing worth saying
+fi
+touch "$STAMP" 2>/dev/null || true
 
 # New Python dependency, occasionally. Cheap to check and it is the failure
 # that looks like a broken pipeline rather than a missing package: the radar
 # service failing on a MetPy import is exactly how this bit the last time.
-for mod in eccodes metpy; do
+for mod in eccodes metpy netCDF4 xarray siphon cfgrib; do
   "$VENV/bin/python" -c "import $mod" >/dev/null 2>&1 || {
     echo "installing missing $mod"
     "$VENV/bin/pip" install --quiet "$mod" || echo "  could not install $mod"
+  }
+done
+
+# The sounding libraries, which need --no-deps and therefore cannot go in the
+# loop above. They are here rather than only in install.sh because pip talking
+# to PyPI is not reliable on a home connection: a dropped connection halfway
+# through leaves the venv without them and nothing notices until somebody
+# clicks a point on the map and gets an error. install.sh is a thing a person
+# runs; this runs every minute, so a failed install simply gets retried until
+# it works, with nobody having to log in.
+#
+# --no-deps because both packages list dependencies they do not actually need
+# here. SHARPpy pins a NumPy that cannot build on current Python, and SounderPy
+# lists two plotting libraries for a machine that never plots anything. What
+# they really use at runtime is installed by name in the loop above.
+for mod in sounderpy sharppy; do
+  "$VENV/bin/python" -c "import $mod" >/dev/null 2>&1 || {
+    echo "installing missing $mod"
+    "$VENV/bin/pip" install --quiet --no-deps "$mod" \
+      || echo "  could not install $mod, will try again next time"
   }
 done
 
