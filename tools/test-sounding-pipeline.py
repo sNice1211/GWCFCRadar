@@ -327,7 +327,38 @@ ok("the checkout is compared with what is on GitHub", "ls-remote" in doc)
 ok("using the call that downloads nothing, so a flaky link still answers",
    "downloads no objects" in doc)
 
-print("\n12. the self-updater survives a flaky link")
+print("\n12. and one command that runs every repair")
+# doctor.sh finds and prints; fix.sh runs. The Pi is often reached with an
+# on-screen keyboard, where a six-line list of commands is the actual
+# obstacle to it ever being repaired.
+fixsh = open(os.path.join(ROOT, "pi", "fix.sh")).read()
+ok("there is a fix script", len(fixsh) > 500)
+ok("it does the newest code FIRST, since every other fix ships inside it",
+   fixsh.index("Newest code") < fixsh.index("Missing packages"))
+ok("it pulls the branch this checkout is already on",
+   'origin "$BRANCH"' in fixsh)
+# Merging main into a feature branch here would author a commit that exists
+# only on the Pi, and the self-updater is right to refuse to fast-forward
+# past one. That would quietly end automatic updates for good.
+ok("and refuses to invent a local commit by merging a different one",
+   "--ff-only" in fixsh and "exists only on" in fixsh)
+ok("a refusal to fast-forward is not retried as though it were the network",
+   "DIVERGED=1" in fixsh)
+ok("it is sent to the script that can recover from that safely",
+   "selfupdate.sh" in fixsh)
+ok("only missing packages are installed, so a healthy Pi costs nothing",
+   "every data package is present" in fixsh)
+ok("sounderpy is asked for the way the app asks, not with a plain import",
+   "find_spec" in fixsh)
+ok("the long running services are restarted, since they hold the old code",
+   "gwcfc-serve" in fixsh and "gwcfc-tunnel" in fixsh and "gwcfc-publish" in fixsh)
+ok("and it ends by saying where things stand",
+   "--check" in fixsh)
+# The whole point is that the next repair should not have to be typed.
+ok("it leaves a shortcut behind", "alias gwfix=" in fixsh)
+ok("without adding it twice", 'grep -q "alias gwfix="' in fixsh)
+
+print("\n13. the self-updater survives a flaky link")
 upd = open(os.path.join(ROOT, "pi", "selfupdate.sh")).read()
 # One dropped pack used to mean the Pi ran old code until the next timer,
 # and a failed update is invisible: the fixes just look like they did not work.
