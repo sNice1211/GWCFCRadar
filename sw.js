@@ -1,6 +1,9 @@
 // GWCFCRadar Service Worker - radar tile cache + app shell + background alert notifications
 const CACHE        = 'gwcfc-v19';
-const STATIC_CACHE = 'gwcfc-static-v1'; // app shell + CDN libraries + fonts
+// v2: the shell copies saved under v1 could be stale in a way nothing would
+// ever heal (see shellNetworkFirst), so activating this version deletes them
+// wholesale and the first load refills the cache with a verified-fresh page.
+const STATIC_CACHE = 'gwcfc-static-v2'; // app shell + CDN libraries + fonts
 const NOTIF_CACHE  = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
@@ -185,12 +188,20 @@ function _shellKey() { return self.registration.scope; }
 
 async function shellNetworkFirst(req) {
   const cache = await caches.open(STATIC_CACHE);
-  // The fetch always runs to completion so the cached copy stays current
-  // even when the race below has already answered from cache.
-  const netP = fetch(req).then(res => {
-    if (res && res.ok) { try { cache.put(_shellKey(), res.clone()); } catch (e) {} }
-    return res;
-  });
+  // cache:'no-cache' is the load-bearing option here. A plain fetch(req) is
+  // answered by the browser's own HTTP cache first, and GitHub Pages marks
+  // the page cacheable for ten minutes - so after a deploy, this "network"
+  // fetch could return the OLD page, and then save that stale copy as the
+  // shell, where the timeout path would keep serving it. The site looked
+  // like it never updated, because this code was laundering staleness into
+  // the one copy meant to be fresh. no-cache forces a revalidation with the
+  // server instead: a cheap 304 when nothing changed, the new page the
+  // moment one is deployed.
+  const netP = fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' })
+    .then(res => {
+      if (res && res.ok) { try { cache.put(_shellKey(), res.clone()); } catch (e) {} }
+      return res;
+    });
   let timer;
   const raced = await Promise.race([
     netP.catch(() => 'net-error'),

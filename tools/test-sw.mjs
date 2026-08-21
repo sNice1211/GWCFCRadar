@@ -107,11 +107,25 @@ async function main() {
   const r3 = await dispatchFetch(GET(LEAF));
   ok('leaflet is cached after the first fetch',
      r3 && r3.status === 200 && netCalls === 1, `calls=${netCalls}`);
-  const staticCache = cacheStore.get('gwcfc-static-v1');
+  const staticCache = cacheStore.get('gwcfc-static-v2');
   ok('and it lives in the static cache, not among the tiles',
      !!(staticCache && staticCache.m.has(LEAF)), [...(staticCache ? staticCache.m.keys() : [])].join(','));
 
-  console.log('\n3. opening the app: network first, shell stored');
+  console.log('\n2b. the shell fetch cannot be fooled by the HTTP cache');
+{
+  // GitHub Pages marks the page cacheable for ten minutes, so a plain
+  // fetch(req) after a deploy gets the OLD page from the browser's own HTTP
+  // cache, believes it is fresh, and saves it as the shell. That is how "I
+  // merged it and the live site did not change" happens. The fix is a
+  // forced revalidation, and it has to stay in the source.
+  const src = readFileSync(join(ROOT, 'sw.js'), 'utf8');
+  ok('the shell is fetched with a forced revalidation',
+     /fetch\(req\.url,\s*\{\s*cache:\s*'no-cache'/.test(src));
+  ok('and the stale v1 shell cache is purged by the version bump',
+     /gwcfc-static-v2/.test(src) && !/STATIC_CACHE = 'gwcfc-static-v1'/.test(src));
+}
+
+console.log('\n3. opening the app: network first, shell stored');
   netImpl = async () => new Response('<html>fresh</html>', { status: 200 });
   netCalls = 0;
   const NAV = GET('https://ralphhtml.github.io/GWCFCRadar/?focus_alert=x', 'navigate');
