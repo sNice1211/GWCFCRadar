@@ -193,13 +193,52 @@ def publish(url, token):
         return r.status in (200, 201)
 
 
+def usable_from_the_web(url):
+    """Why a browser could never load this address, or None if it could.
+
+    The site is served over https from GitHub Pages, and a browser will not
+    fetch http from an https page: it refuses before the request is even
+    sent. So publishing a plain http address, or one only routable on the
+    home network, does not half work - every Pi-backed feature reports the
+    Pi as dead while the Pi is perfectly healthy, and the reason is invisible
+    from the Pi's side because nothing ever arrives.
+
+    The tunnel is what avoids all of this, which is why an address that is
+    not the tunnel's is worth refusing rather than publishing.
+    """
+    if not url.startswith("https://"):
+        return (f"{url} is not https. The site is served over https and "
+                "browsers refuse to load http from an https page, so this "
+                "address would make the Pi look dead everywhere.")
+    host = url.split("://", 1)[1].split("/")[0].split(":")[0].lower()
+    private = (host in ("localhost",)
+               or host.endswith(".local")
+               or host.startswith(("127.", "10.", "192.168.", "169.254."))
+               or re.match(r"^172\.(1[6-9]|2\d|3[01])\.", host))
+    if private:
+        return (f"{url} is a private address on this network. It works from "
+                "a device on the same network and from nowhere else.")
+    return None
+
+
 def pinned_url():
-    """The fixed address, if one was set, else None."""
+    """The fixed address, if one was set and it could actually be used."""
     try:
         with open(PINNED) as f:
-            return f.read().strip() or None
+            url = f.read().strip() or None
     except OSError:
         return None
+    if not url:
+        return None
+    why = usable_from_the_web(url)
+    if why:
+        # Refused rather than published. Publishing it would replace a
+        # working tunnel address with one that cannot work, and the failure
+        # would show up in a browser somewhere else entirely.
+        log(f"ignoring the pinned address: {why}")
+        log(f"  remove {PINNED} to go back to the tunnel's own address")
+        return None
+    return url
 
 
 def publish_if_changed(force=False):
