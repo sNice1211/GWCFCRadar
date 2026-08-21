@@ -88,46 +88,15 @@ SOURCES = {
     "hrrr":     {"label": "RAP analysis",    "src": "Op40",  "fallback": "Bak40"},
 }
 
-SOUNDING_URL = "https://rucsoundings.noaa.gov/get_soundings.cgi"
-FETCH_TIMEOUT = int(os.environ.get("GWCFC_SND_FETCH_TIMEOUT", "25"))
-
-# ── The second source, and why there are two ───────────────────────────────
-#
-# rucsoundings.noaa.gov still resolves and no longer answers: DNS returns an
-# address, port 443 refuses the connection. The rest of NOAA is fine from the
-# same machine, so this is that one service rather than the network.
-#
-# Open-Meteo serves the same thing as pressure level fields, and the app
-# already talks to it for the wind, temperature and marine layers, so it is a
-# host this Pi is known to reach rather than one hoped about. Nineteen levels
-# instead of a hundred, which is fewer than a balloon and still more than the
-# twelve the Pi's own images carry, and it brings real geopotential heights,
-# which removes an approximation from every layer depth on the panel.
-#
-# Both are tried, best first. A source that comes back is a source that comes
-# back, and neither being available is not a thing to find out one at a time.
-OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
-
-# The pressure levels Open-Meteo publishes, thickest air first.
-OM_LEVELS = [1000, 975, 950, 925, 900, 850, 800, 700, 600, 500,
-             400, 300, 250, 200, 150, 100, 70, 50, 30]
-
-# Which Open-Meteo model answers for each source name here.
-OM_MODELS = {
-    "rap": "best_match", "rap-now": "best_match", "rap-fcst": "best_match",
-    "hrrr": "gfs_hrrr", "nam": "gfs_seamless", "gfs": "gfs_seamless",
-    "obs": None,          # a balloon is not a model; only NOAA has those
+# Which model SounderPy is asked for. None means a balloon rather than a
+# model, which is a different call and a different kind of answer.
+SPY_MODELS = {
+    "rap": "rap", "rap-now": "rap", "rap-fcst": "rap",
+    "hrrr": "hrrr", "nam": "nam", "gfs": "gfs", "obs": None,
 }
 
-# How long an answer stays good. A RAP analysis is hourly, so re-fetching the
-# same point inside the hour is paying twice for one number; a forecast for a
-# fixed hour never changes at all once published.
-CACHE_SECS = int(os.environ.get("GWCFC_SND_CACHE_SECS", "900"))
-# The Pi is a small computer on a home connection. Two of these at once is
-# already a lot, and an unbounded queue would mean a page load could be
-# waiting behind ten of them.
-MAX_WAIT_SECS = int(os.environ.get("GWCFC_SND_TIMEOUT", "60"))
-
+SOUNDING_URL = "https://rucsoundings.noaa.gov/get_soundings.cgi"
+FETCH_TIMEOUT = int(os.environ.get("GWCFC_SND_FETCH_TIMEOUT", "25"))
 
 def _cache_key(source, lat, lon, when):
     # Rounded, because two clicks a hundred metres apart are the same sounding
@@ -176,9 +145,14 @@ def _prune_cache(keep=200):
 
 
 def have_libs():
-    """Whether the optional analyser is installed. Nothing depends on it."""
+    """Which of the two are installed, and whether they really import.
+
+    Installed and importable are different questions on a Pi: a package can
+    unpack cleanly and then fail on an ancient NumPy call the moment anything
+    touches it, which is a failure that only shows up when somebody clicks.
+    """
     out = {}
-    for name in ("sharppy",):
+    for name in ("sounderpy", "sharppy"):
         try:
             __import__(name)
             out[name] = True
@@ -287,141 +261,6 @@ def _http_text(url):
         return r.read(2 * 1024 * 1024).decode("utf-8", "replace")
 
 
-def _dewpoint(t_c, rh):
-    """Dew point from temperature and relative humidity, Magnus.
-
-    Open-Meteo publishes humidity at pressure levels and not dew point, and a
-    sounding is read as dew point: the gap between the two lines IS the
-    picture. Bolton's coefficients, the same ones the browser uses on the
-    other path, so the two agree rather than disagreeing by a tenth.
-    """
-    if t_c is None or rh is None:
-        return None
-    rh = max(min(float(rh), 100.0), 0.1)
-    a, b = 17.625, 243.04
-    g = math.log(rh / 100.0) + (a * float(t_c)) / (b + float(t_c))
-    try:
-        return round((b * g) / (a - g), 2)
-    except ZeroDivisionError:
-        return None
-
-
-def fetch_open_meteo(source, lat, lon, when=None):
-    """One profile from Open-Meteo's pressure level fields."""
-    model = OM_MODELS.get(source, "best_match")
-    if model is None:
-        raise RuntimeError("Open-Meteo has models, not balloons, so it cannot "
-                           "answer an observed sounding.")
-    fields = ["temperature_2m", "dew_point_2m", "surface_pressure",
-              "wind_speed_10m", "wind_direction_10m"]
-    for lev in OM_LEVELS:
-        fields += [f"temperature_{lev}hPa", f"relative_humidity_{lev}hPa",
-                   f"wind_speed_{lev}hPa", f"wind_direction_{lev}hPa",
-                   f"geopotential_height_{lev}hPa"]
-    q = {
-        "latitude": f"{float(lat):.4f}", "longitude": f"{float(lon):.4f}",
-        "hourly": ",".join(fields),
-        # Knots, so nothing downstream has to know what unit this arrived in.
-        "wind_speed_unit": "kn",
-        "timezone": "UTC",
-        # Two days back, so the slider can look at a storm after the fact.
-        "past_days": "2", "forecast_days": "2",
-    }
-    if model != "best_match":
-        q["models"] = model
-
-    url = OPEN_METEO_URL + "?" + urllib.parse.urlencode(q)
-    try:
-        body = json.loads(_http_text(url))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"Open-Meteo answered HTTP {e.code} {e.reason}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"could not reach Open-Meteo ({e.reason})")
-    except ValueError:
-        raise RuntimeError("Open-Meteo sent something that is not JSON")
-
-    hourly = (body or {}).get("hourly") or {}
-    times = hourly.get("time") or []
-    if not times:
-        raise RuntimeError("Open-Meteo returned no hours for this point")
-
-    # Which hour. The one asked for, or the last one that is not in the
-    # future: a forecast hour is published, an unobserved hour is not.
-    want = (datetime.strptime(str(when), "%Y%m%d%H").replace(tzinfo=timezone.utc)
-            if when else datetime.now(timezone.utc))
-    stamp = want.strftime("%Y-%m-%dT%H:00")
-    idx = times.index(stamp) if stamp in times else None
-    if idx is None:
-        past = [i for i, t in enumerate(times) if t <= stamp]
-        idx = past[-1] if past else 0
-
-    def at(name):
-        col = hourly.get(name)
-        if not isinstance(col, list) or idx >= len(col):
-            return None
-        v = col[idx]
-        return None if v is None else float(v)
-
-    prof = {"p": [], "z": [], "T": [], "Td": [], "u": [], "v": []}
-
-    def push(p, z, t, td, spd, direc):
-        if p is None or t is None or td is None:
-            return
-        if spd is None or direc is None:
-            u = v = None
-        else:
-            rad = math.radians(direc)
-            u = round(-spd * math.sin(rad), 3)
-            v = round(-spd * math.cos(rad), 3)
-        prof["p"].append(round(p, 2))
-        prof["z"].append(None if z is None else round(z, 1))
-        prof["T"].append(round(t, 2))
-        prof["Td"].append(round(td, 2))
-        prof["u"].append(u)
-        prof["v"].append(v)
-
-    # The surface first, and it is not a pressure level: it is where the
-    # ground actually is, which on high terrain is well above the 1000 mb
-    # level that would otherwise be the bottom of the chart.
-    sfc_p = at("surface_pressure")
-    push(sfc_p, None, at("temperature_2m"), at("dew_point_2m"),
-         at("wind_speed_10m"), at("wind_direction_10m"))
-
-    for lev in OM_LEVELS:
-        # A level below the ground is not a level. On the Rockies the 1000
-        # and 925 mb fields are extrapolated into rock, and drawing them puts
-        # the bottom of the sounding underground.
-        #
-        # At or above, not just above: a station whose surface pressure lands
-        # exactly on a published level would otherwise appear twice, once as
-        # the ground and once as the level, and a profile with two entries at
-        # one pressure has a layer of zero depth in it. Every layer average
-        # divides by that depth.
-        if sfc_p is not None and lev >= sfc_p - 0.5:
-            continue
-        t = at(f"temperature_{lev}hPa")
-        push(lev, at(f"geopotential_height_{lev}hPa"), t,
-             _dewpoint(t, at(f"relative_humidity_{lev}hPa")),
-             at(f"wind_speed_{lev}hPa"), at(f"wind_direction_{lev}hPa"))
-
-    if len(prof["p"]) < 5:
-        raise RuntimeError(
-            f"Open-Meteo returned only {len(prof['p'])} complete levels, "
-            "which is too few to read as a sounding.")
-
-    label = (SOURCES.get(source) or {}).get("label", source)
-    return {
-        "source": source,
-        "label": f"{label} via Open-Meteo",
-        "lat": float(lat), "lon": float(lon),
-        "valid": times[idx] + "Z",
-        "site": "",
-        "levels": len(prof["p"]),
-        "upstream": "open-meteo/" + model,
-        "profile": prof,
-    }
-
-
 def fetch_noaa(source, lat, lon, when=None):
     """One profile from NOAA's GSD text, as plain numbers.
 
@@ -507,22 +346,139 @@ def fetch_noaa(source, lat, lon, when=None):
 
 
 
+def _as_list(x, unit=None):
+    """One SounderPy field as a plain list of numbers.
+
+    SounderPy hands back numpy arrays or pint quantities depending on the
+    field, and JSON knows about neither.
+
+    The unit is asked for by name rather than assumed. Units are the one
+    thing a profile cannot be checked for by looking at it: a wind of 40 is a
+    strong wind in knots and a violent one in metres per second, and the
+    sounding drawn from the wrong one looks entirely plausible and is
+    entirely wrong.
+    """
+    try:
+        if unit is not None and hasattr(x, "to"):
+            x = x.to(unit)
+    except Exception:
+        pass
+    try:
+        x = getattr(x, "magnitude", x)      # strip pint units if present
+    except Exception:
+        pass
+    try:
+        return [None if v != v else round(float(v), 3) for v in x]
+    except TypeError:
+        return []
+
+
+def fetch_sounderpy(source, lat, lon, when=None):
+    """One profile from SounderPy: a hundred levels or more.
+
+    This is the good path. SounderPy pulls the real model or balloon data
+    rather than a handful of published pressure levels, which is the whole
+    reason to want it: an effective inflow layer and a 0-1 km helicity live
+    inside the gaps that coarser sources leave.
+
+    The import is inside the function on purpose. serve.py imports this file
+    to answer every /sounding request, and an import that throws at module
+    scope takes the door down with it rather than one request.
+    """
+    try:
+        import sounderpy as spy
+    except Exception as e:
+        raise RuntimeError(
+            "SounderPy is not installed on this Pi. Run install.sh again, "
+            f"then check with --check. ({e.__class__.__name__})")
+
+    now = datetime.now(timezone.utc)
+    if when:
+        t = datetime.strptime(str(when), "%Y%m%d%H").replace(tzinfo=timezone.utc)
+    else:
+        # The analysis for the hour just gone. The current hour is not
+        # published yet, and asking for it is the commonest way to get an
+        # empty answer that looks like a broken address.
+        t = now - timedelta(hours=1)
+    year, month, day, hour = (f"{t.year}", f"{t.month:02d}",
+                              f"{t.day:02d}", f"{t.hour:02d}")
+
+    spec = SOURCES.get(source) or SOURCES["rap"]
+    model = SPY_MODELS.get(source, "rap")
+    try:
+        if model is None:               # a balloon, not a model
+            clean = spy.get_obs_data(str(lon), year, month, day, hour)
+        else:
+            clean = spy.get_model_data(model, [float(lat)], [float(lon)],
+                                       year, month, day, hour)
+    except Exception as e:
+        raise RuntimeError(
+            f"SounderPy could not fetch a {spec['label']} for {lat}, {lon} "
+            f"at {year}-{month}-{day} {hour}Z: {e}")
+
+    if not clean:
+        raise RuntimeError(
+            f"SounderPy found no {spec['label']} for {lat}, {lon} at "
+            f"{year}-{month}-{day} {hour}Z. Analyses publish about an hour "
+            "behind, so the newest hour is often not there yet.")
+
+    # The units the page reads: millibars, metres above sea level, degrees
+    # Celsius, knots. Identical to what the NOAA text path produces, so the
+    # two draw the same chart and can be compared honestly.
+    prof = {
+        "p": _as_list(clean.get("p"), "hPa"),
+        "z": _as_list(clean.get("z"), "meter"),
+        "T": _as_list(clean.get("T"), "degC"),
+        "Td": _as_list(clean.get("Td"), "degC"),
+        "u": _as_list(clean.get("u"), "knot"),
+        "v": _as_list(clean.get("v"), "knot"),
+    }
+    n = min((len(v) for v in prof.values() if v), default=0)
+    for k in prof:
+        prof[k] = prof[k][:n]
+
+    # Only the levels where every field is really there, surface first.
+    #
+    # A hole part way up does not make the chart look wrong, it makes the
+    # CAPE come out wrong, which is far harder to notice and far worse to act
+    # on. Dropping the level costs one out of a hundred.
+    req = ["p", "T", "Td", "u", "v"] + (["z"] if prof["z"] else [])
+    keep = [i for i in range(n) if all(prof[k][i] is not None for k in req)]
+    keep.sort(key=lambda i: -prof["p"][i])
+    for k in prof:
+        prof[k] = [prof[k][i] for i in keep] if prof[k] else []
+    n = len(keep)
+    if n < 5:
+        raise RuntimeError(
+            f"The {spec['label']} came back with only {n} complete levels, "
+            "which is too few to read as a sounding.")
+
+    site = clean.get("site_info") or {}
+    return {
+        "source": source,
+        "label": spec["label"],
+        "lat": float(lat), "lon": float(lon),
+        "valid": f"{year}-{month}-{day}T{hour}:00Z",
+        "site": site.get("site-name") or site.get("site-id") or "",
+        "levels": n,
+        "upstream": "sounderpy/" + (model or "obs"),
+        "profile": prof,
+    }
+
+
 def fetch_profile(source, lat, lon, when=None):
     """One profile, from whichever source answers.
 
-    Open-Meteo first, because it is the one this Pi is known to reach: the
-    app already talks to it for the wind and temperature layers. NOAA's text
-    soundings second, because when they work they are a hundred levels rather
-    than nineteen and include real balloons, which no model can give.
+    SounderPy first, because it is the real thing: a hundred levels or more
+    of the actual model or balloon data. NOAA's plain text soundings second,
+    so a Pi where SounderPy will not install still draws a sounding rather
+    than an error.
 
     Both failing is reported as both failing, with each reason, rather than
     as whichever happened to be tried last.
     """
-    order = [("Open-Meteo", fetch_open_meteo), ("NOAA", fetch_noaa)]
-    # A balloon is not a model, so an observed sounding can only come from
-    # NOAA and there is no point asking Open-Meteo for one.
-    if source == "obs":
-        order = [("NOAA", fetch_noaa)]
+    order = [("SounderPy", fetch_sounderpy), ("NOAA", fetch_noaa)]
+
     why = []
     for name, fn in order:
         try:
@@ -647,7 +603,7 @@ def sounding(source, lat, lon, when=None, use_cache=True):
     prof = fetch_profile(source, lat, lon, when)
     prof["params"] = sharppy_params(prof)
     prof["engine"] = {
-        "fetch": "NOAA rucsoundings",
+        "fetch": prof.get("upstream", "").split("/")[0] or "NOAA",
         "params": "SHARPpy" if (prof["params"] and "error" not in prof["params"])
                   else None,
     }
@@ -666,7 +622,9 @@ def check(lat=35.4, lon=-97.6):
     any more. If this works, soundings work.
     """
     libs = have_libs()
-    print(f"  Source:   {SOUNDING_URL}")
+    print("  SounderPy:", "installed" if libs["sounderpy"] else "MISSING")
+    print("  SHARPpy:  ", "installed" if libs["sharppy"] else "MISSING")
+    print(f"  Fallback: {SOUNDING_URL}")
     print(f"  Point:    {lat}, {lon}")
     for name in sorted(SOURCES):
         try:
@@ -680,9 +638,12 @@ def check(lat=35.4, lon=-97.6):
         except Exception as e:
             print(f"  {name:9} !!  {e.__class__.__name__}: {e}")
     print()
-    print("  SHARPpy:", "installed, so it does the parameters"
-          if libs["sharppy"] else "not installed, so the browser does the "
-          "parameters. That is the normal case and nothing is missing.")
+    if not libs["sounderpy"]:
+        print("  SounderPy is missing, so the plain text soundings above are")
+        print("  what answers. Run install.sh again to add it.")
+    if not libs["sharppy"]:
+        print("  SHARPpy is missing, so the browser works the parameters out")
+        print("  from the levels it is sent. The chart is the same either way.")
     print(f"  Cache:    {CACHE_DIR} ({CACHE_SECS}s)")
     return 0
 

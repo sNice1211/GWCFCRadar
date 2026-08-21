@@ -75,10 +75,9 @@ for node in svc_tree.body:
 # C and C++ source builds on ARM. Neither was ever needed - NOAA serves the
 # same profiles as plain text - and depending on them again would be walking
 # back into a wall that has already been hit once.
-ok("SounderPy is not imported anywhere",
-   "sounderpy" not in top_imports and "import sounderpy" not in src,
-   str(sorted(top_imports)))
-ok("nor is SHARPpy required", "sharppy" not in top_imports, str(sorted(top_imports)))
+ok("SounderPy is not imported at module scope",
+   "sounderpy" not in top_imports, str(sorted(top_imports)))
+ok("nor is SHARPpy", "sharppy" not in top_imports, str(sorted(top_imports)))
 ok("nor NumPy, which SHARPpy drags in",
    "numpy" not in top_imports, str(sorted(top_imports)))
 # serve.py imports this file to answer a request, and an import that throws at
@@ -93,8 +92,8 @@ sys.path.insert(0, PI)
 import sounding_service as svc          # noqa: E402
 ok("and it really does import on a machine with nothing installed", True)
 ok("and can be asked what it can reach", callable(getattr(svc, "check", None)))
-ok("SHARPpy is reported as an optional bonus, not a requirement",
-   set(svc.have_libs()) == {"sharppy"}, str(svc.have_libs()))
+ok("both are reported on, rather than guessed about",
+   set(svc.have_libs()) == {"sounderpy", "sharppy"}, str(svc.have_libs()))
 
 
 # ── 2. units are converted, not assumed ─────────────────────────────────────
@@ -169,90 +168,55 @@ ok("and every source names a real NOAA dataset",
 ok("and the analysis has a previous cycle to fall back on",
    svc.SOURCES["rap"]["fallback"] == "Bak40")
 
-print("\n2c. Open-Meteo answers when NOAA will not")
-# rucsoundings.noaa.gov still resolves and no longer answers: DNS returns an
-# address, port 443 refuses. The rest of NOAA is fine from the same machine,
-# so that is one dead service rather than a network. Open-Meteo serves the
-# same thing as pressure level fields and the app already talks to it for the
-# wind and temperature layers, so it is a host known to be reachable.
-import urllib.request as _ur
-
-def _served(payload):
-    """Stand in for the network, so this tests the parsing not the weather."""
-    class _R:
-        def read(self, *a): return json.dumps(payload).encode()
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-    return lambda req, timeout=None: _R()
-
-LEVELS = svc.OM_LEVELS
-hourly = {"time": ["2026-08-21T17:00", "2026-08-21T18:00", "2026-08-21T19:00"],
-          "temperature_2m": [30, 31, 32], "dew_point_2m": [21, 21, 21],
-          "surface_pressure": [975, 975, 975],
-          "wind_speed_10m": [12, 12, 12], "wind_direction_10m": [180, 180, 180]}
-for n, lev in enumerate(LEVELS):
-    hourly[f"temperature_{lev}hPa"] = [25 - n * 3] * 3
-    hourly[f"relative_humidity_{lev}hPa"] = [70] * 3
-    hourly[f"wind_speed_{lev}hPa"] = [20 + n * 3] * 3
-    hourly[f"wind_direction_{lev}hPa"] = [200 + n] * 3
-    hourly[f"geopotential_height_{lev}hPa"] = [300 + n * 800] * 3
-
-_real_open = _ur.urlopen
-_ur.urlopen = _served({"hourly": hourly})
+print("\n2c. SounderPy is the good path, and its absence is not a crash")
+# serve.py imports this file to answer every /sounding request, so an import
+# that throws at module scope takes the whole door down rather than one
+# request. It has to be inside the function, and the message it raises has to
+# be a sentence somebody can act on.
+fn = ast.get_source_segment(svc_src, next(
+    n for n in svc_tree.body if getattr(n, "name", "") == "fetch_sounderpy"))
+ok("the import is inside the function", "import sounderpy as spy" in fn)
+ok("and a missing library is a sentence, not a traceback",
+   "is not installed on this Pi" in fn)
 try:
-    om = svc.fetch_open_meteo("rap", 35.4, -97.6, "2026082118")
-finally:
-    _ur.urlopen = _real_open
-
-ok("it builds a profile", om["levels"] >= 10, str(om["levels"]))
-ok("more levels than the Pi's twelve images carry", om["levels"] > 12,
-   str(om["levels"]))
-# The surface is where the ground is, not the 1000 mb level. On high terrain
-# those are hundreds of metres apart and the 1000 mb field is extrapolated
-# into rock.
-ok("the surface is the ground, not the thousand millibar level",
-   om["profile"]["p"][0] == 975.0, str(om["profile"]["p"][:3]))
-ok("and levels below the ground are left out rather than drawn underground",
-   1000 not in om["profile"]["p"], str(om["profile"]["p"][:3]))
-# Strictly falling: two entries at one pressure make a layer of zero depth,
-# and every layer average in the panel divides by that depth.
-ok("pressure falls all the way up, with no level repeated",
-   all(b < a for a, b in zip(om["profile"]["p"], om["profile"]["p"][1:])),
-   str(om["profile"]["p"][:6]))
-ok("real geopotential heights come with it, so the depths are measured",
-   om["profile"]["z"][1] is not None, str(om["profile"]["z"][:3]))
-# Open-Meteo publishes humidity at pressure levels and not dew point, and a
-# sounding is read as the gap between the two lines.
-ok("humidity becomes a dew point, below the temperature as it must be",
-   all(td <= t + 0.01 for t, td in zip(om["profile"]["T"], om["profile"]["Td"])),
-   str(list(zip(om["profile"]["T"][:3], om["profile"]["Td"][:3]))))
-ok("a southerly surface wind blows north", om["profile"]["v"][0] > 0,
-   str(om["profile"]["v"][0]))
-ok("the hour asked for is the hour returned",
-   om["valid"].startswith("2026-08-21T18"), om["valid"])
-ok("and it says which model answered", "open-meteo" in om["upstream"],
-   om["upstream"])
-
-# A balloon is not a model. Asking Open-Meteo for one and getting a model
-# back would be quietly answering a different question.
-try:
-    svc.fetch_open_meteo("obs", 35.4, -97.6)
-    ok("an observed sounding is refused rather than faked", False)
+    svc.fetch_sounderpy("rap", 35.4, -97.6)
+    ok("which is what really happens with it missing", False)
 except RuntimeError as e:
-    ok("an observed sounding is refused rather than faked",
-       "balloon" in str(e), str(e))
+    ok("which is what really happens with it missing",
+       "not installed" in str(e), str(e)[:90])
 
-# Both sources failing must report BOTH reasons, not whichever was last.
-_ur.urlopen = _served({"hourly": {}})
-try:
-    svc.fetch_profile("rap", 35.4, -97.6)
-    ok("both failing says so", False)
-except RuntimeError as e:
-    msg = str(e)
-    ok("when both fail, both reasons are given",
-       "Open-Meteo" in msg and "NOAA" in msg, msg[:200])
-finally:
-    _ur.urlopen = _real_open
+# Units are the one thing a profile cannot be checked for by looking at it.
+for unit in ("hPa", "meter", "degC", "knot"):
+    ok(f"{unit} is asked for by name", f'"{unit}"' in fn)
+ok("a plain list of numbers survives the conversion",
+   svc._as_list([1.0, 2.5]) == [1.0, 2.5])
+ok("a NaN becomes null rather than a poisoned number",
+   svc._as_list([1.0, float("nan")]) == [1.0, None])
+ok("and something that is not a sequence gives an empty list, not a crash",
+   svc._as_list(None) == [])
+
+# A hole part way up does not make the chart look wrong, it makes the CAPE
+# come out wrong, which is far harder to notice.
+ok("levels missing any field are dropped rather than carried",
+   "all(prof[k][i] is not None for k in req)" in fn)
+ok("and what is left is sorted surface first",
+   "key=lambda i: -prof[\"p\"][i]" in fn)
+ok("a balloon is fetched as a balloon, not as a model",
+   "get_obs_data" in fn and "get_model_data" in fn)
+ok("and every source names a model, or None for the balloon",
+   set(svc.SPY_MODELS) == set(svc.SOURCES)
+   and svc.SPY_MODELS["obs"] is None, str(svc.SPY_MODELS))
+
+# Both are tried, so a Pi where SounderPy will not install still draws a
+# sounding rather than an error.
+order = ast.get_source_segment(svc_src, next(
+    n for n in svc_tree.body if getattr(n, "name", "") == "fetch_profile"))
+ok("SounderPy is tried first, NOAA second",
+   order.index("fetch_sounderpy") < order.index("fetch_noaa"))
+ok("and when both fail, both reasons are given",
+   'why.append' in order and '"  ".join(why)' in order)
+ok("Open-Meteo is gone", "open_meteo" not in svc_src.lower()
+   and "OM_LEVELS" not in svc_src)
 
 print("\n3. the cache is keyed by place, not by pixel")
 a = svc._cache_key("rap", 35.4012, -97.6033, None)
@@ -534,25 +498,29 @@ ok("the worker count can be changed without editing code",
 ok("nothing about this door writes anything",
    "do_PUT" in serve_src and "send_error(405)" in serve_src)
 
-print("\n14. install.sh does not try to install what will not build")
+print("\n14. install.sh installs both in the way that actually works")
 ins = open(os.path.join(PI, "install.sh"), encoding="utf-8").read()
-# Both were tried and both failed on a real Pi. SHARPpy pins a NumPy old
-# enough to need distutils.msvccompiler, which Python removed, so it cannot
-# build on 3.13 at all. SounderPy pulls in arm-pyart and cartopy, which are
-# long C and C++ source builds on ARM. Trying anyway costs ten minutes of
-# compiling, several hundred megabytes of build cache on a machine whose disk
-# has already run out once, and ends in the same two warnings.
-ok("SounderPy is not attempted", "install --quiet sounderpy" not in ins)
-ok("nor is SHARPpy", "install --quiet sharppy" not in ins)
-ok("but the reason is written down rather than just deleted",
+# The ordinary install failed on both, and neither failure was about the
+# package. SHARPpy pins a NumPy old enough to need distutils.msvccompiler,
+# which Python removed, so pip tries to BUILD that NumPy and dies before
+# SHARPpy is unpacked. SounderPy lists arm-pyart and cartopy, which are for
+# DRAWING soundings, and nothing on the Pi draws anything.
+ok("SounderPy is installed without its dependency list",
+   "--no-deps sounderpy" in ins)
+ok("and so is SHARPpy", "--no-deps sharppy" in ins)
+ok("the reason is written down, not just the flag",
    "distutils.msvccompiler" in ins and "arm-pyart" in ins)
-ok("and it says where the profiles come from instead",
-   "rucsoundings" in ins)
-ok("the module check no longer expects them",
-   '"sounderpy", "sharppy"' not in ins)
-# The optional path is still there for anyone who wants it.
-ok("SHARPpy is still used if somebody installs it by hand",
-   "installing it by hand" in ins and "sharppy" in svc_src)
+# --no-deps means the real runtime needs have to be named, or the package
+# unpacks and then fails the moment anything touches it.
+for m in ("xarray", "siphon", "cfgrib"):
+    ok(f"what it really needs is installed by name: {m}", m in ins)
+# Installed and importable are different questions under --no-deps.
+ok("and the import is tried rather than trusted",
+   "MISSING ({e.__class__.__name__}" in ins)
+ok("neither failure stops the install",
+   ins.count("warn \"SounderPy") == 1 and ins.count("warn \"SHARPpy") == 1)
+ok("and the fallback is named, so nothing is lost either way",
+   "text soundings answer instead" in ins)
 
 print("\n15. new code on disk means new code answering")
 # The bug this section exists for: gwcfc-serve was started with
