@@ -550,10 +550,15 @@ if [ -s "$HOME/.gwcfc-pinned-url" ]; then
   URL=$(tr -d '[:space:]' < "$HOME/.gwcfc-pinned-url")
   ok "permanent address, so nothing to look up"
 else
+  # Read by the one thing that knows how to read it, rather than by a grep
+  # that looks right. cloudflared writes "api.trycloudflare.com" into this
+  # same log while ASKING for a tunnel, so a pattern this shape plus `tail`
+  # returns Cloudflare's own website, which is exactly the bug that took
+  # every Pi-backed feature down while the Pi sat there healthy.
+  GETURL="import sys; sys.path.insert(0, '$REPO/pi'); import publish_url as p;"
+  GETURL="$GETURL f = p.candidates(); print(f[0] if f else '')"
   for _ in $(seq 1 20); do
-    # tail, not head: the log is appended to across restarts, so the last
-    # address is the live one and every earlier one is dead.
-    URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$HOME/tunnel.log" 2>/dev/null | tail -1 || true)
+    URL=$("$VENV/bin/python" -c "$GETURL" 2>/dev/null || true)
     [ -n "$URL" ] && break
     sleep 2
   done

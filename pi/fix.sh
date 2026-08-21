@@ -144,11 +144,13 @@ for t in gwcfc-models gwcfc-radar gwcfc-sat gwcfc-snd gwcfc-cyclones gwcfc-updat
 done
 
 step "5 of 5   Where things stand"
-# The tunnel needs a moment after a restart to be handed an address and for
-# the publisher to notice it. Asking immediately reports a failure that is
-# only impatience.
-note "waiting 20s for the tunnel to come up"
-sleep 20
+# The tunnel needs a moment after a restart: cloudflared has to be handed an
+# address, and then that name has to reach Cloudflare's edge before anything
+# can be fetched through it. For those few seconds the address is real,
+# correct, and does not work. --check waits on its own now, so this only
+# gives cloudflared time to print the thing at all.
+note "waiting for the tunnel to come up. This part takes about a minute."
+sleep 10
 if [ -x "$PY" ]; then
   "$PY" "$REPO/pi/publish_url.py" --check
 fi
