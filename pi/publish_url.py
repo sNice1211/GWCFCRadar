@@ -80,6 +80,19 @@ def log(m):
 # question is what kind of thing answered, not what it said.
 _PROBE_BYTES = 2048
 
+# Who we say we are, and it matters more than it looks.
+#
+# urllib introduces itself as "Python-urllib/3.11" unless told otherwise, and
+# Cloudflare treats a bare scripting agent very differently from a browser:
+# a burst of requests from one gets challenged or refused. diagnose.sh, which
+# uses curl, could read the tunnel perfectly while this file was being told
+# no, and the difference between those two was never the tunnel.
+_UA = "gwcfc-pi/1.0 (+https://ralphhtml.github.io/GWCFCRadar/)"
+
+# The last thing a probe saw, so a failure can be described rather than just
+# counted. Nothing depends on it; it exists to be printed.
+last_probe = ""
+
 
 def _cors_ok(headers):
     """Would a browser be allowed to read this answer?
@@ -113,17 +126,30 @@ def _probe(url, path, timeout):
     cannot reach your tunnel" and "nothing is listening at all" lives in
     exactly that distinction.
     """
+    global last_probe
+    # A cache buster, because something between here and the Pi does hold on
+    # to answers: diagnose.sh proves it by fetching the same file twice, once
+    # plain and once busted, and getting two different files. Without this, a
+    # single unlucky error could be handed back for as long as it was cached,
+    # and the address would read as dead long after it came back.
+    sep = "&" if "?" in path else "?"
+    full = f"{url.rstrip('/')}{path}{sep}_={int(time.time())}"
     try:
-        req = urllib.request.Request(url.rstrip("/") + path, method="GET")
+        req = urllib.request.Request(
+            full, method="GET",
+            headers={"User-Agent": _UA, "Cache-Control": "no-cache"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            last_probe = f"{path} -> HTTP {r.status}"
             return r.status, r.headers, r.read(_PROBE_BYTES)
     except urllib.error.HTTPError as e:
         try:
             body = e.read(_PROBE_BYTES)
         except Exception:
             body = b""
+        last_probe = f"{path} -> HTTP {e.code}"
         return e.code, e.headers, body
-    except Exception:
+    except Exception as e:
+        last_probe = f"{path} -> {e.__class__.__name__}: {e}"
         return None
 
 
@@ -229,10 +255,18 @@ def current_url(path=None, patience=0):
     deadline = time.monotonic() + max(0, patience)
     said = False
     seen_any = 0
+    first_pass = True
     while True:
         ordered = candidates(path)
         seen_any = max(seen_any, len(ordered))
-        for u in ordered:
+        # Every retired address gets one chance, and after that only the
+        # newest is asked again. Knocking on four dead addresses every five
+        # seconds is dozens of requests a minute at an edge that answers a
+        # burst from a script by refusing it, so the retries were making the
+        # very failure they were retrying.
+        ask = ordered if first_pass else ordered[:1]
+        first_pass = False
+        for u in ask:
             if answers(u):
                 if ordered and u != ordered[0]:
                     log(f"the newest address in the log is dead, using {u}")
@@ -250,6 +284,7 @@ def current_url(path=None, patience=0):
     else:
         log(f"none of the {seen_any} newest addresses in the log answer, "
             "so nothing is published")
+        log(f"  the last thing tried said: {last_probe or 'nothing at all'}")
     return None
 
 
@@ -462,22 +497,18 @@ def check(patience=45):
     # last address in it still reads as current, and this once said
     # "match: yes" about an address nothing answered. Agreeing with the
     # database means nothing unless the Pi is what is on the other end.
-    alive = answers(url, timeout=10)
+    # An address that came from the log has ALREADY been proved alive, two
+    # lines ago, by the only thing that can prove it. Asking a second time
+    # was not a check, it was another request at an edge that dislikes a
+    # burst of them, and when that second one was refused this printed "the
+    # tunnel is not actually running" straight over the top of its own
+    # evidence. A pinned address has had no such proof and still needs one.
+    alive = True if proven else answers(url, timeout=10)
     if alive:
         print("  answers        : yes, the tunnel is alive")
-    elif proven:
-        # This exact contradiction is itself the finding, and printing the
-        # flat "not actually running" over the top of it threw the finding
-        # away. The address answered seconds ago, on the line above, and does
-        # not now. Something is moving underneath, and that is a different
-        # fault with a different fix from an address that never worked.
-        print("  answers        : it answered a moment ago and does not now.")
-        print("    The address is not steady. Either cloudflared keeps")
-        print("    restarting, which rolls a new address every time, or the")
-        print("    connection to Cloudflare is dropping and coming back.")
     else:
         print("  answers        : NO. Nothing that looks like this Pi answers")
-        print("    there, so the tunnel is not actually running.")
+        print(f"    there. The last try said: {last_probe or 'nothing at all'}")
         print("    FIX: systemctl --user restart gwcfc-serve gwcfc-tunnel "
               "gwcfc-publish")
     try:
@@ -502,7 +533,43 @@ def check(patience=45):
         return 1
 
 
+def why():
+    """What every address in the log actually returns, one line each.
+
+    check() answers yes or no, and a no has been wrong twice now for reasons
+    a yes-or-no cannot express: an edge that refuses a burst of requests, a
+    cached error, a name that is not routable yet. All three read as "dead".
+    This asks each door of each address once, slowly, and prints what came
+    back, so the next argument about it is settled by evidence.
+    """
+    found = candidates()
+    if not found:
+        print(f"no tunnel address in {TUNNEL_LOG} at all")
+        return 1
+    print(f"{len(found)} address(es) in the log, newest first:")
+    for u in found:
+        print(f"\n  {u}")
+        for path in ("/", "/models/latest.json"):
+            got = _probe(u, path, 10)
+            if not got:
+                print(f"    {path:22} {last_probe.split(' -> ', 1)[-1]}")
+                continue
+            status, headers, body = got
+            cors = (headers.get("Access-Control-Allow-Origin") or "").strip()
+            via = " via Cloudflare" if headers.get("cf-ray") else ""
+            peek = body.decode(errors="ignore").strip().replace("\n", " ")[:52]
+            print(f"    {path:22} HTTP {status}{via}"
+                  f"{'  browser-readable' if cors == '*' else ''}  {peek!r}")
+            time.sleep(1)          # gently, for the same reason as above
+        print(f"    {'verdict':22} "
+              + ("this is the Pi" if answers(u, timeout=10)
+                 else "not recognised as the Pi"))
+    return 0
+
+
 def main():
+    if "--why" in sys.argv:
+        return why()
     if "--check" in sys.argv:
         return check()
     # A named tunnel never changes, so its address is given once rather than
