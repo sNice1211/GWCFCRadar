@@ -28,6 +28,7 @@ Pi is the answer to the first half of that, which is why it exists.
 
 import ast
 import json
+import re
 import os
 import sys
 import threading
@@ -453,6 +454,30 @@ ok("the module check no longer expects them",
 # The optional path is still there for anyone who wants it.
 ok("SHARPpy is still used if somebody installs it by hand",
    "installing it by hand" in ins and "sharppy" in svc_src)
+
+print("\n15. new code on disk means new code answering")
+# The bug this section exists for: gwcfc-serve was started with
+# "enable --now", and on a service that is ALREADY RUNNING that does nothing
+# at all. serve.py kept running whatever file it was started with for as long
+# as the Pi stayed up. Pulling new code and running the installer looked like
+# a successful update and changed nothing, so the /sounding door was in the
+# file on disk and not in the process answering requests. It looks exactly
+# like a broken feature and is not one.
+sup = open(os.path.join(PI, "selfupdate.sh"), encoding="utf-8").read()
+ok("the installer restarts serve rather than only enabling it",
+   "systemctl --user restart gwcfc-serve.service" in ins)
+ok("and enables it too, so it survives a reboot",
+   "systemctl --user enable  gwcfc-serve.service" in ins)
+ok("the reason is written down, so it is not undone by someone tidying",
+   "ALREADY RUNNING" in ins)
+# The second half: serve.py imports sounding_service, so a change to the
+# service is a change to the running server even though serve.py did not move.
+ok("the self updater restarts serve when serve.py changes",
+   "serve" in sup and "restart gwcfc-serve" in sup)
+ok("and when the sounding service it imports changes",
+   "sounding_service" in sup and re.search(
+       r"grep -qE '\^pi/\(serve\|sounding_service\)", sup) is not None,
+   "not watched")
 
 print()
 if failed:
