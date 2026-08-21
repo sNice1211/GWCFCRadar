@@ -762,6 +762,123 @@ console.log('\n13b. and the picker can force either one');
   ok('the choice is remembered for next time', r.saved === 'auto', String(r.saved));
 }
 
+console.log('\n13c. and there is a source that needs no Pi at all');
+{
+  const r = await page.evaluate(async () => {
+    const el = document.getElementById('snd-panel');
+    // A plausible Open-Meteo answer: nineteen pressure levels plus surface,
+    // humidity rather than dew point, wind as speed and direction.
+    const LV = [1000, 975, 950, 925, 900, 850, 800, 700, 600, 500,
+                400, 300, 250, 200, 150, 100, 70, 50, 30];
+    const hourly = { time: [] };
+    for (let h = 0; h < 4; h++) {
+      const t = new Date(Date.now() + (h - 1) * 3600e3);
+      t.setUTCMinutes(0, 0, 0);
+      hourly.time.push(t.toISOString().slice(0, 16));
+    }
+    const put = (name, val) => { hourly[name] = hourly.time.map(() => val); };
+    // A lapse rate that is real but not saturated, so CAPE is finite.
+    LV.forEach((lv, i) => {
+      put(`temperature_${lv}hPa`, 30 - i * 4.5);
+      put(`relative_humidity_${lv}hPa`, Math.max(12, 80 - i * 4));
+      put(`wind_speed_${lv}hPa`, 10 + i * 3);
+      put(`wind_direction_${lv}hPa`, 180 + i * 5);
+      put(`geopotential_height_${lv}hPa`, 100 + i * 900);
+    });
+    put('temperature_2m', 31); put('dew_point_2m', 22);
+    put('surface_pressure', 985);
+    put('wind_speed_10m', 8); put('wind_direction_10m', 170);
+
+    let askedUrl = null;
+    const realFetch = window.fetch;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes('open-meteo')) {
+        askedUrl = u;
+        return new Response(JSON.stringify({ elevation: 350, hourly }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      // Everything Pi shaped is dead, which is the whole point of this test.
+      if (u.includes('/sounding?')) return new Response('gone', { status: 500 });
+      return realFetch(url, opts);
+    };
+    window._sndProfile = async () => { throw new Error('this Pi has no soundings'); };
+    _hdBase = 'https://pi.example';
+    _sndSource = 'auto'; _sndPiDown = false;
+
+    await openSounding(35.4, -97.6);
+    await new Promise(res => setTimeout(res, 400));
+    const auto = {
+      url: askedUrl,
+      note: el.querySelector('.snd-note').innerHTML,
+      tables: el.querySelectorAll('table').length,
+      rows: (el.querySelector('.snd-note').textContent.match(/(\d+) standard/) || [])[1],
+    };
+
+    // And when it is chosen outright.
+    _sndSource = 'web'; askedUrl = null;
+    await openSounding(35.4, -97.6);
+    await new Promise(res => setTimeout(res, 400));
+    const forced = { url: askedUrl, tables: el.querySelectorAll('table').length };
+
+    // The profile itself, so the physics can be checked rather than the HTML.
+    const prof = await _sndOpenMeteo(35.4, -97.6, 0, 'auto');
+    window.fetch = realFetch;
+    return { auto, forced, prof, ids: SND_SOURCES.map(s => s.id) };
+  });
+
+  ok('the web source is offered in the picker', r.ids.includes('web'),
+     r.ids.join(','));
+  ok('Auto reaches it when both Pi paths are dead', !!r.auto.url,
+     String(r.auto.url).slice(0, 60));
+  ok('and draws a real sounding rather than an error', r.auto.tables === 4,
+     String(r.auto.tables));
+  ok('saying plainly that it fell that far', /web source/.test(r.auto.note),
+     r.auto.note.slice(0, 140));
+  ok('choosing it outright also works', !!r.forced.url && r.forced.tables === 4,
+     `${!!r.forced.url}, ${r.forced.tables}`);
+  // The request has to actually ask for what the panel needs.
+  ok('it asks for wind in knots, which is what the panel reads',
+     /wind_speed_unit=kn/.test(r.auto.url));
+  ok('and for the geopotential heights rather than guessing them',
+     /geopotential_height_500hPa/.test(r.auto.url));
+
+  const L = r.prof.levels;
+  ok('the profile has the standard levels plus the surface', L.length >= 15,
+     String(L.length));
+  ok('it runs from the ground upward', L[0].p > L[L.length - 1].p,
+     `${L[0].p} -> ${L[L.length - 1].p}`);
+  // Pressure levels below the ground are not levels of this sounding, and a
+  // duplicate surface would make a zero depth layer that shear divides by.
+  const dupes = L.filter((x, i) => i && Math.abs(x.p - L[i - 1].p) < 0.5);
+  ok('with no level repeated at the surface pressure', dupes.length === 0,
+     JSON.stringify(dupes.slice(0, 2)));
+  ok('and nothing underground', L.every(x => x.p <= L[0].p),
+     String(L.filter(x => x.p > L[0].p).length));
+  // Dew point is derived from humidity, so it must be a real number and it
+  // must never exceed the temperature, which is what a bad Magnus does.
+  const wet = L.filter(x => x.td != null);
+  ok('dew point is derived for every level that had humidity', wet.length >= 10,
+     String(wet.length));
+  ok('and is never above the temperature',
+     wet.every(x => x.td <= x.t + 0.01),
+     JSON.stringify(wet.filter(x => x.td > x.t + 0.01).slice(0, 2)));
+  // The wind convention is the one thing here that is silently wrong-able: a
+  // wind FROM 180 (a southerly) blows toward the north, so v must be
+  // positive. Getting the sign wrong flips every hodograph and every
+  // helicity value while still drawing a normal looking chart.
+  const sfc = L[0];
+  ok('a southerly wind gives a northward v, as the convention requires',
+     sfc.v > 0 && Math.abs(sfc.u) < Math.abs(sfc.v),
+     `u=${sfc.u.toFixed(1)} v=${sfc.v.toFixed(1)}`);
+  ok('and the speed survives the conversion',
+     Math.abs(Math.hypot(sfc.u, sfc.v) - 8) < 0.1,
+     String(Math.hypot(sfc.u, sfc.v).toFixed(2)));
+  ok('it is labelled as not having come from the Pi',
+     r.prof.via === 'openmeteo' && r.prof.engine === 'browser',
+     `${r.prof.via}, ${r.prof.engine}`);
+}
+
 console.log('\n14. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));

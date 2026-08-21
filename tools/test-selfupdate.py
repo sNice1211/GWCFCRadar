@@ -187,6 +187,42 @@ try:
     # not update. This is the check that it is still wired up.
     ok("the long running server is still restarted when its code changes",
        "gwcfc-serve.service" in src and "sounding_service" in src)
+
+    print("\n6. a half finished pip install heals itself")
+    # pip losing its connection to PyPI leaves the venv missing something and
+    # no commit is coming to trigger a retry. On a machine nobody can log in
+    # to, that is permanent, and it is how the sounding libraries went absent.
+    ok("the sounding libraries are installed here, not only by install.sh",
+       "sounderpy" in src and "sharppy" in src)
+    ok("with --no-deps, since both list dependencies they do not need",
+       "--no-deps" in src)
+    ok("and what they really use is installed by name",
+       all(m in src for m in ("xarray", "siphon", "cfgrib", "netCDF4")))
+    ok("a failed install says it will try again rather than giving up",
+       "will try again next time" in src)
+    # The check has to run on a timer of its own, or it only ever happens
+    # when a commit lands, which is the one moment it is least needed.
+    ok("the check does not depend on a commit having landed",
+       "-mmin +30" in src and "STAMP" in src)
+    ok("but not every minute, because importing these is slow on a Pi",
+       "+30" in src)
+    # And the stamp must not live in the repository: an untracked file there
+    # is exactly what the recovery above refuses to reset over, so it would
+    # strand the Pi with the very file meant to keep it healthy.
+    ok("the stamp file lives outside the repository",
+       'STAMP="$HOME/' in src and 'STAMP="$REPO/' not in src)
+
+    print("\n7. and the timed check does not fake an update")
+    # Running the dependency check on a quiet tick must not make the script
+    # claim it updated anything, nor restart the server for a diff that is
+    # empty.
+    open(os.path.join(w, "stampless"), "w").write("")
+    git(pibox, "reset", "-q", "--hard", "origin/main")
+    out = run_update(pibox)
+    ok("a run with nothing new says nothing about updating",
+       "updated" not in out, out.strip()[:160])
+    ok("and does not restart the server",
+       "restarted serve" not in out, out.strip()[:160])
 finally:
     shutil.rmtree(w, ignore_errors=True)
 
