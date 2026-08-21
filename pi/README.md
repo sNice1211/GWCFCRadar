@@ -53,6 +53,27 @@ one never holds up the others.
 
     systemctl --user list-timers 'gwcfc-*'
 
+## When something is wrong
+
+Two scripts, and the difference between them is whether they touch anything.
+
+    cd ~/GWCFCRadar; git pull; bash pi/fix.sh
+
+`fix.sh` runs every repair, in the order that matters: newest code first
+(because every other fix ships inside it), then the missing packages, then
+the restarts, then it says where things stand. It installs and restarts, and
+it deletes nothing. On its first run it leaves two shortcuts behind, so after
+that the whole thing is `gwfix`, and `gwdoc` to look without changing
+anything.
+
+    bash ~/GWCFCRadar/pi/doctor.sh
+
+`doctor.sh` only looks. It walks every feature's chain - packages installed,
+timer registered, timer firing, files written, files served - and for each
+break it prints the exact command that repairs it. It reads the last error
+lines out of the journal too, so an empty feature says why it is empty rather
+than only that it is.
+
 ## When the site cannot read the Pi
 
     bash ~/GWCFCRadar/pi/diagnose.sh
