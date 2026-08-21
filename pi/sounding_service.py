@@ -524,9 +524,31 @@ def sharppy_params(prof):
         u = np.asarray(p["u"], dtype=float)
         v = np.asarray(p["v"], dtype=float)
         wdir, wspd = utils.comp2vec(u, v)
+        # The date and latitude are not decoration. SHARPpy's convective
+        # profile works out sun position for its own diagnostics and dies
+        # with "'NoneType' object has no attribute 'strftime'" when no date
+        # is given - which meant every parameter request since this door
+        # opened came back as an error, and the browser quietly did its own
+        # arithmetic instead. The panel looked fine, and the entire point of
+        # this function never ran once. Latitude feeds the left/right mover
+        # climatology, so it is passed too rather than defaulted silently.
+        try:
+            when = datetime.strptime(str(prof.get("valid", "")),
+                                     "%Y-%m-%dT%H:%M%z").replace(tzinfo=None)
+        except (ValueError, TypeError):
+            try:
+                when = datetime.strptime(str(prof.get("valid", "")),
+                                         "%Y-%m-%dT%H:%MZ")
+            except (ValueError, TypeError):
+                when = datetime.now(timezone.utc).replace(tzinfo=None)
+        try:
+            lat = float(prof.get("lat"))
+        except (TypeError, ValueError):
+            lat = 35.0
         pro = sp_profile.create_profile(profile="convective", pres=pres,
                                         hght=hght, tmpc=tmpc, dwpc=dwpc,
-                                        wdir=wdir, wspd=wspd)
+                                        wdir=wdir, wspd=wspd,
+                                        date=when, latitude=lat)
     except Exception as e:
         return {"error": f"SHARPpy could not build the profile: {e}"}
 
@@ -574,18 +596,28 @@ def sharppy_params(prof):
     except Exception:
         pass
 
-    try:
-        out["composite"] = {
-            "stp_fixed": num(pro.stp_fixed), "stp_cin": num(pro.stp_cin),
-            "scp": num(pro.right_scp), "ship": num(pro.ship),
-            "sherb": num(pro.sherb), "dcape": num(pro.dcape),
-            "pwat": num(pro.pwat), "k_index": num(pro.k_idx),
-            "lapse03": num(pro.lapserate_3km),
-            "lapse36": num(pro.lapserate_3_6km),
-            "eil": [num(pro.ebottom), num(pro.etop)],
-        }
-    except Exception:
-        pass
+    # One at a time, because SHARPpy renames things between versions: this
+    # build has no `sherb` at all, and one AttributeError inside a single
+    # shared try meant the ENTIRE composite table vanished - PWAT, STP, SCP
+    # and DCAPE all gone because one index was spelled differently. Each key
+    # now stands or falls alone, with the known alternate spellings tried.
+    def attr(*names):
+        for nm in names:
+            try:
+                return num(getattr(pro, nm))
+            except Exception:
+                continue
+        return None
+
+    out["composite"] = {
+        "stp_fixed": attr("stp_fixed"), "stp_cin": attr("stp_cin"),
+        "scp": attr("right_scp", "scp"), "ship": attr("ship"),
+        "sherb": attr("sherb", "sherbe"), "dcape": attr("dcape"),
+        "pwat": attr("pwat"), "k_index": attr("k_idx"),
+        "lapse03": attr("lapserate_3km"),
+        "lapse36": attr("lapserate_3_6km"),
+        "eil": [attr("ebottom"), attr("etop")],
+    }
 
     out["engine"] = "SHARPpy"
     return out

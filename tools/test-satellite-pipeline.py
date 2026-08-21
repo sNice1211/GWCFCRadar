@@ -245,6 +245,26 @@ ok("every post has at least one bucket and no duplicates",
        for s in SATS.values()),
    str({k: v["buckets"] for k, v in SATS.items()}))
 
+print("\n4c. the page and the pipeline agree on where the files live")
+# The pipeline writes to ~/wxdata/satellite/<sat>/<sector>/, serve.py serves
+# ~/wxdata as its root, and the page fetches /satellite/<sat>/<sector>/
+# manifest.json. Three files, one contract, and nothing type-checks it - so
+# a rename in any one of them silently turns into "the Pi did not answer".
+html = open(os.path.join(os.path.dirname(SRC), "..", "index.html"),
+            encoding="utf-8").read()
+ok("the pipeline writes under wxdata/satellite",
+   'os.path.expanduser("~/wxdata/satellite")' in src)
+ok("the manifest is named manifest.json, per sector",
+   'os.path.join(sector_dir, "manifest.json")' in src)
+serve = open(os.path.join(os.path.dirname(SRC), "serve.py"),
+             encoding="utf-8").read()
+ok("serve.py serves wxdata as its root, so /satellite resolves",
+   'os.path.expanduser("~/wxdata")' in serve)
+ok("and the page asks for exactly that path",
+   "/satellite/${sat}/${sector}/manifest.json" in html)
+ok("with the frames read from the products the manifest lists",
+   "man.products" in html)
+
 print("\n5. a filename stamp is the instant it says it is")
 ns2 = funcs("_stamp_utc", "_sun_elevation", "_stretch")
 ok("day 232 of 2026 at 12:01 is the twentieth of August",

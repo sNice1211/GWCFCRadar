@@ -3207,6 +3207,18 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
    be readable without expanding the panel. */
 .snd-fell { color: #ffc44d; opacity: 0.95; }
 #snd-panel .snd-note:has(.snd-fell) { display: block; }
+/* The image the Pi rendered: the full SHARPpy layout as one PNG. Shown
+   whenever a prebuilt site sounding is what answered, at panel width, and a
+   click opens the file itself full size. */
+.snd-pimg { padding: 0 10px 10px; }
+.snd-pimg:empty { display: none; }
+.snd-pimg-head {
+  font-family: var(--mono); font-size: 9.5px; opacity: 0.6; margin: 2px 0 5px;
+}
+.snd-pimg img {
+  width: 100%; border-radius: 9px; cursor: zoom-in; display: block;
+  border: 1px solid rgba(255,255,255,0.09);
+}
 .snd-err {
   padding: 12px 10px; font-family: var(--mono); font-size: 10.5px;
   color: #ffb4a2; line-height: 1.5;
@@ -13558,6 +13570,11 @@ const SND_SOURCES = [
   { id: 'hrrr',   pi: 'hrrr',     label: 'HRRR' },
   { id: 'nam',    pi: 'nam',      label: 'NAM' },
   { id: 'gfs',    pi: 'gfs',      label: 'GFS' },
+  // The images the Pi renders itself: SounderPy's full profile, SHARPpy's
+  // parameters, drawn into a PNG at each upper-air site once an hour. Static
+  // files, so they survive an old serve.py that has never heard of the
+  // /sounding door.
+  { id: 'pisite', pi: null,       label: 'Pi site images (SounderPy)' },
   { id: 'levels', pi: null,       label: 'Pi model levels' },
   // The one that works with no Pi at all, and the reason the panel can
   // always draw something. Last in the list because it is the last resort.
@@ -13602,6 +13619,82 @@ function _sndPixelFor(man, lat, lon) {
     x: Math.min(nx - 1, Math.max(0, Math.round((lon - w) / (e - w) * (nx - 1)))),
     y: Math.min(ny - 1, Math.max(0, Math.round((n - lat) / (n - s) * (ny - 1)))),
   };
+}
+
+// ── The soundings the Pi has already rendered ──────────────────────────────
+//
+// sounding_pipeline.py walks the real upper-air network once an hour:
+// SounderPy fetches the full RAP profile at each site, SHARPpy computes the
+// parameter suite, and the whole thing is drawn into a PNG on the Pi. What
+// lands here is static files - a manifest, a JSON per site per hour in
+// exactly the shape the /sounding door answers with, and the finished image.
+//
+// Static files are the point. The /sounding door needs serve.py to be
+// current and the libraries importable at the moment of the click; a file
+// only needs to have been written once. So this is the second thing Auto
+// tries, after the live door and before everything else.
+let _sndSitesMan = null, _sndSitesAt = 0;
+
+async function _sndSitesManifest() {
+  if (_sndSitesMan && Date.now() - _sndSitesAt < 60000) return _sndSitesMan;
+  const base = (typeof _hdBase !== 'undefined' && _hdBase)
+    || (typeof _hdResolveBase === 'function' ? await _hdResolveBase() : null);
+  if (!base) throw new Error('no address set for the Pi');
+  const man = await fetch(`${base}/soundings/manifest.json?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!man || !man.sites || !Object.keys(man.sites).length) {
+    throw new Error('the Pi has not built any site soundings yet');
+  }
+  _sndSitesMan = man; _sndSitesAt = Date.now();
+  return man;
+}
+
+// The nearest upper-air site, or null when the click is too far from any of
+// them for its air to be an honest answer. 350 km is about the network's own
+// spacing: inside it you are in the site's air mass more often than not.
+function _sndNearestSite(man, lat, lon) {
+  let best = null;
+  for (const [id, s] of Object.entries(man.sites || {})) {
+    const dLat = (s.lat - lat) * 111.32;
+    const dLon = (s.lon - lon) * 111.32 * Math.cos(lat * Math.PI / 180);
+    const km = Math.hypot(dLat, dLon);
+    if (!best || km < best.km) best = { id, s, km };
+  }
+  if (!best || best.km > 350) return null;
+  return best;
+}
+
+async function _sndPrebuilt(lat, lon, hoursBack) {
+  const man = await _sndSitesManifest();
+  const near = _sndNearestSite(man, lat, lon);
+  if (!near) {
+    throw new Error('no prebuilt sounding site within 350 km of this point');
+  }
+  // The frame whose valid time is closest to the hour asked for. The stamp
+  // folders ARE the valid times, which is what makes the history scrubbable.
+  const want = Date.now() - (hoursBack || 0) * 3600e3;
+  let dir = near.s.dir, bestGap = Infinity;
+  for (const f of near.s.frames || []) {
+    const t = Date.parse(f.slice(0, 4) + '-' + f.slice(4, 6) + '-'
+      + f.slice(6, 8) + 'T' + f.slice(9, 11) + ':' + f.slice(11, 13) + ':00Z');
+    const gap = Math.abs(t - want);
+    if (isFinite(t) && gap < bestGap) { bestGap = gap; dir = `${near.id}/${f}`; }
+  }
+  const base = _hdBase;
+  const body = await fetch(`${base}/soundings/${dir}/sounding.json?t=${Date.now()}`,
+                           { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!body || !body.profile) {
+    throw new Error(`the ${near.id} sounding file could not be read`);
+  }
+  const prof = _sndFromPi(body);
+  prof.via = 'pisite';
+  prof.png = `${base}/soundings/${dir}/skewt.png`;
+  prof.siteId = body.site_id || near.id;
+  prof.siteName = body.site_name || near.s.name || near.id;
+  prof.distanceKm = Math.round(near.km);
+  return prof;
 }
 
 // Which run the cached manifest belongs to, so a rollover can be noticed.
@@ -14756,7 +14849,8 @@ async function openSounding(lat, lon) {
       </div>
       <div class="snd-quick"></div>
       <div class="snd-tables"></div>
-      <div class="snd-note"></div>`;
+      <div class="snd-note"></div>
+      <div class="snd-pimg"></div>`;
     document.body.appendChild(el);
     el.querySelector('.snd-x').onclick = () => { el.classList.remove('open'); };
     // Expanding shows the hodograph and the full tables, which are hidden at
@@ -14857,6 +14951,9 @@ async function _sndFetchFor(el, lat, lon, hr) {
     return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'auto'),
              fellBack: null };
   }
+  if (pick.id === 'pisite') {          // explicitly the Pi's rendered sites
+    return { prof: await _sndPrebuilt(lat, lon, hr || 0), fellBack: null };
+  }
   if (pick.pi) {                       // an explicit SounderPy source
     // Falls back rather than dead ending. Picking "HRRR" used to mean "HRRR
     // from the Pi or nothing at all", so on a Pi that cannot answer, choosing
@@ -14898,6 +14995,10 @@ async function _sndFetchFor(el, lat, lon, hr) {
     return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'auto'),
              fellBack: el._autoWhy || null };
   }
+  if (el && el._autoVia === 'pisite') {
+    return { prof: await _sndPrebuilt(lat, lon, hr || 0),
+             fellBack: el._autoWhy || null };
+  }
 
   let why = null;
   if (!_sndPiDown) {
@@ -14907,6 +15008,19 @@ async function _sndFetchFor(el, lat, lon, hr) {
     } catch (e) { why = String((e && e.message) || e); }
   }
   why = why || 'this Pi does not have the sounding service';
+
+  // Second: the soundings the Pi has already rendered. Same SounderPy fetch
+  // and SHARPpy analysis as the door, done ahead of time and saved as plain
+  // files - so they answer even when the door itself cannot, which is
+  // exactly when they are needed. The trade is the point moves to the
+  // nearest upper-air site, and the note says how far that was.
+  try {
+    const prof = await _sndPrebuilt(lat, lon, hr || 0);
+    if (el) { el._autoVia = 'pisite'; el._autoWhy = why; }
+    return { prof, fellBack: why };
+  } catch (e) {
+    why += ' Then the site images: ' + String((e && e.message) || e);
+  }
 
   // Then the Pi's level images, then the web. Auto used to stop at the level
   // images, so a Pi that was unreachable, or that had not built a sounding
@@ -14949,7 +15063,10 @@ async function _sndRefresh(el, hr) {
     if (!d) throw new Error('not enough levels came back to build a sounding');
     if (prof.params) d = _sndApplyParams(d, prof.params);
     el._snd = d; el._prof = prof;
-    el._piMode = prof.via === 'pi';
+    // The site images share the Pi door's slider meaning: hours back through
+    // real analyses, not forecast steps.
+    el._piMode = prof.via === 'pi' || prof.via === 'pisite'
+      || prof.via === 'openmeteo';
 
     const sl = el.querySelector('.snd-hour');
     if (el._piMode) {
@@ -14970,12 +15087,28 @@ async function _sndRefresh(el, hr) {
     el.querySelector('.snd-quick').innerHTML = _sndQuick(d);
     el.querySelector('.snd-tables').innerHTML = _sndTables(d);
     note.innerHTML = _sndNote(d, prof, fellBack);
+    // The image the Pi rendered, when there is one: the full SHARPpy layout,
+    // drawn by the pipeline. Clicking it opens the PNG itself full size.
+    const pimg = el.querySelector('.snd-pimg');
+    if (pimg) {
+      if (prof.png) {
+        pimg.innerHTML =
+          `<div class="snd-pimg-head">The Pi's rendered image · `
+          + `${prof.siteName || ''} (${prof.siteId || ''})</div>`
+          + `<img src="${prof.png}" alt="Skew-T rendered on the Pi" `
+          + `loading="lazy" onclick="window.open(this.src, '_blank')">`;
+      } else {
+        pimg.innerHTML = '';
+      }
+    }
   } catch (e) {
     if (seq !== el._seq) return;
     el.querySelector('.snd-quick').innerHTML = '';
     el.querySelector('.snd-tables').innerHTML =
       `<div class="snd-err">${_sndWhy(e)}</div>`;
     note.textContent = '';
+    const pimg = el.querySelector('.snd-pimg');
+    if (pimg) pimg.innerHTML = '';
   }
 }
 
@@ -14997,6 +15130,17 @@ function _sndNote(d, prof, fellBack) {
         + 'images carry');
     if (prof.cached) bits.push('served from the Pi\'s cache');
     bits.push('heights are the model\'s own geopotential, above ground level');
+  } else if (prof.via === 'pisite') {
+    bits.push(`${esc(prof.label || prof.source)} at ${esc(prof.valid || '')}`);
+    bits.push(`rendered on the Pi for ${esc(prof.siteName || prof.siteId || 'the nearest site')}`
+      + (prof.distanceKm != null
+         ? `, ${esc(prof.distanceKm)} km from the point you clicked` : ''));
+    bits.push(`${d.rows.length} levels via SounderPy`);
+    bits.push(d.engine === 'SHARPpy'
+      ? 'parameters computed by SHARPpy on the Pi, the same code the Storm '
+        + 'Prediction Center\'s tooling uses'
+      : 'parameters worked out in the browser from every level the Pi saved');
+    bits.push('the image below is the Pi\'s own drawing of this exact data');
   } else if (prof.via === 'openmeteo') {
     bits.push(`${esc(prof.label || 'Open-Meteo')} at ${esc(prof.valid || 'the last hour')}`);
     bits.push(`${d.rows.length} standard pressure levels, fetched by the `
@@ -40233,7 +40377,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "When something needs the Pi and cannot reach it, the page now says which of three things went wrong instead of always guessing that the Pi is off. Two of them are not the Pi being off: an http address behind an https page is blocked by the browser before the request is even sent, and a home network address works from home and nowhere else. The Pi also refuses to publish either kind now. Satellite says the ABI bands do not need the Pi, and soundings point at the web source.";
+const APP_LATEST_UPDATE = "Soundings are now rendered as real images on the Pi, exactly the way radar and model pictures are: SounderPy fetches the full RAP profile at each of 68 upper air sites every hour, SHARPpy computes the parameters, and the Pi draws the whole skew-T with hodograph and parameter panel into a PNG the panel shows. Also fixed: SHARPpy had been failing silently on every request since the door opened, because it was never given a date. Its numbers are real now.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

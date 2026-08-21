@@ -879,6 +879,122 @@ console.log('\n13c. and there is a source that needs no Pi at all');
      `${r.prof.via}, ${r.prof.engine}`);
 }
 
+console.log('\n13d. the soundings the Pi rendered as images');
+{
+  const r = await page.evaluate(async () => {
+    const el = document.getElementById('snd-panel');
+    // Two frames for the nearest site, an hour apart, stamped like the
+    // pipeline stamps them: by valid time.
+    const st = (hoursAgo) => {
+      const t = new Date(Date.now() - hoursAgo * 3600e3);
+      t.setUTCMinutes(0, 0, 0);
+      const p2 = n => String(n).padStart(2, '0');
+      return `${t.getUTCFullYear()}${p2(t.getUTCMonth() + 1)}${p2(t.getUTCDate())}`
+           + `_${p2(t.getUTCHours())}0000`;
+    };
+    const fNew = st(1), fOld = st(4);
+    const man = { updated: 'now', sites: {
+      OUN: { name: 'Norman OK', lat: 35.18, lon: -97.44,
+             dir: `OUN/${fNew}`, valid: 'x', frames: [fOld, fNew] },
+      FWD: { name: 'Fort Worth TX', lat: 32.83, lon: -97.30,
+             dir: `FWD/${fNew}`, valid: 'x', frames: [fNew] },
+    } };
+    const n = 40;
+    const body = (site, name) => ({
+      source: 'rap', label: 'RAP analysis', valid: '2026-08-21T02:00Z',
+      site: name, site_id: site, site_name: name, lat: 35.18, lon: -97.44,
+      engine: { fetch: 'sounderpy', params: 'SHARPpy' },
+      params: { sb: { cape: 2222, cin: -15, lcl: 900 },
+                wind: { srh1: 111, srh3: 222, esrh: 180, shear6: 45 } },
+      profile: {
+        p: Array.from({length: n}, (_, i) => 1000 - i * 20),
+        z: Array.from({length: n}, (_, i) => 100 + i * 180),
+        T: Array.from({length: n}, (_, i) => 25 - i),
+        Td: Array.from({length: n}, (_, i) => 18 - i * 1.4),
+        u: Array.from({length: n}, (_, i) => i * 0.8),
+        v: Array.from({length: n}, (_, i) => 5 + i * 0.5),
+      },
+    });
+
+    const asked = [];
+    const realFetch = window.fetch;
+    window.fetch = async (url) => {
+      const u = String(url);
+      asked.push(u);
+      if (u.includes('/sounding?')) return new Response('gone', { status: 500 });
+      if (u.includes('/soundings/manifest.json')) {
+        return new Response(JSON.stringify(man),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      const m = u.match(/\/soundings\/(\w+)\/([0-9_]+)\/sounding\.json/);
+      if (m) {
+        return new Response(JSON.stringify(body(m[1], man.sites[m[1]].name)),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return realFetch(url);
+    };
+    window._sndProfile = async () => { throw new Error('no level images'); };
+    _hdBase = 'https://pi.example';
+    _sndSource = 'auto'; _sndPiDown = false; _sndSitesMan = null;
+
+    // Click NEAR Norman: the nearest site must be OUN, and the distance real.
+    await openSounding(35.60, -97.20);
+    await new Promise(res => setTimeout(res, 400));
+    const auto = {
+      tables: el.querySelectorAll('table').length,
+      note: el.querySelector('.snd-note').innerHTML,
+      img: (el.querySelector('.snd-pimg img') || {}).src || '',
+      head: (el.querySelector('.snd-pimg-head') || {}).textContent || '',
+      piMode: !!el._piMode,
+    };
+
+    // Six hours back must pick the OLD frame, because the stamps are valid
+    // times and the slider walks them.
+    const profBack = await _sndPrebuilt(35.60, -97.20, 6);
+    // And a click in the middle of nowhere is refused rather than answered
+    // with air from half a country away.
+    let farErr = '';
+    try { await _sndPrebuilt(44.0, -110.0, 0); }
+    catch (e) { farErr = String(e.message || e); }
+
+    // Explicitly choosing the source works too.
+    _sndSource = 'pisite';
+    await openSounding(32.9, -97.25);
+    await new Promise(res => setTimeout(res, 400));
+    const forced = {
+      site: (el.querySelector('.snd-pimg-head') || {}).textContent || '',
+      tables: el.querySelectorAll('table').length,
+    };
+    window.fetch = realFetch;
+    _sndSource = 'auto'; _sndSitesMan = null;
+    return { auto, backPng: profBack.png, farErr, forced,
+             ids: SND_SOURCES.map(x => x.id), oldStamp: fOld };
+  });
+
+  ok('the picker offers the Pi site images', r.ids.includes('pisite'),
+     r.ids.join(','));
+  ok('Auto lands on them when the live door is dead', r.auto.tables === 4,
+     String(r.auto.tables));
+  ok('the nearest real site answered', /Norman OK/.test(r.auto.note),
+     r.auto.note.slice(0, 120));
+  ok('and the note says how far away that site is',
+     /\d+ km from the point/.test(r.auto.note), r.auto.note.slice(0, 200));
+  ok('the numbers on screen are SHARPpy\'s, from the saved file',
+     /SHARPpy/.test(r.auto.note));
+  ok('the Pi\'s rendered PNG is shown in the panel',
+     r.auto.img.includes('/soundings/OUN/') && r.auto.img.includes('skewt.png'),
+     r.auto.img);
+  ok('with the site named above it', /Norman OK/.test(r.auto.head), r.auto.head);
+  ok('the slider means hours back on this source', r.auto.piMode === true);
+  ok('and scrubbing back really picks the older frame',
+     r.backPng.includes(r.oldStamp), r.backPng);
+  ok('a click too far from any site is refused, not answered with far air',
+     /350 km/.test(r.farErr), r.farErr);
+  ok('choosing the source outright picks the nearest site to that click',
+     /Fort Worth/.test(r.forced.site) && r.forced.tables === 4,
+     r.forced.site);
+}
+
 console.log('\n14. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));
