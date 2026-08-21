@@ -12997,6 +12997,59 @@ async function _hdFetchPublished() {
   } catch (e) { return null; }
 }
 
+// Why the Pi is unreachable, told apart rather than lumped together.
+//
+// Everything that needs the Pi - the RGB composites, the model layers, the
+// soundings - reports the same sentence when a fetch fails: "the Pi did not
+// answer, it may be off or the tunnel may be down". That sentence is a guess,
+// and two of the three things it could mean are not "the Pi is off" at all.
+// They have completely different fixes and the browser already knows which
+// one it is, because it is the browser that refused.
+//
+//   - The page is https and the address is plain http. The browser blocks
+//     that outright as mixed content and never sends the request, so the Pi
+//     can be perfectly healthy and every feature still reports it dead.
+//   - The address is a private one on the home network. It works on that
+//     network and cannot work anywhere else, which is why this looks like
+//     "works at home, broken everywhere" rather than a fault.
+//   - The request really did go out and nothing came back.
+//
+// Only the third is the Pi being off, and only the third is worth going to
+// look at the Pi for.
+function _hdWhyUnreachable() {
+  const base = (typeof _hdBase !== 'undefined' && _hdBase) || null;
+  if (!base) {
+    return { code: 'none', text: 'The Pi has not been found yet: no address '
+      + 'has been published for it. Check it is switched on.' };
+  }
+  let u = null;
+  try { u = new URL(base); } catch (e) {
+    return { code: 'bad', text: `The published address (${base}) is not a `
+      + 'usable web address, so nothing can be fetched from it.' };
+  }
+  const pageSecure = (typeof location !== 'undefined'
+                      && location.protocol === 'https:');
+  if (pageSecure && u.protocol === 'http:') {
+    return { code: 'mixed', text: `The Pi's address is ${base}, which is `
+      + 'plain http, while this page is served over https. Browsers refuse '
+      + 'to load http from an https page, so the request is never sent and '
+      + 'the Pi looks dead however healthy it is. The Pi needs to publish an '
+      + 'https address: that is what the Cloudflare tunnel is for.' };
+  }
+  // Anything only routable inside a home network. Reachable from the sofa
+  // and from nowhere else, which is a confusing way to be broken.
+  if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.)/.test(u.hostname)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(u.hostname)
+      || /\.local$/.test(u.hostname)) {
+    return { code: 'lan', text: `The Pi's address (${base}) is a private one `
+      + 'on its own network, so it can only be reached from a device on that '
+      + 'same network. From anywhere else there is nothing to answer. The '
+      + 'tunnel is what gives it an address that works from everywhere.' };
+  }
+  return { code: 'down', text: 'The Pi did not answer. It may be off, or the '
+    + 'tunnel may be down.' };
+}
+
 // Re-point everything that depends on the Pi at a new address. Reuses
 // _hdSetBase for the model layer's own cache-clear and refresh, then redraws
 // the Pi radar if it is on, so a moved tunnel heals in place.
@@ -13427,7 +13480,7 @@ async function _hdEnable(want) {
   }
   if (!names.length) {
     _hdPanel.querySelector('.hd-run').innerHTML =
-      `<span class="hd-warn">the Pi did not answer. It may be off, or the address may have changed.</span>`;
+      `<span class="hd-warn">${_hdWhyUnreachable().text}</span>`;
     return;
   }
   if (want && _hdIndex.models[want]) {
@@ -15035,8 +15088,11 @@ function _sndWhy(e) {
          + 'sources are answering right now.';
   }
   if (/did not answer the sounding request/i.test(msg)) {
-    return '<b>The Pi did not answer.</b><br>It may be off, or the tunnel may '
-         + 'have dropped. Everything else Pi-backed will be failing too.';
+    const w = _hdWhyUnreachable();
+    return '<b>The Pi could not be reached.</b><br>' + w.text
+         + '<br>Everything else Pi-backed will be failing the same way. The '
+         + 'sounding itself can still be drawn: choose <b>Web (no Pi needed)</b> '
+         + 'in the source picker, which fetches the levels directly.';
   }
   if (/already working on other soundings/i.test(msg)) {
     return '<b>The Pi is busy.</b><br>It only builds two profiles at a time, '
@@ -19609,7 +19665,14 @@ function _goesPiWhy() {
   }
   const last = _goesPiLast;
   if (last && last.status === -1) {
-    return 'The Pi did not answer. It may be off, or the tunnel may be down.';
+    // The composites are the Pi's own work, so there is no other source for
+    // them. Worth saying, because the ABI bands in the same menu come from a
+    // public service and are unaffected: "satellite is broken" is usually
+    // "the composites are broken" and the bands are still there.
+    return _hdWhyUnreachable().text
+      + ' The RGB composites are built by the Pi itself, so there is nothing '
+      + 'else to fall back to. The ABI Bands in this same menu come from a '
+      + 'public service and do not need the Pi at all.';
   }
   if (last && last.status === 404) {
     return `The Pi has never built ${where}. Composites are a separate `
@@ -40170,7 +40233,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Soundings work again, and now work even when the Pi cannot answer. Every sounding path used to end at the Pi, so when its sounding service had nothing behind it there was no sounding at all. There is now a web source that needs no Pi, sitting last behind SounderPy and the Pi levels, so a healthy Pi is still preferred. Picking a named model like HRRR also used to mean that model or nothing; it falls back now instead of dead ending.";
+const APP_LATEST_UPDATE = "When something needs the Pi and cannot reach it, the page now says which of three things went wrong instead of always guessing that the Pi is off. Two of them are not the Pi being off: an http address behind an https page is blocked by the browser before the request is even sent, and a home network address works from home and nowhere else. The Pi also refuses to publish either kind now. Satellite says the ABI bands do not need the Pi, and soundings point at the web source.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
