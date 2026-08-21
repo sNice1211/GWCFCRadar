@@ -240,11 +240,34 @@ src = open(os.path.join(ROOT, "pi", "sounding_pipeline.py")).read()
 ok("there is an upfront dependency check", "def missing_deps" in src)
 ok("it names matplotlib, which draws the image", '"matplotlib"' in src)
 ok("and sounderpy, which fetches the profile", '"sounderpy"' in src)
+# The bug that stopped every sounding being built, and the third place it
+# appeared. A plain import of SounderPy fails on the Pi BY DESIGN: it goes in
+# with --no-deps, so cartopy and pyart are absent and it reaches for both
+# while loading, along with a county map layer MetPy only defines when
+# cartopy is real. sounding_service stands in for all three.
+#
+# So this reported "sounderpy is not installed" about a package that was
+# installed and working, printed the install command for it, and that install
+# succeeded and changed nothing, so it said the same thing the next time.
+# doctor.sh and install.sh were both fixed for this; this one was missed, and
+# it is the one that actually stops a picture being made.
+_deps = src.split("def missing_deps")[1].split("\ndef ")[0]
+ok("SounderPy is asked for the way the app asks, not with a plain import",
+   "import_sounderpy" in _deps, _deps[:200])
+ok("and is therefore NOT in the plain loop that imports by name",
+   '("sounderpy", "fetches the profile")' not in
+   _deps.split("for mod, why in")[1].split(":")[0] + _deps.split("))")[0],
+   _deps[:200])
+# --render-test draws a profile the file makes up, to tell "cannot draw"
+# apart from "cannot fetch". Requiring the fetching library first made it
+# answer the very question it exists to answer.
+_rt = src.split("if a.render_test")[1][:400]
+ok("the render test does not need the fetching library at all",
+   'd[0] != "sounderpy"' in _rt, _rt[:160])
 # SHARPpy is deliberately not required: without it the parameters go missing
 # and the sounding is still a sounding.
 ok("but not SHARPpy, because a sounding without parameters is still one",
-   '("sounderpy", "fetches the profile")' in src
-   and '"sharppy", "' not in src.split("def missing_deps")[1].split("def ")[0])
+   '"sharppy"' not in src.split("def missing_deps")[1].split("\ndef ")[0])
 # Parsed rather than sliced out of the text by character count: an earlier
 # version of this counted 900 characters from the check, and a longer error
 # message pushed the return past the window and failed a working guard.
@@ -257,12 +280,17 @@ _guard = _ast.get_source_segment(src, next(
     and "gone" in _ast.dump(n.test)))
 ok("a missing package stops the pass rather than failing every site",
    "return 1" in _guard, _guard[:120])
+# The commands live in one place now, said by both the render test and the
+# real pass, so neither can drift into printing an install that does not work.
+_cmds = src.split("def _install_cmds")[1].split("\ndef ")[0]
 ok("and the message carries the command that fixes it",
-   "pip install" in _guard, _guard[:120])
+   "pip install" in _cmds, _cmds[:160])
 # SounderPy has to go in with --no-deps: the plain command is the install
 # that already failed, so printing it would send somebody round the loop.
 ok("and SounderPy's command is the one that actually works",
-   "--no-deps sounderpy" in _guard, _guard[:200])
+   "--no-deps sounderpy" in _cmds, _cmds[:200])
+ok("said by one function, so the two callers cannot disagree",
+   src.count("_say_missing(gone)") >= 2)
 
 print("\n10. and the page can read why, without anyone logging in")
 ok("the pass writes a status file", "def write_status" in src)
