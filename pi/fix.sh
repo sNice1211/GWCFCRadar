@@ -184,6 +184,15 @@ if [ -x "$PY" ]; then
   "$PY" "$REPO/pi/publish_url.py" --check || {
     printf '\n'
     "$PY" "$REPO/pi/tunnel_doctor.py"
+    # "Name or service not known" is not a wrong address. It is a question
+    # nobody answered, and no amount of restarting the tunnel fixes a name
+    # server that does not reply. That needs root, so it is offered rather
+    # than done.
+    if ! getent hosts cloudflare.com >/dev/null 2>&1; then
+      printf '\n\033[1;33m   This Pi cannot look up names at all, which is'
+      printf ' underneath every\n   failure above. Fix that first:\033[0m\n'
+      printf '     sudo bash %s/pi/fixnet.sh\n' "$REPO"
+    fi
   }
 fi
 
