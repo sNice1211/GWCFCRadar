@@ -315,6 +315,29 @@ for unit in ("gwcfc-models", "gwcfc-radar", "gwcfc-sat", "gwcfc-snd"):
 # the browser and is a different fault.
 ok("a stale build is told apart from one that never ran",
    "builds have stopped" in doc and "nothing new in half an hour" in doc)
+# A timer keeps its next run in one of two places depending on how it was
+# written, and reading only one of them called four healthy timers broken.
+ok("a timer's next run is read from both places systemd keeps it",
+   "NextElapseUSecRealtime" in doc and "NextElapseUSecMonotonic" in doc)
+ok("and 'never' is told apart from 'scheduled since boot'",
+   "after boot" in doc)
+# Judging a machine by its output while it runs last week's code sends
+# everybody chasing bugs that were fixed days ago.
+ok("the checkout is compared with what is on GitHub", "ls-remote" in doc)
+ok("using the call that downloads nothing, so a flaky link still answers",
+   "downloads no objects" in doc)
+
+print("\n12. the self-updater survives a flaky link")
+upd = open(os.path.join(ROOT, "pi", "selfupdate.sh")).read()
+# One dropped pack used to mean the Pi ran old code until the next timer,
+# and a failed update is invisible: the fixes just look like they did not work.
+ok("a failed fetch is retried rather than abandoned",
+   "fetch attempt" in upd and "retrying in" in upd)
+ok("with a growing wait between tries", "DELAY * 2" in upd)
+ok("and it still gives up rather than looping forever",
+   "fetch failed four times" in upd)
+ok("git is told not to abandon a merely slow link",
+   "http.lowSpeedLimit" in upd)
 
 shutil.rmtree(HOMEDIR, ignore_errors=True)
 print()

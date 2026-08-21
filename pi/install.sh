@@ -159,7 +159,14 @@ for m in xarray siphon cfgrib netCDF4 bs4 ecape_parcel cdsapi; do
       warn "$m would not install; SounderPy may not fetch every source"
 done
 
-if ! "$VENV/bin/python" -c "import sounderpy" >/dev/null 2>&1; then
+# Asked with find_spec rather than a plain import, because a plain import of
+# SounderPy fails on this machine BY DESIGN: --no-deps left cartopy and pyart
+# out, and it reaches for both while loading. So `import sounderpy` says
+# "missing" about a package that is installed and working, and this would
+# reinstall it on every single run while reporting a fault that is not one.
+if ! "$VENV/bin/python" -c \
+     "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('sounderpy') else 1)" \
+     >/dev/null 2>&1; then
   "$VENV/bin/pip" install --quiet --no-deps sounderpy || \
     warn "SounderPy would not install; the text soundings answer instead"
 fi
@@ -172,13 +179,27 @@ fi
 # package can unpack cleanly and then fail the moment anything touches it,
 # which is a failure that otherwise only shows up when somebody clicks. So
 # the import is tried here rather than trusted.
-{ "$VENV/bin/python" - <<'SNDCHECK'
-for m in ("sounderpy", "sharppy"):
-    try:
-        __import__(m)
-        print(f"   {m:10} ok")
-    except Exception as e:
-        print(f"   {m:10} MISSING ({e.__class__.__name__}: {e})"[:110])
+#
+# SounderPy is asked for the way the app asks for it, through
+# sounding_service, which stands in for the two drawing libraries that are
+# deliberately absent. A plain __import__ here printed "sounderpy MISSING
+# (ModuleNotFoundError: No module named 'cartopy')" at the end of every
+# successful install, which is a frightening line about nothing at all.
+{ REPO="$REPO" "$VENV/bin/python" - <<'SNDCHECK'
+import os
+import sys
+sys.path.insert(0, os.path.join(os.environ["REPO"], "pi"))
+try:
+    import sounding_service as _s
+    _s.import_sounderpy()
+    print(f"   {'sounderpy':10} ok")
+except Exception as e:
+    print(f"   {'sounderpy':10} MISSING ({e.__class__.__name__}: {e})"[:110])
+try:
+    __import__("sharppy")
+    print(f"   {'sharppy':10} ok")
+except Exception as e:
+    print(f"   {'sharppy':10} MISSING ({e.__class__.__name__}: {e})"[:110])
 SNDCHECK
 } || true
 

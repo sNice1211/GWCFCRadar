@@ -23,9 +23,13 @@ them apart.
 """
 
 import ast
+import importlib.util
+import json
 import os
 import re
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PUB = os.path.join(ROOT, "pi", "publish_url.py")
@@ -137,6 +141,105 @@ ok("the composites say what still works without the Pi",
    "do not need the Pi at all" in html)
 ok("and the sounding points at the source that needs no Pi",
    "Web (no Pi needed)" in html)
+
+
+# The rest of this file runs the real functions against real little servers,
+# because the two bugs below were both "the code says the right words and
+# does the wrong thing", which reading the source cannot catch.
+_spec = importlib.util.spec_from_file_location("publish_url", PUB)
+pub = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(pub)
+
+
+class _Fake(BaseHTTPRequestHandler):
+    """One stand-in server; ROUTES says what it answers with."""
+    ROUTES = {}
+    CORS = True
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        code, body = self.ROUTES.get(self.path, (404, b"not found"))
+        self.send_response(code)
+        if self.CORS:
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def serve(routes, cors=True):
+    """A throwaway server on a spare port. Returns its address."""
+    cls = type("H", (_Fake,), {"ROUTES": routes, "CORS": cors})
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), cls)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    servers.append(srv)
+    return f"http://127.0.0.1:{srv.server_address[1]}"
+
+
+servers = []
+LISTING = b"<html><title>Directory listing for /</title><ul></ul></html>"
+LATEST = json.dumps({"run": "2026082112", "layers": []}).encode()
+CF_404 = b'{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}'
+
+print("\n7. the address is only accepted if the PI is what answers")
+# The bug this exists for: `answers` took any HTTP reply as proof, so when a
+# wrong address was published, the check meant to catch it confirmed it. The
+# site was told to fetch the Pi's files from Cloudflare's API and every
+# Pi-backed feature went dark while the Pi sat there perfectly healthy.
+pi = serve({"/models/latest.json": (200, LATEST), "/": (200, LISTING)})
+ok("a healthy Pi is accepted", pub.answers(pi, timeout=5) is True)
+
+fresh = serve({"/": (200, LISTING)})
+ok("so is a Pi that has not built a model yet, since the root still proves it",
+   pub.answers(fresh, timeout=5) is True)
+
+cf = serve({"/": (404, CF_404)})
+ok("Cloudflare's API host is REFUSED even though it answers politely",
+   pub.answers(cf, timeout=5) is False)
+
+other = serve({"/": (200, b"<html><body>somebody else's website</body></html>")})
+ok("and so is any other site that happens to answer on /",
+   pub.answers(other, timeout=5) is False)
+
+plain = serve({"/models/latest.json": (200, LATEST), "/": (200, LISTING)},
+              cors=False)
+ok("a server with no CORS header is refused, since a browser could not read it",
+   pub.answers(plain, timeout=5) is False)
+
+ok("nothing listening at all is refused",
+   pub.answers("http://127.0.0.1:1", timeout=2) is False)
+
+ok("and the --check knock is the same knock, so the two cannot disagree",
+   "answers(url, timeout=20)" in src)
+
+
+print("\n8. the tunnel's address is read out of the log, not Cloudflare's")
+# cloudflared writes "api.trycloudflare.com" into its own log while asking
+# for a tunnel. The old pattern matched it, and it was the newest match, so
+# that is what got published.
+log = """
+2026-08-21T02:11:04Z INF Requesting new quick Tunnel on trycloudflare.com...
+2026-08-21T02:11:05Z INF Requesting tunnel from https://api.trycloudflare.com/tunnel
+2026-08-21T02:11:07Z INF +------------------------------------------+
+2026-08-21T02:11:07Z INF |  https://calm-river-fried-1234.trycloudflare.com  |
+2026-08-21T02:11:07Z INF +------------------------------------------+
+"""
+found = pub._tunnel_urls(log)
+ok("Cloudflare's own API host is not mistaken for the tunnel",
+   "https://api.trycloudflare.com" not in found, str(found))
+ok("and the real tunnel address is found",
+   found == ["https://calm-river-fried-1234.trycloudflare.com"], str(found))
+ok("dash, www and the other service names are refused too",
+   pub._tunnel_urls("https://www.trycloudflare.com https://dash.trycloudflare.com") == [],
+   str(pub._tunnel_urls("https://www.trycloudflare.com")))
+ok("order is kept, so the newest can still be preferred",
+   pub._tunnel_urls("https://one-a.trycloudflare.com https://two-b.trycloudflare.com")
+   == ["https://one-a.trycloudflare.com", "https://two-b.trycloudflare.com"])
+
+for s in servers:
+    s.shutdown()
 
 print()
 if failed:
