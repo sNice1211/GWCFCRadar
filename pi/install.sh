@@ -106,31 +106,31 @@ if ! "$VENV/bin/python" -c "import netCDF4" >/dev/null 2>&1; then
   "$VENV/bin/pip" install --quiet netCDF4 || \
     warn "netCDF4 would not install; satellite composites will not build"
 fi
-# SounderPy fetches real vertical profiles and SHARPpy computes the parameters
-# on them the way the Storm Prediction Center's own tooling does. Both are
-# optional: without them the page still draws a sounding by reading the Pi's
-# pressure-level images, it just works the numbers out itself from twelve
-# levels instead of several hundred. So a failure here is a warning.
-if ! "$VENV/bin/python" -c "import sounderpy" >/dev/null 2>&1; then
-  "$VENV/bin/pip" install --quiet sounderpy || \
-    warn "SounderPy would not install; soundings fall back to the level images"
-fi
-# SHARPpy is the older of the two and the likelier of the two to refuse: its
-# last release predates NumPy 2, so on a Pi that already has NumPy 2 from apt
-# the import can fail even after a clean install. That is survivable, which is
-# why it is a warning: profiles still get fetched, the browser just works the
-# numbers out itself. If you want it badly enough, a NumPy 1 venv is the fix.
-if ! "$VENV/bin/python" -c "import sharppy" >/dev/null 2>&1; then
-  "$VENV/bin/pip" install --quiet sharppy || \
-    warn "SHARPpy would not install; profiles are fetched but analysed in the browser"
-fi
+# SounderPy and SHARPpy are deliberately NOT installed.
+#
+# Both were tried and both refuse to build on a current Pi, for reasons that
+# have nothing to do with weather:
+#
+#   SHARPpy   pins a NumPy old enough to need distutils.msvccompiler, a module
+#             Python removed. It cannot build on 3.13 at all.
+#   SounderPy pulls in arm-pyart and cartopy, which are large C and C++ source
+#             builds on ARM: a long compile and a lot of disk, on a machine
+#             where the disk is the thing that runs out.
+#
+# Neither was ever needed. NOAA serves the same profiles as plain text at
+# rucsoundings.noaa.gov, and pi/sounding_service.py reads them with nothing
+# but the standard library. The parameters are worked out in the browser,
+# where the whole thermodynamic suite already lives.
+#
+# If you want SHARPpy's own numbers anyway it is still used when present, so
+# installing it by hand into the venv is a bonus rather than a requirement.
+
 # Braced and forgiven, because set -e would otherwise abandon the whole install
 # over one optional module.
 { "$VENV/bin/python" - <<'PY'
 import sys
 mods = {}
-for m in ("eccodes", "numpy", "PIL", "requests", "metpy", "netCDF4",
-          "sounderpy", "sharppy"):
+for m in ("eccodes", "numpy", "PIL", "requests", "metpy", "netCDF4"):
     try:
         __import__(m); mods[m] = "ok"
     except Exception as e:

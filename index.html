@@ -13726,7 +13726,7 @@ function _sndFromPi(body) {
     hour: 0, lat: body.lat, lon: body.lon,
     cached: !!body.cached,
     engine: (body.engine && body.engine.params) ? 'SHARPpy' : 'browser',
-    fetcher: (body.engine && body.engine.fetch) || 'SounderPy',
+    fetcher: (body.engine && body.engine.fetch) || 'NOAA rucsoundings',
     params: body.params || null,
     levels,
   };
@@ -14746,12 +14746,13 @@ function _sndNote(d, prof, fellBack) {
   if (prof.via === 'pi') {
     bits.push(`${esc(prof.label || prof.source)} at ${esc(prof.valid || 'the last hour')}`);
     if (prof.site) bits.push(esc(prof.site));
-    bits.push(`${d.rows.length} levels via ${esc(prof.fetcher || 'SounderPy')}`);
+    bits.push(`${d.rows.length} levels via ${esc(prof.fetcher || 'NOAA')}`);
     bits.push(d.engine === 'SHARPpy'
       ? 'parameters computed by SHARPpy on the Pi, the same code the Storm '
         + 'Prediction Center\'s tooling uses'
-      : 'SHARPpy is not installed on the Pi, so the parameters below were '
-        + 'worked out in the browser from the levels it sent');
+      : 'parameters worked out in the browser from every level the Pi sent, '
+        + 'which is a hundred or more rather than the twelve the level '
+        + 'images carry');
     if (prof.cached) bits.push('served from the Pi\'s cache');
     bits.push('heights are the model\'s own geopotential, above ground level');
   } else {
@@ -14809,11 +14810,13 @@ function _sndWhy(e) {
          + '<code>systemctl --user restart gwcfc-serve</code>. Until then, '
          + 'choose <b>Pi model levels</b> above, which always works.';
   }
-  if (/SounderPy is not installed/i.test(msg)) {
-    return '<b>SounderPy is not installed on the Pi.</b><br>Run '
-         + '<code>bash ~/GWCFCRadar/pi/install.sh</code> on the Pi to add it. '
-         + 'Check it took with <code>~/wxenv/bin/python '
-         + '~/GWCFCRadar/pi/sounding_service.py --check</code>.';
+  if (/NOAA did not return|too few complete levels/i.test(msg)) {
+    return '<b>NOAA did not have a profile for that point.</b><br>Analyses '
+         + 'publish about an hour behind, and the balloon sources only exist '
+         + 'where a balloon was released. Try the slider a step back, or pick '
+         + 'a different source. On the Pi, <code>~/wxenv/bin/python '
+         + '~/GWCFCRadar/pi/sounding_service.py --check</code> says which '
+         + 'sources are answering right now.';
   }
   if (/did not answer the sounding request/i.test(msg)) {
     return '<b>The Pi did not answer.</b><br>It may be off, or the tunnel may '
@@ -39774,7 +39777,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The Pi now checks its own disk before it writes. Three days of frames is a promise the SD card has to be able to keep, and it was made without asking: retention shortens itself as the card fills, a build stops before the card is full rather than after, and install.sh refuses to half install into a disk with no room and prints the commands that free it.";
+const APP_LATEST_UPDATE = "Soundings no longer need anything installed on the Pi. SounderPy and SHARPpy both refuse to build on a current Raspberry Pi, so the profiles now come straight from NOAA as plain text and are read with nothing but the standard library: a hundred or more levels instead of twelve, no compiler, no NumPy pin, nothing to break next time Python moves. The parameters are worked out in the browser, where the whole suite already lived.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

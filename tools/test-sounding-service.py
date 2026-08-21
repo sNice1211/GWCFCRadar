@@ -55,63 +55,119 @@ def ok(name, cond, extra=""):
 
 
 svc_src = open(SVC, encoding="utf-8").read()
+src = svc_src
 svc_tree = ast.parse(svc_src)
 serve_src = open(SERVE, encoding="utf-8").read()
 
 
 # ── 1. the service can be read without the libraries it uses ────────────────
-print("\n1. a Pi without SounderPy still starts")
+print("\n1. it needs nothing that has to be installed")
 top_imports = set()
 for node in svc_tree.body:
     if isinstance(node, ast.Import):
         top_imports.update(a.name.split(".")[0] for a in node.names)
     elif isinstance(node, ast.ImportFrom) and node.module:
         top_imports.add(node.module.split(".")[0])
-ok("SounderPy is not imported at module scope",
-   "sounderpy" not in top_imports, str(sorted(top_imports)))
-ok("nor is SHARPpy", "sharppy" not in top_imports, str(sorted(top_imports)))
+# SounderPy and SHARPpy were both tried and both refuse to build on a current
+# Pi: SHARPpy pins a NumPy old enough to need distutils.msvccompiler, which
+# Python removed, and SounderPy pulls in arm-pyart and cartopy, which are long
+# C and C++ source builds on ARM. Neither was ever needed - NOAA serves the
+# same profiles as plain text - and depending on them again would be walking
+# back into a wall that has already been hit once.
+ok("SounderPy is not imported anywhere",
+   "sounderpy" not in top_imports and "import sounderpy" not in src,
+   str(sorted(top_imports)))
+ok("nor is SHARPpy required", "sharppy" not in top_imports, str(sorted(top_imports)))
 ok("nor NumPy, which SHARPpy drags in",
    "numpy" not in top_imports, str(sorted(top_imports)))
-# This is the whole reason for the rule: serve.py imports this file to answer
-# a request, and an import that throws at module scope takes the door with it.
+# serve.py imports this file to answer a request, and an import that throws at
+# module scope takes the door with it.
 ok("so importing it costs nothing but the standard library",
-   top_imports <= {"argparse", "json", "os", "sys", "time", "datetime"},
+   top_imports <= {"argparse", "json", "math", "os", "sys", "time",
+                   "datetime", "urllib"},
    str(sorted(top_imports)))
 
 # It really does import, here, now, with nothing installed.
 sys.path.insert(0, PI)
 import sounding_service as svc          # noqa: E402
-ok("and it really does import on a machine with neither installed", True)
-ok("which it can then say, without a network",
-   callable(getattr(svc, "check", None)) and callable(getattr(svc, "have_libs", None)))
-libs = svc.have_libs()
-ok("have_libs answers for both rather than guessing",
-   set(libs) == {"sounderpy", "sharppy"}, str(libs))
+ok("and it really does import on a machine with nothing installed", True)
+ok("and can be asked what it can reach", callable(getattr(svc, "check", None)))
+ok("SHARPpy is reported as an optional bonus, not a requirement",
+   set(svc.have_libs()) == {"sharppy"}, str(svc.have_libs()))
 
 
 # ── 2. units are converted, not assumed ─────────────────────────────────────
-print("\n2. the units are asked for by name")
-# A wind of 40 is a strong wind in knots and a violent one in metres per
-# second, and a sounding drawn from the wrong one looks entirely plausible.
-for unit in ("hPa", "meter", "degC", "knot"):
-    ok(f"{unit} is named in the conversion", f'"{unit}"' in svc_src)
-fn = next(n for n in svc_tree.body
-          if isinstance(n, ast.FunctionDef) and n.name == "_as_list")
-ok("_as_list takes the unit as an argument rather than trusting the caller",
-   [a.arg for a in fn.args.args] == ["x", "unit"],
-   str([a.arg for a in fn.args.args]))
-ok("and it converts through pint when the value carries units",
-   '.to(unit)' in ast.get_source_segment(svc_src, fn))
+print("\n2. the text format is read in the units it is written in")
+# The single thing most likely to be got wrong here. GSD writes pressure in
+# TENTHS of a millibar and both temperatures in TENTHS of a degree, so a
+# profile read without dividing by ten is a plausible looking sounding of a
+# planet nobody lives on: a surface at 9720 mb and 248 degrees.
+GSD = """    RAOB     12     00      21      Aug    2026
+   CAPE    999    CIN    -50  Helic    150     PW     30
+      3         35.40    -97.60  99999  99999
+      9   9720    357    248    195    170     15
+      4   9250    714    221    180    185     22
+      4   8500   1450    172    120    200     35
+      4   7000   3050     68    -20    230     45
+      4   5000   5700   -130   -250    250     60
+      5   2500  99999   -530   -650  99999  99999
+      4   2000  11800   -570   -700    265     80"""
+prof, station = svc.parse_gsd(GSD)
+ok("pressure comes back in millibars, not tenths",
+   prof["p"][0] == 972.0, str(prof["p"][:2]))
+ok("temperature in degrees, not tenths",
+   prof["T"][0] == 24.8, str(prof["T"][:2]))
+ok("and the dew point too, which is below it as it must be",
+   prof["Td"][0] == 19.5 and prof["Td"][0] < prof["T"][0], str(prof["Td"][:2]))
+ok("height stays in metres", prof["z"][0] == 357, str(prof["z"][:2]))
+ok("every data level is read, header lines are not",
+   len(prof["p"]) == 7, str(len(prof["p"])))
+ok("and the station line is picked out of the headers",
+   "35.40" in station, station)
 
-# _as_list runs for real: no library needed for the plain-list path.
-ok("a plain list of numbers survives it", svc._as_list([1.0, 2.5]) == [1.0, 2.5])
-ok("and a NaN becomes null rather than a poisoned number",
-   svc._as_list([1.0, float("nan")]) == [1.0, None])
-ok("and something that is not a sequence gives an empty list, not a crash",
-   svc._as_list(None) == [])
+# Wind arrives as a direction and a speed and is drawn as a vector. The signs
+# are the meteorological convention: a wind FROM the south blows TOWARDS the
+# north, so a 170 degree wind has a POSITIVE v. Getting this backwards
+# mirrors every hodograph in the app.
+ok("a southerly wind blows north", prof["v"][0] > 0, str(prof["v"][0]))
+ok("and barely east or west", abs(prof["u"][0]) < 3, str(prof["u"][0]))
+ok("the speed survives the conversion",
+   abs((prof["u"][0] ** 2 + prof["v"][0] ** 2) ** 0.5 - 15) < 0.01,
+   str((prof["u"][0] ** 2 + prof["v"][0] ** 2) ** 0.5))
+west = svc.parse_gsd("      9   9720    357    248    195    270     20")[0]
+ok("and a westerly blows east, so u is positive",
+   west["u"][0] > 19, str(west["u"][0]))
+ok("with nothing north or south in it",
+   abs(west["v"][0]) < 0.01, str(west["v"][0]))
 
+# 99999 is how the file says "nothing here". Read as a number it is a
+# pressure of ten thousand millibars.
+ok("a missing wind is missing, not 99999",
+   prof["u"][5] is None and prof["v"][5] is None, str(prof["u"][5]))
+ok("and a level with no temperature at all is dropped rather than carried",
+   all(t is not None for t in prof["T"]))
+gap = svc.parse_gsd("      4   8500   1450  99999    120    200     35")[0]
+ok("because a hole part way up makes the CAPE wrong, not the chart",
+   len(gap["p"]) == 0, str(gap["p"]))
 
-# ── 3. the cache key is the same for two clicks on the same storm ───────────
+ok("a line that is not a sounding at all is ignored",
+   svc.parse_gsd("this is not a sounding")[0]["p"] == [])
+ok("and so is an empty answer", svc.parse_gsd("")[0]["p"] == [])
+ok("or no answer", svc.parse_gsd(None)[0]["p"] == [])
+
+print("\n2b. the address is built from real parameters")
+url = svc._sounding_url("Op40", 35.4, -97.6)
+for bit in ("data_source=Op40", "airport=35.4000%2C-97.6000", "GSD"):
+    ok(f"the query carries {bit.split('=')[0]}", bit in url, url[:140])
+ok("and every source names a real NOAA dataset",
+   all(v["src"] in ("Op40", "Bak40", "RAOB", "NAM", "GFS")
+       for v in svc.SOURCES.values()),
+   str({k: v["src"] for k, v in svc.SOURCES.items()}))
+# The newest analysis hour is often not published yet, which is the commonest
+# way to get an empty answer that looks like a broken address.
+ok("and the analysis has a previous cycle to fall back on",
+   svc.SOURCES["rap"]["fallback"] == "Bak40")
+
 print("\n3. the cache is keyed by place, not by pixel")
 a = svc._cache_key("rap", 35.4012, -97.6033, None)
 b = svc._cache_key("rap", 35.4038, -97.5975, None)
@@ -129,15 +185,15 @@ ok("the key is safe to use as a filename",
 # ── 4. failures are sentences ───────────────────────────────────────────────
 print("\n4. every failure says what to do about it")
 raises = [n for n in ast.walk(svc_tree) if isinstance(n, ast.Raise)]
-ok("there are failures to check", len(raises) >= 4, str(len(raises)))
+# Fewer than before on purpose: the whole surface of "the library is not\n# installed" went away with the library.\nok("there are failures to check", len(raises) >= 2, str(len(raises)))
 msgs = []
 for r in raises:
     seg = ast.get_source_segment(svc_src, r) or ""
     msgs.append(seg)
 ok("all of them are RuntimeError, so the caller can tell them from a bug",
    all("RuntimeError" in m for m in msgs), str(msgs)[:200])
-ok("the missing-library one names install.sh",
-   any("install.sh" in m for m in msgs))
+ok("the empty-answer one names the point that was asked about",
+   any("lat" in m or "{lat}" in m for m in msgs), str(msgs)[:160])
 ok("the empty-answer one explains that analyses publish behind",
    any("behind" in m for m in msgs))
 ok("nothing raises a bare Exception with no message",
@@ -378,15 +434,25 @@ ok("the worker count can be changed without editing code",
 ok("nothing about this door writes anything",
    "do_PUT" in serve_src and "send_error(405)" in serve_src)
 
-print("\n14. install.sh installs both, and forgives both")
+print("\n14. install.sh does not try to install what will not build")
 ins = open(os.path.join(PI, "install.sh"), encoding="utf-8").read()
-ok("SounderPy is installed", "pip\" install --quiet sounderpy" in ins
-   or "install --quiet sounderpy" in ins)
-ok("SHARPpy is installed", "install --quiet sharppy" in ins)
-ok("neither failure stops the install",
-   ins.count("warn \"SounderPy") == 1 and ins.count("warn \"SHARPpy") == 1)
-ok("and both are checked afterwards, so a silent failure is visible",
-   '"sounderpy", "sharppy"' in ins)
+# Both were tried and both failed on a real Pi. SHARPpy pins a NumPy old
+# enough to need distutils.msvccompiler, which Python removed, so it cannot
+# build on 3.13 at all. SounderPy pulls in arm-pyart and cartopy, which are
+# long C and C++ source builds on ARM. Trying anyway costs ten minutes of
+# compiling, several hundred megabytes of build cache on a machine whose disk
+# has already run out once, and ends in the same two warnings.
+ok("SounderPy is not attempted", "install --quiet sounderpy" not in ins)
+ok("nor is SHARPpy", "install --quiet sharppy" not in ins)
+ok("but the reason is written down rather than just deleted",
+   "distutils.msvccompiler" in ins and "arm-pyart" in ins)
+ok("and it says where the profiles come from instead",
+   "rucsoundings" in ins)
+ok("the module check no longer expects them",
+   '"sounderpy", "sharppy"' not in ins)
+# The optional path is still there for anyone who wants it.
+ok("SHARPpy is still used if somebody installs it by hand",
+   "installing it by hand" in ins and "sharppy" in svc_src)
 
 print()
 if failed:
