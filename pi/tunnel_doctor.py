@@ -30,6 +30,7 @@ import os
 import socket
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -105,6 +106,50 @@ def tcp_open(host, port, timeout=8):
             s.close()
         except OSError:
             pass
+
+
+def fetch(url, timeout=10):
+    """What actually came back, in one line, whatever it was.
+
+    Not a yes or a no. When a tunnel reports itself connected and the address
+    still does not work, every remaining theory is a different HTTP status,
+    and guessing between them from a boolean is how this went round in
+    circles. 502 is the tunnel not reaching serve.py. 1033 is the edge not
+    reaching the tunnel. 200 with the wrong body means the check is wrong.
+    """
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "gwcfc"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.headers, r.read(200)
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(200)
+        except Exception:
+            body = b""
+        return e.code, e.headers, body
+    except Exception as e:
+        return None, None, f"{e.__class__.__name__}: {e}".encode()
+
+
+def describe(status, headers, body):
+    """One readable line about a response, including who sent it."""
+    if status is None:
+        return f"no answer  ({body.decode(errors='ignore')})"
+    who = ""
+    if headers is not None:
+        # cf-ray only exists on a reply that went through Cloudflare, so it
+        # says whether the edge answered or the Pi did.
+        if headers.get("cf-ray"):
+            who = " via Cloudflare"
+        if (headers.get("Access-Control-Allow-Origin") or "").strip() == "*":
+            who += " with the browser header"
+    peek = body.decode(errors="ignore").strip().replace("\n", " ")[:70]
+    return f"HTTP {status}{who}  {peek!r}"
+
+
+def starts(text):
+    """How many times cloudflared has begun a run in this log."""
+    return text.count(START)
 
 
 def https_ok(url, timeout=10):
@@ -199,11 +244,62 @@ def main():
         out("   so it could not reach trycloudflare.com to ask for one.")
         out("   FIX: systemctl --user restart gwcfc-tunnel, then run this again")
         return 1
-    out("   The tunnel is connected and carrying traffic, so the address")
-    out("   should work. If the site still cannot read the Pi, the trouble")
-    out("   is on this side of it.")
-    out("   FIX: bash ~/GWCFCRadar/pi/diagnose.sh")
-    return 0
+    # Connected, and the address still does not work. Every theory left is a
+    # different HTTP status, so stop theorising and read them.
+    out("   The tunnel says it is connected. So the question is what actually")
+    out("   comes back, from each end, which is below.")
+    out()
+    out("== What each end actually returns")
+    local = fetch(f"http://127.0.0.1:{os.environ.get('GWCFC_PORT', '8080')}/",
+                  timeout=6)
+    out(f"   straight to serve.py   {describe(*local)}")
+    tries = []
+    if urls:
+        addr = urls[-1].rstrip("/") + "/"
+        for n in range(3):
+            got = fetch(addr, timeout=10)
+            tries.append(got[0])
+            out(f"   through the tunnel {n + 1}   {describe(*got)}")
+            if n < 2:
+                time.sleep(3)
+    out()
+    out(f"   cloudflared has started {starts(text)} times in this log, on")
+    out(f"   {len(publish_url._tunnel_urls(text))} different addresses. Every start rolls a new one.")
+
+    out()
+    out("== What that means")
+    if local[0] != 200:
+        out("   serve.py is not answering on this Pi, so there is nothing for")
+        out("   the tunnel to carry. That is the whole problem and it is")
+        out("   nothing to do with Cloudflare.")
+        out("   FIX: systemctl --user restart gwcfc-serve")
+        return 1
+    if not tries:
+        out("   serve.py is fine and there is no address to test against.")
+        out("   FIX: systemctl --user restart gwcfc-tunnel")
+        return 1
+    good_tries = [t for t in tries if t == 200]
+    if len(good_tries) == len(tries):
+        out("   Both ends work and the address answers every time. So the")
+        out("   address is good, and the site is simply being told an older")
+        out("   one that has since died.")
+        out("   FIX: systemctl --user restart gwcfc-publish")
+        return 1
+    if good_tries:
+        out("   It answers sometimes and not others. Nothing is misconfigured;")
+        out("   the connection itself is dropping and coming back, and each")
+        out("   drop rolls a brand new address that the site cannot keep up")
+        out("   with. A quick tunnel is the throwaway kind and does this on an")
+        out("   unsteady connection.")
+        out("   FIX: a named tunnel keeps ONE address for good, however often")
+        out("   it reconnects. See pi/NAMED_TUNNEL.md, which is worth the")
+        out("   twenty minutes precisely because this stops happening.")
+        return 1
+    out("   serve.py answers here, and nothing comes back through the tunnel.")
+    out("   The tunnel is pointed somewhere other than serve.py, or the")
+    out("   address just rolled and this one is already dead.")
+    out("   FIX: systemctl --user restart gwcfc-tunnel gwcfc-publish")
+    return 1
 
 
 if __name__ == "__main__":
