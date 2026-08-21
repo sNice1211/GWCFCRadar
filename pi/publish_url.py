@@ -44,30 +44,97 @@ STATE = os.path.expanduser("~/.gwcfc-published-url")
 # stopped answering when the quick tunnel did.
 PINNED = os.path.expanduser("~/.gwcfc-pinned-url")
 
-URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+# The tunnel's own address, and NOT Cloudflare's.
+#
+# This used to be `https://[a-z0-9-]+\.trycloudflare\.com`, which is the
+# right shape and matches one host too many: cloudflared writes
+# "api.trycloudflare.com" into its own log while asking for a tunnel, so the
+# newest match in the log was Cloudflare's API endpoint rather than the
+# tunnel. That address was published, the site dutifully asked it for the
+# Pi's files, and every Pi-backed feature went dark while the Pi sat there
+# building everything correctly and serving it on the right port.
+#
+# A quick tunnel's hostname is words joined by hyphens. api, www and the
+# other service names are not that shape and are refused by name as well,
+# because being wrong here is invisible: the address looks entirely
+# plausible in a log line.
+_RESERVED_SUBS = {"api", "www", "dash", "developers", "docs", "blog"}
+URL_RE = re.compile(r"https://([a-z0-9][a-z0-9-]*)\.trycloudflare\.com")
+
+
+def _tunnel_urls(text):
+    """Every plausible quick-tunnel address in a log, in order."""
+    out = []
+    for sub in URL_RE.findall(text):
+        if sub in _RESERVED_SUBS:
+            continue
+        out.append(f"https://{sub}.trycloudflare.com")
+    return out
 
 
 def log(m):
     print(f"[publish] {m}", flush=True)
 
 
-def answers(url, timeout=8):
-    """
-    Does this address actually reach the file server behind the tunnel?
+# Only the first couple of kilobytes of a probe are ever looked at. The
+# question is what kind of thing answered, not what it said.
+_PROBE_BYTES = 2048
 
-    Any answer at all proves the address is live and pointed at something:
-    a 404 is the server saying "not that file", which still means the road
-    goes through. Only a refused or timed out connection is a dead address.
+
+def _cors_ok(headers):
+    """Would a browser be allowed to read this answer?
+
+    serve.py puts Access-Control-Allow-Origin on every response it makes,
+    which is also the exact permission the site needs, so an address without
+    it is useless to the page even when it answers a script perfectly well.
     """
     try:
-        req = urllib.request.Request(url.rstrip("/") + "/models/latest.json",
-                                     method="GET")
-        with urllib.request.urlopen(req, timeout=timeout):
-            return True
-    except urllib.error.HTTPError:
-        return True
+        return (headers.get("Access-Control-Allow-Origin") or "").strip() == "*"
     except Exception:
         return False
+
+
+def _looks_like_json(body):
+    return body.lstrip()[:1] in (b"{", b"[")
+
+
+def _looks_like_listing(body):
+    # What http.server writes for a directory with no index in it, which is
+    # what ~/wxdata is. Present from the very first boot, before a single
+    # model has been built.
+    return b"Directory listing for" in body
+
+
+def answers(url, timeout=8):
+    """
+    Does this address reach the Pi's OWN file server?
+
+    This used to accept any HTTP reply at all, on the reasoning that even a
+    404 is a server saying "not that file", which still proves the road goes
+    through. It proves a road goes through, to somebody. When the log
+    misreading above published api.trycloudflare.com, that host answered the
+    probe with a perfectly ordinary 404, this function called the address
+    alive, and the one check meant to catch a wrong address confirmed it
+    instead. The site was then told to fetch the Pi's files from Cloudflare's
+    API, and every Pi-backed feature went dark while the Pi sat there healthy.
+
+    So the answer now has to look like this server rather than merely exist:
+    the CORS header the page depends on, plus a body that is either the model
+    index really being JSON or the root really being http.server's directory
+    listing. Cloudflare's API sends neither of those bodies at these paths.
+    """
+    base = url.rstrip("/")
+    for path, recognise in (("/models/latest.json", _looks_like_json),
+                            ("/", _looks_like_listing)):
+        try:
+            req = urllib.request.Request(base + path, method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                if (r.status == 200 and _cors_ok(r.headers)
+                        and recognise(r.read(_PROBE_BYTES))):
+                    return True
+        except Exception:
+            continue           # try the other door before giving up
+    return False
 
 
 def current_url(path=None):
@@ -91,7 +158,7 @@ def current_url(path=None):
     """
     try:
         with open(path or TUNNEL_LOG, errors="ignore") as f:
-            found = URL_RE.findall(f.read())
+            found = _tunnel_urls(f.read())
     except OSError:
         return None
     if not found:
@@ -285,19 +352,17 @@ def check():
     if not url:
         print("    the tunnel may still be starting. systemctl --user status gwcfc-tunnel")
         return 1
-    # Knock on the door. The log is append-only across restarts, so after a
-    # reboot with a dead tunnel the last address in it still reads as current,
-    # and this check once said "match: yes" about an address nothing answered.
-    # Agreeing with the database means nothing unless the address is alive.
-    alive = False
-    try:
-        with urllib.request.urlopen(url + "/models/latest.json", timeout=20) as r:
-            alive = r.status == 200
-    except Exception:
-        pass
+    # Knock on the door, and use the same knock the publisher uses, so this
+    # check and the thing it is checking can never disagree. The log is
+    # append-only across restarts, so after a reboot with a dead tunnel the
+    # last address in it still reads as current, and this once said
+    # "match: yes" about an address nothing answered. Agreeing with the
+    # database means nothing unless the Pi is what is on the other end.
+    alive = answers(url, timeout=20)
     print("  answers        : " + ("yes, the tunnel is alive" if alive else
-        "NO. The address does not answer, so the tunnel is not actually "
-        "running.\n    FIX: systemctl --user restart gwcfc-tunnel gwcfc-publish"))
+        "NO. Nothing that looks like this Pi answers there, so the tunnel is "
+        "not actually running.\n    FIX: systemctl --user restart "
+        "gwcfc-serve gwcfc-tunnel gwcfc-publish"))
     try:
         with urllib.request.urlopen(
                 f"https://firestore.googleapis.com/v1/projects/{PROJECT}"

@@ -177,7 +177,9 @@ try:
 
     print("\n5. the ordinary paths are untouched")
     ok("a fetch that fails is not treated as a reason to reset",
-       "fetch failed, will try again next time" in open(SCRIPT).read())
+       "fetch failed four times, will try again next time" in open(SCRIPT).read())
+    ok("but one dropped pack is retried first, since home wifi does that",
+       "fetch attempt" in open(SCRIPT).read())
     src = open(SCRIPT).read()
     ok("recovery is guarded on a clean tree",
        "git status --porcelain" in src)

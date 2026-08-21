@@ -19,7 +19,33 @@ BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 # Fetch and fast-forward only. A merge that is not a fast-forward means the Pi
 # has commits of its own, and quietly throwing those away is not this script's
 # decision to make: it says so and leaves them alone.
-git fetch --quiet origin "$BRANCH" || { echo "fetch failed, will try again next time"; exit 0; }
+#
+# The fetch is retried, because on home wifi a single failure means nothing.
+# A Pi pulling a large pack drops it often enough ("RPC failed... curl 56
+# Recv failure", "fatal: unpack-objects failed") that giving up on the first
+# try left the machine silently running old code for hours, and a failed
+# update is invisible from the outside: every fix shipped upstream just
+# looks like it did not work. The low-speed settings stop git abandoning a
+# slow stretch instead of a genuinely dead link.
+fetch_once() {
+  git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+      -c http.postBuffer=524288000 \
+      fetch --quiet origin "$BRANCH" 2>&1
+}
+FETCHED=0
+DELAY=2
+for attempt in 1 2 3 4; do
+  if OUT=$(fetch_once); then FETCHED=1; break; fi
+  [ "$attempt" = 4 ] && break
+  echo "fetch attempt $attempt failed, retrying in ${DELAY}s"
+  sleep "$DELAY"
+  DELAY=$((DELAY * 2))
+done
+if [ "$FETCHED" != 1 ]; then
+  echo "fetch failed four times, will try again next time"
+  printf '%s\n' "$OUT" | tail -n 3
+  exit 0
+fi
 if ! git merge --ff-only --quiet "origin/$BRANCH" 2>/dev/null; then
   # Diverged. Usually that means someone pulled a feature branch onto this
   # checkout by hand and it later got squash merged: the work is upstream,

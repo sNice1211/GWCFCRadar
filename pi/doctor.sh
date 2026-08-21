@@ -44,6 +44,30 @@ elif [ "${FREE:-0}" -lt 2000 ]; then
 else
   good "${FREE} MB free on /"
 fi
+# Is this checkout actually running the newest code?
+#
+# ls-remote asks for one line and downloads no objects, so it still answers
+# over a link too flaky to finish a real fetch, which is exactly the case
+# worth catching. A `git pull` that dies partway ("RPC failed... curl 56")
+# is easy to scroll past, and afterwards every fix shipped upstream looks
+# like it simply did not work, on a machine where the code is the last thing
+# anyone thinks to suspect.
+GBRANCH=$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)
+GHERE=$(git -C "$REPO" rev-parse HEAD 2>/dev/null)
+GTHERE=$(git -C "$REPO" ls-remote origin "$GBRANCH" 2>/dev/null | awk 'NR==1{print $1}')
+if [ -z "$GBRANCH" ] || [ -z "$GHERE" ]; then
+  warn "$REPO is not a git checkout, so its code version cannot be read"
+elif [ -z "$GTHERE" ]; then
+  warn "could not reach GitHub to compare code versions (branch $GBRANCH)"
+elif git -C "$REPO" merge-base --is-ancestor "$GTHERE" "$GHERE" 2>/dev/null; then
+  good "code is current with origin/$GBRANCH (${GHERE:0:7})"
+else
+  bad "this checkout is NOT the newest code on origin/$GBRANCH"
+  note "here ${GHERE:0:7}, origin ${GTHERE:0:7}. A pull that failed partway"
+  note "leaves it exactly like this. Do this one FIRST: everything below it"
+  note "is being judged against old code."
+  fix "cd $REPO && git pull origin $GBRANCH"
+fi
 
 hdr "1. Python packages, per feature"
 # Which package each feature actually cannot run without. A missing one is
@@ -108,13 +132,24 @@ for t in gwcfc-models gwcfc-radar gwcfc-sat gwcfc-snd gwcfc-cyclones gwcfc-updat
     bad "$t.timer is not installed at all"
     fix "bash $REPO/pi/install.sh"
   elif systemctl --user is-enabled --quiet "$t.timer" 2>/dev/null; then
+    # A timer keeps its next run in ONE of two places, and which one depends
+    # on how it was written. OnCalendar= puts a wall-clock date in
+    # NextElapseUSecRealtime; OnBootSec=/OnUnitActiveSec= put an
+    # elapsed-since-boot figure in NextElapseUSecMonotonic and leave the
+    # realtime one empty. Reading only the realtime one therefore called every
+    # perfectly healthy monotonic timer broken, which is what gwcfc-update is,
+    # and sent people restarting things that were never wrong.
     NEXT=$(systemctl --user show "$t.timer" -p NextElapseUSecRealtime --value 2>/dev/null)
+    MONO=$(systemctl --user show "$t.timer" -p NextElapseUSecMonotonic --value 2>/dev/null)
     LAST=$(systemctl --user show "$t.service" -p ExecMainStartTimestamp --value 2>/dev/null)
+    case "$NEXT" in ""|"n/a"|"0") NEXT="" ;; esac
+    case "$MONO" in ""|"n/a"|"0"|"infinity") MONO="" ;; esac
+    [ -z "$NEXT" ] && [ -n "$MONO" ] && NEXT="$MONO after boot"
     # A blank NEXT while the service is active is normal: a timer does not
     # schedule the next run until the current one finishes.
     if systemctl --user is-active --quiet "$t.service"; then
       good "$t.timer enabled; its service is running right now"
-    elif [ -z "$NEXT" ] || [ "$NEXT" = "n/a" ]; then
+    elif [ -z "$NEXT" ]; then
       warn "$t.timer is enabled but has no next run scheduled"
       note "last started: ${LAST:-never}"
       fix "systemctl --user restart $t.timer"
@@ -148,16 +183,58 @@ PYEOF
 
 count_dirs() { find "$1" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l; }
 
+# What a unit's last run actually said.
+#
+# "Nothing built" names the symptom and not the cause, and the cause is
+# already written down in the journal: a failed import, a refused download, a
+# full disk. Reading the last few lines back here is the difference between
+# knowing a build failed and knowing why, which is the whole point of this
+# script. Errors first, because a run that fails prints one line that matters
+# among fifty that do not.
+last_words() {   # unit, how many lines
+  local unit="$1" n="${2:-12}" out
+  out=$(journalctl --user -u "$unit" -n 200 --no-pager -o cat 2>/dev/null \
+        | grep -iE "error|traceback|failed|no module|refused|timed out|no space" \
+        | tail -"$n")
+  [ -z "$out" ] && out=$(journalctl --user -u "$unit" -n "$n" --no-pager -o cat 2>/dev/null)
+  if [ -n "$out" ]; then
+    note "last words from $unit:"
+    printf '%s\n' "$out" | sed 's/^/          /'
+  else
+    note "$unit has never logged anything, so it has probably never run"
+  fi
+}
+
 if [ -s "$DATA/models/latest.json" ]; then
-  good "models: latest.json present ($(wc -c < "$DATA/models/latest.json") bytes)"
+  AGE=$(( ($(date +%s) - $(stat -c %Y "$DATA/models/latest.json" 2>/dev/null || echo 0)) / 60 ))
+  if [ "$AGE" -gt 180 ]; then
+    warn "models: latest.json is ${AGE} min old, so builds have stopped"
+    last_words gwcfc-models.service
+    fix "systemctl --user start gwcfc-models.service"
+  else
+    good "models: latest.json present, ${AGE} min old"
+  fi
 else
-  bad "models: no latest.json"
+  bad "models: no latest.json, so no model has ever built"
+  last_words gwcfc-models.service
   fix "systemctl --user start gwcfc-models.service"
 fi
 
 RN=$(count_dirs "$DATA/radar")
-[ "$RN" -gt 0 ] && good "radar: $RN product folder(s)" || {
-  bad "radar: nothing built"; fix "systemctl --user start gwcfc-radar.service"; }
+if [ "$RN" -gt 0 ]; then
+  NEW=$(find "$DATA/radar" -name '*.png' -mmin -30 2>/dev/null | wc -l)
+  if [ "$NEW" -gt 0 ]; then
+    good "radar: $RN product folder(s), $NEW frame(s) in the last half hour"
+  else
+    warn "radar: $RN product folder(s) but nothing new in half an hour"
+    last_words gwcfc-radar.service
+    fix "systemctl --user start gwcfc-radar.service"
+  fi
+else
+  bad "radar: nothing built"
+  last_words gwcfc-radar.service
+  fix "systemctl --user start gwcfc-radar.service"
+fi
 
 SATMAN=$(find "$DATA/satellite" -name manifest.json 2>/dev/null | wc -l)
 if [ "$SATMAN" -gt 0 ]; then
@@ -185,6 +262,7 @@ for sat in sorted(os.listdir(root)):
 PYEOF
 else
   bad "satellite: no manifest anywhere, so nothing has ever built"
+  last_words gwcfc-sat.service
   fix "$PY $REPO/pi/satellite_pipeline.py --sector conus"
 fi
 show_status satellite "satellite"
@@ -206,6 +284,7 @@ else:
 PYEOF
 else
   bad "soundings: no manifest, so no site has ever built"
+  last_words gwcfc-snd.service
   fix "$PY $REPO/pi/sounding_pipeline.py --site OUN"
 fi
 show_status soundings "soundings"
