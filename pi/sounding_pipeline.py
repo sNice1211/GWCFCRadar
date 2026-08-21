@@ -623,12 +623,29 @@ def missing_deps():
     out = []
     for mod, why in (("numpy", "the arithmetic"),
                      ("matplotlib", "draws the sounding image"),
-                     ("metpy", "does the skew-T projection and the parcel"),
-                     ("sounderpy", "fetches the profile")):
+                     ("metpy", "does the skew-T projection and the parcel")):
         try:
             __import__(mod)
         except Exception as e:
             out.append((mod, why, f"{e.__class__.__name__}: {e}"))
+    # SounderPy is asked for THE WAY THE APP ASKS, and only that way.
+    #
+    # A plain import of it fails on this Pi by design: it goes in with
+    # --no-deps, so cartopy and pyart are absent and it reaches for both while
+    # loading, along with a county map layer MetPy only defines when cartopy
+    # is real. sounding_service stands in for all three. Asking plainly here
+    # reported "sounderpy is not installed" about a package that was installed
+    # and working, and then printed the install command for it, which
+    # succeeded and changed nothing, so it said the same thing next time.
+    #
+    # doctor.sh and install.sh were both fixed for this. This one was missed,
+    # and it is the one that actually stops a sounding being built.
+    try:
+        import sounding_service
+        sounding_service.import_sounderpy()
+    except Exception as e:
+        out.append(("sounderpy", "fetches the profile",
+                    f"{e.__class__.__name__}: {e}"))
     return out
 
 
@@ -647,6 +664,31 @@ def write_status(**fields):
         pass
 
 
+def _install_cmds(gone):
+    """The commands that would actually work, which are not the obvious ones.
+
+    SounderPy has to go in with --no-deps, because it lists two plotting
+    libraries this machine never uses and both are long C++ builds on ARM.
+    Printing the plain command would send whoever reads it down exactly the
+    install that already failed once.
+    """
+    plain = [m for m, _w, _e in gone if m != "sounderpy"]
+    cmds = []
+    if plain:
+        cmds.append("~/wxenv/bin/pip install " + " ".join(plain))
+    if any(m == "sounderpy" for m, _w, _e in gone):
+        cmds.append("~/wxenv/bin/pip install --no-deps sounderpy")
+    return cmds
+
+
+def _say_missing(gone):
+    for mod, why, err in gone:
+        log(f"soundings: {mod} is not installed, and it {why} ({err})")
+    log("soundings: install with")
+    for c in _install_cmds(gone):
+        log("  " + c)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--site", action="append", help="one site id, repeatable")
@@ -656,29 +698,27 @@ def main(argv=None):
     if a.check:
         return check()
 
+    # --render-test draws a profile this file makes up, on purpose: it exists
+    # to tell "cannot draw" apart from "cannot fetch", which is the first
+    # question worth asking when no sounding appears. Requiring the fetching
+    # library before it would run makes it answer the very question it was
+    # written to answer, and refuse to run for the other reason.
+    if a.render_test:
+        gone = [d for d in missing_deps() if d[0] != "sounderpy"]
+        if gone:
+            _say_missing(gone)
+            return 1
+        return render_test()
+
     gone = missing_deps()
     # SHARPpy is deliberately not in that list: without it the parameters go
     # missing and the sounding is still a sounding. The four above are the
     # ones without which there is no picture at all.
     if gone:
-        for mod, why, err in gone:
-            log(f"soundings: {mod} is not installed, and it {why} ({err})")
-        # SounderPy has to go in with --no-deps, because it lists two plotting
-        # libraries this machine never uses and they are long C++ builds on
-        # ARM. Printing the plain command would send whoever reads it down
-        # exactly the install that already failed once.
-        plain = [m for m, _w, _e in gone if m != "sounderpy"]
-        cmds = []
-        if plain:
-            cmds.append("~/wxenv/bin/pip install " + " ".join(plain))
-        if any(m == "sounderpy" for m, _w, _e in gone):
-            cmds.append("~/wxenv/bin/pip install --no-deps sounderpy")
-        log("soundings: install with")
-        for c in cmds:
-            log("  " + c)
+        _say_missing(gone)
         write_status(ok=False, reason="missing " + ", ".join(
             m for m, _w, _e in gone),
-            fix=" ; ".join(cmds), sites=0)
+            fix=" ; ".join(_install_cmds(gone)), sites=0)
         return 1
 
     if a.render_test:
