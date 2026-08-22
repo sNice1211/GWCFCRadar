@@ -627,7 +627,104 @@ console.log('\n12. correlation coefficient is not one flat green');
      /^#/.test(r.lowEnd), r.lowEnd);
 }
 
-console.log('\n13. nothing threw along the way');
+console.log('\n13. correlation coefficient is not dragged down by the merge');
+{
+  // "CC is still wrong" after the colour scale was fixed, and the colour
+  // scale was not the whole story: the VALUES were being corrupted before any
+  // colour saw them.
+  //
+  // Far from the radar the renderer thins the sweep - stride is 1 inside
+  // 100 km and doubles every 100 km after, so past 300 km eight gates collapse
+  // into one. Reflectivity merges by taking the maximum and velocity by the
+  // largest magnitude, and for those the extreme IS the signal: a core and a
+  // couplet are what a merged cell must not lose.
+  //
+  // Correlation coefficient was doing the same thing in reverse, taking the
+  // MINIMUM. But low CC is mostly noise - one poorly lit gate at low signal to
+  // noise reads low - so the minimum hands the whole merged cell to its worst
+  // gate. Uniform 0.98 rain past 300 km reported whichever of eight gates
+  // happened to be lowest, and the far half of every sweep came out looking
+  // like mixed or non-meteorological echo.
+  //
+  // Nothing is lost by averaging instead: debris balls are observed CLOSE to
+  // the radar, and inside 100 km the stride is 1, so no merge is happening
+  // there at all. The minimum rule only ever applied where it was not needed.
+  const src = readFileSync(join(ROOT, 'src/parse/radar_worker.js'), 'utf8');
+  // Both decode paths, Level 2 and Level 3, have to agree.
+  const meanSites = (src.match(/ccSum \+= v; ccCount \+= 1;/g) || []).length;
+  ok('both decode paths merge CC by a running mean', meanSites === 2,
+     `${meanSites} of 2`);
+  ok('and neither one still takes the minimum',
+     !/(layer === 'CC'|isCorrelation)\)?\s*value = Math\.min/.test(src)
+     && !/Math\.min\(value, v\)/.test(src),
+     'a Math.min merge is still in the file');
+  // The other two must NOT have changed: their extremes are the signal.
+  ok('reflectivity still keeps the strongest gate in a merged cell',
+     /else value = Math\.max\(value, v\);/.test(src));
+  ok('and velocity still keeps the fastest',
+     (src.match(/Math\.abs\(v\) > Math\.abs\(value\)/g) || []).length === 2);
+  // The bias this removes, stated as arithmetic so the reason is checkable
+  // rather than merely described: eight gates of ordinary rain with one noisy
+  // one among them.
+  const gates = [0.98, 0.99, 0.98, 0.97, 0.99, 0.98, 0.72, 0.98];
+  const asMin = Math.min(...gates);
+  const asMean = gates.reduce((a, b) => a + b, 0) / gates.length;
+  const band = await page.evaluate((g) => {
+    const fn = _meshColorFn('cc');
+    const mn = Math.min(...g);
+    const mean = g.reduce((a, b) => a + b, 0) / g.length;
+    return { min: String(fn(mn)), mean: String(fn(mean)) };
+  }, gates);
+  ok('one noisy gate in eight used to decide the whole cell',
+     Math.abs(asMin - 0.72) < 1e-9 && asMean > 0.94,
+     `min ${asMin}, mean ${asMean.toFixed(3)}`);
+  ok('and it painted that cell a different colour from the rain it is in',
+     band.min !== band.mean, `${band.min} vs ${band.mean}`);
+}
+
+console.log('\n14. every product covers the range it claims to cover');
+{
+  // "I do not know about the others". This walks all eight families, asks the
+  // colour function for sixty values across the range the family itself
+  // declares, and checks the answer is neither one flat colour nor a hole
+  // where real data lives.
+  const r = await page.evaluate(() => {
+    _fxUiResetAll();
+    const pick = { ref: 'ref', vel: 'vel', sw: 'sw', cc: 'cc',
+                   zdr: 'zdr', kdp: 'kdp', hc: 'n0h', et: 'eet' };
+    const out = {};
+    Object.keys(RADAR_FAMS).forEach(fam => {
+      const d = RADAR_FAMS[fam];
+      const fn = _meshColorFn(pick[fam]);
+      const cols = [], blank = [];
+      for (let i = 0; i <= 60; i++) {
+        const v = d.min + (d.max - d.min) * i / 60;
+        const c = fn(v);
+        if (c) cols.push(String(c)); else blank.push(+v.toFixed(2));
+      }
+      out[fam] = { distinct: new Set(cols).size, painted: cols.length,
+                   blank: blank.length, first: blank[0], last: blank[blank.length - 1] };
+    });
+    return out;
+  });
+  // A family that answers with one colour across its whole range is the exact
+  // fault reported for CC.
+  const flat = Object.entries(r).filter(([, v]) => v.distinct < 5);
+  ok('no product paints its whole range in fewer than five colours',
+     flat.length === 0, flat.map(([k, v]) => `${k}:${v.distinct}`).join(', '));
+  // Reflectivity below 5 dBZ, velocity within 5 kt of zero, KDP near zero and
+  // echo tops below 5 kft are deliberately blank: drawing them would fill the
+  // map with things that are not weather.
+  const mostlyBlank = Object.entries(r).filter(([, v]) => v.painted < 30);
+  ok('and none of them is mostly blank across its own range',
+     mostlyBlank.length === 0,
+     mostlyBlank.map(([k, v]) => `${k}:${v.painted}/61`).join(', '));
+  ok('correlation coefficient in particular now has real resolution',
+     r.cc.distinct >= 10 && r.cc.blank === 0,
+     `${r.cc.distinct} colours, ${r.cc.blank} blank`);
+}
+
+console.log('\n15. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 await browser.close();
