@@ -578,7 +578,56 @@ console.log('\n11. every product the menu offers can actually be coloured');
      JSON.stringify(srv));
 }
 
-console.log('\n12. nothing threw along the way');
+console.log('\n12. correlation coefficient is not one flat green');
+{
+  // Reported as "why is cc green". Because it was, all of it.
+  //
+  // CC asks whether everything in a gate is the same kind of thing. Rain
+  // answers about 0.98 and essentially ALL precipitation answers between 0.95
+  // and 1.00, so a ramp spread evenly across the nominal 0 to 1.05 range
+  // spends nineteen twentieths of itself on values the weather never takes.
+  // Everything from 0.85 up landed inside a forty degree slice of green: a CC
+  // picture of a supercell was a green blob.
+  const r = await page.evaluate(() => {
+    _fxUiResetAll();
+    const fn = _meshColorFn('cc');
+    const hex = v => String(fn(v));
+    // Where all the weather actually is.
+    const wx = [0.95, 0.96, 0.97, 0.98, 0.99, 1.00].map(hex);
+    // The one thing CC exists to find, and the rain it sits inside.
+    const debris = hex(0.70), rain = hex(0.98);
+    const lum = h => {
+      const n = parseInt(h.slice(1), 16);
+      return { r: n >> 16 & 255, g: n >> 8 & 255, b: n & 255 };
+    };
+    // Monotonic: no jumping backwards and forwards across the scale.
+    const ramp = [];
+    for (let v = 0.80; v <= 1.001; v += 0.01) ramp.push(hex(+v.toFixed(2)));
+    return { wx, uniqueWx: new Set(wx).size,
+             debris, rain, dRGB: lum(debris), rRGB: lum(rain),
+             ramp, uniqueRamp: new Set(ramp).size,
+             below: fn(-1), lowEnd: hex(0.2) };
+  });
+  // The actual complaint, as a number.
+  ok('the range where all precipitation lives gets six different colours',
+     r.uniqueWx === 6, r.wx.join(' '));
+  ok('and 0.80 upward is more than a couple of shades',
+     r.uniqueRamp >= 8, `${r.uniqueRamp} colours across 0.80-1.00`);
+  // Debris used to be ORANGE while the rain around it was green, which is
+  // backwards from every operational display and from the reason CC is on the
+  // menu at all.
+  ok('debris reads cold and rain reads warm, not the other way round',
+     r.dRGB.b > r.dRGB.r && r.rRGB.r > r.rRGB.b,
+     `debris ${r.debris}, rain ${r.rain}`);
+  ok('so a debris ball cannot be mistaken for the rain around it',
+     r.debris !== r.rain);
+  ok('a value below the scale draws nothing rather than a colour',
+     r.below === null, String(r.below));
+  ok('and the non-meteorological end is still drawn, not dropped',
+     /^#/.test(r.lowEnd), r.lowEnd);
+}
+
+console.log('\n13. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 await browser.close();
