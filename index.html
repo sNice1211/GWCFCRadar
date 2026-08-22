@@ -3136,7 +3136,12 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
     0 2px 0 rgba(255,255,255,0.05) inset,
     0 0 0 1px rgba(0,0,0,0.4);
   font-family: var(--sans); color: #e8edf5;
-  overflow: hidden;
+  /* A card must stay a card. Adding views and pulling the note out from
+     behind a tab made it tall enough to reach off the bottom of a short
+     window, at which point it is a takeover of the screen rather than
+     something glanced at while still looking at the map. */
+  max-height: calc(100vh - 160px);
+  overflow: hidden auto;
 }
 #snd-panel.open { display: block; animation: sndIn 0.22s cubic-bezier(.2,.9,.3,1); }
 @keyframes sndIn {
@@ -3257,9 +3262,10 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
 
 /* ── Charts ────────────────────────────────────────────────────────────── */
 .snd-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 10px; }
-#snd-panel.big .snd-grid {
-  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
-}
+/* One column, at every size. The second one existed to hold the hodograph
+   beside the skew-T; the hodograph is a view of its own now, and leaving the
+   column behind would squeeze the chart into 1.35/2.35 of the panel to make
+   room for nothing. */
 .snd-card {
   min-width: 0; background: rgba(253,0,0,0.03);
   border: 1px solid rgba(253,0,0,0.16); border-radius: 12px;
@@ -3268,11 +3274,35 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
 .snd-card canvas { display: block; width: 100%; border-radius: 6px; }
 #snd-skewt { height: 236px; }
 #snd-panel.big #snd-skewt { height: min(60vh, 580px); }
-#snd-hodo { height: 200px; }
-#snd-panel.big #snd-hodo { height: min(36vh, 360px); }
-/* The hodograph is hidden small, because at 380px it is a smudge. */
-.snd-right { display: none; flex-direction: column; gap: 10px; min-width: 0; }
-#snd-panel.big .snd-right { display: flex; }
+/* A view of its own, so it gets the whole panel rather than the cramped half
+   of a grid it used to share with the skew-T. At 380px in a corner it was a
+   smudge and had to be hidden; at full width it is readable on a phone. */
+#snd-hodo { height: 236px; }
+#snd-panel.big #snd-hodo { height: min(52vh, 480px); }
+#snd-wind { height: 236px; }
+#snd-panel.big #snd-wind { height: min(52vh, 480px); }
+/* The numbers a hodograph is read FOR, under the picture that shows them. */
+.snd-hodo-read {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px; padding: 0 10px 10px;
+}
+#snd-panel.big .snd-hodo-read { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.snd-hodo-read:empty { display: none; }
+.snd-hr {
+  background: linear-gradient(180deg, rgba(253,0,0,0.09), rgba(253,0,0,0.02));
+  border: 1px solid rgba(253,0,0,0.18);
+  border-radius: 10px; padding: 6px 8px; min-width: 0;
+}
+.snd-hr b {
+  display: block; font-size: 8.5px; letter-spacing: 0.5px;
+  text-transform: uppercase; opacity: 0.52; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.snd-hr i {
+  display: block; font-family: var(--mono); font-size: 12.5px;
+  font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums;
+  margin-top: 2px; white-space: nowrap;
+}
 .snd-card-title {
   font-size: 9px; letter-spacing: 1.1px; text-transform: uppercase;
   color: var(--r-orange); opacity: 0.8; margin-bottom: 6px; font-weight: 700;
@@ -3390,20 +3420,24 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
   color: #ffd9d5; font-weight: 700;
 }
 .snd-pane[hidden] { display: none; }
-/* The note is the Source pane's whole content, so it is always visible in
-   there rather than only when something fell back. */
-.snd-pane[data-pane="source"] .snd-note { display: block; padding: 10px 12px 14px; }
-
+/* Always on, and no longer behind a tab. Where a number came from is not a
+   footnote to go looking for: two panels that look identical can disagree by
+   four hundred joules, and this line is the only thing that says which one is
+   on screen. It is also where a fallback owns up. */
 .snd-note {
-  padding: 0 10px 9px; font-family: var(--mono); font-size: 9px; opacity: 0.5;
-  display: none; line-height: 1.6;
+  padding: 6px 11px 10px; font-family: var(--mono); font-size: 9px;
+  opacity: 0.5; line-height: 1.6;
+  border-top: 1px solid rgba(253,0,0,0.12);
 }
-#snd-panel.big .snd-note { display: block; padding: 0 14px 16px; font-size: 10.5px; }
+.snd-note:empty { display: none; }
+#snd-panel.big .snd-note { padding: 8px 14px 14px; font-size: 10.5px; }
 /* A fallback is not an error, but it is not nothing either: the numbers on
    screen came from somewhere other than what was asked for, and that has to
    be readable without expanding the panel. */
+/* A fallback is not an error, but it is not nothing either: the numbers on
+   screen came from somewhere other than what was asked for. The note is
+   always visible now, so this only needs to make that line stand out in it. */
 .snd-fell { color: var(--r-yellow); opacity: 0.95; }
-#snd-panel .snd-note:has(.snd-fell) { display: block; }
 
 /* The image the Pi rendered: the full SHARPpy layout as one PNG. Shown
    whenever a prebuilt site sounding is what answered, at panel width, and a
@@ -14376,6 +14410,26 @@ let _sndPixel = null;      // a 1x1 scratch canvas, reused for every read
 // something, which is the rule now: each Pi path falls back to Open-Meteo when
 // the Pi cannot answer, so naming a model is a preference about where the
 // numbers come from rather than an instruction to fail without them.
+// The views the panel offers, and the two it keeps but no longer shows.
+//
+// Image showed a PNG the Pi renders itself, and Source showed where the
+// numbers came from. The Pi's sources are hidden, so Image could only ever be
+// blank, and the note Source held is better placed under the panel where it
+// is always visible than behind a tab nobody opens. Both are `hidden` rather
+// than deleted, exactly like the Pi sources: the panes and the code that
+// fills them are untouched, and one flag brings either back.
+//
+// Every view below reads the profile the panel already holds. Switching tabs
+// costs nothing: no fetch, no decode, no request to Open-Meteo.
+const SND_TABS = [
+  { id: 'chart',   label: 'Chart' },
+  { id: 'hodo',    label: 'Hodograph' },
+  { id: 'wind',    label: 'Wind' },
+  { id: 'numbers', label: 'Numbers' },
+  { id: 'image',   label: 'Image',  hidden: true },
+  { id: 'source',  label: 'Source', hidden: true },
+];
+
 // `hidden` takes an entry off the menu WITHOUT taking it out of the app.
 //
 // Every Pi source is hidden for now. Nothing about them is deleted: the
@@ -15886,10 +15940,11 @@ function _sndTab(el, which) {
     t.setAttribute('aria-selected', on ? 'true' : 'false');
   });
   el._tab = which;
-  // The charts live in a pane now, and a canvas in a hidden pane measures
-  // zero, so whatever was drawn while it was away is the wrong size. Coming
-  // back to it has to redraw at the size it actually is.
-  if (which === 'chart' && el._snd) _sndPaint(el, el._snd, el._prof);
+  // A canvas in a hidden pane measures zero, so whatever was drawn while it
+  // was away is the wrong size. Coming back to any of the drawn views has to
+  // redraw at the size it actually is. This reads from the profile already in
+  // hand, so switching views never asks Open-Meteo for anything.
+  if (el._snd) _sndPaint(el, el._snd, el._prof);
 }
 
 // What the Pi's own pipelines last said about themselves.
@@ -15949,14 +16004,10 @@ async function openSounding(lat, lon) {
       </div>
       <div class="snd-verdict"></div>
       <nav class="snd-tabs" role="tablist" aria-label="Sounding views">
-        <button type="button" role="tab" aria-selected="true"
-                class="snd-tab on" data-tab="chart">Chart</button>
-        <button type="button" role="tab" aria-selected="false"
-                class="snd-tab" data-tab="numbers">Numbers</button>
-        <button type="button" role="tab" aria-selected="false"
-                class="snd-tab" data-tab="image">Image</button>
-        <button type="button" role="tab" aria-selected="false"
-                class="snd-tab" data-tab="source">Source</button>
+        ${SND_TABS.filter(t => !t.hidden).map((t, i) =>
+          `<button type="button" role="tab" aria-selected="${i === 0}"
+                   class="snd-tab${i === 0 ? ' on' : ''}"
+                   data-tab="${t.id}">${t.label}</button>`).join('')}
       </nav>
       <div class="snd-pane" data-pane="chart">
         <div class="snd-grid">
@@ -15964,14 +16015,25 @@ async function openSounding(lat, lon) {
             <div class="snd-card-title">Skew-T log-P</div>
             <canvas id="snd-skewt"></canvas>
           </div>
-          <div class="snd-right">
-            <div class="snd-card">
-              <div class="snd-card-title">Hodograph (kt)</div>
-              <canvas id="snd-hodo"></canvas>
-            </div>
-          </div>
         </div>
         <div class="snd-quick"></div>
+      </div>
+      <div class="snd-pane" data-pane="hodo" hidden>
+        <div class="snd-grid">
+          <div class="snd-card">
+            <div class="snd-card-title">Hodograph (kt)</div>
+            <canvas id="snd-hodo"></canvas>
+          </div>
+        </div>
+        <div class="snd-hodo-read"></div>
+      </div>
+      <div class="snd-pane" data-pane="wind" hidden>
+        <div class="snd-grid">
+          <div class="snd-card">
+            <div class="snd-card-title">Wind with height</div>
+            <canvas id="snd-wind"></canvas>
+          </div>
+        </div>
       </div>
       <div class="snd-pane" data-pane="numbers" hidden>
         <div class="snd-tables"></div>
@@ -15979,9 +16041,12 @@ async function openSounding(lat, lon) {
       <div class="snd-pane" data-pane="image" hidden>
         <div class="snd-pimg"></div>
       </div>
-      <div class="snd-pane" data-pane="source" hidden>
-        <div class="snd-note"></div>
-      </div>`;
+      <div class="snd-pane" data-pane="source" hidden></div>
+      <!-- Where the numbers came from. OUT of the panes on purpose: it used
+           to live behind a tab, and provenance that has to be gone looking
+           for is provenance nobody reads. It is also the only place a
+           fallback announces itself. -->
+      <div class="snd-note"></div>`;
     document.body.appendChild(el);
     el.querySelector('.snd-x').onclick = () => { el.classList.remove('open'); };
     // Four short views instead of one long column, and the switch sits above
@@ -16080,15 +16145,143 @@ async function openSounding(lat, lon) {
   await _sndRefresh(el, null);
 }
 
+// Draw whichever view is up, and only that one. A canvas in a hidden pane
+// measures zero and draws nothing, so painting the others is work for no
+// picture; _sndTab paints on the way back to them instead.
 function _sndPaint(el, d, prof) {
-  // Nothing to draw into while another view is up. _sndTab paints on the way
-  // back, so this is skipped work rather than a missing chart.
-  const pane = el.querySelector('.snd-pane[data-pane="chart"]');
-  if (pane && pane.hidden) return;
-  _sndDrawSkewT(el.querySelector('#snd-skewt'), d, prof);
-  // Only drawn when it is on screen: a canvas with no size measures zero and
-  // draws nothing, and doing it anyway is work for no picture.
-  if (el.classList.contains('big')) _sndDrawHodo(el.querySelector('#snd-hodo'), d);
+  const up = (name) => {
+    const p = el.querySelector(`.snd-pane[data-pane="${name}"]`);
+    return p && !p.hidden;
+  };
+  if (up('chart')) _sndDrawSkewT(el.querySelector('#snd-skewt'), d, prof);
+  if (up('hodo')) {
+    _sndDrawHodo(el.querySelector('#snd-hodo'), d);
+    const read = el.querySelector('.snd-hodo-read');
+    if (read) read.innerHTML = _sndHodoRead(d);
+  }
+  if (up('wind')) _sndDrawWind(el.querySelector('#snd-wind'), d);
+}
+
+// The three numbers a hodograph is read for, under the picture that shows
+// them. A hodograph's SHAPE says whether a storm can rotate; these say how
+// much, and having them side by side is how the shape stops being decorative.
+function _sndHodoRead(d) {
+  if (!d) return '';
+  const esc = s2 => (typeof _ssEsc === 'function' ? _ssEsc(String(s2)) : String(s2));
+  const cell = (label, v, cls) =>
+    `<span class="snd-hr"><b>${esc(label)}</b>`
+    + `<i class="${cls || ''}">${esc(v)}</i></span>`;
+  const mo = d.motion && d.motion.right;
+  const dir = (mo && isFinite(mo.u) && isFinite(mo.v))
+    ? ((Math.atan2(-mo.u, -mo.v) * 180 / Math.PI + 360) % 360) : null;
+  const spd = (mo && isFinite(mo.u) && isFinite(mo.v)) ? Math.hypot(mo.u, mo.v) : null;
+  return cell('0-1 SRH', _sndFmt(d.srh1, 0) + ' m2/s2',
+              _sndClass(d.srh1, 100, 250))
+       + cell('0-3 SRH', _sndFmt(d.srh3, 0) + ' m2/s2',
+              _sndClass(d.srh3, 150, 300))
+       + cell('0-6 shear', _sndFmt(d.shear6, 0) + ' kt',
+              _sndClass(d.shear6, 35, 50))
+       + (dir != null
+          ? cell('Storm motion',
+                 `${Math.round(dir)}° at ${Math.round(spd)} kt`, '')
+          : '');
+}
+
+// Wind speed against height, with the barbs beside it.
+//
+// The hodograph answers "does the wind TURN", which is what decides rotation.
+// This answers the plainer question underneath it - how hard is it blowing,
+// and where does that change - which a hodograph genuinely hides: a curve far
+// from the origin and a curve near it can look alike in shape while being
+// forty knots apart in strength.
+//
+// Same profile, same cached Open-Meteo answer, no request of its own.
+function _sndDrawWind(canvas, d) {
+  if (!canvas || !d || !d.rows) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const CW = canvas.clientWidth, CH = canvas.clientHeight;
+  if (!CW || !CH) return;
+  canvas.width = CW * dpr; canvas.height = CH * dpr;
+  const g = canvas.getContext('2d');
+  if (!g) return;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, CW, CH);
+
+  const tok = (n, f) => {
+    const v = getComputedStyle(canvas).getPropertyValue(n).trim();
+    return v || f;
+  };
+  const rows = d.rows.filter(r => r.u != null && r.v != null
+    && isFinite(r.z) && r.z <= 12000);
+  const padL = 34, padR = 46, padT = 8, padB = 22;
+  const W = CW - padL - padR, H = CH - padT - padB;
+  if (W < 40 || H < 40 || rows.length < 2) {
+    g.fillStyle = 'rgba(255,255,255,0.45)';
+    g.font = '11px ui-monospace, monospace';
+    g.textAlign = 'center';
+    g.fillText('No wind in this profile.', CW / 2, CH / 2);
+    return;
+  }
+  let vmax = 10;
+  rows.forEach(r => { vmax = Math.max(vmax, Math.hypot(r.u, r.v)); });
+  vmax = Math.ceil(vmax / 10) * 10;
+  const zTop = 12;
+  const X = kt => padL + (kt / vmax) * W;
+  const Y = zkm => padT + H - (zkm / zTop) * H;
+
+  g.font = '9px ui-monospace, monospace';
+  g.strokeStyle = 'rgba(255,255,255,0.10)';
+  g.fillStyle = 'rgba(255,255,255,0.45)';
+  g.textAlign = 'right'; g.textBaseline = 'middle';
+  for (let z = 0; z <= zTop; z += 2) {
+    const y = Y(z);
+    g.beginPath(); g.moveTo(padL, y); g.lineTo(padL + W, y); g.stroke();
+    g.fillText(z + ' km', padL - 4, y);
+  }
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  const step = vmax <= 40 ? 10 : vmax <= 100 ? 20 : 40;
+  for (let v = 0; v <= vmax; v += step) {
+    const x = X(v);
+    g.strokeStyle = 'rgba(255,255,255,0.07)';
+    g.beginPath(); g.moveTo(x, padT); g.lineTo(x, padT + H); g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.45)';
+    g.fillText(String(v), x, padT + H + 4);
+  }
+
+  // The speed trace, coloured the way the hodograph colours height.
+  const band = (zkm) => zkm <= 1 ? tok('--r-red', '#fd0000')
+                      : zkm <= 3 ? tok('--r-orange', '#fd9500')
+                      : zkm <= 6 ? tok('--r-green', '#02fd02')
+                                 : tok('--r-blue', '#019ff4');
+  const pts = rows.map(r => ({
+    zkm: r.z / 1000, kt: Math.hypot(r.u, r.v), u: r.u, v: r.v,
+  })).sort((a, b) => a.zkm - b.zkm);
+  g.lineWidth = 2.4;
+  for (let i = 1; i < pts.length; i++) {
+    g.strokeStyle = band(pts[i].zkm);
+    g.beginPath();
+    g.moveTo(X(pts[i - 1].kt), Y(pts[i - 1].zkm));
+    g.lineTo(X(pts[i].kt), Y(pts[i].zkm));
+    g.stroke();
+  }
+
+  // Barbs down the right margin, the standard way of reading direction.
+  const bx = padL + W + 22;
+  g.strokeStyle = 'rgba(255,255,255,0.7)'; g.lineWidth = 1.2;
+  g.beginPath(); g.moveTo(bx, padT); g.lineTo(bx, padT + H); g.stroke();
+  let lastY = -99;
+  pts.forEach(p => {
+    const y = Y(p.zkm);
+    if (Math.abs(y - lastY) < 16) return;   // no unreadable pile-up
+    lastY = y;
+    if (typeof _sndBarb === 'function') _sndBarb(g, bx, y, p.u, p.v);
+  });
+
+  g.strokeStyle = 'rgba(255,255,255,0.22)';
+  g.strokeRect(padL, padT, W, H);
+  g.fillStyle = 'rgba(255,255,255,0.4)';
+  g.textAlign = 'center'; g.textBaseline = 'top';
+  g.fillText('knots', padL + W / 2, padT + H + 13);
 }
 
 // The four numbers worth having at card size. Which four is not a guess: CAPE
@@ -41891,7 +42084,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The sounding source menu now shows only Open-Meteo, which needs no Pi. Every Pi source is hidden rather than removed: the SounderPy door, the rendered site images and the model level reader are all still in the app and still tested, and bringing one back is a one line change. With the Pi off the air a menu offering seven ways to ask it was offering seven ways to wait and then be told no.";
+const APP_LATEST_UPDATE = "The sounding panel has two new views and has lost two old ones. Image and Source are gone from the bar: Image showed a picture only the Pi renders, so with the Pi sources hidden it could only ever be blank, and the note Source held now sits under the panel where it is always visible instead of behind a tab. In their place, Hodograph and Wind. The hodograph gets the whole panel rather than a squeezed corner, with the numbers it is read for underneath it, and Wind shows speed against height with the barbs beside it. Both are drawn from the same Open-Meteo answer the chart uses, so switching between any of the four views costs nothing at all: no fetch, no request, no waiting.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
