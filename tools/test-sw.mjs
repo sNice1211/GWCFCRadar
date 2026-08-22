@@ -107,7 +107,7 @@ async function main() {
   const r3 = await dispatchFetch(GET(LEAF));
   ok('leaflet is cached after the first fetch',
      r3 && r3.status === 200 && netCalls === 1, `calls=${netCalls}`);
-  const staticCache = cacheStore.get('gwcfc-static-v2');
+  const staticCache = cacheStore.get('gwcfc-static-v3');
   ok('and it lives in the static cache, not among the tiles',
      !!(staticCache && staticCache.m.has(LEAF)), [...(staticCache ? staticCache.m.keys() : [])].join(','));
 
@@ -121,8 +121,14 @@ async function main() {
   const src = readFileSync(join(ROOT, 'sw.js'), 'utf8');
   ok('the shell is fetched with a forced revalidation',
      /fetch\(req\.url,\s*\{\s*cache:\s*'no-cache'/.test(src));
-  ok('and the stale v1 shell cache is purged by the version bump',
-     /gwcfc-static-v2/.test(src) && !/STATIC_CACHE = 'gwcfc-static-v1'/.test(src));
+  ok('and the stale shell cache is purged by the version bump',
+     /gwcfc-static-v3/.test(src) && !/STATIC_CACHE = 'gwcfc-static-v2'/.test(src));
+  // A timeout shorter than the page takes to arrive is a timeout that fires
+  // every single time, and then the stale shell answers every single time.
+  // index.html is nearly three megabytes, so this has to be generous.
+  const ms = +(/SHELL_TIMEOUT_MS = (\d+)/.exec(src) || [])[1];
+  ok('and the shell timeout is longer than this page takes to arrive',
+     ms >= 8000, String(ms));
 }
 
 console.log('\n3. opening the app: network first, shell stored');
@@ -152,7 +158,7 @@ console.log('\n3. opening the app: network first, shell stored');
   ok('the cached shell arrives instead of a blank wait',
      r6 && (await r6.clone().text()) === '<html>fresh</html>', String(r6 && r6.status));
   ok('and it took about the timeout, not forever',
-     waited >= 3000 && waited < 5500, waited + 'ms');
+     waited >= 8000 && waited < 11000, waited + 'ms');
   slowResolve(new Response('late', { status: 200 })); // release the hanging fetch
 
   console.log('\n6. live data is never intercepted');

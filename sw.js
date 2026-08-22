@@ -3,7 +3,10 @@ const CACHE        = 'gwcfc-v19';
 // v2: the shell copies saved under v1 could be stale in a way nothing would
 // ever heal (see shellNetworkFirst), so activating this version deletes them
 // wholesale and the first load refills the cache with a verified-fresh page.
-const STATIC_CACHE = 'gwcfc-static-v2'; // app shell + CDN libraries + fonts
+const STATIC_CACHE = 'gwcfc-static-v3'; // app shell + CDN libraries + fonts
+// v3: the shell timeout was shorter than this page takes to arrive on a slow
+// connection, so the stale copy under v2 was being served over and over and
+// the fresh one never got a turn. Bumping the name deletes those on activate.
 const NOTIF_CACHE  = 'gwcfc-notif-seen-v1'; // tracks alert IDs already notified
 
 // ── Radar tile caches ────────────────────────────────────────
@@ -62,7 +65,17 @@ const STATIC_TTL_MS = 30 * 24 * 3600 * 1000;
 // copy as the fallback when the network is slow or gone. The race means a
 // bad connection costs at most SHELL_TIMEOUT_MS before the app opens from
 // cache; the fetch keeps running in the background and refreshes the copy.
-const SHELL_TIMEOUT_MS = 3500;
+const SHELL_TIMEOUT_MS = 9000;
+// 3500 was measured against a fast connection and was wrong for this one.
+// index.html is nearly three megabytes in a single file, and on a slow or
+// unsteady link it simply does not arrive in three and a half seconds. So
+// the timeout fired on EVERY load, the stale shell answered every time,
+// and a deploy could never reach the person waiting for it: the site was
+// permanently one version behind and nothing said why.
+//
+// This is only ever the wait before falling back to a copy that already
+// works, and only when there IS one. A first visit is not affected: with
+// nothing cached the code below gives the network its full chance anyway.
 
 // The tile cache grows a few hundred KB per radar frame per pan. Left alone
 // it balloons until cache.match itself gets slow, so it is trimmed back to
