@@ -262,7 +262,114 @@ console.log('\n6. the check tells an empty basin from a dead server');
      JSON.stringify(r.rows));
 }
 
-console.log('\n7. nothing above threw');
+console.log("\n8. the URL it actually asks for, which is what broke");
+{
+  // The layer went blank because of one character. Three other places in the
+  // app ask this same cache service for plain text and all of them spell it
+  // `txt`; JTWC was the only caller spelling it `text`, so it was the only
+  // caller getting back something that was not the feed. The parse found no
+  // <item, returned an empty list, and an empty list is indistinguishable
+  // from a quiet ocean - so it failed silently and looked like good weather.
+  //
+  // Every test above mocked the fetch and therefore never looked at the URL,
+  // which is exactly how a whole suite stays green over a dead layer.
+  const r = await page.evaluate(async () => {
+    const asked = [];
+    const realFetch = window.fetch;
+    window.fetch = async (url, opts) => {
+      asked.push(String(url));
+      return new Response('<rss><channel></channel></rss>', { status: 200 });
+    };
+    await _jtwcFetchBasin({ id: 'wp', label: 'Western Pacific' });
+    window.fetch = realFetch;
+    const proxied = asked[0] || '';
+    return {
+      proxied,
+      // How the rest of the app spells it, read from the page's own source of
+      // truth rather than from a copy in this test.
+      fmt: (proxied.match(/[?&]format=([^&]+)/) || [])[1] || '',
+      target: decodeURIComponent((proxied.match(/[?&]url=([^&]+)/) || [])[1] || ''),
+    };
+  });
+  ok('the feed is asked for through the cache', /cachefetch/.test(r.proxied),
+     r.proxied.slice(0, 90));
+  // The fix, stated as the thing that must stay true.
+  ok('and asked for as txt, the spelling every other caller uses',
+     r.fmt === 'txt', r.fmt);
+  ok('the address behind it is JTWC RSS for that basin',
+     /metoc\.navy\.mil\/jtwc\/rss\/jtwc\.rss\?wp$/.test(r.target), r.target);
+
+  // Read from the file, so a fourth caller drifting apart from the other
+  // three is caught the moment it is written rather than when it is noticed.
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const formats = [...html.matchAll(/cachefetch\.sparkradar\.app\/cache\?format=([a-z$'{? :]+)/g)]
+    .map(m => m[1]);
+  const textish = formats.filter(f => /text/.test(f) && !/txt/.test(f));
+  ok('and no caller anywhere still says "text" where it means "txt"',
+     textish.length === 0, formats.join(' | '));
+}
+
+console.log("\n9. an unreadable feed is not allowed to look like calm weather");
+{
+  // The failure mode this whole section exists for. A blank Pacific is a
+  // perfectly ordinary sight, so "nothing drawn" must not be the only signal
+  // that the feed is broken.
+  const r = await page.evaluate(async () => {
+    const out = {};
+    const realFetch = window.fetch;
+    const realToast = window.showToast;
+    let toast = null;
+    window.showToast = (msg) => { toast = String(msg); };
+
+    // 1. The proxy hands back its own error page rather than the feed.
+    window.fetch = async () => new Response('{"error":"bad format"}', { status: 200 });
+    const notFeed = await _jtwcFetchBasin({ id: 'wp', label: 'WP' });
+    out.notFeed = { n: notFeed.length, why: notFeed.error || '' };
+
+    // 2. The cache refuses outright.
+    window.fetch = async () => new Response('nope', { status: 503 });
+    const http = await _jtwcFetchBasin({ id: 'wp', label: 'WP' });
+    out.http = { n: http.length, why: http.error || '' };
+
+    // 3. A real feed with genuinely no systems in it. This one must stay
+    //    quiet: it is the ocean being calm, not the layer being broken.
+    window.fetch = async () =>
+      new Response('<rss><channel><item><title>No warnings</title>'
+        + '<description>none</description></item></channel></rss>', { status: 200 });
+    const quiet = await _jtwcFetchBasin({ id: 'wp', label: 'WP' });
+    out.quiet = { n: quiet.length, why: quiet.error || null };
+
+    // 4. Every basin unreadable, through the real toggle, with the layer on.
+    window.fetch = async () => new Response('{"error":"bad format"}', { status: 200 });
+    _jtwcOn = true;
+    toast = null;
+    await loadJTWCOutlook();
+    out.toast = toast || '';
+    out.drawn = _jtwcLayers.length;
+    _jtwcOn = false;
+    _jtwcClear();
+
+    window.fetch = realFetch;
+    window.showToast = realToast;
+    return out;
+  });
+  ok('a proxy error page is reported as not being the feed',
+     r.notFeed.n === 0 && /not the JTWC feed/.test(r.notFeed.why), r.notFeed.why);
+  ok('and it quotes what did arrive, so the cause is visible',
+     /bad format/.test(r.notFeed.why), r.notFeed.why);
+  ok('a refusal names the status it was refused with',
+     /HTTP 503/.test(r.http.why), r.http.why);
+  // The other half, and the one that keeps this honest: a real but empty
+  // feed carries no error, because there is nothing wrong with it.
+  ok('a genuinely quiet basin is NOT reported as an error',
+     r.quiet.n === 0 && r.quiet.why === null, String(r.quiet.why));
+  ok('and when no basin can be read the map says so out loud',
+     /could not be read/i.test(r.toast), r.toast.slice(0, 120));
+  ok('rather than drawing nothing and looking like a calm ocean',
+     r.drawn === 0, String(r.drawn));
+}
+
+console.log('\n10. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));
   ok('no page errors', real.length === 0, real.slice(0, 3).join(' | '));

@@ -25654,9 +25654,35 @@ const JTWC_BASINS = [
 // Anything fetched goes through the same cache proxy the NHC feed uses, so
 // the browser's cross-origin rules are somebody else's problem and a crowd
 // of visitors is one call upstream rather than hundreds.
+// `txt`, not `text`.
+//
+// This is the whole reason the layer went blank. Three other places in this
+// file ask the same cache service for plain text and every one of them spells
+// it `txt`; this was the only caller spelling it `text`, so it was the only
+// caller getting an answer back that was not the feed. The parse then found
+// no `<item` in it, returned an empty list, and an empty list is exactly what
+// a quiet ocean looks like - so the layer failed silently and looked like
+// "no storms today" for as long as it was wrong.
 function _jtwcProxy(url, asText) {
-  return `https://cachefetch.sparkradar.app/cache?format=${asText ? 'text' : 'json'}`
+  return `https://cachefetch.sparkradar.app/cache?format=${asText ? 'txt' : 'json'}`
        + `&maxAge=900&url=${encodeURIComponent(url)}`;
+}
+
+// Some cache services hand plain text back wrapped in a JSON envelope. If
+// that is what arrived, the feed is inside it rather than missing, and
+// unwrapping costs nothing when it is not.
+function _jtwcUnwrap(text) {
+  const t = String(text || '');
+  if (t.indexOf('<item') >= 0) return t;          // already the feed itself
+  const trimmed = t.trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return t;
+  try {
+    const j = JSON.parse(trimmed);
+    for (const k of ['contents', 'body', 'data', 'text', 'result', 'response']) {
+      if (typeof j[k] === 'string' && j[k].indexOf('<item') >= 0) return j[k];
+    }
+  } catch (e) {}
+  return t;
 }
 
 // Position lines in JTWC text read like "12.3N 130.5E". Both hemispheres and
@@ -25685,14 +25711,31 @@ function _jtwcParseKt(text) {
 // fragile in the way reading prose always is, which is why a system with no
 // readable position is dropped rather than drawn at nought degrees by nought
 // degrees, in the Gulf of Guinea, where there has never been a typhoon.
+// Returns the systems, and hangs the reason on the array when there are
+// none. "The western Pacific is quiet" and "the feed could not be read" are
+// both an empty list, they want completely different responses, and the
+// version of this that could not tell them apart hid a broken layer behind a
+// perfectly ordinary looking quiet map.
 async function _jtwcFetchBasin(basin) {
   const url = `https://www.metoc.navy.mil/jtwc/rss/jtwc.rss?${basin.id}`;
+  const fail = (why) => { const a = []; a.error = why; return a; };
   let text = null;
   try {
     const r = await fetchWithTimeout(_jtwcProxy(url, true), 12000);
-    if (r.ok) text = await r.text();
-  } catch (e) { return []; }
-  if (!text || text.indexOf('<item') < 0) return [];
+    if (!r.ok) return fail(`the cache answered HTTP ${r.status}`);
+    text = await r.text();
+  } catch (e) {
+    return fail('could not reach the cache: ' + ((e && e.message) || e));
+  }
+  text = _jtwcUnwrap(text);
+  if (!text) return fail('the cache answered with nothing at all');
+  if (text.indexOf('<item') < 0) {
+    // Reached something, but not the feed. Worth saying what did arrive,
+    // because that is the difference between a dead upstream and a proxy
+    // handing back its own error page.
+    return fail('what came back was not the JTWC feed: '
+      + text.replace(/\s+/g, ' ').trim().slice(0, 120));
+  }
 
   const out = [];
   const items = text.split(/<item[\s>]/i).slice(1);
@@ -25722,9 +25765,20 @@ async function _jtwcFetchBasin(basin) {
   return out;
 }
 
+// Set when the last load could not read a single basin, so the toggle can
+// say so rather than leaving an empty map to be read as calm weather.
+let _jtwcLastError = null;
+
 async function _jtwcFetchAll() {
   const lists = await Promise.all(JTWC_BASINS.map(b =>
-    _jtwcFetchBasin(b).catch(() => [])));
+    _jtwcFetchBasin(b).catch((e) => {
+      const a = []; a.error = (e && e.message) || String(e); return a;
+    })));
+  // Every basin failing is a broken feed. Some failing while others answer is
+  // ordinary: JTWC does not always publish for all three.
+  const broke = lists.filter(l => l.error);
+  _jtwcLastError = (broke.length === JTWC_BASINS.length)
+    ? broke[0].error : null;
   const all = [].concat.apply([], lists);
   // One warning per system, not one per bulletin: JTWC reissues, and the
   // feed can carry several for the same storm.
@@ -25749,6 +25803,17 @@ async function loadJTWCOutlook() {
   catch (e) { systems = []; }
   if (!_jtwcOn) return 0;                 // switched off while we waited
   _jtwcClear();
+
+  // Nothing drawn AND nothing readable. The Pacific is never reliably quiet
+  // enough for a blank map to be self-explanatory, so it says which it was.
+  if (!systems.length && _jtwcLastError) {
+    if (typeof showToast === 'function') {
+      showToast('JTWC could not be read: ' + _jtwcLastError.slice(0, 90)
+        + '. Run _jtwcCheck() in the console for the detail.', 6000);
+    }
+    console.warn('[JTWC]', _jtwcLastError);
+    return 0;
+  }
 
   systems.forEach(s => {
     const kt = s.kt || 0;
@@ -25814,8 +25879,11 @@ async function _jtwcCheck() {
   const rows = [];
   for (const b of JTWC_BASINS) {
     let n = 0, err = null;
-    try { n = (await _jtwcFetchBasin(b)).length; }
-    catch (e) { err = e.message || String(e); }
+    try {
+      const list = await _jtwcFetchBasin(b);
+      n = list.length;
+      err = list.error || null;
+    } catch (e) { err = e.message || String(e); }
     rows.push({ basin: b.label, systems: n, error: err });
   }
   console.table(rows);
@@ -42084,7 +42152,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The sounding panel has two new views and has lost two old ones. Image and Source are gone from the bar: Image showed a picture only the Pi renders, so with the Pi sources hidden it could only ever be blank, and the note Source held now sits under the panel where it is always visible instead of behind a tab. In their place, Hodograph and Wind. The hodograph gets the whole panel rather than a squeezed corner, with the numbers it is read for underneath it, and Wind shows speed against height with the barbs beside it. Both are drawn from the same Open-Meteo answer the chart uses, so switching between any of the four views costs nothing at all: no fetch, no request, no waiting.";
+const APP_LATEST_UPDATE = "JTWC outlooks are fixed. The layer was asking the cache service for the feed as \"text\" where every other part of the app asks for \"txt\", so it was the only one getting back something that was not the feed. What made it hard to notice is that the failure looked exactly like good weather: the parse found nothing, drew nothing, and a blank Pacific is an ordinary sight. It now says out loud when it cannot read the feed, and stays quiet when a basin is genuinely calm, which are two different things it could not tell apart before.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
