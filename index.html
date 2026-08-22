@@ -14190,22 +14190,36 @@ let _sndPixel = null;      // a 1x1 scratch canvas, reused for every read
 // trust an effective-inflow layer or a 0-1 km SRH from, because both of those
 // live inside the gaps between the levels. That is the whole reason for the
 // door, and why Auto reaches for it first.
+// Only the sources that actually put a sounding on the screen.
+//
+// "Auto" is gone, and it is the only thing that went. It was never a source:
+// it tried the others in turn, and then had to REMEMBER which one it settled
+// on so that the slider did not change meaning underneath the hand, and what
+// it settled on was always one of the entries below anyway. An entry that can
+// only ever be a different entry is a way of not choosing, not a choice.
+//
+// What is left is the Pi, seven ways, and Open-Meteo. Every one of them draws
+// something, which is the rule now: each Pi path falls back to Open-Meteo when
+// the Pi cannot answer, so naming a model is a preference about where the
+// numbers come from rather than an instruction to fail without them.
 const SND_SOURCES = [
-  { id: 'auto',   pi: null,       label: 'Auto (best available)' },
-  { id: 'rap',    pi: 'rap',      label: 'RAP analysis' },
-  { id: 'obs',    pi: 'obs',      label: 'Observed balloon' },
-  { id: 'hrrr',   pi: 'hrrr',     label: 'HRRR' },
-  { id: 'nam',    pi: 'nam',      label: 'NAM' },
-  { id: 'gfs',    pi: 'gfs',      label: 'GFS' },
+  { id: 'rap',    pi: 'rap',      label: 'RAP analysis (Pi)' },
+  { id: 'obs',    pi: 'obs',      label: 'Observed balloon (Pi)' },
+  { id: 'hrrr',   pi: 'hrrr',     label: 'HRRR (Pi)' },
+  { id: 'nam',    pi: 'nam',      label: 'NAM (Pi)' },
+  { id: 'gfs',    pi: 'gfs',      label: 'GFS (Pi)' },
   // The images the Pi renders itself: SounderPy's full profile, SHARPpy's
   // parameters, drawn into a PNG at each upper-air site once an hour. Static
   // files, so they survive an old serve.py that has never heard of the
-  // /sounding door.
+  // /sounding door. This is the only source that fills the Image view.
   { id: 'pisite', pi: null,       label: 'Pi site images (SounderPy)' },
+  // Twelve levels read out of the model images the Pi builds every six hours
+  // and analysed here. The coarsest of the Pi paths, and the one that answers
+  // when the Pi has models but no sounding run yet.
   { id: 'levels', pi: null,       label: 'Pi model levels' },
   // The one that works with no Pi at all, and the reason the panel can
   // always draw something. Last in the list because it is the last resort.
-  { id: 'web',    pi: null,       label: 'Web (no Pi needed)' },
+  { id: 'web',    pi: null,       label: 'Open-Meteo (no Pi needed)' },
 ];
 // How far back the SounderPy sources can be asked to look, in hours. An
 // analysis is hourly, so these are the hours themselves rather than a
@@ -14214,8 +14228,12 @@ const SND_SOURCES = [
 // sounding after the fact.
 const SND_BACK_HOURS = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48];
 
-let _sndSource = 'auto';
-// Remembered per session so Auto stops knocking on a door that is not there.
+// RAP is the default because it is the best thing the Pi can answer with: an
+// hourly analysis of what the air is doing right now, rather than a forecast
+// of what it will do. It falls back to Open-Meteo on its own, so defaulting to
+// it costs nothing when the Pi is away.
+let _sndSource = 'rap';
+// Remembered per session so the panel stops knocking on a door that is not there.
 // A Pi running an older serve.py answers 404 for /sounding, and retrying that
 // on every click is a second of nothing before every fallback.
 let _sndPiDown = false;
@@ -14464,41 +14482,227 @@ const SND_OM_LEVELS = [1000, 975, 950, 925, 900, 850, 800, 700, 600, 500,
 const SND_OM_MODELS = {
   auto: 'best_match', rap: 'best_match', gfs: 'gfs_seamless',
   hrrr: 'gfs_hrrr', nam: 'ncep_nbm_conus', obs: 'best_match',
+  pisite: 'best_match',
 };
 
-async function _sndOpenMeteo(lat, lon, hoursBack, source) {
-  const fields = [];
-  for (const lv of SND_OM_LEVELS) {
-    fields.push(`temperature_${lv}hPa`, `relative_humidity_${lv}hPa`,
-                `wind_speed_${lv}hPa`, `wind_direction_${lv}hPa`,
-                `geopotential_height_${lv}hPa`);
-  }
-  fields.push('temperature_2m', 'dew_point_2m', 'surface_pressure',
-              'wind_speed_10m', 'wind_direction_10m');
-  const model = SND_OM_MODELS[source] || 'best_match';
-  const q = new URLSearchParams({
-    latitude: (+lat).toFixed(4), longitude: (+lon).toFixed(4),
-    hourly: fields.join(','),
-    wind_speed_unit: 'kn',
-    // Past days only when actually looking back, because asking for them
-    // always makes the answer bigger for no reason.
-    past_days: hoursBack > 0 ? String(Math.min(2, Math.ceil(hoursBack / 24))) : '0',
-    forecast_days: '2',
-    models: model,
-  });
-  const url = `https://api.open-meteo.com/v1/forecast?${q.toString()}`;
+// ── Asking Open-Meteo as rarely as it is possible to ask it ────────────────
+//
+// This is the one source with nothing of ours behind it, so it is the one
+// that can be taken away by asking too often. Open-Meteo's free tier allows
+// roughly 600 calls a minute, 5,000 an hour and 10,000 a day, and the panel
+// used to spend them carelessly: one whole request PER HOUR OF THE SLIDER.
+// Dragging that slider across its eleven stops fired eleven identical
+// downloads and threw ten of them away, because every response already
+// contains the whole series and the code was only indexing a different
+// element of it.
+//
+// Four things stop it now, in the order they take effect:
+//
+//   1. One request covers every hour. The window asked for is FIXED at two
+//      days back and two days forward, which spans every stop the slider has,
+//      so moving it never touches the network at all.
+//   2. A cache, keyed on the point rounded to about a kilometre. A second
+//      click in the same neighbourhood is free.
+//   3. Requests in flight are shared. Two clicks before the first answers
+//      make one request, not two.
+//   4. A budget far below the published limits, counted in localStorage so it
+//      survives a reload and is shared by every tab. When it is spent, a
+//      stale cached answer is used rather than a request being made.
+//
+// And if Open-Meteo ever does say no, its own Retry-After is honoured and
+// nothing is sent until it passes.
+const SND_OM_TTL_MS    = 15 * 60e3;      // fresh enough to use without asking
+const SND_OM_STALE_MS  = 6 * 3600e3;     // old, but better than no sounding
+const SND_OM_MIN_GAP   = 400;            // never two requests back to back
+const SND_OM_MEM_MAX   = 12;             // points remembered in this tab
+const SND_OM_SAVE_MAX  = 3;              // and across a reload
+// Deliberately about a twentieth of what is actually allowed. The panel has
+// no legitimate reason to approach the real ceiling, so the budget is set
+// where crossing it means something is wrong rather than something is busy.
+const SND_OM_BUDGET = [
+  { ms: 60e3,    max: 20,   name: 'a minute' },
+  { ms: 3600e3,  max: 200,  name: 'an hour' },
+  { ms: 86400e3, max: 1500, name: 'a day' },
+];
+const SND_OM_CALLS_KEY = 'gwcfc_om_calls';
+const SND_OM_CACHE_KEY = 'gwcfc_om_cache';
 
-  let r;
+const _sndOMMem = new Map();      // key -> { at, body }
+const _sndOMFlight = new Map();   // key -> Promise, so clicks share a request
+let _sndOMLastAt = 0;
+let _sndOMHoldUntil = 0;          // set by a 429, cleared by time
+
+// About a kilometre. Two clicks that close ask the same question, and a
+// sounding does not change between them.
+function _sndOMKey(lat, lon, model) {
+  return `${(+lat).toFixed(2)},${(+lon).toFixed(2)},${model}`;
+}
+
+function _sndOMReadStore(key, fallback) {
   try {
-    r = await fetch(url, { cache: 'no-store', signal: _abortSignal(15000) });
-  } catch (e) {
-    throw new Error('could not reach Open-Meteo, so there is no sounding '
-      + 'source left. Check the connection.');
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) { return fallback; }
+}
+
+// Every call this browser has made in the last day, oldest first. Kept in
+// localStorage rather than memory because a reload is not a fresh allowance:
+// the limit belongs to the address, not to the page.
+function _sndOMCalls() {
+  const cut = Date.now() - 86400e3;
+  const all = _sndOMReadStore(SND_OM_CALLS_KEY, []);
+  return (Array.isArray(all) ? all : []).filter(t => typeof t === 'number' && t > cut);
+}
+
+function _sndOMNoteCall() {
+  const list = _sndOMCalls();
+  list.push(Date.now());
+  try { localStorage.setItem(SND_OM_CALLS_KEY, JSON.stringify(list)); } catch (e) {}
+}
+
+// Null when there is room, or the window that is full. Checked BEFORE a
+// request rather than after a refusal, which is the whole point: a limit that
+// is only discovered by being rejected has already been crossed.
+function _sndOMOverBudget() {
+  const now = Date.now();
+  const list = _sndOMCalls();
+  for (const w of SND_OM_BUDGET) {
+    const n = list.filter(t => t > now - w.ms).length;
+    if (n >= w.max) return `${n} requests in ${w.name}`;
   }
-  if (!r.ok) throw new Error(`Open-Meteo answered HTTP ${r.status}`);
-  const body = await r.json().catch(() => null);
-  const H = body && body.hourly;
-  if (!H || !H.time) throw new Error('Open-Meteo sent back no hourly data');
+  return null;
+}
+
+function _sndOMCacheGet(key) {
+  const hit = _sndOMMem.get(key);
+  if (hit) return hit;
+  const saved = _sndOMReadStore(SND_OM_CACHE_KEY, {});
+  const s = saved && saved[key];
+  if (s && s.at && s.body) {
+    _sndOMMem.set(key, s);
+    return s;
+  }
+  return null;
+}
+
+function _sndOMCachePut(key, body) {
+  const entry = { at: Date.now(), body };
+  _sndOMMem.set(key, entry);
+  while (_sndOMMem.size > SND_OM_MEM_MAX) {
+    _sndOMMem.delete(_sndOMMem.keys().next().value);
+  }
+  // Mirrored to disk so a reload does not start the spending again. The
+  // series is large, so only the newest few are kept and a full disk is not
+  // an error: the memory cache above is what actually does the work.
+  try {
+    const saved = _sndOMReadStore(SND_OM_CACHE_KEY, {}) || {};
+    saved[key] = entry;
+    const keys = Object.keys(saved)
+      .sort((a, b) => (saved[b].at || 0) - (saved[a].at || 0));
+    const trimmed = {};
+    keys.slice(0, SND_OM_SAVE_MAX).forEach(k => { trimmed[k] = saved[k]; });
+    localStorage.setItem(SND_OM_CACHE_KEY, JSON.stringify(trimmed));
+  } catch (e) {
+    try { localStorage.removeItem(SND_OM_CACHE_KEY); } catch (e2) {}
+  }
+}
+
+// The only place in the panel that touches Open-Meteo.
+async function _sndOMSeries(lat, lon, model) {
+  const key = _sndOMKey(lat, lon, model);
+  const cached = _sndOMCacheGet(key);
+  const age = cached ? Date.now() - cached.at : Infinity;
+  if (cached && age < SND_OM_TTL_MS) return cached.body;
+
+  // Someone else already asked this exact question and has not been answered
+  // yet. Wait on their request instead of making a second one.
+  const flying = _sndOMFlight.get(key);
+  if (flying) return flying;
+
+  // Stale is better than absent whenever a request cannot be made. Both of
+  // these are reasons to hold off, and neither is a reason to show an error
+  // over a sounding that is fifteen minutes old.
+  const usable = cached && age < SND_OM_STALE_MS ? cached.body : null;
+  if (Date.now() < _sndOMHoldUntil) {
+    if (usable) return usable;
+    const secs = Math.ceil((_sndOMHoldUntil - Date.now()) / 1000);
+    throw new Error(`Open-Meteo asked for ${secs}s before the next request, `
+      + 'and there is nothing saved for this point yet');
+  }
+  const full = _sndOMOverBudget();
+  if (full) {
+    if (usable) return usable;
+    throw new Error(`holding off Open-Meteo after ${full}, and there is `
+      + 'nothing saved for this point yet');
+  }
+
+  const p = (async () => {
+    // Never two requests in the same instant, however fast the clicking.
+    const gap = SND_OM_MIN_GAP - (Date.now() - _sndOMLastAt);
+    if (gap > 0) await new Promise(r => setTimeout(r, gap));
+
+    const fields = [];
+    for (const lv of SND_OM_LEVELS) {
+      fields.push(`temperature_${lv}hPa`, `relative_humidity_${lv}hPa`,
+                  `wind_speed_${lv}hPa`, `wind_direction_${lv}hPa`,
+                  `geopotential_height_${lv}hPa`);
+    }
+    fields.push('temperature_2m', 'dew_point_2m', 'surface_pressure',
+                'wind_speed_10m', 'wind_direction_10m');
+    const q = new URLSearchParams({
+      latitude: (+lat).toFixed(4), longitude: (+lon).toFixed(4),
+      hourly: fields.join(','),
+      wind_speed_unit: 'kn',
+      // FIXED, not trimmed to the hour being asked for. Two days back covers
+      // every stop the slider has, so the whole control is served by this one
+      // answer. Asking for less would save a few kilobytes and cost a request
+      // per hour, which is the trade that caused this.
+      past_days: '2',
+      forecast_days: '2',
+      models: model,
+    });
+    const url = `https://api.open-meteo.com/v1/forecast?${q.toString()}`;
+
+    _sndOMLastAt = Date.now();
+    _sndOMNoteCall();
+    let r;
+    try {
+      r = await fetch(url, { cache: 'no-store', signal: _abortSignal(15000) });
+    } catch (e) {
+      throw new Error('could not reach Open-Meteo, so there is no sounding '
+        + 'source left. Check the connection.');
+    }
+    if (r.status === 429 || r.status === 503) {
+      // Its own answer about when to come back, believed rather than guessed.
+      const ra = parseInt(r.headers.get('retry-after') || '', 10);
+      const wait = isFinite(ra) && ra > 0 ? Math.min(ra, 3600) : 60;
+      _sndOMHoldUntil = Date.now() + wait * 1000;
+      throw new Error(`Open-Meteo is rate limiting this address and asked for `
+        + `${wait}s. Nothing will be sent to it until then.`);
+    }
+    if (!r.ok) throw new Error(`Open-Meteo answered HTTP ${r.status}`);
+    const body = await r.json().catch(() => null);
+    if (!body || !body.hourly || !body.hourly.time) {
+      throw new Error('Open-Meteo sent back no hourly data');
+    }
+    _sndOMCachePut(key, body);
+    return body;
+  })().finally(() => { _sndOMFlight.delete(key); });
+
+  _sndOMFlight.set(key, p);
+  // A failed request must not throw away a usable saved answer.
+  try {
+    return await p;
+  } catch (e) {
+    if (usable) return usable;
+    throw e;
+  }
+}
+
+async function _sndOpenMeteo(lat, lon, hoursBack, source) {
+  const model = SND_OM_MODELS[source] || 'best_match';
+  const body = await _sndOMSeries(lat, lon, model);
+  const H = body.hourly;
 
   // Which hour. The series runs from past_days ago to forecast_days ahead, so
   // the wanted hour is found by time rather than by counting from either end,
@@ -15619,21 +15823,36 @@ async function openSounding(lat, lon) {
     // comes from, and that is not a compromise: a forecast has forecast hours
     // and an analysis does not. For the level images it picks a forecast hour;
     // for anything through the Pi's door it picks how far back to look.
+    //
+    // Debounced, because `input` fires for every stop the thumb passes over,
+    // not for the one it is let go on. Dragging from one end to the other used
+    // to start a fetch at each of the eleven stops on the way. The label under
+    // the thumb still moves immediately, so the control feels no slower; only
+    // the fetching waits to find out where the thumb actually stopped.
+    const hourAt = (i) => {
+      if (el._piMode) {
+        return SND_BACK_HOURS[Math.min(i, SND_BACK_HOURS.length - 1)];
+      }
+      const hrs = (_sndManifest && _sndManifest.hours) || [0];
+      return +hrs[Math.min(i, hrs.length - 1)];
+    };
     el.querySelector('.snd-hour').oninput = (e) => {
       const i = Math.max(0, +e.target.value);
-      if (el._piMode) {
-        _sndRefresh(el, SND_BACK_HOURS[Math.min(i, SND_BACK_HOURS.length - 1)]);
-      } else {
-        const hrs = (_sndManifest && _sndManifest.hours) || [0];
-        _sndRefresh(el, +hrs[Math.min(i, hrs.length - 1)]);
+      const hr = hourAt(i);
+      const lbl = el.querySelector('.snd-hour-lbl');
+      if (lbl) {
+        lbl.textContent = el._piMode
+          ? (hr ? `-${hr}h` : 'now')
+          : 'F+' + String(hr).padStart(3, '0');
       }
+      clearTimeout(el._hourTimer);
+      el._hourTimer = setTimeout(() => _sndRefresh(el, hr), 160);
     };
     el.querySelector('.snd-src').onchange = (e) => {
       _sndSource = e.target.value;
       // A fresh choice deserves a fresh try even at a door that failed before:
       // the Pi may simply have been restarted with the new serve.py.
       _sndPiDown = false;
-      el._autoVia = null; el._autoWhy = null;
       try { localStorage.setItem('gwcfc_snd_source', _sndSource); } catch (err) {}
       _sndRefresh(el, 0);
     };
@@ -15651,7 +15870,7 @@ async function openSounding(lat, lon) {
   // A new point gets one fresh attempt at the good path. The Pi may have come
   // back since the last click, and "outside the area the Pi covers" is a
   // property of the point rather than of the Pi.
-  el._autoVia = null; el._autoWhy = null;
+  _sndPiDown = false;
   try {
     const saved = localStorage.getItem('gwcfc_snd_source');
     if (saved && SND_SOURCES.some(s => s.id === saved)) _sndSource = saved;
@@ -15787,117 +16006,71 @@ function _sndVerdictHTML(d) {
 // One profile, from wherever the picker says, with a fallback that is quiet
 // about succeeding and loud about why it had to.
 //
-// Auto is not "try things until one works" for its own sake. The two paths
-// answer the same question at different resolutions, and there is a real
-// preference between them: SounderPy plus SHARPpy is several hundred levels
-// analysed by the tooling forecasters already read, the level images are
-// twelve levels analysed here. So Auto asks for the good one, and drops to
-// the floor rather than showing an error over a panel that could have drawn
-// something.
+// Every branch below ends at Open-Meteo rather than at an error. That is the
+// whole rule of this function: the picker offers no choice that can leave the
+// panel with nothing on it. Naming a model is a preference about where the
+// numbers should come from, not an instruction to fail when that place is
+// unreachable, and a Pi that is off is the normal case rather than the
+// exceptional one.
 async function _sndFetchFor(el, lat, lon, hr) {
   const pick = SND_SOURCES.find(s => s.id === _sndSource) || SND_SOURCES[0];
 
-  if (pick.id === 'web') {             // explicitly the no-Pi source
-    return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'auto'),
+  if (pick.id === 'web') {             // Open-Meteo, asked for directly
+    return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'web'),
              fellBack: null };
   }
-  if (pick.id === 'pisite') {          // explicitly the Pi's rendered sites
-    return { prof: await _sndPrebuilt(lat, lon, hr || 0), fellBack: null };
-  }
-  if (pick.pi) {                       // an explicit SounderPy source
-    // Falls back rather than dead ending. Picking "HRRR" used to mean "HRRR
-    // from the Pi or nothing at all", so on a Pi that cannot answer, choosing
-    // a named model turned a working panel into a permanent error message -
-    // while Auto, one item up the same list, drew a sounding fine. Naming a
-    // model is a preference, not an instruction to fail.
+
+  // Everything else is a Pi path, and they all recover the same way, so the
+  // recovery is written once. The Pi's reason is the one worth reporting:
+  // the web source failing as well means the connection is out, which the
+  // person can already see, while the Pi's reason has something to do about
+  // it. Letting the last error win used to bury it.
+  const viaWeb = async (why) => {
     try {
-      const prof = await _sndPiSounding(lat, lon, pick.pi, hr || 0);
-      return { prof, fellBack: null };
+      return { prof: await _sndOpenMeteo(lat, lon, hr || 0, pick.id),
+               fellBack: why };
+    } catch (e2) {
+      throw new Error(why + ' (and Open-Meteo could not answer either: '
+        + String((e2 && e2.message) || e2) + ')');
+    }
+  };
+
+  if (pick.id === 'pisite') {
+    // The rendered images first, then the level images the same Pi builds,
+    // then the web. Two Pi paths before leaving the Pi, because a Pi that has
+    // not built a sounding run yet usually has model levels already.
+    try {
+      return { prof: await _sndPrebuilt(lat, lon, hr || 0), fellBack: null };
     } catch (e) {
       const why = String((e && e.message) || e);
       try {
-        return { prof: await _sndOpenMeteo(lat, lon, hr || 0, pick.pi),
+        return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
                  fellBack: why };
       } catch (e2) {
-        // The Pi's reason is the useful one. The web source failing too is
-        // worth saying, but it is not what the person needs to go and fix.
-        throw new Error(why + ' (and the web source could not answer either: '
-          + String((e2 && e2.message) || e2) + ')');
+        return viaWeb(why + ' Then the level images: '
+          + String((e2 && e2.message) || e2));
       }
     }
   }
-  if (pick.id === 'levels') {          // explicitly the level images
-    return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
-             fellBack: null };
-  }
 
-  // Auto, having already settled on the level images for this panel.
-  //
-  // Settling is the point. The slider means a forecast hour on one path and
-  // hours-back on the other, so an Auto that re-decided on every refresh
-  // would change what the slider means under the hand. Once it has dropped to
-  // the floor it stays there until the picker is touched.
-  if (el && el._autoVia === 'levels') {
-    return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
-             fellBack: el._autoWhy || null };
-  }
-  if (el && el._autoVia === 'web') {
-    return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'auto'),
-             fellBack: el._autoWhy || null };
-  }
-  if (el && el._autoVia === 'pisite') {
-    return { prof: await _sndPrebuilt(lat, lon, hr || 0),
-             fellBack: el._autoWhy || null };
-  }
-
-  let why = null;
-  if (!_sndPiDown) {
+  if (pick.id === 'levels') {
     try {
-      return { prof: await _sndPiSounding(lat, lon, 'rap', hr || 0),
+      return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
                fellBack: null };
-    } catch (e) { why = String((e && e.message) || e); }
-  }
-  why = why || 'this Pi does not have the sounding service';
-
-  // Second: the soundings the Pi has already rendered. Same SounderPy fetch
-  // and SHARPpy analysis as the door, done ahead of time and saved as plain
-  // files - so they answer even when the door itself cannot, which is
-  // exactly when they are needed. The trade is the point moves to the
-  // nearest upper-air site, and the note says how far that was.
-  try {
-    const prof = await _sndPrebuilt(lat, lon, hr || 0);
-    if (el) { el._autoVia = 'pisite'; el._autoWhy = why; }
-    return { prof, fellBack: why };
-  } catch (e) {
-    why += ' Then the site images: ' + String((e && e.message) || e);
-  }
-
-  // Then the Pi's level images, then the web. Auto used to stop at the level
-  // images, so a Pi that was unreachable, or that had not built a sounding
-  // run yet, left the panel with nothing to draw and an error where a
-  // sounding should be. There is always something to draw now.
-  try {
-    const prof = await _sndProfile(lat, lon, hr == null ? 0 : hr);
-    if (el) { el._autoVia = 'levels'; el._autoWhy = why; }
-    return { prof, fellBack: why };
-  } catch (e) {
-    const why2 = String((e && e.message) || e);
-    let prof;
-    try {
-      prof = await _sndOpenMeteo(lat, lon, hr || 0, 'auto');
-    } catch (e3) {
-      // Everything is down. Report the PI's reason, not the web source's.
-      // The web source failing means the connection is out, which the person
-      // can already see; the Pi's reason is the one with something to do
-      // about it, and letting the last error win buried it.
-      throw new Error(why2);
+    } catch (e) {
+      return viaWeb(String((e && e.message) || e));
     }
-    // Settled on the web source, so the slider keeps meaning hours back
-    // rather than changing under the hand on the next refresh.
-    if (el) { el._autoVia = 'web'; el._autoWhy = why + ' Then: ' + why2; }
-    return { prof, fellBack: why + ' Then the level images: ' + why2 };
+  }
+
+  // A named model, through the Pi's SounderPy door.
+  try {
+    return { prof: await _sndPiSounding(lat, lon, pick.pi, hr || 0),
+             fellBack: null };
+  } catch (e) {
+    return viaWeb(String((e && e.message) || e));
   }
 }
+
 
 async function _sndRefresh(el, hr) {
   const lat = +el.dataset.lat, lon = +el.dataset.lon;
@@ -41482,7 +41655,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The sounding panel is now painted in the radar's own colours, led by the red of an intense echo. Nothing in it is a colour invented for a panel: every one is an entry in the same NWS reflectivity table the map paints storms with, so the verdict word runs up that scale as the day gets worse, green through yellow and orange to red, and the bars under the numbers climb the same ramp. Before that, the panel got tidier and, more to the point, its buttons now do something. Chart, Numbers, Image and Source used to sit in a row at the very bottom, under content that stayed on screen whichever one you picked, and on a small panel the Numbers view was empty. They are one switch at the top now, and each one really swaps the view. The verdict also stopped contradicting itself: a profile could read DANGEROUS directly above its own sentence saying it supported ordinary thunderstorms, because the word and the sentence were decided separately. They come from one decision now. The glowing bubble around that word, the stripe of colour across the top and the box around the coordinates are gone.";
+const APP_LATEST_UPDATE = "The sounding source list now only offers things that actually put a sounding on the screen. \"Auto\" is gone, because it was never a source: it tried the others in turn and always ended up on one of them anyway. What is left is the Pi, seven ways, and Open-Meteo, and every one of them draws something now, since each Pi option falls back to Open-Meteo rather than showing an error when the Pi cannot answer. Open-Meteo itself can no longer be asked often enough to get us cut off: dragging the hour slider used to fire one whole download per stop and throw all but one away, when a single answer already covers every hour on it. One request now serves the entire slider, nearby clicks are free, and there is a hard budget far below what the service allows.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
