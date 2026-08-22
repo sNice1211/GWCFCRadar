@@ -31882,8 +31882,15 @@ const REF_BANDS = [
 // stand out rather than blending in: debris, birds, chaff and the melting
 // layer read as "not rain" at a glance.
 const CC_BANDS = [
-  [0.00, '#3f3f5f'],   // noise, and the ground clutter that is not weather
-  [0.45, '#6b3fa0'],   // very low: certainly not precipitation
+  // Nothing below 0.45, and this is the floor every other product here
+  // already has: reflectivity starts at 5 dBZ, velocity has a dead zone
+  // either side of nought, KDP ignores near-zero. CC was the only one drawn
+  // from the bottom of its range upward, and the bottom of CC's range is not
+  // information. It is the speckle a radar returns from clear air, and it
+  // covers most of a sweep on most days, so painting it covered the map in
+  // the colour of the lowest band and buried the weather underneath it.
+  [0.00, null],        // noise. Not drawn, the same as sub-5 dBZ is not drawn
+  [0.45, '#6b3fa0'],   // very low, but real: certainly not precipitation
   [0.65, '#8f5fd6'],   // debris, birds, insects, chaff
   [0.80, '#2f6fbf'],   // mixed, or a hail shaft tearing the uniformity up
   [0.87, '#3b9ad6'],   // melting layer
@@ -42266,7 +42273,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Correlation coefficient is properly fixed now. The colour scale was only half of it: the values were being spoiled before any colour saw them. Far from the radar the sweep is thinned, and past 300 km eight gates collapse into one. Reflectivity keeps the strongest of those and velocity the fastest, which is right, because a core and a couplet are what a merged cell must not lose. CC was doing the same thing in reverse and keeping the LOWEST, but a low CC is usually just a noisy gate, so every merged cell was handed to its worst one and the far half of every sweep looked like debris instead of rain. It averages now, which costs nothing, because debris balls are close to the radar and nothing is merged inside 100 km. The Pi renders CC over a narrower range too, for the same reason.";
+const APP_LATEST_UPDATE = "CC purple was my fault. When I rebuilt its colour scale I gave it bands starting at zero, so it painted the low-CC speckle a radar returns from clear air, which is not weather and covers most of a sweep on most days. That wash of the lowest band was the purple, and the real weather was underneath it. Nothing below 0.45 is drawn now, which is the same floor every other product here already had: reflectivity starts at 5 dBZ, velocity ignores anything within 5 kt of nought, KDP ignores near-zero. CC was the only one drawn from the bottom of its range upward.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
