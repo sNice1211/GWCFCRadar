@@ -315,6 +315,48 @@ console.log('\n5b. the colour scales cover the values real sweeps actually hold'
      r.ccTop[1] === r.ccTop[2], JSON.stringify(r.ccTop));
 }
 
+console.log('\n5c. no palette resolves finer than its own product noise');
+{
+  // The rule this encodes, learned the hard way from correlation
+  // coefficient: if neighbouring colour bands are closer together than the
+  // product's gate-to-gate wobble, a smooth field renders as confetti.
+  //
+  // CC wobbles about 0.017 between adjacent gates in rain, measured on live
+  // sweeps at KMLB, KJAX and KTBW. The old table put six high-contrast bands
+  // in the 0.05 above 0.95, so rain crossed three or four of them on noise
+  // alone and a solid rain shaft came out a red, yellow, green and cyan
+  // checkerboard.
+  const r = await page.evaluate(() => {
+    const dist = (a, b) => {
+      const h = s => [1, 3, 5].map(i => parseInt(s.slice(i, i + 2), 16));
+      if (!a || !b || a[0] !== '#' || b[0] !== '#') return null;
+      const x = h(a), y = h(b);
+      return Math.abs(x[0]-y[0]) + Math.abs(x[1]-y[1]) + Math.abs(x[2]-y[2]);
+    };
+    // Adjacent pairs from 0.94 up, which is ordinary precipitation and where
+    // nearly every gate in a rain sweep lands.
+    const rain = CC_BANDS.filter(b => b[0] >= 0.93 && b[1]);
+    const steps = [];
+    for (let i = 1; i < rain.length; i++) {
+      steps.push({ from: rain[i-1][0], to: rain[i][0],
+                   d: dist(rain[i-1][1], rain[i][1]) });
+    }
+    return {
+      steps,
+      worst: Math.max(...steps.map(s => s.d)),
+      bandsInRain: rain.length,
+      // The low end must keep its contrast: that is where CC earns its keep.
+      debrisVsRain: dist(_meshColorFn('n0c')(0.70), _meshColorFn('n0c')(0.99)),
+    };
+  });
+  ok('neighbouring bands in the rain range stay visually close',
+     r.worst <= 90, `worst step ${r.worst}, ${JSON.stringify(r.steps)}`);
+  ok('while still resolving the rain range into several steps',
+     r.bandsInRain >= 6, String(r.bandsInRain));
+  ok('and debris still looks nothing like rain',
+     r.debrisVsRain > 200, String(r.debrisVsRain));
+}
+
 console.log('\n6. storm relative velocity is not converted twice');
 {
   // The worker turns product 56's four bit codes into knots itself. Running

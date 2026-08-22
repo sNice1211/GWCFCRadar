@@ -12090,6 +12090,7 @@
           capIndex - gateIndex
         ));
         let value = null;
+        let ccSum = 0, ccCount = 0;
         for (let k = 0; k < stride; k++) {
           const rawValue = radial.moment_data[gateIndex + k];
           if (rawValue === null || rawValue === void 0) continue;
@@ -12098,13 +12099,19 @@
             v = computeKdpFromPhi(radial.moment_data, gateIndex + k, gateSize);
           }
           if (v == null) continue;
+          if (layer === "CC") {
+            if (v === "rf") continue;
+            ccSum += v;
+            ccCount += 1;
+            value = ccSum / ccCount;
+            continue;
+          }
           if (value == null || value === "rf") {
             value = v;
             continue;
           }
           if (v === "rf") continue;
-          if (layer === "CC") value = Math.min(value, v);
-          else if (layer === "VEL") value = Math.abs(v) > Math.abs(value) ? v : value;
+          if (layer === "VEL") value = Math.abs(v) > Math.abs(value) ? v : value;
           else value = Math.max(value, v);
         }
         if (value == null) {
@@ -12146,13 +12153,24 @@
     if (!packet19) {
       throw new Error("No radial packet data found in Level 3 product.");
     }
-    const rangeScaleKm = packet19.rangeScale ?? 1;
     const firstBin = packet19.firstBin ?? 0;
     const numberBins = packet19.numberBins ?? 0;
     const radials = packet19.radials || [];
     const range = readRangeOptions(options);
     const code41 = radar.productDescription?.code;
-    const scaleFactor = code41 === 56 || code41 === 170 || code41 === 172 ? 1e3 : 250;
+    const FIXED_BIN_KM = {
+      135: 1,
+      // enhanced echo tops:      346 bins x 1.00 km = 346 km
+      180: 0.15,
+      // TDWR base reflectivity:  592 bins x 0.15 km =  89 km
+      182: 0.15,
+      // TDWR base velocity:      592 bins x 0.15 km =  89 km
+      186: 0.3
+      // TDWR long range refl:   1390 bins x 0.30 km = 417 km
+    };
+    const fixedBinKm = FIXED_BIN_KM[code41];
+    const scaleFactor = fixedBinKm ? fixedBinKm * 1e3 : code41 === 56 || code41 === 170 || code41 === 172 ? 1e3 : 250;
+    const rangeScaleKm = fixedBinKm ? 1 : packet19.rangeScale ?? 1;
     const binKm = rangeScaleKm * scaleFactor / 1e3;
     const isVelocity = code41 === 25 || code41 === 27 || code41 === 55 || code41 === 56 || code41 === 99;
     const isCorrelation = code41 === 161;
@@ -12200,16 +12218,23 @@
           cap - binIndex
         ));
         let value = null;
+        let ccSum = 0, ccCount = 0;
         for (let k = 0; k < stride; k++) {
           const v = decodeBin(bins[binIndex + k]);
           if (v == null) continue;
+          if (isCorrelation) {
+            if (v === "rf") continue;
+            ccSum += v;
+            ccCount += 1;
+            value = ccSum / ccCount;
+            continue;
+          }
           if (value == null || value === "rf") {
             value = v;
             continue;
           }
           if (v === "rf") continue;
-          if (isCorrelation) value = Math.min(value, v);
-          else if (isVelocity) value = Math.abs(v) > Math.abs(value) ? v : value;
+          if (isVelocity) value = Math.abs(v) > Math.abs(value) ? v : value;
           else value = Math.max(value, v);
         }
         if (value == null) {

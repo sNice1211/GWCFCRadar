@@ -1000,6 +1000,10 @@ MRMS_BASE = "https://mrms.ncep.noaa.gov/data/2D"
 # in its own tree rather than beside the 2D mosaics. A product says which one
 # it lives in; everything without a "base" is a 2D mosaic.
 FLASH_BASE = "https://mrms.ncep.noaa.gov/data/FLASH"
+# The three-dimensional reflectivity stack, and the dual-pol mosaics that
+# come with it, are published per altitude in their own tree rather than
+# beside the flat 2D mosaics.
+REFL3D_BASE = "https://mrms.ncep.noaa.gov/data/3DRefl"
 
 # What one pass of MRMS is allowed to cost.
 #
@@ -1044,10 +1048,10 @@ MRMS_PRODUCTS = {
     "rotation1440": {"path": "RotationTrackML1440min", "label": "Rotation Tracks 24h",
                      "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
                      "floor": 0.003, "every": 60},
-    "rotationll60": {"path": "RotationTrackLL60min", "label": "Low-Level Rotation 60m",
+    "rotationll60": {"path": "RotationTrack60min", "label": "Low-Level Rotation 60m",
                      "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
                      "floor": 0.003, "every": 5},
-    "rotationll30": {"path": "RotationTrackLL30min", "label": "Low-Level Rotation 30m",
+    "rotationll30": {"path": "RotationTrack30min", "label": "Low-Level Rotation 30m",
                      "unit": "s^-1", "range": (0.002, 0.014), "ramp": "heat",
                      "floor": 0.003, "every": 5},
     # ── Hail. MESH is the algorithm's largest hail, in millimetres; 6 mm is
@@ -1100,15 +1104,15 @@ MRMS_PRODUCTS = {
                     "label": "Rotation Tracks 6h", "unit": "s^-1",
                     "range": (0.002, 0.014), "ramp": "heat",
                     "floor": 0.003, "every": 30},
-    "rotationll120": {"path": "RotationTrackLL120min",
+    "rotationll120": {"path": "RotationTrack120min",
                       "label": "Low Level Rotation 2h", "unit": "s^-1",
                       "range": (0.002, 0.014), "ramp": "heat",
                       "floor": 0.003, "every": 15},
-    "rotationll240": {"path": "RotationTrackLL240min",
+    "rotationll240": {"path": "RotationTrack240min",
                       "label": "Low Level Rotation 4h", "unit": "s^-1",
                       "range": (0.002, 0.014), "ramp": "heat",
                       "floor": 0.003, "every": 30},
-    "rotationll1440": {"path": "RotationTrackLL1440min",
+    "rotationll1440": {"path": "RotationTrack1440min",
                        "label": "Low Level Rotation 24h", "unit": "s^-1",
                        "range": (0.002, 0.014), "ramp": "heat",
                        "floor": 0.003, "every": 60},
@@ -1373,6 +1377,192 @@ MRMS_PRODUCTS = {
     "h0c": {"path": "Model_0degC_Height", "label": "Freezing Level",
             "unit": "m", "range": (0, 5000), "ramp": "viridis",
             "floor": 1.0, "every": 15},
+    # ── Added after enumerating NOAA's own MRMS bucket (noaa-mrms-pds) and
+    # diffing it against this table. Everything below is a product MRMS
+    # genuinely publishes and this pipeline was not asking for.
+    #
+    # The NCEP web server drops the elevation suffix the bucket carries, so
+    # RotationTrackML60min_00.50 in the bucket is RotationTrackML60min here;
+    # the three-dimensional stacks keep theirs because the suffix is the only
+    # thing telling one altitude from another. A path that turns out wrong
+    # costs one logged line and a skip, and --check names it.
+
+    # Reflectivity by altitude. The mosaic is really a stack of them and only
+    # the composite was ever being read, which is the whole column flattened
+    # to its strongest echo. These are the slices behind it: watching a core
+    # sit at 6 km and then descend is what a composite cannot show you.
+    "refl3d05": {"path": "MergedReflectivityQC_00.50", "base": REFL3D_BASE,
+                 "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                 "label": "Reflectivity 0.5 km", "every": 10},
+    "refl3d1": {"path": "MergedReflectivityQC_01.00", "base": REFL3D_BASE,
+                "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                "label": "Reflectivity 1 km", "every": 10},
+    "refl3d2": {"path": "MergedReflectivityQC_02.00", "base": REFL3D_BASE,
+                "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                "label": "Reflectivity 2 km", "every": 10},
+    "refl3d3": {"path": "MergedReflectivityQC_03.00", "base": REFL3D_BASE,
+                "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                "label": "Reflectivity 3 km", "every": 10},
+    "refl3d4": {"path": "MergedReflectivityQC_04.00", "base": REFL3D_BASE,
+                "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                "label": "Reflectivity 4 km", "every": 15},
+    "refl3d6": {"path": "MergedReflectivityQC_06.00", "base": REFL3D_BASE,
+                "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                "label": "Reflectivity 6 km", "every": 15},
+    "refl3d8": {"path": "MergedReflectivityQC_08.00", "base": REFL3D_BASE,
+                "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                "label": "Reflectivity 8 km", "every": 15},
+    "refl3d10": {"path": "MergedReflectivityQC_10.00", "base": REFL3D_BASE,
+                 "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                 "label": "Reflectivity 10 km", "every": 30},
+    "refl3d12": {"path": "MergedReflectivityQC_12.00", "base": REFL3D_BASE,
+                 "range": (-10, 75), "ramp": "radar", "unit": "dBZ",
+                 "label": "Reflectivity 12 km", "every": 30},
+
+    # National dual-pol. Nothing here had either of these before, at any
+    # altitude: differential reflectivity tells big flat drops from small
+    # round ones, and correlation tells rain from debris and hail.
+    "zdr3d05": {"path": "MergedZdr_00.50", "base": REFL3D_BASE,
+                "range": (-2, 6), "ramp": "spread", "unit": "dB",
+                "label": "Differential Refl 0.5 km", "signed": True, "every": 10},
+    "zdr3d2": {"path": "MergedZdr_02.00", "base": REFL3D_BASE,
+               "range": (-2, 6), "ramp": "spread", "unit": "dB",
+               "label": "Differential Refl 2 km", "signed": True, "every": 15},
+    "zdr3d4": {"path": "MergedZdr_04.00", "base": REFL3D_BASE,
+               "range": (-2, 6), "ramp": "spread", "unit": "dB",
+               "label": "Differential Refl 4 km", "signed": True, "every": 30},
+    "rhohv3d05": {"path": "MergedRhoHV_00.50", "base": REFL3D_BASE,
+                  "range": (0.5, 1.05), "ramp": "viridis", "unit": "",
+                  "label": "Correlation 0.5 km", "every": 10},
+    "rhohv3d2": {"path": "MergedRhoHV_02.00", "base": REFL3D_BASE,
+                 "range": (0.5, 1.05), "ramp": "viridis", "unit": "",
+                 "label": "Correlation 2 km", "every": 15},
+    "rhohv3d4": {"path": "MergedRhoHV_04.00", "base": REFL3D_BASE,
+                 "range": (0.5, 1.05), "ramp": "viridis", "unit": "",
+                 "label": "Correlation 4 km", "every": 30},
+
+    # The two isotherm slices that were missing. Reflectivity at the level
+    # where the air is a given temperature is how hail growth is judged:
+    # 50 dBZ at -20 C is a very different storm from 50 dBZ at the ground.
+    "reflm5c": {"path": "Reflectivity_-5C", "range": (-10, 75), "ramp": "radar",
+                "unit": "dBZ", "label": "Reflectivity at -5C", "every": 10},
+    "reflm15c": {"path": "Reflectivity_-15C", "range": (-10, 75), "ramp": "radar",
+                 "unit": "dBZ", "label": "Reflectivity at -15C", "every": 10},
+    "refllowest": {"path": "ReflectivityAtLowestAltitude", "range": (-10, 75),
+                   "ramp": "radar", "unit": "dBZ",
+                   "label": "Reflectivity Lowest Altitude", "every": 5},
+
+    # An hour of maxima, which is the cheapest way to see where a line has
+    # already been rather than only where it is now.
+    "brefmax1h": {"path": "BREF_1HR_MAX", "range": (-10, 75), "ramp": "radar",
+                  "unit": "dBZ", "label": "Base Refl 1h Max", "every": 10},
+    "crefmax1h": {"path": "CREF_1HR_MAX", "range": (-10, 75), "ramp": "radar",
+                  "unit": "dBZ", "label": "Composite Refl 1h Max", "every": 10},
+
+    # Heights rather than intensities: how high the composite echo came from.
+    "heightcomposite": {"path": "HeightCompositeReflectivity", "range": (0, 18),
+                        "ramp": "viridis", "unit": "km",
+                        "label": "Height of Composite Refl", "every": 10},
+    "heightlowcomposite": {"path": "HeightLowLevelCompositeReflectivity",
+                           "range": (0, 6), "ramp": "viridis", "unit": "km",
+                           "label": "Height of Low-Level Composite", "every": 10},
+
+    # The Level 3 style national grids, which are a different algorithm from
+    # the mosaic versions above and worth being able to compare against.
+    "hreet": {"path": "LVL3_HREET", "range": (0, 70), "ramp": "viridis",
+              "unit": "kft", "label": "High Res Echo Tops", "every": 10},
+    "hiresvil": {"path": "LVL3_HighResVIL", "range": (0, 80), "ramp": "heat",
+                 "unit": "kg/m2", "label": "High Res VIL", "every": 10},
+    "vilmax120": {"path": "VIL_Max_120min", "range": (0, 80), "ramp": "heat",
+                  "unit": "kg/m2", "label": "VIL 2h Max", "every": 15},
+    "vilmax1440": {"path": "VIL_Max_1440min", "range": (0, 80), "ramp": "heat",
+                   "unit": "kg/m2", "label": "VIL 24h Max", "every": 60},
+
+    # Warm rain, which falls hard without ever making ice and so without ever
+    # looking impressive on reflectivity. It is a common flash flood setup.
+    "warmrain": {"path": "WarmRainProbability", "range": (0, 100),
+                 "ramp": "viridis", "unit": "%",
+                 "label": "Warm Rain Probability", "every": 10},
+
+    # How much to believe the mosaic where you are standing: beam blockage,
+    # distance from the nearest radar, gauge agreement.
+    "rqi": {"path": "RadarQualityIndex", "range": (0, 1), "ramp": "viridis",
+            "unit": "", "label": "Radar Quality Index", "every": 30},
+    "raqi01": {"path": "RadarAccumulationQualityIndex_01H", "range": (0, 1),
+               "ramp": "viridis", "unit": "",
+               "label": "Accum Quality 1 hr", "every": 30},
+    "raqi24": {"path": "RadarAccumulationQualityIndex_24H", "range": (0, 1),
+               "ramp": "viridis", "unit": "",
+               "label": "Accum Quality 24 hr", "every": 60},
+
+    # Rainfall against the threshold that actually issues a flood warning.
+    # Above 1.0 is rain exceeding the guidance, which is the number a
+    # forecaster is watching rather than the raw total.
+    "ffg01": {"path": "QPE_FFG01H", "base": FLASH_BASE, "range": (0, 2),
+              "ramp": "precip", "unit": "ratio",
+              "label": "Rain vs Flood Guidance 1 hr", "every": 10},
+    "ffg03": {"path": "QPE_FFG03H", "base": FLASH_BASE, "range": (0, 2),
+              "ramp": "precip", "unit": "ratio",
+              "label": "Rain vs Flood Guidance 3 hr", "every": 15},
+    "ffg06": {"path": "QPE_FFG06H", "base": FLASH_BASE, "range": (0, 2),
+              "ramp": "precip", "unit": "ratio",
+              "label": "Rain vs Flood Guidance 6 hr", "every": 15},
+    "ffgmax": {"path": "QPE_FFGMAX", "base": FLASH_BASE, "range": (0, 2),
+               "ramp": "precip", "unit": "ratio",
+               "label": "Rain vs Flood Guidance Max", "every": 10},
+    "ari30m": {"path": "QPE_ARI30M", "base": FLASH_BASE, "range": (0, 100),
+               "ramp": "precip", "unit": "yr",
+               "label": "Recurrence Interval 30 min", "every": 10},
+    "arimax": {"path": "QPE_ARIMAX", "base": FLASH_BASE, "range": (0, 100),
+               "ramp": "precip", "unit": "yr",
+               "label": "Recurrence Interval Max", "every": 10},
+
+    # 15 minute radar rainfall, the shortest accumulation MRMS publishes.
+    "qpe15m": {"path": "RadarOnly_QPE_15M", "range": (0, 25), "ramp": "precip",
+               "unit": "mm", "label": "Radar Rainfall 15 min", "every": 5},
+
+    # Lightning jump: a sudden climb in flash rate, which often runs a few
+    # minutes ahead of a storm turning severe.
+    "ltgjumpmax": {"path": "LtgJumpGrid_Max_005min", "range": (0, 10),
+                   "ramp": "heat", "unit": "sigma",
+                   "label": "Lightning Jump 5m Max", "every": 5},
+    "cgdensity1": {"path": "NLDN_CG_001min_AvgDensity", "range": (0, 5),
+                   "ramp": "heat", "unit": "flashes/km2/min",
+                   "label": "Cloud-to-Ground 1 min", "every": 5},
+    "cgdensity5": {"path": "NLDN_CG_005min_AvgDensity", "range": (0, 5),
+                   "ramp": "heat", "unit": "flashes/km2/min",
+                   "label": "Cloud-to-Ground 5 min", "every": 5},
+    "cgdensity15": {"path": "NLDN_CG_015min_AvgDensity", "range": (0, 5),
+                    "ramp": "heat", "unit": "flashes/km2/min",
+                    "label": "Cloud-to-Ground 15 min", "every": 10},
+    "cgdensity30": {"path": "NLDN_CG_030min_AvgDensity", "range": (0, 5),
+                    "ramp": "heat", "unit": "flashes/km2/min",
+                    "label": "Cloud-to-Ground 30 min", "every": 10},
+
+    # What kind of precipitation the algorithm thinks it is, before the
+    # gauges get a say, and the first-pass multi-sensor totals.
+    "synthprecipid": {"path": "SyntheticPrecipRateID", "range": (0, 10),
+                      "ramp": "viridis", "unit": "class",
+                      "label": "Synthetic Precip Type", "every": 10},
+    "qpemultip1_01": {"path": "MultiSensor_QPE_01H_Pass1", "range": (0, 50),
+                      "ramp": "precip", "unit": "mm",
+                      "label": "Multi-Sensor 1 hr (pass 1)", "every": 15},
+    "qpemultip1_24": {"path": "MultiSensor_QPE_24H_Pass1", "range": (0, 200),
+                      "ramp": "precip", "unit": "mm",
+                      "label": "Multi-Sensor 24 hr (pass 1)", "every": 60},
+    "gaugeinfl01": {"path": "GaugeInflIndex_01H_Pass2", "range": (0, 1),
+                    "ramp": "viridis", "unit": "",
+                    "label": "Gauge Influence 1 hr", "every": 30},
+    "gaugeinfl24": {"path": "GaugeInflIndex_24H_Pass2", "range": (0, 1),
+                    "ramp": "viridis", "unit": "",
+                    "label": "Gauge Influence 24 hr", "every": 60},
+
+    # The remaining FLASH model outputs. Streamflow is what the water is
+    # doing, soil saturation is whether the ground can take any more.
+    "hpsoil": {"path": "QPE_MAXSOILSAT", "base": FLASH_BASE, "range": (0, 1),
+               "ramp": "moisture", "unit": "fraction",
+               "label": "Hydrophobic Soil Saturation", "every": 15},
+
 }
 
 

@@ -305,6 +305,43 @@ console.log('\n7. Level 3 reaches its full range too');
      minCC < 0.98 - 0.03, String(minCC));
   ok('and Level 3 averages it exactly as Level 2 does',
      minCC > 0.55 + 0.001, String(minCC));
+
+  // The products whose files do not state a usable bin size.
+  //
+  // The range scale halfword is an integer scaled by a thousand, so a 250 m
+  // gate is written 999. These four write a bare 1, which reads back as
+  // 0.001, and multiplying that by the nominal gate shrank the whole sweep by
+  // a factor of a thousand. It did not draw a wrong picture, it drew the
+  // right picture inside a box a few metres wide: an invisible dot. Every
+  // terminal radar product and echo tops at every NEXRAD went missing this
+  // way, and only the canvas looked right, so anything checking the canvas
+  // instead of the map saw nothing wrong.
+  //
+  // rangeScale is 1 here exactly as the real files write it.
+  const FIXED = [
+    [135, 'echo tops',              346,  345],
+    [180, 'terminal reflectivity',  592,   89],
+    [182, 'terminal velocity',      592,   89],
+    [186, 'terminal long range',   1390,  417],
+  ];
+  FIXED.forEach(([code, label, bins, wantKm]) => {
+    const m = mod.processLevel3Data(mkL3(code, bins, () => 30), SITE, {});
+    const far = reachKm(m.meshData);
+    ok(`${label} reaches its published ${wantKm} km`,
+       Math.abs(far - wantKm) < wantKm * 0.06,
+       far.toFixed(0) + ' km, wanted ' + wantKm);
+    // The failure this replaces was a hundredth of a kilometre, so the
+    // floor matters as much as the target.
+    ok(`and is nowhere near the dot it used to draw`, far > 20,
+       far.toFixed(3) + ' km');
+  });
+
+  // The moment products must not be disturbed by that table: they really do
+  // carry their scale in the header and 999 must keep meaning 250 m.
+  const ref250 = mod.processLevel3Data(mkL3(94, 1840, () => 35), SITE, {});
+  ok('a 250 m moment product still reads its own header',
+     Math.abs(reachKm(ref250.meshData) - 460) < 30,
+     reachKm(ref250.meshData).toFixed(0) + ' km');
 }
 
 console.log('\n8. an old caller cannot silently shorten it back');

@@ -24035,18 +24035,26 @@ const MRMS_GROUPS = [
   { id: 'winter',  label: 'Winter',
     match: k => /^(brightband|sfctemp|wetbulb|h0c)/.test(k) },
   { id: 'severe',  label: 'Severe',
-    match: k => /^(rotation|mesh|pos?h|shi|vii|azshear|h5\d|h6\d)/.test(k) },
+    match: k => /^(rotation|mesh|pos?h|shi|vii|azshear|h5\d|h6\d|warmrain)/.test(k) },
+  // Reflectivity, and everything measured in the same breath: the altitude
+  // slices behind the composite, the national dual-pol mosaics, the heights
+  // the echo came from, and the hour-long maxima.
   { id: 'refl',    label: 'Reflectivity',
-    match: k => /^(composite|lowalt|lowcomposite|layer|hsr|echotop|vil|refl|baseqc)/.test(k) },
+    match: k => /^(composite|lowalt|lowcomposite|layer|hsr|echotop|vil|refl|baseqc|zdr3d|rhohv3d|bref|cref|height|hreet|hiresvil)/.test(k) },
   { id: 'precip',  label: 'Precip',
-    match: k => /^(preciprate|preciptype|qpe)/.test(k) },
+    match: k => /^(preciprate|preciptype|qpe|synthprecip|gaugeinfl)/.test(k) },
   { id: 'ltg',     label: 'Lightning',
-    match: k => /^ltg/.test(k) },
+    match: k => /^(ltg|cgdensity)/.test(k) },
   // Flooding is its own question and not a kind of precipitation. Rainfall
   // is what fell; this is what the ground did with it, which is what a flood
   // warning actually turns on.
   { id: 'flood',   label: 'Flooding',
-    match: k => /^(crest|sac|hp)(flow|unit|soil)/.test(k) },
+    match: k => /^(crest|sac|hp)(flow|unit|soil)|^(ffg|ari)/.test(k) },
+  // How much the mosaic is worth believing where you are standing. Not a
+  // weather field at all, which is exactly why it does not belong inside one
+  // of the groups above.
+  { id: 'quality', label: 'Coverage',
+    match: k => /^(rqi|raqi)/.test(k) },
 ];
 
 function _mrmsGroupOf(key) {
@@ -30630,7 +30638,7 @@ let _radarWorkerPending = null;  // { resolve, reject } for current request
 // is a new URL, and a page from before the build keeps the URL its decoder
 // answers to. A mismatched pair is how "Parse failed" appears on one device
 // while the same click works everywhere else.
-var RADAR_WORKER_V = '3908afe7';
+var RADAR_WORKER_V = '608a05bf';
 
 function _getRadarWebWorker() {
   if (_radarWebWorker) return _radarWebWorker;
@@ -32009,39 +32017,59 @@ const REF_BANDS = [
 // ORANGE while the rain around it was green. Backwards from every operational
 // display, and from the one thing CC is actually used for.
 //
-// Eight bands now cover 0.91 to 1.00, which is where the information is, and
-// the low end is cold and obviously different so non-meteorological targets
+// The low end is cold and obviously different so non-meteorological targets
 // stand out rather than blending in: debris, birds, chaff and the melting
 // layer read as "not rain" at a glance.
+//
+// A second thing this table has to respect, which the version before it did
+// not: a palette must not resolve finer than its own product's noise.
+//
+// Correlation coefficient wobbles about 0.017 from one gate to the next in
+// ordinary rain, measured on live sweeps at three sites. The old table put
+// SIX high-contrast bands between 0.95 and 1.00, one every 0.01 - green,
+// yellow, orange, dark orange, red, white - so a rain shaft that is genuinely
+// smooth crossed three or four of them purely on measurement wobble. The
+// result was the confetti: a solid area of rain rendering as a red, yellow,
+// green and cyan checkerboard.
+//
+// Reflectivity does not do this even though its steps look similar, because
+// its 5 dBZ bands are twice its 2.5 dBZ gate noise. CC was the only product
+// here banded BELOW its own noise floor.
+//
+// So the contrast is spent where it earns its keep. Below 0.90 is where CC is
+// diagnostic - debris, biology, melting layer, a hail shaft - and those bands
+// stay far apart in colour. From 0.94 up is ordinary precipitation, which is
+// most of a sweep, and those steps stay in one warm family and change by only
+// a dozen or so units of RGB each, so wobble shades instead of flickering.
+// The resolution is still there, it just stopped shouting.
 const CC_BANDS = [
   // Nothing below 0.45, and this is the floor every other product here
   // already has: reflectivity starts at 5 dBZ, velocity has a dead zone
-  // either side of nought, KDP ignores near-zero. CC was the only one drawn
-  // from the bottom of its range upward, and the bottom of CC's range is not
-  // information. It is the speckle a radar returns from clear air, and it
-  // covers most of a sweep on most days, so painting it covered the map in
-  // the colour of the lowest band and buried the weather underneath it.
+  // either side of nought. CC was the only one drawn from the bottom of its
+  // range upward, and the bottom of CC's range is not information. It is the
+  // speckle a radar returns from clear air, and it covers most of a sweep on
+  // most days, so painting it covered the map in the colour of the lowest
+  // band and buried the weather underneath it.
   [0.00, null],        // noise. Not drawn, the same as sub-5 dBZ is not drawn
-  [0.45, '#6b3fa0'],   // very low, but real: certainly not precipitation
-  [0.65, '#8f5fd6'],   // debris, birds, insects, chaff
-  [0.80, '#2f6fbf'],   // mixed, or a hail shaft tearing the uniformity up
-  [0.87, '#3b9ad6'],   // melting layer
-  [0.91, '#4fc3c3'],
-  [0.93, '#4fc36e'],
-  [0.95, '#8fd44a'],   // ordinary rain begins here
-  [0.96, '#d6d43b'],
-  [0.97, '#e6a52f'],
-  [0.98, '#e6702f'],   // uniform rain, the commonest value of all
-  [0.99, '#e63b2f'],
+  [0.45, '#5f2f96'],   // very low, but real: certainly not precipitation
+  [0.62, '#8552cc'],   // debris, birds, insects, chaff
+  [0.78, '#9d78dd'],
+  [0.86, '#5b86c9'],   // mixed, or a hail shaft tearing the uniformity up
+  [0.91, '#4fa8c8'],   // melting layer
+  [0.935, '#68b7ae'],
+  [0.952, '#8cc194'],  // ordinary rain begins here, and the steps close up
+  [0.966, '#b8c17e'],
+  [0.976, '#d4b96c'],
+  [0.985, '#dda85a'],
+  [0.993, '#e0964c'],
   // The file's encoding runs past 1.0, up to about 1.05, because the estimator
   // can overshoot on a very uniform target. Nothing in the atmosphere actually
   // correlates better than perfectly, so this is headroom rather than a
   // measurement - and it is not rare: nearly a tenth of the gates in a live
-  // rain sweep land here. Painted brilliant white, as it was, that tenth
+  // rain sweep land here. Painted brilliant white, as it once was, that tenth
   // became the loudest thing on the map, and the one part of the picture that
-  // means the least was the part the eye went to first. It reads as the top of
-  // the rain run now, one shade on from 0.99, instead of as an alarm.
-  [1.00, '#f0736a'],
+  // means the least was the part the eye went to first.
+  [1.001, '#df8540'],
 ];
 
 // Velocity, in knots, and symmetric on purpose. The number means "towards the
@@ -42473,7 +42501,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Pulled a live scan of every radar product from a NEXRAD and from a terminal radar, drew each one, and checked the colours against what the numbers actually mean. Three scales were wrong. Specific differential phase was drawing almost nothing: it threw away everything below 0.8 deg/km, and a real rain shield has a median of 0 and a 90th percentile of 0.15, so 98 percent of the product was invisible and it had no colours below zero at all, though the file carries values down to -2. It is banded properly now and went from 5,500 painted pixels to 245,000 on the same scan. Velocity drew nothing within 5 kt of zero, which sounds harmless until you measure that the median gate on a live sweep is about 2 kt: the blank band was not catching still air, it was punching holes through the middle of every storm. It is one knot either side now, and the two darkest bands were nearly black so they have been lifted. Correlation coefficient was painting brilliant white for values above 1.0, which is a tenth of a rain scan and is a number that cannot physically exist, so the least meaningful part of the picture was the loudest. Everything else checked out: reflectivity matches the Weather Service table band for band on both radar families, and correlation coefficient and differential reflectivity were confirmed against co-located reflectivity at four sites, both tracking the physics in the right direction."
+const APP_LATEST_UPDATE = "Found why Level 3 looked wrong, and it turned out to be two separate things. The first is much bigger than the colours: every product of every terminal radar, and echo tops at every NEXRAD, was being placed on the map inside a box a few metres across. Those files state their bin size as a bare 1 where the moment products write 999, and the code multiplied that straight through, shrinking the whole sweep by a factor of a thousand. The picture was built perfectly and then drawn as a dot far too small to see, which is why checking the rendered image never caught it: the image was fine, its position was not. All 46 terminal radars now reach their real 90 km, their long range sweep reaches 416, and echo tops covers the country. The second is the correlation coefficient confetti: rain is smooth in reality, but the palette had six high-contrast bands packed into the top 0.05, and CC wobbles about 0.017 between neighbouring gates, so a solid rain shaft crossed three or four colours on measurement noise alone and came out a red, yellow, green and cyan checkerboard. The scale keeps its resolution but spends its contrast where CC is actually diagnostic, at the low end, so debris and biology still leap out while rain reads as one field. Also repointed the low-level rotation tracks, which had been asking for a path MRMS does not publish, and added 48 more MRMS products taken from NOAA's own catalogue: reflectivity by altitude, national dual-pol mosaics, rainfall against flood guidance, cloud-to-ground lightning density and radar coverage quality."
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

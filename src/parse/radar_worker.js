@@ -542,7 +542,6 @@ const processLevel3Data = (radar, radarLocation, options = {}) => {
         throw new Error('No radial packet data found in Level 3 product.');
     }
 
-    const rangeScaleKm = packet.rangeScale ?? 1;
     const firstBin = packet.firstBin ?? 0;
     const numberBins = packet.numberBins ?? 0;
     const radials = packet.radials || [];
@@ -551,11 +550,40 @@ const processLevel3Data = (radar, radarLocation, options = {}) => {
     // The product code, not a name the page passed in, because the file says
     // what it is and the page only says what it asked for.
     const code = radar.productDescription?.code;
-    // How long one bin is, in metres. Most products count in 250 m steps;
-    // storm relative velocity and the digital accumulations count in whole
-    // kilometres. This never changed inside the loop, so it does not belong
-    // there.
-    const scaleFactor = (code === 56 || code === 170 || code === 172) ? 1000 : 250;
+
+    // How long one bin is, in KILOMETRES, for the products whose files do not
+    // say.
+    //
+    // The packet header carries a range scale as an integer scaled by a
+    // thousand, so a 250 m gate is written as 999 and read back as 0.999,
+    // which is then multiplied by the product's nominal gate size. That works
+    // for the moment products and it is a trap for these four: they write a
+    // bare 1 into the same halfword, which reads back as 0.001, and taking
+    // that at face value shrinks the sweep by a factor of a thousand.
+    //
+    // The consequence was not a wrong picture, it was NO picture. The mesh
+    // was built correctly and then placed on the map inside a box a few
+    // metres across, so it drew as a dot far too small to see. Every product
+    // of every one of the 46 terminal radars was invisible this way, and so
+    // were echo tops at all 160 NEXRADs. Only the canvas looked right, which
+    // is why photographing the canvas rather than the map missed it.
+    //
+    // Their geometry is fixed and published, and the numbers below were each
+    // confirmed against a live file: bin count times bin size lands on the
+    // product's documented range to within half a percent.
+    const FIXED_BIN_KM = {
+        135: 1.0,    // enhanced echo tops:      346 bins x 1.00 km = 346 km
+        180: 0.15,   // TDWR base reflectivity:  592 bins x 0.15 km =  89 km
+        182: 0.15,   // TDWR base velocity:      592 bins x 0.15 km =  89 km
+        186: 0.30,   // TDWR long range refl:   1390 bins x 0.30 km = 417 km
+    };
+    const fixedBinKm = FIXED_BIN_KM[code];
+
+    // scaleFactor is one bin in metres; rangeScaleKm is the multiplier on top
+    // of it. Stating the bin size outright means the multiplier is exactly 1.
+    const scaleFactor = fixedBinKm ? fixedBinKm * 1000
+        : ((code === 56 || code === 170 || code === 172) ? 1000 : 250);
+    const rangeScaleKm = fixedBinKm ? 1 : (packet.rangeScale ?? 1);
     const binKm = (rangeScaleKm * scaleFactor) / 1000;
     const isVelocity = code === 25 || code === 27 || code === 55
                        || code === 56 || code === 99;

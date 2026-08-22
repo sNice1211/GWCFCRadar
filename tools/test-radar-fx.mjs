@@ -845,7 +845,16 @@ console.log('\n15. what is on the canvas is what the value says, for every produ
       }
       return seen.size;
     };
-    const ccVals = [0.50, 0.70, 0.82, 0.88, 0.91, 0.93, 0.95, 0.96, 0.97, 0.98, 0.99, 1.00];
+    // One value from inside each band of the CURRENT table, because what is
+    // being proven here is that the renderer keeps distinct values distinct.
+    // The bug this guards against collapsed twelve CC values into three
+    // colours by bucketing them in quarter-unit steps, and it would do that
+    // whatever the palette said. Which edges the palette happens to use is a
+    // separate question, tested in test-radar-products.mjs; picking values
+    // off the old edges made this test fail whenever the palette was retuned,
+    // which is noise rather than signal.
+    const ccVals = [0.50, 0.70, 0.82, 0.88, 0.925, 0.945, 0.960,
+                    0.970, 0.980, 0.990, 0.997, 1.02];
     const refVals = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75];
     return { cc: draw('cc', ccVals), ccWant: ccVals.length,
              ref: draw('ref', refVals), refWant: refVals.length };
