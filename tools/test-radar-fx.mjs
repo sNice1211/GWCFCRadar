@@ -735,7 +735,128 @@ console.log('\n14. every product covers the range it claims to cover');
      r.cc.last < 0.45, `blank up to ${r.cc.last}`);
 }
 
-console.log('\n15. nothing threw along the way');
+console.log('\n15. what is on the canvas is what the value says, for every product');
+{
+  // The bug that outlasted three attempts at the CC palette, and it was never
+  // in a palette at all.
+  //
+  // _meshToImage groups gates by value so the colour function runs a few
+  // hundred times instead of a few hundred thousand. It grouped by
+  // Math.round(v * 4) - quarter-UNIT buckets - and then painted the whole
+  // bucket with the first value that landed in it. A quarter of a unit is
+  // sensible across reflectivity's 110 dBZ. Across correlation coefficient's
+  // entire range of 1.05 it is five buckets for the whole product, so every
+  // CC from 0.875 up was painted whatever colour the first gate in that
+  // bucket happened to be. Measured before the fix: twelve distinct CC values
+  // rendered as THREE colours, 0.88 through 1.00 all the same blue. And since
+  // the answer depended on iteration order, it looked like a different wrong
+  // colour every time the palette was touched.
+  //
+  // Underneath it, a second one: mesh values live in a Float32Array, and
+  // float32 cannot hold 0.95 exactly - it is 0.9499999881, which a band edge
+  // AT 0.95 rejects. Reflectivity hid it by having whole-number edges.
+  //
+  // So this renders each value as a real quad through the real renderer and
+  // reads the real pixel back. It is the only check here that would have
+  // caught either one.
+  const r = await page.evaluate(() => {
+    _fxUiResetAll();
+    const cv0 = document.createElement('canvas'); cv0.width = cv0.height = 1;
+    const c0 = cv0.getContext('2d', { willReadFrequently: true });
+    // hsl() and #rrggbb compared on equal terms.
+    const toHex = (css) => {
+      if (css == null) return null;
+      c0.clearRect(0, 0, 1, 1); c0.fillStyle = css; c0.fillRect(0, 0, 1, 1);
+      const d = c0.getImageData(0, 0, 1, 1).data;
+      return '#' + [d[0], d[1], d[2]].map(x => x.toString(16).padStart(2, '0')).join('');
+    };
+    const render = (v, product) => {
+      const lon0 = -100, lat0 = 30, w = 2, h = 2;
+      const m = new Float32Array(9);           // float32 ON PURPOSE
+      m[0] = lon0; m[1] = lat0; m[2] = lon0 + w; m[3] = lat0;
+      m[4] = lon0 + w; m[5] = lat0 + h; m[6] = lon0; m[7] = lat0 + h; m[8] = v;
+      const bounds = [lon0, lat0, lon0 + w, lat0 + h];
+      const img = _meshToImage({ meshData: m, bounds }, product, bounds);
+      if (!img) return null;
+      const cv = img.canvas, S = cv.width;
+      const px = cv.getContext('2d').getImageData(0, 0, S, S).data;
+      const o = (Math.floor(S / 2) * S + Math.floor(S / 2)) * 4;
+      if (px[o + 3] === 0) return null;
+      return '#' + [px[o], px[o + 1], px[o + 2]]
+        .map(x => x.toString(16).padStart(2, '0')).join('');
+    };
+    const check = (product, vals) => vals.map(v => ({
+      v, want: toHex(_meshColorFn(product)(v)), got: render(v, product),
+    })).filter(x => x.want !== x.got);
+    return {
+      cc:  check('cc',  [0.50, 0.70, 0.82, 0.88, 0.91, 0.93, 0.95, 0.96, 0.97, 0.98, 0.99, 1.00]),
+      ref: check('ref', [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75]),
+      vel: check('vel', [-100, -64, -36, -20, -10, 10, 20, 36, 64, 100]),
+      zdr: check('zdr', [-6, -4, -2, 0, 2, 4, 6]),
+      kdp: check('kdp', [1, 2, 3, 4, 5, 6, 7]),
+      sw:  check('sw',  [1, 3, 5, 7, 9, 11, 13]),
+      et:  check('et',  [10, 20, 30, 40, 50, 60]),
+      hc:  check('n0h', [10, 30, 50, 70, 90, 110]),
+    };
+  });
+  const say = k => r[k].map(x => `${x.v}: want ${x.want} got ${x.got}`).join('; ');
+  // The one that was reported, over and over.
+  ok('correlation coefficient renders every value as its own colour',
+     r.cc.length === 0, say('cc'));
+  ok('reflectivity does too', r.ref.length === 0, say('ref'));
+  ok('and velocity', r.vel.length === 0, say('vel'));
+  ok('and differential reflectivity', r.zdr.length === 0, say('zdr'));
+  ok('and specific differential phase', r.kdp.length === 0, say('kdp'));
+  ok('and spectrum width', r.sw.length === 0, say('sw'));
+  ok('and echo tops', r.et.length === 0, say('et'));
+  ok('and hydrometeor classification', r.hc.length === 0, say('hc'));
+  const total = Object.values(r).reduce((a, b) => a + b.length, 0);
+  ok('so nothing on the canvas disagrees with the value behind it',
+     total === 0, `${total} disagreements`);
+
+  // One value at a time cannot catch the bucketing collapse: one value is one
+  // bucket whatever the step is. It only appears when MANY values share a
+  // sweep, which is of course every real sweep. So this puts them all in one
+  // mesh, as the renderer really receives them, and counts how many colours
+  // survive. Before the fix twelve CC values came out as three.
+  const many = await page.evaluate(() => {
+    const draw = (product, vals) => {
+      const lon0 = -100, lat0 = 30, cell = 1;
+      const m = new Float32Array(vals.length * 9);
+      let k = 0;
+      vals.forEach((v, i) => {
+        const x = lon0 + i * cell;
+        m[k++] = x;        m[k++] = lat0;
+        m[k++] = x + cell; m[k++] = lat0;
+        m[k++] = x + cell; m[k++] = lat0 + cell;
+        m[k++] = x;        m[k++] = lat0 + cell;
+        m[k++] = v;
+      });
+      const bounds = [lon0, lat0, lon0 + vals.length * cell, lat0 + cell];
+      const img = _meshToImage({ meshData: m, bounds }, product, bounds);
+      if (!img) return 0;
+      const cv = img.canvas, S = cv.width;
+      const px = cv.getContext('2d').getImageData(0, 0, S, S).data;
+      // Every colour actually painted, counted off the canvas itself.
+      const seen = new Set();
+      for (let o = 0; o < px.length; o += 4) {
+        if (px[o + 3] === 0) continue;
+        seen.add((px[o] << 16) | (px[o + 1] << 8) | px[o + 2]);
+      }
+      return seen.size;
+    };
+    const ccVals = [0.50, 0.70, 0.82, 0.88, 0.91, 0.93, 0.95, 0.96, 0.97, 0.98, 0.99, 1.00];
+    const refVals = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75];
+    return { cc: draw('cc', ccVals), ccWant: ccVals.length,
+             ref: draw('ref', refVals), refWant: refVals.length };
+  });
+  ok('twelve different CC values in one sweep paint twelve colours',
+     many.cc === many.ccWant, `${many.cc} of ${many.ccWant}`);
+  ok('and fifteen reflectivity values paint fifteen',
+     many.ref === many.refWant, `${many.ref} of ${many.refWant}`);
+}
+
+console.log('\n16. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 await browser.close();
