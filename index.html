@@ -31719,7 +31719,11 @@ function _meshFamily(product) {
   var p = String(product || '').toLowerCase();
   if (p === 'ref' || p === 'ncr' || p === 'tzl'
       || /^n\d[qb]$/.test(p) || /^tz\d$/.test(p)) return 'ref';
-  if (p === 'vel' || /^n\d[ug]$/.test(p) || /^tv\d$/.test(p)) return 'vel';
+  // n0s/n1s is storm relative velocity: the same measurement as base
+  // velocity, in the same knots, re-centred on the storm's own motion. It
+  // matched no rule here at all, so _meshColorFn had no colour function for
+  // it and the product painted nothing whatsoever.
+  if (p === 'vel' || /^n\d[ugs]$/.test(p) || /^tv\d$/.test(p)) return 'vel';
   if (p === 'sw') return 'sw';
   if (p === 'cc'  || /^n\dc$/.test(p)) return 'cc';
   if (p === 'zdr' || /^n\dx$/.test(p)) return 'zdr';
@@ -32073,6 +32077,9 @@ function _fxTouch() {
 }
 
 function _fxUiSync() {
+  // Kept current every time the panel is touched, so it can never be stale
+  // about the thing it exists to reveal.
+  _fxUiSyncActive();
   var sel = document.getElementById('lqm-fx-fam');
   if (!sel) return;
   if (!sel.options.length) {
@@ -32321,12 +32328,80 @@ function _fxUiPreset(key) {
   _fxTouch();
   var sel = document.getElementById('lqm-fx-preset'); if (sel) sel.value = '';
 }
+// This used to be the whole of "Back to Normal", and it is not: it clears the
+// ONE family the panel happens to be showing. Set a palette on Reflectivity,
+// switch the picker to Velocity, press Reset, and Reflectivity is still
+// repainting every radar picture on the site - Level 2 and Level 3 alike,
+// because these are keyed by family and a family does not care which level it
+// came from. The panel then shows Velocity's untouched settings, which reads
+// as "nothing is on".
+//
+// So the per-family clear keeps its job under a name that admits its scope,
+// and there is a real clear-everything beside it.
 function _fxUiReset() {
   delete _fxFilter[_fxUiFam];
   delete _fxColors[_fxUiFam];
   _fxSave();
   _fxUiSync();
   _radarFxApply();
+}
+
+// Paints the always-visible "currently changed" line.
+function _fxUiSyncActive() {
+  const el = document.getElementById('lqm-fx-active');
+  if (!el) return;
+  const rows = _fxActiveList();
+  if (!rows.length) {
+    el.style.color = 'rgba(255,255,255,0.45)';
+    el.textContent = 'Nothing. Radar is using its standard colors.';
+    return;
+  }
+  el.style.color = '#ffc44d';
+  el.textContent = rows.map(r => `${r.label} (${r.what})`).join(', ')
+    + ' - these repaint every site, Level 2 and Level 3.';
+}
+
+// Which families are currently overriding the defaults. The one question the
+// panel could not answer, because it only ever shows one family at a time.
+function _fxActiveList() {
+  const out = [];
+  Object.keys(RADAR_FAMS || {}).forEach(fam => {
+    const bits = [];
+    if (_fxFilterFor(fam)) bits.push('filter');
+    if (_fxPaletteFor(fam)) bits.push('colors');
+    if (bits.length) {
+      out.push({ fam, label: (RADAR_FAMS[fam] || {}).label || fam,
+                 what: bits.join(' + ') });
+    }
+  });
+  return out;
+}
+
+function _fxUiResetAll() {
+  const n = _fxActiveList().length;
+  _fxFilter = {};
+  _fxColors = {};
+  try {
+    localStorage.removeItem(FX_FILTER_KEY);
+    localStorage.removeItem(FX_COLORS_KEY);
+  } catch (e) {}
+  _fxSave();
+  _fxUiSync();
+  _radarFxApply();
+  if (typeof showToast === 'function') {
+    showToast(n ? `Cleared ${n} product${n === 1 ? '' : 's'}. Radar is back to `
+                  + 'the standard colors.'
+                : 'Nothing was overriding the standard colors.', 3500);
+  }
+}
+
+// Answers "are any color tables on?" without opening anything, for when the
+// map looks wrong and the panel looks innocent.
+function _radarColorCheck() {
+  const rows = _fxActiveList();
+  if (!rows.length) console.log('No radar filter or color override is active.');
+  else console.table(rows);
+  return rows;
 }
 
 async function loadDualPolData(product, stationOverride = null) {
@@ -37075,7 +37150,16 @@ function selectProduct(p) {
     </div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Back to Normal</span>
-      <button id="lqm-fx-reset" onclick="_fxUiReset()" style="font-family:var(--mono);font-size:9px;color:var(--accent2);background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);border-radius:6px;padding:3px 10px;cursor:pointer;">Reset</button>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0;">
+        <button id="lqm-fx-reset" onclick="_fxUiReset()" style="font-family:var(--mono);font-size:9px;color:var(--accent2);background:rgba(0,140,186,0.15);border:1px solid rgba(0,140,186,0.4);border-radius:6px;padding:3px 10px;cursor:pointer;">Reset this product</button>
+        <button id="lqm-fx-reset-all" onclick="_fxUiResetAll()" style="font-family:var(--mono);font-size:9px;color:#ffb4a2;background:rgba(253,0,0,0.14);border:1px solid rgba(253,0,0,0.4);border-radius:6px;padding:3px 10px;cursor:pointer;">Reset every product</button>
+      </div>
+    </div>
+    <!-- The panel shows one product at a time, so an override on a product
+         you are NOT looking at is invisible. This is always visible. -->
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Currently changed</span>
+      <span id="lqm-fx-active" style="font-family:var(--mono);font-size:9px;flex:1;min-width:0;line-height:1.5;"></span>
     </div>
     <div style="font-size:9px;opacity:.65;line-height:1.45;padding:2px 4px 0;">
       Reflectivity through Echo Tops run on the raw radar numbers, Level 2
@@ -42152,7 +42236,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "JTWC outlooks are fixed. The layer was asking the cache service for the feed as \"text\" where every other part of the app asks for \"txt\", so it was the only one getting back something that was not the feed. What made it hard to notice is that the failure looked exactly like good weather: the parse found nothing, drew nothing, and a blank Pacific is an ordinary sight. It now says out loud when it cannot read the feed, and stays quiet when a basin is genuinely calm, which are two different things it could not tell apart before.";
+const APP_LATEST_UPDATE = "If your radar colors looked wrong while you were sure no color table was on, here is why: the color settings are saved per product, the settings panel shows one product at a time, and \"Back to Normal\" only ever cleared the product you were looking at. Set a palette on Reflectivity, switch the picker to Velocity, press Reset, and Reflectivity carried on repainting every radar picture on the site while the panel showed you Velocity looking untouched. The panel now lists which products are changed, whichever one you have selected, and there is a Reset every product beside the old one. Storm Relative Velocity also painted nothing at all, because it matched no product family; it works now.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
