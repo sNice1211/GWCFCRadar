@@ -331,7 +331,11 @@ console.log('\n7. a small card by default, a big one when asked');
       big: el.classList.contains('big'),
       w: b.width, h: b.height, vw: innerWidth, vh: innerHeight,
       skewSized: sk.width > 100 && sk.height > 100,
-      hodoShown: getComputedStyle(el.querySelector('.snd-right')).display !== 'none',
+      // At card size the chart view is the skew-T alone. The hodograph is not
+      // squeezed in beside it any more; it is a view of its own, which is how
+      // it became readable on a phone at all.
+      hodoInChart: !!el.querySelector('.snd-pane[data-pane="chart"] #snd-hodo'),
+      hodoHasPane: !!el.querySelector('.snd-pane[data-pane="hodo"] #snd-hodo'),
       quickCount: quick.querySelectorAll('.snd-q').length,
       quickText: quick.textContent,
       tables: tbl.querySelectorAll('table').length,
@@ -348,7 +352,8 @@ console.log('\n7. a small card by default, a big one when asked');
   ok('it is a small card, not a full-screen takeover',
      !r.big && r.w < r.vw * 0.6 && r.h < r.vh * 0.8, JSON.stringify(r));
   ok('the skew-T canvas is really sized and drawn', r.skewSized);
-  ok('the hodograph is not squeezed in at card size', r.hodoShown === false);
+  ok('the hodograph is not squeezed in beside the skew-T', !r.hodoInChart);
+  ok('it has a view of its own instead', r.hodoHasPane);
   ok('four quick numbers stand in for the tables',
      r.quickCount === 4, String(r.quickCount));
   ok('and they are the ones a warning is written from',
@@ -378,15 +383,29 @@ console.log('\n7b. expanding shows the hodograph and the full tables');
     return {
       big: el.classList.contains('big'),
       wider: b.width, vw: innerWidth,
-      hodoShown: getComputedStyle(el.querySelector('.snd-right')).display !== 'none',
-      hodoSized: ho.width > 100 && ho.height > 100,
+      // The hodograph is its own view now rather than the cramped half of the
+      // chart, so expanding is no longer what reveals it: choosing it is.
+      hodoSized: (() => {
+        _sndTab(el, 'hodo');
+        const c = el.querySelector('#snd-hodo');
+        const okd = c.width > 100 && c.height > 100;
+        _sndTab(el, 'chart');
+        return okd;
+      })(),
+      windSized: (() => {
+        _sndTab(el, 'wind');
+        const c = el.querySelector('#snd-wind');
+        const okd = c.width > 100 && c.height > 100;
+        _sndTab(el, 'chart');
+        return okd;
+      })(),
       tablesShown: getComputedStyle(el.querySelector('.snd-tables')).display !== 'none',
       quickHidden: getComputedStyle(el.querySelector('.snd-quick')).display === 'none',
     };
   });
   ok('it expands', r.big && r.wider > r.vw * 0.5, JSON.stringify(r));
-  ok('the hodograph appears', r.hodoShown && r.hodoSized, JSON.stringify(r));
-  ok('and is really drawn, not just made visible', r.hodoSized);
+  ok('the hodograph draws when its view is chosen', r.hodoSized);
+  ok('and so does the wind profile beside it', r.windSized);
   ok('the full tables appear', r.tablesShown);
   ok('and the quick row steps aside, rather than saying it twice',
      r.quickHidden);
@@ -1235,21 +1254,29 @@ console.log('\n13e. the panel is four views, not one long column');
   const r = await page.evaluate(async () => {
     const el = document.getElementById('snd-panel');
     const tabs = Array.from(el.querySelectorAll('.snd-tab')).map(t => t.dataset.tab);
+    // Hidden views are still in the DOM and still fillable; they are simply
+    // not offered. Both halves of that are worth asserting.
+    const panes = Array.from(el.querySelectorAll('.snd-pane'))
+      .map(p => p.dataset.pane);
     const shown = () => Array.from(el.querySelectorAll('.snd-pane'))
       .filter(p => !p.hidden).map(p => p.dataset.pane);
     const atOpen = shown();
     _sndTab(el, 'numbers');
     const onNumbers = shown();
     const lit = Array.from(el.querySelectorAll('.snd-tab.on')).map(t => t.dataset.tab);
-    _sndTab(el, 'source');
-    const onSource = shown();
+    _sndTab(el, 'wind');
+    const onWind = shown();
     // Each pane really holds the thing its tab promises.
     const homes = {
-      chart:   !!el.querySelector('.snd-pane[data-pane="chart"] .snd-quick'),
+      chart:   !!el.querySelector('.snd-pane[data-pane="chart"] #snd-skewt'),
+      hodo:    !!el.querySelector('.snd-pane[data-pane="hodo"] #snd-hodo'),
+      wind:    !!el.querySelector('.snd-pane[data-pane="wind"] #snd-wind'),
       numbers: !!el.querySelector('.snd-pane[data-pane="numbers"] .snd-tables'),
       image:   !!el.querySelector('.snd-pane[data-pane="image"] .snd-pimg'),
-      source:  !!el.querySelector('.snd-pane[data-pane="source"] .snd-note'),
     };
+    // Where the numbers came from is not behind a tab any more.
+    const noteOutside = !el.querySelector('.snd-pane .snd-note')
+      && !!el.querySelector('#snd-panel > .snd-note');
     // The chart is a view like the other three. It used to sit outside the
     // panes so a tab could not hide it, which meant choosing Numbers changed
     // nothing visible on a card sized panel.
@@ -1265,20 +1292,28 @@ console.log('\n13e. the panel is four views, not one long column');
     // whatever it held while it was away is the wrong size.
     const c = el.querySelector('#snd-skewt');
     const redrawn = c.width > 100 && c.height > 100;
-    return { tabs, atOpen, onNumbers, lit, onSource, homes,
+    return { tabs, panes, atOpen, onNumbers, lit, onWind, homes, noteOutside,
              chartInPane, tabsAbove, marked, redrawn };
   });
-  ok('there are four views', r.tabs.join(',') === 'chart,numbers,image,source',
-     r.tabs.join(','));
+  ok('the four views offered are the ones Open-Meteo can fill',
+     r.tabs.join(',') === 'chart,hodo,wind,numbers', r.tabs.join(','));
+  // Image showed a picture only the Pi renders, so with the Pi sources hidden
+  // it could only ever be blank. Hidden, not deleted, like everything else.
+  ok('Image and Source are gone from the bar but still in the panel',
+     !r.tabs.includes('image') && !r.tabs.includes('source')
+     && r.panes.includes('image') && r.panes.includes('source'),
+     r.panes.join(','));
   ok('and the chart is the one open to begin with',
      r.atOpen.length === 1 && r.atOpen[0] === 'chart', r.atOpen.join(','));
   ok('choosing one shows only it', r.onNumbers.length === 1
      && r.onNumbers[0] === 'numbers', r.onNumbers.join(','));
   ok('and lights only its tab', r.lit.length === 1 && r.lit[0] === 'numbers',
      r.lit.join(','));
-  ok('switching again swaps it', r.onSource.join(',') === 'source', r.onSource.join(','));
+  ok('switching again swaps it', r.onWind.join(',') === 'wind', r.onWind.join(','));
   ok('every view holds what its tab promises',
      Object.values(r.homes).every(Boolean), JSON.stringify(r.homes));
+  ok('and the note sits under all of them rather than behind one',
+     r.noteOutside);
   ok('the chart is a view like the rest, not a fixture above them',
      r.chartInPane);
   ok('and the switch sits above what it switches', r.tabsAbove);
@@ -1286,6 +1321,53 @@ console.log('\n13e. the panel is four views, not one long column');
      r.marked === 1, String(r.marked));
   ok('coming back to the chart redraws it at the size it really is',
      r.redrawn);
+}
+
+console.log("\n13e2. the new views are free: switching asks Open-Meteo nothing");
+{
+  // Hodograph and Wind are drawn from the SAME profile the chart is drawn
+  // from, which came from the same cached Open-Meteo answer. Adding views is
+  // therefore not adding load, and this proves it by counting requests rather
+  // than by reasoning about the code: every tab, twice round, and the count
+  // has to stay at zero.
+  const r = await page.evaluate(async () => {
+    const el = document.getElementById('snd-panel');
+    let hits = 0;
+    const realFetch = window.fetch;
+    window.fetch = async (url, opts) => {
+      if (String(url).includes('open-meteo')) hits++;
+      return realFetch(url, opts);
+    };
+    const tabs = Array.from(el.querySelectorAll('.snd-tab')).map(b => b.dataset.tab);
+    for (let round = 0; round < 2; round++) {
+      for (const id of tabs) {
+        _sndTab(el, id);
+        await new Promise(r2 => setTimeout(r2, 20));
+      }
+    }
+    // Every drawn view really drew, rather than being free by doing nothing.
+    const sizes = {};
+    for (const [id, sel] of [['chart', '#snd-skewt'], ['hodo', '#snd-hodo'],
+                             ['wind', '#snd-wind']]) {
+      _sndTab(el, id);
+      await new Promise(r2 => setTimeout(r2, 20));
+      const c = el.querySelector(sel);
+      sizes[id] = c ? (c.width > 100 && c.height > 100) : false;
+    }
+    _sndTab(el, 'chart');
+    const read = el.querySelector('.snd-hodo-read');
+    const readText = read ? read.textContent : '';
+    window.fetch = realFetch;
+    return { hits, tabs, sizes, readText, rounds: tabs.length * 2 };
+  });
+  ok('switching through every view costs no requests at all',
+     r.hits === 0, `${r.hits} requests over ${r.rounds} switches`);
+  ok('and each drawn view really drew something',
+     r.sizes.chart && r.sizes.hodo && r.sizes.wind, JSON.stringify(r.sizes));
+  // A hodograph's shape says whether a storm can rotate; these say how much.
+  ok('the hodograph carries the numbers it is read for',
+     /SRH/.test(r.readText) && /shear/i.test(r.readText),
+     r.readText.slice(0, 100));
 }
 
 console.log('\n13f. the Pi says why it is empty, in the browser');
@@ -1494,9 +1576,15 @@ console.log('\n13g4. the panel is painted in the radar\'s own colours');
   // reflectivity table the map paints echoes with, so these check the two
   // cannot drift: a hex typed into the panel by hand would pass a screenshot
   // and fail here the moment the radar table changed under it.
-  const r = await page.evaluate(() => {
+  const r = await page.evaluate(async () => {
     const el = document.getElementById('snd-panel');
     el.classList.add('open');
+    // A tab fades into its lit state over 140ms. Reading the background the
+    // instant it is chosen catches the transition part way and returns
+    // transparent about one run in three, which is a flaky test rather than a
+    // real fault. Settle first.
+    _sndTab(el, 'chart');
+    await new Promise(res => setTimeout(res, 260));
     const cs = getComputedStyle(el);
     const tok = n => cs.getPropertyValue(n).trim().toLowerCase();
     const fromTable = dbz =>
