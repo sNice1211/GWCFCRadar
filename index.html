@@ -31518,12 +31518,49 @@ function _meshToImage(result, product, forceBounds) {
   var STRIDE = 9;
   var _fxRange = _fxFilterFor(_meshFamily(product));
 
+  // Gates are grouped by value so the colour function runs a few hundred
+  // times instead of a few hundred thousand. HOW they are grouped was the
+  // single worst bug in this renderer.
+  //
+  // It used to be Math.round(v * 4): quarter-unit buckets, and the bucket was
+  // then painted with `repV`, the first value that happened to land in it.
+  // Quarter of a unit is sensible for reflectivity, whose range is a hundred
+  // and ten dBZ wide. It is catastrophic for correlation coefficient, whose
+  // ENTIRE range is 1.05: every CC from 0.875 to 1.05 fell into one bucket,
+  // so the whole precipitation range - all of it - was painted whatever
+  // colour the first gate in that bucket happened to be. Measured: twelve
+  // distinct CC values rendered as THREE colours, with 0.88 through 1.00 all
+  // coming out the same blue.
+  //
+  // That is also why it looked like a different wrong colour every time the
+  // palette was touched: the answer depended on which gate the loop met
+  // first, so it moved with the weather rather than with the code.
+  //
+  // Now the step comes from the family's own range, so every product gets the
+  // same relative precision, and repV is the bucket's own value rather than
+  // an arbitrary member of it - the picture is a function of the data again,
+  // not of iteration order.
+  var _qFam = (typeof RADAR_FAMS !== 'undefined' && RADAR_FAMS[_meshFamily(product)])
+    || { min: -30, max: 80 };
+  var _qSpan = (_qFam.max - _qFam.min) || 1;
+  // 4096 steps across the range, and the bucket keeps the REAL value of the
+  // first gate in it rather than the step's midpoint.
+  //
+  // Both halves matter. The step has to be fine enough that a single bucket
+  // can never span two palette colours - at 4096 it is a four-thousandth of
+  // the range, far below any band edge here - and once that is true, every
+  // gate in a bucket genuinely shares a colour, so asking the first one is
+  // exact rather than merely close. Using the midpoint instead put values
+  // sitting exactly on a band edge on the wrong side of it: CC 0.93 quantised
+  // to 0.9290 and painted as the band below.
+  var _qScale = 4096 / _qSpan;
+
   var buckets = {};
   for (var i = 0; i < meshData.length; i += STRIDE) {
     var v = meshData[i + 8];
     if (v !== v) continue; // NaN = range fold
     if (_fxRange && (v < _fxRange.min || v > _fxRange.max)) continue;
-    var qk = Math.round(v * 4);
+    var qk = Math.round((v - _qFam.min) * _qScale);
     if (!buckets[qk]) buckets[qk] = { repV: v, indices: [i] };
     else buckets[qk].indices.push(i);
   }
@@ -31929,10 +31966,22 @@ const ET_BANDS = [
 
 // Which band a value falls in. A null colour in the table means "draw
 // nothing here", which is how the dead zone around zero velocity is spelled.
+// The epsilon is not a fudge, it is the mesh's storage format.
+//
+// Gate values live in a Float32Array, and float32 cannot hold most decimals
+// exactly: 0.95 comes back as 0.9499999881. A band edge AT 0.95 then rejects
+// its own value and hands it to the band below. Reflectivity never showed
+// this because its edges are whole dBZ and float32 holds small integers
+// exactly; correlation coefficient showed it on three bands out of thirteen,
+// because none of 0.95, 0.96 or 0.97 is representable.
+//
+// A millionth is far below any radar's precision in any of these units and
+// comfortably larger than float32's error near 1.0, which is about 6e-8.
+var _BAND_EPS = 1e-6;
 function _bandColor(bands, v) {
   if (v == null || v !== v) return null;
   for (var i = bands.length - 1; i >= 0; i--) {
-    if (v >= bands[i][0]) return bands[i][1];
+    if (v >= bands[i][0] - _BAND_EPS) return bands[i][1];
   }
   return null;                       // below the lowest band: not an echo
 }
@@ -42273,7 +42322,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "CC purple was my fault. When I rebuilt its colour scale I gave it bands starting at zero, so it painted the low-CC speckle a radar returns from clear air, which is not weather and covers most of a sweep on most days. That wash of the lowest band was the purple, and the real weather was underneath it. Nothing below 0.45 is drawn now, which is the same floor every other product here already had: reflectivity starts at 5 dBZ, velocity ignores anything within 5 kt of nought, KDP ignores near-zero. CC was the only one drawn from the bottom of its range upward.";
+const APP_LATEST_UPDATE = "Found the real reason CC kept coming out a different wrong colour, and it was never in a colour table. To stay fast the renderer groups gates by value before colouring them, and it grouped them in quarter-unit steps. That is fine across reflectivity, which spans a hundred and ten dBZ. Correlation coefficient spans 1.05 in total, so the whole product collapsed into about five groups, and each group was painted whichever gate the loop happened to reach first. Twelve different CC values were coming out as three colours, and the answer moved with the weather rather than with the code. Groups are now sized to each product, so every value gets its own colour. A second bug underneath it: gate values are stored as 32 bit floats, where 0.95 is really 0.9499999881, so bands with edges at 0.95 rejected their own values and shifted them one band down. Every product is now checked pixel by pixel.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
