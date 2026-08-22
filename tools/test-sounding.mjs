@@ -760,12 +760,23 @@ console.log('\n13. a named model asks the Pi\'s door, and falls back rather than
   ok('so the next click does not wait on it all over again', r.noRetry);
 }
 
-console.log('\n13b. and the picker can force either one');
+console.log('\n13b. the Pi sources are put away, not thrown out');
 {
+  // The Pi is off the air, so a menu that still offered seven ways to ask it
+  // was offering seven ways to wait and then be told no. They are hidden.
+  //
+  // Hidden is the whole point of this section: NOTHING was deleted. The
+  // SounderPy door, the rendered site images and the level reader are all
+  // still here and still work, because the fetching never asked the menu
+  // anything - it reads _sndSource. So this drives them from code, which is
+  // exactly what uncommenting one `hidden` would restore to the menu.
   const r = await page.evaluate(async () => {
     const el = document.getElementById('snd-panel');
     const sel = el.querySelector('.snd-src');
-    const ids = [...sel.options].map(o => o.value);
+    const offered = [...sel.options].map(o => o.value);
+    const known = SND_SOURCES.map(s => s.id);
+    const hidden = SND_SOURCES.filter(s => s.hidden).map(s => s.id);
+
     const asked = [];
     const realFetch = window.fetch;
     window.fetch = async (url, opts) => {
@@ -777,48 +788,51 @@ console.log('\n13b. and the picker can force either one');
       }
       return realFetch(url, opts);
     };
-    // Explicitly the Pi's rendered site images: the door must not be
-    // touched at all.
-    sel.value = 'pisite'; sel.dispatchEvent(new Event('change'));
-    await new Promise(r => setTimeout(r, 400));
+
+    // The rendered site images, reached the only way that is left. The door
+    // must not be touched at all.
+    _sndSource = 'pisite'; _sndPiDown = false;
+    await _sndRefresh(el, 0);
+    await new Promise(r2 => setTimeout(r2, 300));
     const siteOnly = { asked: asked.length,
                        tables: el.querySelector('.snd-tables')
                                  .querySelectorAll('table').length };
-    // Explicitly a SounderPy source: no silent fallback, because the person
-    // asked for that one and a quiet substitution would be a lie.
-    sel.value = 'obs'; sel.dispatchEvent(new Event('change'));
-    await new Promise(r => setTimeout(r, 300));
+
+    // A named SounderPy source still asks for that one by name.
+    _sndSource = 'obs'; _sndPiDown = false;
+    await _sndRefresh(el, 0);
+    await new Promise(r2 => setTimeout(r2, 300));
     const forced = { asked: asked.slice(),
-                     err: el.querySelector('.snd-tables').textContent,
                      note: el.querySelector('.snd-note').textContent };
-    sel.value = 'rap'; sel.dispatchEvent(new Event('change'));
-    await new Promise(r => setTimeout(r, 300));
+
+    // And the menu's own choice is still remembered.
+    sel.value = 'web'; sel.dispatchEvent(new Event('change'));
+    await new Promise(r2 => setTimeout(r2, 300));
     window.fetch = realFetch;
-    return { ids, siteOnly, forced,
+    return { offered, known, hidden, siteOnly, forced,
              saved: localStorage.getItem('gwcfc_snd_source') };
   });
-  // Only the sources that actually put a sounding on the screen. "Auto" was a
-  // chooser rather than a source and always settled on one of these anyway,
-  // and the level images were strictly worse than every one of them and dead
-  // ended outside the area they cover.
-  ok('the picker offers the Pi and Open-Meteo, and no way of not choosing',
-     r.ids.join(',') === 'rap,obs,hrrr,nam,gfs,pisite,levels,web',
-     JSON.stringify(r.ids));
-  ok('and Auto, which was never a source, is not among them',
-     !r.ids.includes('auto'), JSON.stringify(r.ids));
-  ok('choosing the site images does not touch the Pi\'s door at all',
+  ok('the menu offers only the source that can answer without the Pi',
+     r.offered.join(',') === 'web', JSON.stringify(r.offered));
+  // If this ever fails because an id vanished from SND_SOURCES, something was
+  // deleted that was only meant to be put away.
+  ok('but every Pi source is still in the app, merely hidden',
+     r.known.join(',') === 'rap,obs,hrrr,nam,gfs,pisite,levels,web',
+     JSON.stringify(r.known));
+  ok('and all seven of them are the hidden ones',
+     r.hidden.join(',') === 'rap,obs,hrrr,nam,gfs,pisite,levels',
+     JSON.stringify(r.hidden));
+  ok('a hidden source still works when it is asked for in code',
+     r.siteOnly.tables === 4, String(r.siteOnly.tables));
+  ok('and the site images still do not touch the Pi\'s door',
      r.siteOnly.asked === 0, String(r.siteOnly.asked));
-  ok('and still draws the full sounding', r.siteOnly.tables === 4,
-     String(r.siteOnly.tables));
-  ok('choosing a SounderPy source really asks for that one',
+  ok('a named SounderPy source still asks for that one by name',
      /source=obs/.test(r.forced.asked.join(' ')), r.forced.asked.join(' '));
-  // It used to be checked that a failed door left its error on screen. That
-  // is no longer what should happen: every source falls back now, so what has
-  // to be true is that the substitution is ADMITTED rather than silent.
-  ok('and when it fails it says so in the note rather than substituting quietly',
+  ok('and still admits in the note when it had to fall back',
      /Fell back/.test(r.forced.note) && /no such hour yet/.test(r.forced.note),
      r.forced.note.slice(0, 200));
-  ok('the choice is remembered for next time', r.saved === 'rap', String(r.saved));
+  ok('the menu choice is still remembered for next time',
+     r.saved === 'web', String(r.saved));
 }
 
 console.log('\n13c. and there is a source that needs no Pi at all');

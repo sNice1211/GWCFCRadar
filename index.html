@@ -14376,25 +14376,38 @@ let _sndPixel = null;      // a 1x1 scratch canvas, reused for every read
 // something, which is the rule now: each Pi path falls back to Open-Meteo when
 // the Pi cannot answer, so naming a model is a preference about where the
 // numbers come from rather than an instruction to fail without them.
+// `hidden` takes an entry off the menu WITHOUT taking it out of the app.
+//
+// Every Pi source is hidden for now. Nothing about them is deleted: the
+// SounderPy door, the rendered site images and the model level reader are all
+// still here, still tested, and still reachable the moment a line below is
+// uncommented, because the fetching in _sndFetchFor never asked the menu
+// anything. This is the difference between putting a feature away and
+// throwing it out, and with the Pi off the air it is the honest state of the
+// panel: a menu should not offer a choice that cannot currently answer.
 const SND_SOURCES = [
-  { id: 'rap',    pi: 'rap',      label: 'RAP analysis (Pi)' },
-  { id: 'obs',    pi: 'obs',      label: 'Observed balloon (Pi)' },
-  { id: 'hrrr',   pi: 'hrrr',     label: 'HRRR (Pi)' },
-  { id: 'nam',    pi: 'nam',      label: 'NAM (Pi)' },
-  { id: 'gfs',    pi: 'gfs',      label: 'GFS (Pi)' },
+  { id: 'rap',    pi: 'rap',      label: 'RAP analysis (Pi)',   hidden: true },
+  { id: 'obs',    pi: 'obs',      label: 'Observed balloon (Pi)', hidden: true },
+  { id: 'hrrr',   pi: 'hrrr',     label: 'HRRR (Pi)',           hidden: true },
+  { id: 'nam',    pi: 'nam',      label: 'NAM (Pi)',            hidden: true },
+  { id: 'gfs',    pi: 'gfs',      label: 'GFS (Pi)',            hidden: true },
   // The images the Pi renders itself: SounderPy's full profile, SHARPpy's
   // parameters, drawn into a PNG at each upper-air site once an hour. Static
   // files, so they survive an old serve.py that has never heard of the
   // /sounding door. This is the only source that fills the Image view.
-  { id: 'pisite', pi: null,       label: 'Pi site images (SounderPy)' },
+  { id: 'pisite', pi: null,       label: 'Pi site images (SounderPy)', hidden: true },
   // Twelve levels read out of the model images the Pi builds every six hours
   // and analysed here. The coarsest of the Pi paths, and the one that answers
   // when the Pi has models but no sounding run yet.
-  { id: 'levels', pi: null,       label: 'Pi model levels' },
+  { id: 'levels', pi: null,       label: 'Pi model levels',     hidden: true },
   // The one that works with no Pi at all, and the reason the panel can
   // always draw something. Last in the list because it is the last resort.
   { id: 'web',    pi: null,       label: 'Open-Meteo (no Pi needed)' },
 ];
+// What the menu is allowed to show, and what a fresh visitor lands on.
+const _sndVisibleSources = () => SND_SOURCES.filter(s => !s.hidden);
+const _sndDefaultSource = () =>
+  (_sndVisibleSources()[0] || SND_SOURCES[0] || { id: 'web' }).id;
 // How far back the SounderPy sources can be asked to look, in hours. An
 // analysis is hourly, so these are the hours themselves rather than a
 // forecast's steps: this is the control for "show me what the air looked like
@@ -14402,11 +14415,10 @@ const SND_SOURCES = [
 // sounding after the fact.
 const SND_BACK_HOURS = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48];
 
-// RAP is the default because it is the best thing the Pi can answer with: an
-// hourly analysis of what the air is doing right now, rather than a forecast
-// of what it will do. It falls back to Open-Meteo on its own, so defaulting to
-// it costs nothing when the Pi is away.
-let _sndSource = 'rap';
+// The first source the menu offers, which with every Pi entry hidden is
+// Open-Meteo. Written as a lookup rather than a literal so that unhiding a Pi
+// source above is the only edit needed to make it the default again.
+let _sndSource = (SND_SOURCES.find(s => !s.hidden) || SND_SOURCES[0]).id;
 // Remembered per session so the panel stops knocking on a door that is not there.
 // A Pi running an older serve.py answers 404 for /sounding, and retrying that
 // on every click is a second of nothing before every fallback.
@@ -15925,7 +15937,8 @@ async function openSounding(lat, lon) {
         <span class="snd-where"></span>
         <div class="snd-head-spacer"></div>
         <select class="snd-src" title="Where the profile comes from">
-          ${SND_SOURCES.map(s => `<option value="${s.id}">${s.label}</option>`).join('')}
+          ${_sndVisibleSources().map(s =>
+            `<option value="${s.id}">${s.label}</option>`).join('')}
         </select>
         <div class="snd-hour-wrap">
           <span class="snd-hour-lbl">F+000</span>
@@ -16047,9 +16060,18 @@ async function openSounding(lat, lon) {
   _sndPiDown = false;
   try {
     const saved = localStorage.getItem('gwcfc_snd_source');
-    if (saved && SND_SOURCES.some(s => s.id === saved)) _sndSource = saved;
+    // Only a source the menu still offers. Someone who last chose a Pi source
+    // would otherwise come back to a picker showing nothing, pointed at a
+    // door that is not answering.
+    if (saved && SND_SOURCES.some(s => s.id === saved && !s.hidden)) {
+      _sndSource = saved;
+    }
   } catch (e) {}
-  el.querySelector('.snd-src').value = _sndSource;
+  const _srcSel = el.querySelector('.snd-src');
+  _srcSel.value = _sndSource;
+  // A hidden source can still be selected from code, and then the picker has
+  // no option to show for it. It reads as the default rather than as blank.
+  if (!_srcSel.value) _srcSel.value = _sndDefaultSource();
   el.querySelector('.snd-where').textContent =
     `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
   el.querySelector('.snd-note').textContent = 'Asking the Pi...';
@@ -16187,7 +16209,9 @@ function _sndVerdictHTML(d) {
 // unreachable, and a Pi that is off is the normal case rather than the
 // exceptional one.
 async function _sndFetchFor(el, lat, lon, hr) {
-  const pick = SND_SOURCES.find(s => s.id === _sndSource) || SND_SOURCES[0];
+  const pick = SND_SOURCES.find(s => s.id === _sndSource)
+    || SND_SOURCES.find(s => s.id === _sndDefaultSource())
+    || SND_SOURCES[0];
 
   if (pick.id === 'web') {             // Open-Meteo, asked for directly
     return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'web'),
@@ -41867,7 +41891,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "New tool: Cross Section, in the tool column on the right. A radar picture is one thin cone through a storm and says nothing about how tall it is, but a volume scan sweeps the same circle at rising angles, so sampling every one of them along a line on the ground stacks them into a side-on view: where the core sits, whether it leans, whether there is an overhang. Drag the two ends of the line on the map and press the arrow. It uses the volume already downloaded for the picture on screen, so it costs no extra download. Also, the right-click menu now opens on a double tap, which is how you reach it on a phone, and a mouse double click still zooms as before.";
+const APP_LATEST_UPDATE = "The sounding source menu now shows only Open-Meteo, which needs no Pi. Every Pi source is hidden rather than removed: the SounderPy door, the rendered site images and the model level reader are all still in the app and still tested, and bringing one back is a one line change. With the Pi off the air a menu offering seven ways to ask it was offering seven ways to wait and then be told no.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
