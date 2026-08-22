@@ -31002,16 +31002,11 @@ function _buildDpPool(station, frames, layerSuffix) {
 // ── L3 CANVAS - CC / ZDR via Cloudflare Worker ───────────────────────────────
 
 // Colormaps: input t = 0..1 (already normalised from raw value), returns CSS color string
-function _ccColor(t) {
-  // CC: 0.2–1.05. Below ~0.7 = non-met (grey/purple), 0.9+ = clean rain (green)
-  if (t < 0)   return null;
-  if (t < 0.3) return `hsl(270,50%,${20 + t*60}%)`;   // dark purple
-  if (t < 0.6) return `hsl(${270-t*180},60%,40%)`;    // purple→red
-  if (t < 0.8) return `hsl(${30-t*30},80%,50%)`;      // orange→yellow
-  return `hsl(${90+(t-0.8)*300},90%,50%)`;             // yellow→green
-}
 function _zdrColor(t) {
-  // ZDR: -8 to +8 dB. t=0.5 = 0 dB (spherical drops, blue). t>0.5 = oblate (red).
+  // ZDR: -8 to +8 dB, a straight ramp from blue at -8 through green at 0 dB
+  // (spherical drops) to red at +8 (large oblate ones).  Note 0 dB is the
+  // MIDDLE of the ramp and therefore green; the comment here used to claim it
+  // was blue, which is where -8 sits.
   const h = 240 - t * 240;  // 240=blue → 0=red
   return `hsl(${h},90%,50%)`;
 }
@@ -31866,6 +31861,42 @@ const REF_BANDS = [
   [65, '#f800fd'], [70, '#9854c6'], [75, '#fdfdfd'],
 ];
 
+// Correlation coefficient, and the bands are crowded at the top ON PURPOSE.
+//
+// CC asks "is everything in this gate the same kind of thing". Rain answers
+// about 0.98, and essentially all precipitation on Earth answers between 0.95
+// and 1.00. So a scale spread evenly over its nominal 0 to 1.05 range spends
+// nineteen twentieths of itself on values the weather never takes, and paints
+// every storm one flat colour. That is exactly what happened here: everything
+// from 0.85 upward came out inside a forty degree slice of green, so a CC
+// picture of a supercell was a green blob.
+//
+// The old ramp also compared its thresholds against v/1.05 while its comments
+// described raw CC, so every boundary sat about five percent away from where
+// it was meant to, and a CC of 0.70 - the classic debris signature - was drawn
+// ORANGE while the rain around it was green. Backwards from every operational
+// display, and from the one thing CC is actually used for.
+//
+// Eight bands now cover 0.91 to 1.00, which is where the information is, and
+// the low end is cold and obviously different so non-meteorological targets
+// stand out rather than blending in: debris, birds, chaff and the melting
+// layer read as "not rain" at a glance.
+const CC_BANDS = [
+  [0.00, '#3f3f5f'],   // noise, and the ground clutter that is not weather
+  [0.45, '#6b3fa0'],   // very low: certainly not precipitation
+  [0.65, '#8f5fd6'],   // debris, birds, insects, chaff
+  [0.80, '#2f6fbf'],   // mixed, or a hail shaft tearing the uniformity up
+  [0.87, '#3b9ad6'],   // melting layer
+  [0.91, '#4fc3c3'],
+  [0.93, '#4fc36e'],
+  [0.95, '#8fd44a'],   // ordinary rain begins here
+  [0.96, '#d6d43b'],
+  [0.97, '#e6a52f'],
+  [0.98, '#e6702f'],   // uniform rain, the commonest value of all
+  [0.99, '#e63b2f'],
+  [1.00, '#fdfdfd'],   // as uniform as it gets
+];
+
 // Velocity, in knots, and symmetric on purpose. The number means "towards the
 // radar" on one side of zero and "away" on the other, and the thing worth
 // seeing is the two sitting side by side, which is rotation. Green towards,
@@ -31912,8 +31943,7 @@ function _meshColorFn(product) {
     return _fxGradientFn(fam, pal);
   }
   if (fam === 'cc') return function(v) {
-    var t = v / 1.05; t = t < 0 ? 0 : t > 1 ? 1 : t;
-    return _ccColor(t);
+    return _bandColor(CC_BANDS, v);
   };
   if (fam === 'zdr') return function(v) {
     var t = (v + 8) / 16; t = t < 0 ? 0 : t > 1 ? 1 : t;
@@ -42236,7 +42266,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "If your radar colors looked wrong while you were sure no color table was on, here is why: the color settings are saved per product, the settings panel shows one product at a time, and \"Back to Normal\" only ever cleared the product you were looking at. Set a palette on Reflectivity, switch the picker to Velocity, press Reset, and Reflectivity carried on repainting every radar picture on the site while the panel showed you Velocity looking untouched. The panel now lists which products are changed, whichever one you have selected, and there is a Reset every product beside the old one. Storm Relative Velocity also painted nothing at all, because it matched no product family; it works now.";
+const APP_LATEST_UPDATE = "Correlation coefficient was green, all of it. CC asks whether everything in a gate is the same kind of thing, and essentially all precipitation answers between 0.95 and 1.00, so a scale spread evenly across its full 0 to 1.05 range spent nineteen twentieths of itself on values the weather never takes: everything from 0.85 up came out in one narrow slice of green. Worse, a CC of 0.70, which is the classic debris signature, was drawn orange while the rain around it was green, exactly backwards from what CC is used for. Eight bands now cover 0.91 to 1.00 where the information actually is, and the low end is cold so debris, birds and the melting layer stand out against warm rain instead of blending into it.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
