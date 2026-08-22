@@ -571,30 +571,59 @@ def fetch_sounderpy(source, lat, lon, when=None):
     }
 
 
+def _hours_before(stamp, n):
+    """The same YYYYMMDDHH stamp, n hours earlier."""
+    t = datetime.strptime(stamp, "%Y%m%d%H").replace(tzinfo=timezone.utc)
+    return (t - timedelta(hours=n)).strftime("%Y%m%d%H")
+
+
+LOOK_BACK_HOURS = 3
+
+
 def fetch_profile(source, lat, lon, when=None):
-    """One profile, from whichever source answers.
+    """One profile, from whichever source answers, at whichever recent hour has one.
 
     SounderPy first, because it is the real thing: a hundred levels or more
     of the actual model or balloon data. NOAA's plain text soundings second,
     so a Pi where SounderPy will not install still draws a sounding rather
     than an error.
 
-    Both failing is reported as both failing, with each reason, rather than
-    as whichever happened to be tried last.
-    """
-    order = [("SounderPy", fetch_sounderpy), ("NOAA", fetch_noaa)]
+    And then it steps back through the last few hours, which is the part that
+    was missing. An analysis for the hour just gone is often not published
+    yet, and SounderPy's way of saying so is "list index out of range": it
+    asks for the newest run in a list that is still empty. That is not a
+    broken Pi and not a broken profile, it is a question asked four minutes
+    too early, and the hour before it almost always has one.
 
+    NOAA is only asked once, at the requested hour. It is the slow path on a
+    poor connection, and asking it four times turns one timeout into four.
+
+    Everything failing is reported as everything failing, with each reason,
+    rather than as whichever happened to be tried last.
+    """
+    base = when or datetime.now(timezone.utc).strftime("%Y%m%d%H")
     why = []
-    for name, fn in order:
+    for back in range(0, LOOK_BACK_HOURS + 1):
+        # The first attempt passes `when` through untouched, including None,
+        # so a source with its own idea of "latest" keeps it.
+        stamp = when if back == 0 else _hours_before(base, back)
         try:
-            return fn(source, lat, lon, when)
+            return fetch_sounderpy(source, lat, lon, stamp)
         except RuntimeError as e:
-            why.append(f"{name}: {e}")
+            why.append(f"SounderPy{'' if back == 0 else f' at -{back}h'}: {e}")
         except Exception as e:
-            why.append(f"{name}: {e.__class__.__name__}: {e}")
+            why.append(f"SounderPy{'' if back == 0 else f' at -{back}h'}: "
+                       f"{e.__class__.__name__}: {e}")
+    try:
+        return fetch_noaa(source, lat, lon, when)
+    except RuntimeError as e:
+        why.append(f"NOAA: {e}")
+    except Exception as e:
+        why.append(f"NOAA: {e.__class__.__name__}: {e}")
     raise RuntimeError("No sounding for "
                        f"{lat}, {lon}" + (f" at {when}Z" if when else "")
-                       + ". " + "  ".join(why))
+                       + f", nor in the {LOOK_BACK_HOURS} hours before it. "
+                       + "  ".join(why))
 
 
 def sharppy_params(prof):

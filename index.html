@@ -14182,12 +14182,25 @@ function _sndDecode(px, lo, hi) {
   return lo + ((px[0] * 256 + px[1]) / 65535) * (hi - lo);
 }
 
-function _sndLoadImage(url) {
+function _sndLoadImage(url, ms) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';   // required, or the canvas is tainted
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('could not load ' + url));
+    // An image request that hangs fires NEITHER onload nor onerror, so without
+    // this the promise simply never settles. Every caller is inside the
+    // sounding's fallback chain, and a step that never finishes is worse than
+    // one that fails: the chain stops dead, the panel keeps saying "Building
+    // the sounding" for as long as anyone is willing to watch it, and the web
+    // source that would have drawn something is never reached.
+    const timer = setTimeout(() => {
+      img.src = '';                  // stop the transfer we are giving up on
+      reject(new Error('timed out loading ' + url));
+    }, ms || 15000);
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error('could not load ' + url));
+    };
     img.src = url;
   });
 }
@@ -14224,7 +14237,7 @@ async function _sndSitesManifest() {
     || (typeof _hdResolveBase === 'function' ? await _hdResolveBase() : null);
   if (!base) throw new Error('no address set for the Pi');
   const man = await fetch(`${base}/soundings/manifest.json?t=${Date.now()}`,
-                          { cache: 'no-store' })
+                          { cache: 'no-store', signal: _abortSignal(12000) })
     .then(r => r.ok ? r.json() : null).catch(() => null);
   if (!man || !man.sites || !Object.keys(man.sites).length) {
     // The pipeline says why, when it managed to say anything at all.
@@ -14269,7 +14282,7 @@ async function _sndPrebuilt(lat, lon, hoursBack) {
   }
   const base = _hdBase;
   const body = await fetch(`${base}/soundings/${dir}/sounding.json?t=${Date.now()}`,
-                           { cache: 'no-store' })
+                           { cache: 'no-store', signal: _abortSignal(12000) })
     .then(r => r.ok ? r.json() : null).catch(() => null);
   if (!body || !body.profile) {
     throw new Error(`the ${near.id} sounding file could not be read`);
@@ -14306,7 +14319,8 @@ async function _sndProfile(lat, lon, fhr) {
   // with nothing anywhere saying the run had changed underneath it.
   if (!_sndManifest || _sndManifestRun !== idx.sounding.run) {
     _sndManifest = await fetch(`${_hdBase}/models/${idx.sounding.path}?t=${Date.now()}`,
-      { cache: 'no-store' }).then(r => r.ok ? r.json() : null).catch(() => null);
+      { cache: 'no-store', signal: _abortSignal(15000) })
+      .then(r => r.ok ? r.json() : null).catch(() => null);
     if (!_sndManifest) throw new Error('could not read the sounding index');
     _sndManifestRun = idx.sounding.run;
   }
@@ -14432,7 +14446,7 @@ async function _sndOpenMeteo(lat, lon, hoursBack, source) {
 
   let r;
   try {
-    r = await fetch(url, { cache: 'no-store' });
+    r = await fetch(url, { cache: 'no-store', signal: _abortSignal(15000) });
   } catch (e) {
     throw new Error('could not reach Open-Meteo, so there is no sounding '
       + 'source left. Check the connection.');
@@ -14544,7 +14558,8 @@ async function _sndPiSounding(lat, lon, source, hoursBack) {
 
   let r;
   try {
-    r = await fetch(`${_hdBase}/sounding?${q.toString()}`, { cache: 'no-store' });
+    r = await fetch(`${_hdBase}/sounding?${q.toString()}`,
+                    { cache: 'no-store', signal: _abortSignal(45000) });
   } catch (e) {
     throw new Error('the Pi did not answer the sounding request');
   }
@@ -41378,7 +41393,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The sounding panel is rebuilt. It now opens with a plain sentence saying what the profile actually means, from \"Quiet\" to \"Dangerous\", with the reason next to it, so the wall of numbers answers the question you opened it to ask before you read any of them. It refuses to cry severe over a capped profile, which is the case where a number alone misleads most. Each of the four headline values now has a bar under it showing how far along its own scale it sits, the tables are proper cards, and the whole panel is glass with the controls on two rows so nothing gets pushed off the edge.";
+const APP_LATEST_UPDATE = "Fixed the sounding panel getting stuck on \"Building the sounding\" for ever. None of the six things it fetches had a time limit, and an image request that is never answered fires neither success nor failure, so the panel simply waited, and the backup sources that would have drawn something were never reached. Everything is now bounded, so a slow Pi means a short pause and then a sounding from elsewhere. The Pi also steps back through the last few hours instead of giving up when the newest analysis is not published yet, which is what its \"list index out of range\" was really saying.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

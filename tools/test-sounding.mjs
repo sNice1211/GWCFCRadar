@@ -1142,6 +1142,55 @@ console.log('\n13g. the verdict, and the meters under the numbers');
      String((r.qs.match(/snd-meter/g) || []).length));
 }
 
+console.log('\n13h. a hanging Pi cannot hang the panel');
+{
+  // The symptom this section exists for: the panel sat on "Building the
+  // sounding" forever. Not one of the sounding fetches had a timeout, and an
+  // IMAGE that hangs fires neither onload nor onerror, so its promise never
+  // settled at all. The fallback chain below it therefore never ran, and the
+  // web source that would have drawn something was never reached.
+  // A request that is accepted and then never answered, held open here rather
+  // than hoped for from a real address. A refused port is NOT this case: it
+  // fires onerror at once, which was always handled. The one that stuck the
+  // panel was the request that simply never came back.
+  await page.route('**/hangs-forever.png', () => { /* never fulfilled */ });
+  const r = await page.evaluate(async () => {
+    const out = {};
+    // An image request that never answers, the exact case that stuck.
+    const t0 = Date.now();
+    try {
+      await _sndLoadImage('https://example.test/hangs-forever.png', 700);
+      out.settled = 'resolved';
+    } catch (e) {
+      out.settled = 'rejected';
+      out.why = String(e.message || e);
+    }
+    out.waited = Date.now() - t0;
+    return out;
+  });
+  ok('a hanging image gives up instead of waiting for ever',
+     r.settled === 'rejected', JSON.stringify(r));
+  ok('and says it timed out rather than blaming the file',
+     /timed out/.test(r.why || ''), r.why);
+  ok('at about the deadline, not long after',
+     r.waited < 3000, r.waited + 'ms');
+  // Every network read in the sounding path has to be bounded, or one of them
+  // becomes the new place it hangs.
+  // Read from the SOURCE, not from window. Earlier sections here replace
+  // _sndProfile and friends with test doubles, and a double has no timeout,
+  // so asking the live function asks the mock and fails a fixed product.
+  const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const bounded = ['_sndSitesManifest', '_sndPrebuilt', '_sndProfile',
+                   '_sndOpenMeteo', '_sndPiSounding', '_sndLoadImage']
+    .filter(n => {
+      const m = new RegExp('\\n(?:async )?function ' + n
+                           + '\\([\\s\\S]*?\\n\\}').exec(html);
+      return !m || !/_abortSignal\(|setTimeout\(/.test(m[0]);
+    });
+  ok('every sounding fetch is bounded by a deadline',
+     bounded.length === 0, bounded.join(', '));
+}
+
 console.log('\n14. nothing above threw');
 {
   const real = errors.filter(e => !/Failed to fetch|NetworkError|ERR_FAILED|net::/i.test(e));

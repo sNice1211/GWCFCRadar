@@ -621,6 +621,71 @@ ok("and install.sh installs exactly those",
    all(m in open(os.path.join(ROOT, "pi", "install.sh")).read()
        for m in ("siphon", "netCDF4", "bs4", "ecape_parcel", "cdsapi")))
 
+print("\n= an hour that has no analysis yet is not the end of it")
+# The failure off the Pi, verbatim: "SounderPy could not fetch a RAP analysis
+# ... list index out of range". That is SounderPy asking for the newest run in
+# a list that is still empty, which is a question asked a few minutes too
+# early rather than a broken profile. The hour before it almost always has one.
+_tried = []
+
+
+def _spy_always_early(src, lat, lon, when):
+    _tried.append(("spy", when))
+    raise RuntimeError("list index out of range")
+
+
+def _noaa_slow(src, lat, lon, when):
+    _tried.append(("noaa", when))
+    raise RuntimeError("could not reach the host (timed out)")
+
+
+_real = (svc.fetch_sounderpy, svc.fetch_noaa)
+svc.fetch_sounderpy, svc.fetch_noaa = _spy_always_early, _noaa_slow
+try:
+    svc.fetch_profile("rap", 35.18, -97.44, "2026082122")
+    _msg = ""
+except RuntimeError as e:
+    _msg = str(e)
+svc.fetch_sounderpy, svc.fetch_noaa = _real
+
+ok("the requested hour is tried first, untouched",
+   _tried and _tried[0] == ("spy", "2026082122"), str(_tried[:1]))
+ok("then the hours before it, newest first",
+   [t[1] for t in _tried if t[0] == "spy"]
+   == ["2026082122", "2026082121", "2026082120", "2026082119"], str(_tried))
+# NOAA is the slow path on a poor connection, and this Pi has one. Asking it
+# once per hour would turn a single timeout into four.
+ok("and NOAA is asked once, not once per hour",
+   sum(1 for t in _tried if t[0] == "noaa") == 1, str(_tried))
+ok("the reason says every hour was tried, not just the one",
+   "hours before it" in _msg, _msg[:120])
+
+_tried.clear()
+
+
+def _spy_ok_two_back(src, lat, lon, when):
+    _tried.append(when)
+    if when == "2026082120":
+        return {"ok": True, "valid": when}
+    raise RuntimeError("list index out of range")
+
+
+svc.fetch_sounderpy = _spy_ok_two_back
+_got = svc.fetch_profile("rap", 35.18, -97.44, "2026082122")
+svc.fetch_sounderpy = _real[0]
+ok("an hour that DOES have one is used", _got.get("valid") == "2026082120",
+   str(_got))
+ok("and it stops there rather than walking the rest", len(_tried) == 3,
+   str(_tried))
+
+# Stamp arithmetic has to cross midnight, month and year ends, which is the
+# only part of this that can be quietly wrong for a day and then for a year.
+ok("an hour before midnight is the previous day",
+   svc._hours_before("2026082100", 1) == "2026082023")
+ok("and an hour before new year is the previous year",
+   svc._hours_before("2026010100", 3) == "2025123121")
+
+
 print()
 if failed:
     print(f"{failed} FAILED, {passed} passed")
