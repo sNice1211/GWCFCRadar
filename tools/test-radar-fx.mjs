@@ -469,7 +469,116 @@ console.log('\n8. saved rules survive a fresh visit');
   await seeded.page.close();
 }
 
-console.log('\n9. nothing threw along the way');
+console.log('\n10. an override you are not looking at cannot hide');
+{
+  // The reported fault: "all the colors are messed up and I have no color
+  // tables on". The colour tables were innocent - checked to the pixel in
+  // section 1 - and so was the renderer. What was not innocent is that these
+  // settings are keyed by PRODUCT FAMILY and the panel shows ONE family at a
+  // time, while "Back to Normal" cleared only the family on screen.
+  //
+  // Set a palette on Reflectivity, switch the picker to Velocity, press
+  // Reset: Velocity is cleared, the panel now shows Velocity's untouched
+  // settings, and Reflectivity carries on repainting every radar picture on
+  // the site. The panel says nothing is on. Everything looks wrong. And it is
+  // both levels at once, because a family does not know which level it came
+  // from.
+  const r = await page.evaluate(() => {
+    _fxColors = {}; _fxFilter = {};
+    // Somebody experiments with reflectivity colours.
+    _fxColors.ref = { on: true,
+      stops: ['#000000', '#333333', '#777777', '#bbbbbb', '#ffffff'] };
+    _fxFilter.vel = { on: true, min: -20, max: 20 };
+    _fxSave();
+    const beforeCount = _fxActiveList().length;
+
+    // ...then looks at a different product and presses Reset.
+    _fxUiFam = 'vel';
+    _fxUiReset();
+    const afterOne = {
+      active: _fxActiveList().map(x => x.fam),
+      refStillOn: !!_fxPaletteFor('ref'),
+    };
+    // What the panel now says, which is the whole point.
+    _fxUiSync();
+    const line = (document.getElementById('lqm-fx-active') || {}).textContent || '';
+
+    // And the way out.
+    _fxUiResetAll();
+    const afterAll = {
+      active: _fxActiveList().length,
+      ref: _fxPaletteFor('ref'), vel: _fxFilterFor('vel'),
+      stored: localStorage.getItem('gwcfc_radar_colors'),
+    };
+    _fxUiSync();
+    const cleanLine = (document.getElementById('lqm-fx-active') || {}).textContent || '';
+    return { beforeCount, afterOne, line, afterAll, cleanLine };
+  });
+  ok('two products overriding is seen as two', r.beforeCount === 2,
+     String(r.beforeCount));
+  // Not a bug in itself - but it must not be the only thing called "reset".
+  ok('resetting one product leaves the other one running',
+     r.afterOne.refStillOn && r.afterOne.active.join(',') === 'ref',
+     JSON.stringify(r.afterOne));
+  // The fix. The panel now says so, whichever product is selected.
+  ok('and the panel says out loud which products are still changed',
+     /Reflectivity/i.test(r.line) && /colors/i.test(r.line), r.line);
+  ok('naming that it applies to both levels, since that is what confuses',
+     /Level 2 and Level 3/.test(r.line), r.line);
+  ok('resetting every product really clears them all',
+     r.afterAll.active === 0 && !r.afterAll.ref && !r.afterAll.vel,
+     JSON.stringify(r.afterAll));
+  ok('and clears what was saved, so a reload does not bring them back',
+     !r.afterAll.stored || r.afterAll.stored === '{}', String(r.afterAll.stored));
+  ok('the panel then says plainly that nothing is changed',
+     /standard colors/i.test(r.cleanLine), r.cleanLine);
+}
+
+console.log('\n11. every product the menu offers can actually be coloured');
+{
+  // Found while chasing the above. Storm relative velocity matched no rule in
+  // _meshFamily, so it had no colour function and painted NOTHING - a product
+  // in the menu that could only ever draw an empty map.
+  const r = await page.evaluate(() => {
+    _fxUiResetAll();
+    const codes = [];
+    Object.keys(PR_PRODUCTS).forEach(k => {
+      const p = PR_PRODUCTS[k];
+      (p.l3Tilts || (p.l3 ? [p.l3] : [])).forEach(c => codes.push({ k, c }));
+      if (p.l2) codes.push({ k, c: p.l2 });
+    });
+    // Only the ones the browser decodes itself. The Pi-painted pictures
+    // (VIL, the precip totals) have no raw numbers behind them by design.
+    const picture = Object.keys(RADAR_PICTURE_FAMS || {});
+    const raw = codes.filter(x => !picture.includes(x.k));
+    return raw.map(x => {
+      const fam = _meshFamily(x.c);
+      let paints = false;
+      try {
+        const fn = _meshColorFn(x.c);
+        const probe = fam === 'cc' ? 0.95 : fam === 'vel' ? 40
+                    : fam === 'zdr' ? 2 : fam === 'kdp' ? 2
+                    : fam === 'sw' ? 5 : fam === 'hc' ? 30
+                    : fam === 'et' ? 30 : 45;
+        paints = !!fn(probe);
+      } catch (e) {}
+      return { product: x.k, code: x.c, fam, paints };
+    });
+  });
+  const noFam = r.filter(x => !x.fam);
+  const blank = r.filter(x => !x.paints);
+  ok('every decoded product code maps to a family',
+     noFam.length === 0, noFam.map(x => x.code).join(','));
+  ok('and every one of them actually returns a colour',
+     blank.length === 0, blank.map(x => `${x.code}:${x.fam}`).join(','));
+  // The specific one that was broken.
+  const srv = r.filter(x => /^n\ds$/.test(x.code));
+  ok('storm relative velocity reads as velocity, not as nothing',
+     srv.length > 0 && srv.every(x => x.fam === 'vel' && x.paints),
+     JSON.stringify(srv));
+}
+
+console.log('\n12. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 await browser.close();
