@@ -1253,6 +1253,65 @@ console.log('\n13g3. the panel stopped decorating itself');
      r.equal, r.wide.join(','));
 }
 
+console.log('\n13g4. the panel is painted in the radar\'s own colours');
+{
+  // Not "a red theme". Every colour in the panel is an entry in the same NWS
+  // reflectivity table the map paints echoes with, so these check the two
+  // cannot drift: a hex typed into the panel by hand would pass a screenshot
+  // and fail here the moment the radar table changed under it.
+  const r = await page.evaluate(() => {
+    const el = document.getElementById('snd-panel');
+    el.classList.add('open');
+    const cs = getComputedStyle(el);
+    const tok = n => cs.getPropertyValue(n).trim().toLowerCase();
+    const fromTable = dbz =>
+      (NWS_DBZ_META.find(m => m.dbz === dbz) || {}).hex.toLowerCase();
+    // The verdict word at each level, resolved to real pixels.
+    const lv = [];
+    const vd = el.querySelector('.snd-verdict');
+    for (let i = 0; i <= 4; i++) {
+      vd.innerHTML = `<span class="snd-verdict-word lv${i}">x</span>`;
+      lv.push(getComputedStyle(vd.firstChild).color);
+    }
+    const rgb = hex => {
+      const n = parseInt(hex.slice(1), 16);
+      return `rgb(${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255})`;
+    };
+    return {
+      tokens: {
+        '--r-cyan': [tok('--r-cyan'), fromTable(5)],
+        '--r-blue': [tok('--r-blue'), fromTable(10)],
+        '--r-green': [tok('--r-green'), fromTable(20)],
+        '--r-yellow': [tok('--r-yellow'), fromTable(35)],
+        '--r-orange': [tok('--r-orange'), fromTable(45)],
+        '--r-red': [tok('--r-red'), fromTable(50)],
+        '--r-mag': [tok('--r-mag'), fromTable(65)],
+      },
+      lv,
+      wantLv: [rgb(fromTable(10)), rgb(fromTable(20)), rgb(fromTable(35)),
+               rgb(fromTable(45)), rgb(fromTable(50))],
+      // Red leads: the panel's own edge is the 50 dBZ red, not a neutral grey.
+      edge: cs.borderTopColor,
+      titleLit: getComputedStyle(el.querySelector('.snd-title')).color,
+      tabLit: getComputedStyle(el.querySelector('.snd-tab.on')).backgroundColor,
+    };
+  });
+  const wrong = Object.entries(r.tokens).filter(([, [got, want]]) => got !== want);
+  ok('every colour token is an entry in the radar table, not a copy of one',
+     wrong.length === 0,
+     wrong.map(([k, v]) => `${k} ${v[0]} != ${v[1]}`).join('; '));
+  ok('the verdict runs up the ramp, quiet at the faint end and dangerous at '
+     + 'the intense one',
+     r.lv.join(' | ') === r.wantLv.join(' | '),
+     r.lv.join(' | '));
+  ok('and 50 dBZ red leads: it is the panel edge',
+     /^rgba?\(2[45]\d, 0, 0/.test(r.edge), r.edge);
+  ok('the title is red too, lifted so small type stays readable',
+     /^rgb\(255, 111, 99\)$/.test(r.titleLit), r.titleLit);
+  ok('and the chosen view is filled with it', /^rgba\(253, 0, 0/.test(r.tabLit),
+     r.tabLit);
+}
+
 console.log('\n13h. a hanging Pi cannot hang the panel');
 {
   // The symptom this section exists for: the panel sat on "Building the
