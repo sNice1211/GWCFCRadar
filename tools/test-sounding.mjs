@@ -1015,11 +1015,23 @@ console.log('\n13e. the panel is four views, not one long column');
       image:   !!el.querySelector('.snd-pane[data-pane="image"] .snd-pimg'),
       source:  !!el.querySelector('.snd-pane[data-pane="source"] .snd-note'),
     };
-    // The chart canvas must never be inside a pane, or switching tabs would
-    // hide the sounding itself.
-    const chartOutside = !el.querySelector('.snd-pane #snd-skewt');
+    // The chart is a view like the other three. It used to sit outside the
+    // panes so a tab could not hide it, which meant choosing Numbers changed
+    // nothing visible on a card sized panel.
+    const chartInPane = !!el.querySelector('.snd-pane[data-pane="chart"] #snd-skewt');
+    // And the switch is above what it switches, not below it.
+    const tabsAbove = !!(el.querySelector('.snd-tabs').compareDocumentPosition(
+      el.querySelector('.snd-pane')) & Node.DOCUMENT_POSITION_FOLLOWING);
+    // A tab is a tab to a screen reader too, and exactly one is current.
+    const marked = Array.from(el.querySelectorAll('.snd-tab'))
+      .filter(t => t.getAttribute('aria-selected') === 'true').length;
     _sndTab(el, 'chart');
-    return { tabs, atOpen, onNumbers, lit, onSource, homes, chartOutside };
+    // Coming back has to redraw: a canvas in a hidden pane measures zero, so
+    // whatever it held while it was away is the wrong size.
+    const c = el.querySelector('#snd-skewt');
+    const redrawn = c.width > 100 && c.height > 100;
+    return { tabs, atOpen, onNumbers, lit, onSource, homes,
+             chartInPane, tabsAbove, marked, redrawn };
   });
   ok('there are four views', r.tabs.join(',') === 'chart,numbers,image,source',
      r.tabs.join(','));
@@ -1032,9 +1044,13 @@ console.log('\n13e. the panel is four views, not one long column');
   ok('switching again swaps it', r.onSource.join(',') === 'source', r.onSource.join(','));
   ok('every view holds what its tab promises',
      Object.values(r.homes).every(Boolean), JSON.stringify(r.homes));
-  // The skew-T lives above the tabs on purpose: it is the thing being looked
-  // at, and putting it in a pane would let a tab hide it.
-  ok('and the sounding itself is never hidden by a tab', r.chartOutside);
+  ok('the chart is a view like the rest, not a fixture above them',
+     r.chartInPane);
+  ok('and the switch sits above what it switches', r.tabsAbove);
+  ok('exactly one tab is marked current for a screen reader',
+     r.marked === 1, String(r.marked));
+  ok('coming back to the chart redraws it at the size it really is',
+     r.redrawn);
 }
 
 console.log('\n13f. the Pi says why it is empty, in the browser');
@@ -1140,6 +1156,101 @@ console.log('\n13g. the verdict, and the meters under the numbers');
   ok('every quick tile carries one',
      (r.qs.match(/snd-meter/g) || []).length === 4,
      String((r.qs.match(/snd-meter/g) || []).length));
+}
+
+console.log('\n13g2. the verdict cannot contradict itself');
+{
+  // The bug this section exists for, off a real click at 29.79, -80.54: the
+  // panel read DANGEROUS directly above its own sentence, "755 J/kg with 21 kt
+  // of deep shear. Supports ordinary thunderstorms." Both halves were true of
+  // the numbers and only one of them could be true of the day, because the
+  // word and the sentence were being decided by two separate ladders. The
+  // word's ladder reached its top rung on SCP alone and never asked about
+  // shear, so a composite parameter arriving too high from upstream promoted
+  // an ordinary afternoon to the loudest thing the panel can say.
+  const r = await page.evaluate(() => {
+    const say = (o) => _sndVerdictHTML(Object.assign({
+      sb: { label: 'SB', cape: 800, cin: -20 },
+      ml: { label: 'ML', cape: 755, cin: -25 },
+      sfc: { t: 28, td: 21 }, shear6: 21, srh1: 40,
+      stp: 0, scp: 0, ship: 0,
+    }, o));
+    return {
+      // The exact profile from the screenshot, with SCP arriving high.
+      real: say({ scp: 7.2 }),
+      // A day that genuinely earns the word still gets it.
+      earned: say({ cape: 2400, shear6: 55, stp: 2.2, scp: 8,
+                    sb: { label: 'SB', cape: 2900, cin: -30 },
+                    ml: { label: 'ML', cape: 2400, cin: -40 } }),
+      // Shear without a composite is organised, not dangerous.
+      sheared: say({ shear6: 34, scp: 2.5,
+                     ml: { label: 'ML', cape: 1400, cin: -30 } }),
+    };
+  });
+  const word = h => (/snd-verdict-word[^>]*>([^<]+)</.exec(h) || [])[1];
+  ok('high SCP with 21 kt of shear is NOT called dangerous',
+     word(r.real) !== 'Dangerous', word(r.real) + ' | ' + r.real);
+  ok('it is called what its own sentence says it is',
+     word(r.real) === 'Active' && /ordinary thunderstorms/.test(r.real),
+     word(r.real) + ' | ' + r.real);
+  ok('a profile that really does support tornadoes still says so',
+     word(r.earned) === 'Dangerous' && /tornado/.test(r.earned),
+     word(r.earned));
+  ok('and organised shear reads as organised, one rung down',
+     word(r.sheared) === 'Organised', word(r.sheared) + ' | ' + r.sheared);
+}
+
+console.log('\n13g3. the panel stopped decorating itself');
+{
+  // Three things were doing no work: a gradient thread along the top of the
+  // head, an outlined pill around the verdict word that pulsed red, and a
+  // bordered chip around the coordinate. All three were louder than the text
+  // they framed.
+  const r = await page.evaluate(() => {
+    const el = document.getElementById('snd-panel');
+    el.classList.add('open');           // measured, so it has to be on screen
+    const head = el.querySelector('.snd-head');
+    const before = getComputedStyle(head, '::before');
+    // Put a level 4 verdict up deliberately: it was the one that glowed and
+    // pulsed, so it is the one worth measuring.
+    el.querySelector('.snd-verdict').innerHTML = _sndVerdictHTML({
+      sb: { label: 'SB', cape: 2900, cin: -30 },
+      ml: { label: 'ML', cape: 2400, cin: -40 },
+      sfc: { t: 29, td: 22 }, shear6: 55, srh1: 210,
+      stp: 2.2, scp: 8, ship: 1.4,
+    });
+    const w = el.querySelector('.snd-verdict-word');
+    const ws = getComputedStyle(w);
+    const where = getComputedStyle(el.querySelector('.snd-where'));
+    // One track of equal parts, not four loose pills: same row, same width.
+    const btns = Array.from(el.querySelectorAll('.snd-tab'))
+      .map(b => b.getBoundingClientRect());
+    const wide = btns.map(b => Math.round(b.width));
+    return {
+      thread: before.content !== 'none' && before.content !== 'normal',
+      badges: el.querySelectorAll('.snd-badge').length,
+      wordBorder: ws.borderTopWidth,
+      wordShadow: ws.boxShadow,
+      wordAnim: ws.animationName,
+      whereBorder: where.borderTopWidth,
+      count: btns.length,
+      sameRow: btns.every(b => Math.round(b.top) === Math.round(btns[0].top)),
+      equal: wide.every(x => Math.abs(x - wide[0]) <= 1),
+      wide,
+    };
+  });
+  ok('the decorative colour bar is gone', !r.thread, String(r.thread));
+  ok('the verdict is text, not a badge in a bubble',
+     r.badges === 0 && r.wordBorder === '0px',
+     r.badges + ' badges, border ' + r.wordBorder);
+  ok('with no glow around it either', r.wordShadow === 'none', r.wordShadow);
+  ok('and it does not pulse for attention', r.wordAnim === 'none', r.wordAnim);
+  ok('the coordinate is a caption, not a chip', r.whereBorder === '0px',
+     r.whereBorder);
+  ok('the four views share one row', r.count === 4 && r.sameRow,
+     r.count + ' tabs');
+  ok('in equal parts, so none of them reads as the important one',
+     r.equal, r.wide.join(','));
 }
 
 console.log('\n13h. a hanging Pi cannot hang the panel');
