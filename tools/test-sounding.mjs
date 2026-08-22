@@ -314,6 +314,11 @@ console.log('\n7. a small card by default, a big one when asked');
     _sndManifest = { hours: [0, 6, 12, 18, 24], run: '2026082012' };
     window._sndProfile = async (lat, lon, fhr) =>
       ({ hour: fhr || 0, run: '2026082012', lat, lon, levels: rows });
+    // The level images, named. The picker no longer has an "Auto" that would
+    // have wandered onto them by itself. Saved as well as set, because
+    // openSounding restores the remembered choice over the variable.
+    _sndSource = 'levels';
+    localStorage.setItem('gwcfc_snd_source', 'levels');
     await openSounding(35.4, -97.6);
     await new Promise(r => setTimeout(r, 300));
     const el = document.getElementById('snd-panel');
@@ -590,7 +595,7 @@ console.log('\n12. SHARPpy\'s numbers replace the browser\'s, field by field');
      !r.plainHasEff && !r.plainHasShip);
 }
 
-console.log('\n13. Auto asks the Pi first and falls back without an error');
+console.log('\n13. a named model asks the Pi\'s door, and falls back rather than failing');
 {
   const r = await page.evaluate(async () => {
     const el = document.getElementById('snd-panel');
@@ -604,7 +609,9 @@ console.log('\n13. Auto asks the Pi first and falls back without an error');
       ({ hour: fhr || 0, run: '2026082012', lat, lon, via: 'levels', levels: rows });
     _sndManifest = { hours: [0, 6, 12, 18, 24], run: '2026082012' };
     _hdBase = 'https://pi.example';
-    _sndSource = 'auto'; _sndPiDown = false;
+    // RAP, the default: straight at the Pi's SounderPy door.
+    _sndSource = 'rap'; _sndPiDown = false;
+    localStorage.setItem('gwcfc_snd_source', 'rap');
 
     const asked = [];
     const realFetch = window.fetch;
@@ -645,14 +652,48 @@ console.log('\n13. Auto asks the Pi first and falls back without an error');
       fell: !!el.querySelector('.snd-note').querySelector('.snd-fell'),
     };
 
-    // Now the Pi's door is gone, the way an older serve.py answers.
+    // Now the Pi's door is gone, the way an older serve.py answers. Naming a
+    // model is a preference about where the numbers come from, not an
+    // instruction to fail without them, so Open-Meteo has to answer instead.
+    const om = { hourly: { time: [] } };
+    const now = new Date(); now.setUTCMinutes(0, 0, 0);
+    for (let i = -48; i <= 48; i++) {
+      om.hourly.time.push(new Date(now.getTime() + i * 3600e3)
+        .toISOString().slice(0, 16));
+    }
+    const n = om.hourly.time.length;
+    const fill = (name, v) => { om.hourly[name] = new Array(n).fill(v); };
+    fill('surface_pressure', 985); fill('temperature_2m', 29);
+    fill('dew_point_2m', 21); fill('wind_speed_10m', 12);
+    fill('wind_direction_10m', 180);
+    const omT = { 1000: 30, 975: 28, 950: 26, 925: 24, 900: 22, 850: 18,
+                  800: 14, 700: 6, 600: -3, 500: -13, 400: -27, 300: -44,
+                  250: -53, 200: -57, 150: -60, 100: -62, 70: -60, 50: -55,
+                  30: -50 };
+    let zz = 100;
+    for (const lv of Object.keys(omT).map(Number).sort((a, b) => b - a)) {
+      fill(`temperature_${lv}hPa`, omT[lv]);
+      fill(`relative_humidity_${lv}hPa`, 55);
+      fill(`wind_speed_${lv}hPa`, 30);
+      fill(`wind_direction_${lv}hPa`, 230);
+      fill(`geopotential_height_${lv}hPa`, (zz += 700));
+    }
+    om.elevation = 350;
     window.fetch = async (url, opts) => {
       const u = String(url);
       if (u.includes('/sounding?')) {
         return new Response('Not Found', { status: 404 });
       }
+      if (u.includes('api.open-meteo.com')) {
+        return new Response(JSON.stringify(om),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
       return realFetch(url, opts);
     };
+    // A cache that already holds this point would skip the request this half
+    // of the test is about.
+    _sndOMMem.clear();
+    try { localStorage.removeItem('gwcfc_om_cache'); } catch (e) {}
     _sndPiDown = false;
     await openSounding(35.4, -97.6);
     await new Promise(r => setTimeout(r, 350));
@@ -673,7 +714,8 @@ console.log('\n13. Auto asks the Pi first and falls back without an error');
     window.fetch = realFetch;
     return { good, fellBack, noRetry };
   });
-  ok('Auto asks the Pi\'s door', r.good.asked.length === 1, JSON.stringify(r.good.asked));
+  ok('the named model asks the Pi\'s door', r.good.asked.length === 1,
+     JSON.stringify(r.good.asked));
   ok('with the point on the query string',
      /lat=35\.4000/.test(r.good.asked[0] || '') && /lon=-97\.6000/.test(r.good.asked[0] || ''),
      r.good.asked[0]);
@@ -706,9 +748,14 @@ console.log('\n13. Auto asks the Pi first and falls back without an error');
   ok('and it says plainly that it fell back, and why',
      /Fell back/.test(r.fellBack.note) && /sounding service/.test(r.fellBack.note),
      r.fellBack.note.slice(0, 160));
+  ok('and names Open-Meteo as what answered instead',
+     /Open-Meteo/i.test(r.fellBack.note), r.fellBack.note.slice(0, 200));
   ok('the reason is visible at card size, not hidden until expanded',
      r.fellBack.shown !== 'none', r.fellBack.shown);
-  ok('the slider goes back to meaning a forecast hour', !r.fellBack.piMode);
+  // Open-Meteo answers in hours back through real times, the same as the
+  // door it stood in for, so the slider keeps meaning what it meant.
+  ok('and the slider still reads as time, not as a forecast hour',
+     r.fellBack.piMode);
   ok('a door that answered 404 is remembered as shut', r.fellBack.down);
   ok('so the next click does not wait on it all over again', r.noRetry);
 }
@@ -730,36 +777,48 @@ console.log('\n13b. and the picker can force either one');
       }
       return realFetch(url, opts);
     };
-    // Explicitly the level images: the door must not be touched at all.
-    sel.value = 'levels'; sel.dispatchEvent(new Event('change'));
-    await new Promise(r => setTimeout(r, 300));
-    const levelsOnly = { asked: asked.length,
-                         tables: el.querySelector('.snd-tables')
-                                   .querySelectorAll('table').length };
+    // Explicitly the Pi's rendered site images: the door must not be
+    // touched at all.
+    sel.value = 'pisite'; sel.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 400));
+    const siteOnly = { asked: asked.length,
+                       tables: el.querySelector('.snd-tables')
+                                 .querySelectorAll('table').length };
     // Explicitly a SounderPy source: no silent fallback, because the person
     // asked for that one and a quiet substitution would be a lie.
     sel.value = 'obs'; sel.dispatchEvent(new Event('change'));
     await new Promise(r => setTimeout(r, 300));
     const forced = { asked: asked.slice(),
-                     err: el.querySelector('.snd-tables').textContent };
-    sel.value = 'auto'; sel.dispatchEvent(new Event('change'));
+                     err: el.querySelector('.snd-tables').textContent,
+                     note: el.querySelector('.snd-note').textContent };
+    sel.value = 'rap'; sel.dispatchEvent(new Event('change'));
     await new Promise(r => setTimeout(r, 300));
     window.fetch = realFetch;
-    return { ids, levelsOnly, forced,
+    return { ids, siteOnly, forced,
              saved: localStorage.getItem('gwcfc_snd_source') };
   });
-  ok('every source is offered, the floor included',
-     r.ids.includes('auto') && r.ids.includes('rap') && r.ids.includes('obs')
-     && r.ids.includes('levels'), JSON.stringify(r.ids));
-  ok('choosing the level images does not touch the Pi\'s door at all',
-     r.levelsOnly.asked === 0, String(r.levelsOnly.asked));
-  ok('and still draws the full sounding', r.levelsOnly.tables === 4,
-     String(r.levelsOnly.tables));
+  // Only the sources that actually put a sounding on the screen. "Auto" was a
+  // chooser rather than a source and always settled on one of these anyway,
+  // and the level images were strictly worse than every one of them and dead
+  // ended outside the area they cover.
+  ok('the picker offers the Pi and Open-Meteo, and no way of not choosing',
+     r.ids.join(',') === 'rap,obs,hrrr,nam,gfs,pisite,levels,web',
+     JSON.stringify(r.ids));
+  ok('and Auto, which was never a source, is not among them',
+     !r.ids.includes('auto'), JSON.stringify(r.ids));
+  ok('choosing the site images does not touch the Pi\'s door at all',
+     r.siteOnly.asked === 0, String(r.siteOnly.asked));
+  ok('and still draws the full sounding', r.siteOnly.tables === 4,
+     String(r.siteOnly.tables));
   ok('choosing a SounderPy source really asks for that one',
      /source=obs/.test(r.forced.asked.join(' ')), r.forced.asked.join(' '));
-  ok('and when it fails it says so rather than quietly showing something else',
-     /no such hour yet/.test(r.forced.err), r.forced.err.slice(0, 120));
-  ok('the choice is remembered for next time', r.saved === 'auto', String(r.saved));
+  // It used to be checked that a failed door left its error on screen. That
+  // is no longer what should happen: every source falls back now, so what has
+  // to be true is that the substitution is ADMITTED rather than silent.
+  ok('and when it fails it says so in the note rather than substituting quietly',
+     /Fell back/.test(r.forced.note) && /no such hour yet/.test(r.forced.note),
+     r.forced.note.slice(0, 200));
+  ok('the choice is remembered for next time', r.saved === 'rap', String(r.saved));
 }
 
 console.log('\n13c. and there is a source that needs no Pi at all');
@@ -789,6 +848,10 @@ console.log('\n13c. and there is a source that needs no Pi at all');
     put('surface_pressure', 985);
     put('wind_speed_10m', 8); put('wind_direction_10m', 170);
 
+    // The cache is doing its job by now, and its job is to skip the
+    // request this section is here to inspect. Emptied first.
+    _sndOMMem.clear();
+    try { localStorage.removeItem('gwcfc_om_cache'); } catch (e) {}
     let askedUrl = null;
     const realFetch = window.fetch;
     window.fetch = async (url, opts) => {
@@ -804,7 +867,8 @@ console.log('\n13c. and there is a source that needs no Pi at all');
     };
     window._sndProfile = async () => { throw new Error('this Pi has no soundings'); };
     _hdBase = 'https://pi.example';
-    _sndSource = 'auto'; _sndPiDown = false;
+    _sndSource = 'rap'; _sndPiDown = false;
+    localStorage.setItem('gwcfc_snd_source', 'rap');
 
     await openSounding(35.4, -97.6);
     await new Promise(res => setTimeout(res, 400));
@@ -817,6 +881,7 @@ console.log('\n13c. and there is a source that needs no Pi at all');
 
     // And when it is chosen outright.
     _sndSource = 'web'; askedUrl = null;
+    localStorage.setItem('gwcfc_snd_source', 'web');
     await openSounding(35.4, -97.6);
     await new Promise(res => setTimeout(res, 400));
     const forced = { url: askedUrl, tables: el.querySelectorAll('table').length };
@@ -829,13 +894,17 @@ console.log('\n13c. and there is a source that needs no Pi at all');
 
   ok('the web source is offered in the picker', r.ids.includes('web'),
      r.ids.join(','));
-  ok('Auto reaches it when both Pi paths are dead', !!r.auto.url,
+  ok('a dead Pi lands on Open-Meteo rather than on an error', !!r.auto.url,
      String(r.auto.url).slice(0, 60));
   ok('and draws a real sounding rather than an error', r.auto.tables === 4,
      String(r.auto.tables));
   ok('saying plainly that it fell that far', /web source/.test(r.auto.note),
      r.auto.note.slice(0, 140));
-  ok('choosing it outright also works', !!r.forced.url && r.forced.tables === 4,
+  // No second request: `web` and the Pi paths ask Open-Meteo for the same
+  // blend at the same point, so the answer was already in hand. This is the
+  // rate limiting working, and it is worth asserting rather than tolerating.
+  ok('choosing it outright is served from the cache, without asking again',
+     r.forced.url === null && r.forced.tables === 4,
      `${!!r.forced.url}, ${r.forced.tables}`);
   // The request has to actually ask for what the panel needs.
   ok('it asks for wind in knots, which is what the panel reads',
@@ -877,6 +946,152 @@ console.log('\n13c. and there is a source that needs no Pi at all');
   ok('it is labelled as not having come from the Pi',
      r.prof.via === 'openmeteo' && r.prof.engine === 'browser',
      `${r.prof.via}, ${r.prof.engine}`);
+}
+
+console.log("\n13c2. Open-Meteo cannot be asked often enough to be cut off");
+{
+  // The panel used to spend a whole request PER HOUR OF THE SLIDER, because
+  // every answer already contains the entire series and the code was only
+  // indexing a different element of it. Dragging that slider from end to end
+  // fired eleven identical downloads and threw ten away. Open-Meteo's free
+  // tier is generous but finite, and it is the one source with nothing of
+  // ours behind it: spend it and the panel has no floor left.
+  //
+  // Everything below counts real requests rather than inspecting the guard.
+  const r = await page.evaluate(async () => {
+    let hits = 0;
+    const realFetch = window.fetch;
+    const hourly = { time: [] };
+    const now = new Date(); now.setUTCMinutes(0, 0, 0);
+    for (let i = -48; i <= 48; i++) {
+      hourly.time.push(new Date(now.getTime() + i * 3600e3)
+        .toISOString().slice(0, 16));
+    }
+    const n = hourly.time.length;
+    const put = (k, v) => { hourly[k] = new Array(n).fill(v); };
+    const LV = [1000, 975, 950, 925, 900, 850, 800, 700, 600, 500, 400, 300,
+                250, 200, 150, 100, 70, 50, 30];
+    LV.forEach((lv, i) => {
+      put(`temperature_${lv}hPa`, 30 - i * 4.5);
+      put(`relative_humidity_${lv}hPa`, Math.max(12, 80 - i * 4));
+      put(`wind_speed_${lv}hPa`, 10 + i * 3);
+      put(`wind_direction_${lv}hPa`, 180 + i * 5);
+      put(`geopotential_height_${lv}hPa`, 100 + i * 900);
+    });
+    put('temperature_2m', 31); put('dew_point_2m', 22);
+    put('surface_pressure', 985);
+    put('wind_speed_10m', 8); put('wind_direction_10m', 170);
+
+    let status = 200, retryAfter = null;
+    window.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes('open-meteo')) {
+        hits++;
+        if (status !== 200) {
+          const h = retryAfter ? { 'Retry-After': String(retryAfter) } : {};
+          return new Response('slow down', { status, headers: h });
+        }
+        return new Response(JSON.stringify({ elevation: 350, hourly }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return realFetch(url, opts);
+    };
+    const reset = () => {
+      _sndOMMem.clear();
+      _sndOMHoldUntil = 0;
+      _sndOMLastAt = 0;
+      try {
+        localStorage.removeItem('gwcfc_om_cache');
+        localStorage.removeItem('gwcfc_om_calls');
+      } catch (e) {}
+      hits = 0;
+    };
+    const out = {};
+
+    // 1. Every stop the slider has, from one request.
+    reset();
+    for (const h of SND_BACK_HOURS) await _sndOpenMeteo(41.1, -101.2, h, 'web');
+    out.wholeSlider = { stops: SND_BACK_HOURS.length, hits };
+
+    // 2. A click a few hundred metres away is the same question.
+    reset();
+    await _sndOpenMeteo(41.1, -101.2, 0, 'web');
+    const afterFirst = hits;
+    await _sndOpenMeteo(41.1004, -101.2004, 0, 'web');
+    out.nearby = { afterFirst, total: hits };
+
+    // 3. Clicks that arrive together share one request rather than racing.
+    reset();
+    await Promise.all([0, 1, 2, 3, 6].map(h =>
+      _sndOpenMeteo(44.4, -93.3, h, 'web')));
+    out.together = hits;
+
+    // 4. The budget is checked BEFORE sending, not discovered by refusal.
+    reset();
+    const spent = [];
+    for (let i = 0; i < SND_OM_BUDGET[0].max; i++) spent.push(Date.now());
+    localStorage.setItem('gwcfc_om_calls', JSON.stringify(spent));
+    out.over = _sndOMOverBudget();
+    let refusedWhy = null;
+    try { await _sndOpenMeteo(12.5, 34.5, 0, 'web'); }
+    catch (e) { refusedWhy = String(e.message || e); }
+    out.refused = { why: refusedWhy, hits };
+
+    // 5. Spent budget must not mean a blank panel when something is saved.
+    reset();
+    await _sndOpenMeteo(51.5, -0.12, 0, 'web');
+    const gotOne = hits;
+    _sndOMMem.get(_sndOMKey(51.5, -0.12, 'best_match')).at =
+      Date.now() - (SND_OM_TTL_MS + 60e3);          // stale, not gone
+    localStorage.setItem('gwcfc_om_calls', JSON.stringify(spent));
+    const stale = await _sndOpenMeteo(51.5, -0.12, 0, 'web');
+    out.stale = { gotOne, after: hits, levels: stale.levels.length };
+
+    // 6. A real refusal is believed, and nothing is sent until it passes.
+    reset();
+    status = 429; retryAfter = 90;
+    let saidWhat = null;
+    try { await _sndOpenMeteo(-33.9, 151.2, 0, 'web'); }
+    catch (e) { saidWhat = String(e.message || e); }
+    const afterRefusal = hits;
+    try { await _sndOpenMeteo(-33.9, 151.2, 0, 'web'); } catch (e) {}
+    out.rateLimited = {
+      said: saidWhat, sentOnce: afterRefusal, sentAgain: hits,
+      holdsFor: Math.round((_sndOMHoldUntil - Date.now()) / 1000),
+    };
+
+    status = 200; retryAfter = null;
+    reset();
+    window.fetch = realFetch;
+    return out;
+  });
+
+  ok('the whole slider costs one request, not one per stop',
+     r.wholeSlider.hits === 1,
+     `${r.wholeSlider.hits} requests for ${r.wholeSlider.stops} stops`);
+  ok('a click in the same neighbourhood costs nothing at all',
+     r.nearby.afterFirst === 1 && r.nearby.total === 1,
+     JSON.stringify(r.nearby));
+  ok('clicks that arrive together make one request between them',
+     r.together === 1, String(r.together));
+  ok('a full budget is noticed before anything is sent',
+     /requests in a minute/.test(r.over || ''), String(r.over));
+  ok('and nothing is sent once it is full', r.refused.hits === 0,
+     String(r.refused.hits));
+  ok('which is said in words rather than shown as a broken panel',
+     /holding off/.test(r.refused.why || ''), r.refused.why);
+  // The point of keeping the old answer: fifteen minutes stale is a sounding,
+  // and an error message is not.
+  ok('a saved answer is used rather than an error when the budget is spent',
+     r.stale.after === r.stale.gotOne && r.stale.levels > 5,
+     JSON.stringify(r.stale));
+  ok('a real refusal is taken at its word', r.rateLimited.sentOnce === 1
+     && r.rateLimited.sentAgain === 1, JSON.stringify(r.rateLimited));
+  ok('for exactly as long as it asked for',
+     Math.abs(r.rateLimited.holdsFor - 90) <= 2,
+     String(r.rateLimited.holdsFor));
+  ok('and it says which of the two things happened',
+     /rate limiting/.test(r.rateLimited.said || ''), r.rateLimited.said);
 }
 
 console.log('\n13d. the soundings the Pi rendered as images');
@@ -935,7 +1150,13 @@ console.log('\n13d. the soundings the Pi rendered as images');
     };
     window._sndProfile = async () => { throw new Error('no level images'); };
     _hdBase = 'https://pi.example';
-    _sndSource = 'auto'; _sndPiDown = false; _sndSitesMan = null;
+    _sndSource = 'pisite'; _sndPiDown = false; _sndSitesMan = null;
+    localStorage.setItem('gwcfc_snd_source', 'pisite');
+    // Every source falls back to Open-Meteo now, and a cached Open-Meteo
+    // answer would quietly stand in for the site images this section is
+    // about, passing the shape of the test while proving nothing.
+    _sndOMMem.clear();
+    try { localStorage.removeItem('gwcfc_om_cache'); } catch (e) {}
 
     // Click NEAR Norman: the nearest site must be OUN, and the distance real.
     await openSounding(35.60, -97.20);
@@ -973,7 +1194,7 @@ console.log('\n13d. the soundings the Pi rendered as images');
 
   ok('the picker offers the Pi site images', r.ids.includes('pisite'),
      r.ids.join(','));
-  ok('Auto lands on them when the live door is dead', r.auto.tables === 4,
+  ok('the site images answer when the live door is dead', r.auto.tables === 4,
      String(r.auto.tables));
   ok('the nearest real site answered', /Norman OK/.test(r.auto.note),
      r.auto.note.slice(0, 120));
@@ -1015,11 +1236,23 @@ console.log('\n13e. the panel is four views, not one long column');
       image:   !!el.querySelector('.snd-pane[data-pane="image"] .snd-pimg'),
       source:  !!el.querySelector('.snd-pane[data-pane="source"] .snd-note'),
     };
-    // The chart canvas must never be inside a pane, or switching tabs would
-    // hide the sounding itself.
-    const chartOutside = !el.querySelector('.snd-pane #snd-skewt');
+    // The chart is a view like the other three. It used to sit outside the
+    // panes so a tab could not hide it, which meant choosing Numbers changed
+    // nothing visible on a card sized panel.
+    const chartInPane = !!el.querySelector('.snd-pane[data-pane="chart"] #snd-skewt');
+    // And the switch is above what it switches, not below it.
+    const tabsAbove = !!(el.querySelector('.snd-tabs').compareDocumentPosition(
+      el.querySelector('.snd-pane')) & Node.DOCUMENT_POSITION_FOLLOWING);
+    // A tab is a tab to a screen reader too, and exactly one is current.
+    const marked = Array.from(el.querySelectorAll('.snd-tab'))
+      .filter(t => t.getAttribute('aria-selected') === 'true').length;
     _sndTab(el, 'chart');
-    return { tabs, atOpen, onNumbers, lit, onSource, homes, chartOutside };
+    // Coming back has to redraw: a canvas in a hidden pane measures zero, so
+    // whatever it held while it was away is the wrong size.
+    const c = el.querySelector('#snd-skewt');
+    const redrawn = c.width > 100 && c.height > 100;
+    return { tabs, atOpen, onNumbers, lit, onSource, homes,
+             chartInPane, tabsAbove, marked, redrawn };
   });
   ok('there are four views', r.tabs.join(',') === 'chart,numbers,image,source',
      r.tabs.join(','));
@@ -1032,9 +1265,13 @@ console.log('\n13e. the panel is four views, not one long column');
   ok('switching again swaps it', r.onSource.join(',') === 'source', r.onSource.join(','));
   ok('every view holds what its tab promises',
      Object.values(r.homes).every(Boolean), JSON.stringify(r.homes));
-  // The skew-T lives above the tabs on purpose: it is the thing being looked
-  // at, and putting it in a pane would let a tab hide it.
-  ok('and the sounding itself is never hidden by a tab', r.chartOutside);
+  ok('the chart is a view like the rest, not a fixture above them',
+     r.chartInPane);
+  ok('and the switch sits above what it switches', r.tabsAbove);
+  ok('exactly one tab is marked current for a screen reader',
+     r.marked === 1, String(r.marked));
+  ok('coming back to the chart redraws it at the size it really is',
+     r.redrawn);
 }
 
 console.log('\n13f. the Pi says why it is empty, in the browser');
@@ -1142,6 +1379,160 @@ console.log('\n13g. the verdict, and the meters under the numbers');
      String((r.qs.match(/snd-meter/g) || []).length));
 }
 
+console.log('\n13g2. the verdict cannot contradict itself');
+{
+  // The bug this section exists for, off a real click at 29.79, -80.54: the
+  // panel read DANGEROUS directly above its own sentence, "755 J/kg with 21 kt
+  // of deep shear. Supports ordinary thunderstorms." Both halves were true of
+  // the numbers and only one of them could be true of the day, because the
+  // word and the sentence were being decided by two separate ladders. The
+  // word's ladder reached its top rung on SCP alone and never asked about
+  // shear, so a composite parameter arriving too high from upstream promoted
+  // an ordinary afternoon to the loudest thing the panel can say.
+  const r = await page.evaluate(() => {
+    const say = (o) => _sndVerdictHTML(Object.assign({
+      sb: { label: 'SB', cape: 800, cin: -20 },
+      ml: { label: 'ML', cape: 755, cin: -25 },
+      sfc: { t: 28, td: 21 }, shear6: 21, srh1: 40,
+      stp: 0, scp: 0, ship: 0,
+    }, o));
+    return {
+      // The exact profile from the screenshot, with SCP arriving high.
+      real: say({ scp: 7.2 }),
+      // A day that genuinely earns the word still gets it.
+      earned: say({ cape: 2400, shear6: 55, stp: 2.2, scp: 8,
+                    sb: { label: 'SB', cape: 2900, cin: -30 },
+                    ml: { label: 'ML', cape: 2400, cin: -40 } }),
+      // Shear without a composite is organised, not dangerous.
+      sheared: say({ shear6: 34, scp: 2.5,
+                     ml: { label: 'ML', cape: 1400, cin: -30 } }),
+    };
+  });
+  const word = h => (/snd-verdict-word[^>]*>([^<]+)</.exec(h) || [])[1];
+  ok('high SCP with 21 kt of shear is NOT called dangerous',
+     word(r.real) !== 'Dangerous', word(r.real) + ' | ' + r.real);
+  ok('it is called what its own sentence says it is',
+     word(r.real) === 'Active' && /ordinary thunderstorms/.test(r.real),
+     word(r.real) + ' | ' + r.real);
+  ok('a profile that really does support tornadoes still says so',
+     word(r.earned) === 'Dangerous' && /tornado/.test(r.earned),
+     word(r.earned));
+  ok('and organised shear reads as organised, one rung down',
+     word(r.sheared) === 'Organised', word(r.sheared) + ' | ' + r.sheared);
+}
+
+console.log('\n13g3. the panel stopped decorating itself');
+{
+  // Three things were doing no work: a gradient thread along the top of the
+  // head, an outlined pill around the verdict word that pulsed red, and a
+  // bordered chip around the coordinate. All three were louder than the text
+  // they framed.
+  const r = await page.evaluate(() => {
+    const el = document.getElementById('snd-panel');
+    el.classList.add('open');           // measured, so it has to be on screen
+    const head = el.querySelector('.snd-head');
+    const before = getComputedStyle(head, '::before');
+    // Put a level 4 verdict up deliberately: it was the one that glowed and
+    // pulsed, so it is the one worth measuring.
+    el.querySelector('.snd-verdict').innerHTML = _sndVerdictHTML({
+      sb: { label: 'SB', cape: 2900, cin: -30 },
+      ml: { label: 'ML', cape: 2400, cin: -40 },
+      sfc: { t: 29, td: 22 }, shear6: 55, srh1: 210,
+      stp: 2.2, scp: 8, ship: 1.4,
+    });
+    const w = el.querySelector('.snd-verdict-word');
+    const ws = getComputedStyle(w);
+    const where = getComputedStyle(el.querySelector('.snd-where'));
+    // One track of equal parts, not four loose pills: same row, same width.
+    const btns = Array.from(el.querySelectorAll('.snd-tab'))
+      .map(b => b.getBoundingClientRect());
+    const wide = btns.map(b => Math.round(b.width));
+    return {
+      thread: before.content !== 'none' && before.content !== 'normal',
+      badges: el.querySelectorAll('.snd-badge').length,
+      wordBorder: ws.borderTopWidth,
+      wordShadow: ws.boxShadow,
+      wordAnim: ws.animationName,
+      whereBorder: where.borderTopWidth,
+      count: btns.length,
+      sameRow: btns.every(b => Math.round(b.top) === Math.round(btns[0].top)),
+      equal: wide.every(x => Math.abs(x - wide[0]) <= 1),
+      wide,
+    };
+  });
+  ok('the decorative colour bar is gone', !r.thread, String(r.thread));
+  ok('the verdict is text, not a badge in a bubble',
+     r.badges === 0 && r.wordBorder === '0px',
+     r.badges + ' badges, border ' + r.wordBorder);
+  ok('with no glow around it either', r.wordShadow === 'none', r.wordShadow);
+  ok('and it does not pulse for attention', r.wordAnim === 'none', r.wordAnim);
+  ok('the coordinate is a caption, not a chip', r.whereBorder === '0px',
+     r.whereBorder);
+  ok('the four views share one row', r.count === 4 && r.sameRow,
+     r.count + ' tabs');
+  ok('in equal parts, so none of them reads as the important one',
+     r.equal, r.wide.join(','));
+}
+
+console.log('\n13g4. the panel is painted in the radar\'s own colours');
+{
+  // Not "a red theme". Every colour in the panel is an entry in the same NWS
+  // reflectivity table the map paints echoes with, so these check the two
+  // cannot drift: a hex typed into the panel by hand would pass a screenshot
+  // and fail here the moment the radar table changed under it.
+  const r = await page.evaluate(() => {
+    const el = document.getElementById('snd-panel');
+    el.classList.add('open');
+    const cs = getComputedStyle(el);
+    const tok = n => cs.getPropertyValue(n).trim().toLowerCase();
+    const fromTable = dbz =>
+      (NWS_DBZ_META.find(m => m.dbz === dbz) || {}).hex.toLowerCase();
+    // The verdict word at each level, resolved to real pixels.
+    const lv = [];
+    const vd = el.querySelector('.snd-verdict');
+    for (let i = 0; i <= 4; i++) {
+      vd.innerHTML = `<span class="snd-verdict-word lv${i}">x</span>`;
+      lv.push(getComputedStyle(vd.firstChild).color);
+    }
+    const rgb = hex => {
+      const n = parseInt(hex.slice(1), 16);
+      return `rgb(${n >> 16 & 255}, ${n >> 8 & 255}, ${n & 255})`;
+    };
+    return {
+      tokens: {
+        '--r-cyan': [tok('--r-cyan'), fromTable(5)],
+        '--r-blue': [tok('--r-blue'), fromTable(10)],
+        '--r-green': [tok('--r-green'), fromTable(20)],
+        '--r-yellow': [tok('--r-yellow'), fromTable(35)],
+        '--r-orange': [tok('--r-orange'), fromTable(45)],
+        '--r-red': [tok('--r-red'), fromTable(50)],
+        '--r-mag': [tok('--r-mag'), fromTable(65)],
+      },
+      lv,
+      wantLv: [rgb(fromTable(10)), rgb(fromTable(20)), rgb(fromTable(35)),
+               rgb(fromTable(45)), rgb(fromTable(50))],
+      // Red leads: the panel's own edge is the 50 dBZ red, not a neutral grey.
+      edge: cs.borderTopColor,
+      titleLit: getComputedStyle(el.querySelector('.snd-title')).color,
+      tabLit: getComputedStyle(el.querySelector('.snd-tab.on')).backgroundColor,
+    };
+  });
+  const wrong = Object.entries(r.tokens).filter(([, [got, want]]) => got !== want);
+  ok('every colour token is an entry in the radar table, not a copy of one',
+     wrong.length === 0,
+     wrong.map(([k, v]) => `${k} ${v[0]} != ${v[1]}`).join('; '));
+  ok('the verdict runs up the ramp, quiet at the faint end and dangerous at '
+     + 'the intense one',
+     r.lv.join(' | ') === r.wantLv.join(' | '),
+     r.lv.join(' | '));
+  ok('and 50 dBZ red leads: it is the panel edge',
+     /^rgba?\(2[45]\d, 0, 0/.test(r.edge), r.edge);
+  ok('the title is red too, lifted so small type stays readable',
+     /^rgb\(255, 111, 99\)$/.test(r.titleLit), r.titleLit);
+  ok('and the chosen view is filled with it', /^rgba\(253, 0, 0/.test(r.tabLit),
+     r.tabLit);
+}
+
 console.log('\n13h. a hanging Pi cannot hang the panel');
 {
   // The symptom this section exists for: the panel sat on "Building the
@@ -1181,7 +1572,7 @@ console.log('\n13h. a hanging Pi cannot hang the panel');
   // so asking the live function asks the mock and fails a fixed product.
   const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
   const bounded = ['_sndSitesManifest', '_sndPrebuilt', '_sndProfile',
-                   '_sndOpenMeteo', '_sndPiSounding', '_sndLoadImage']
+                   '_sndOMSeries', '_sndPiSounding', '_sndLoadImage']
     .filter(n => {
       const m = new RegExp('\\n(?:async )?function ' + n
                            + '\\([\\s\\S]*?\\n\\}').exec(html);
