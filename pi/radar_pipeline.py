@@ -122,7 +122,15 @@ L2_PRODUCTS = {
             "label": "Velocity", "unit": "m/s"},
     # The dual polarity moments ride in the same volume, so reading them costs
     # no extra download at all: the file is already on disk when these run.
-    "cc":  {"moment": "RHO", "range": (0.2, 1.05), "ramp": "viridis",
+    # 0.45 rather than 0.2 at the bottom, and 1.0 rather than 1.05 at the top.
+    # Correlation coefficient asks whether everything in a gate is the same
+    # kind of thing, and essentially all precipitation answers between 0.95
+    # and 1.00. Spread over 0.2 to 1.05 the ramp spent nearly all of itself on
+    # values the weather never takes and painted every storm one flat colour;
+    # this puts the useful part of viridis where the data actually is, while
+    # still keeping room below 0.8 for the debris and biological targets that
+    # are the whole reason to look at CC.
+    "cc":  {"moment": "RHO", "range": (0.45, 1.0), "ramp": "viridis",
             "label": "Correlation Coeff", "unit": ""},
     "zdr": {"moment": "ZDR", "range": (-4, 8), "ramp": "spread",
             "label": "Differential Refl", "unit": "dB"},

@@ -467,7 +467,31 @@ const processRadarData = (radar, radarLocation, extent, layer, options = {}) => 
             // way, so an inbound-outbound couplet survives instead of the two
             // halves cancelling. Everywhere else the maximum is right, since
             // a core is what a merged cell should still show.
+            //
+            // GWCFC: correlation coefficient merges by MEAN, not by minimum.
+            //
+            // For reflectivity and velocity the extreme IS the signal: a core
+            // and a couplet are what a merged cell must not lose, so max and
+            // max-magnitude are right. Correlation coefficient is the other
+            // way round. Low CC is mostly NOISE - a single poorly lit gate at
+            // low signal to noise reads low - and it is only occasionally the
+            // rare thing worth seeing. Taking the minimum of a merged cell
+            // therefore hands the whole cell to its worst gate.
+            //
+            // That is not a small bias. Stride is 1 inside 100 km and doubles
+            // every 100 km after, so past 300 km eight gates collapse into one
+            // and uniform 0.98 rain reported whichever of those eight happened
+            // to be lowest. The far half of every sweep came out looking like
+            // mixed or non-meteorological echo, and the closer the colour
+            // scale got to being useful at the top end the more obvious it was.
+            //
+            // Nothing is lost by averaging. Debris balls sit close to the
+            // radar - that is where a tornado is observable at all - and
+            // inside 100 km the stride is 1, so there is no merge happening
+            // there in the first place. The minimum rule only ever applied
+            // where it was not needed, and only ever did harm.
             let value = null;
+            let ccSum = 0, ccCount = 0;
             for (let k = 0; k < stride; k++) {
                 const rawValue = radial.moment_data[gateIndex + k];
                 if (rawValue === null || rawValue === undefined) continue;
@@ -476,10 +500,15 @@ const processRadarData = (radar, radarLocation, extent, layer, options = {}) => 
                     v = computeKdpFromPhi(radial.moment_data, gateIndex + k, gateSize);
                 }
                 if (v == null) continue;
+                if (layer === 'CC') {
+                    if (v === 'rf') continue;
+                    ccSum += v; ccCount += 1;
+                    value = ccSum / ccCount;
+                    continue;
+                }
                 if (value == null || value === 'rf') { value = v; continue; }
                 if (v === 'rf') continue;
-                if (layer === 'CC') value = Math.min(value, v);
-                else if (layer === 'VEL') value = Math.abs(v) > Math.abs(value) ? v : value;
+                if (layer === 'VEL') value = Math.abs(v) > Math.abs(value) ? v : value;
                 else value = Math.max(value, v);
             }
 
@@ -582,17 +611,25 @@ const processLevel3Data = (radar, radarLocation, options = {}) => {
             const stride = Math.max(1, Math.min(
                 strideForRange(rangeKm, binKm, range.full), cap - binIndex));
 
-            // Same rule as Level 2: lowest wins on correlation coefficient,
-            // because a debris ball is a HOLE of low values and a merge that
-            // took the highest would erase the one thing worth seeing.
+            // Same rule as Level 2, including the correction: correlation
+            // coefficient merges by MEAN. Low CC is mostly noise rather than
+            // the rare thing worth seeing, so handing a merged cell to its
+            // worst gate dragged the whole far field down. See the long note
+            // on the Level 2 path above.
             let value = null;
+            let ccSum = 0, ccCount = 0;
             for (let k = 0; k < stride; k++) {
                 const v = decodeBin(bins[binIndex + k]);
                 if (v == null) continue;
+                if (isCorrelation) {
+                    if (v === 'rf') continue;
+                    ccSum += v; ccCount += 1;
+                    value = ccSum / ccCount;
+                    continue;
+                }
                 if (value == null || value === 'rf') { value = v; continue; }
                 if (v === 'rf') continue;
-                if (isCorrelation) value = Math.min(value, v);
-                else if (isVelocity) value = Math.abs(v) > Math.abs(value) ? v : value;
+                if (isVelocity) value = Math.abs(v) > Math.abs(value) ? v : value;
                 else value = Math.max(value, v);
             }
 
