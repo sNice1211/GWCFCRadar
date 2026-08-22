@@ -1013,8 +1013,19 @@ REFL3D_BASE = "https://mrms.ncep.noaa.gov/data/3DRefl"
 # downloading mosaics and the radar loop would have a hole in it, which is
 # far worse than a mosaic being five minutes stale: a stale mosaic is still a
 # picture, a missing radar frame is a gap in the animation that never fills.
-MRMS_PASS_SECS = float(os.environ.get("GWCFC_MRMS_PASS_SECS", "120"))
-MRMS_PASS_MAX = int(os.environ.get("GWCFC_MRMS_PASS_MAX", "14"))
+#
+# These two were set when the catalogue was about seventy entries and were
+# never revisited as it grew. At fourteen a pass the catalogue could not come
+# round: a hundred and thirty products need ten passes, so nearly an hour
+# passed before the last of them had been built even once, and until then the
+# menu simply did not list them. That, rather than anything in the browser, is
+# why the row looked like it held twenty or thirty products.
+#
+# The ceiling still exists because the radar frames share this timer and
+# matter more than any single mosaic, but it is a ceiling on a busy pass now
+# rather than a cap that the ordinary case runs into every time.
+MRMS_PASS_SECS = float(os.environ.get("GWCFC_MRMS_PASS_SECS", "210"))
+MRMS_PASS_MAX = int(os.environ.get("GWCFC_MRMS_PASS_MAX", "30"))
 # ── The MRMS catalogue ──────────────────────────────────────────────────────
 # Every entry is one national grid published at a fixed address, so adding a
 # product is a dict entry and nothing else: build_mrms below reads, shrinks,
@@ -1071,13 +1082,6 @@ MRMS_PRODUCTS = {
     "mesh1440": {"path": "MESH_Max_1440min", "label": "Hail Swaths 24h",
                  "unit": "mm", "range": (0, 100), "ramp": "radar",
                  "floor": 6.0, "every": 60},
-    # POH is the chance of hail at all; POSH is the chance of hail big enough
-    # to be severe. Two different questions and the answers diverge widely:
-    # a summer storm is often near certain for the first and near zero for
-    # the second.
-    "poh":      {"path": "POH", "label": "Prob. of Hail",
-                 "unit": "%", "range": (0, 100), "ramp": "heat",
-                 "floor": 5.0, "every": 5},
     "posh":     {"path": "POSH", "label": "Prob. of Severe Hail",
                  "unit": "%", "range": (0, 100), "ramp": "heat",
                  "floor": 5.0, "every": 5},
@@ -1271,19 +1275,19 @@ MRMS_PRODUCTS = {
     # How unusual the rain is, rather than how much of it there was. Two
     # inches is a wet afternoon in Louisiana and a once in a decade event in
     # Arizona, and the recurrence interval is what tells those apart.
-    "qpeari01": {"path": "RadarOnly_QPE_01H_ARI", "label": "1 hr rain, ARI",
+    "qpeari01": {"path": "QPE_ARI01H", "base": FLASH_BASE, "label": "1 hr rain, ARI",
                  "unit": "yr", "range": (0, 100), "ramp": "heat",
                  "floor": 1.0, "every": 15},
-    "qpeari03": {"path": "RadarOnly_QPE_03H_ARI", "label": "3 hr rain, ARI",
+    "qpeari03": {"path": "QPE_ARI03H", "base": FLASH_BASE, "label": "3 hr rain, ARI",
                  "unit": "yr", "range": (0, 100), "ramp": "heat",
                  "floor": 1.0, "every": 30},
-    "qpeari06": {"path": "RadarOnly_QPE_06H_ARI", "label": "6 hr rain, ARI",
+    "qpeari06": {"path": "QPE_ARI06H", "base": FLASH_BASE, "label": "6 hr rain, ARI",
                  "unit": "yr", "range": (0, 100), "ramp": "heat",
                  "floor": 1.0, "every": 30},
-    "qpeari12": {"path": "RadarOnly_QPE_12H_ARI", "label": "12 hr rain, ARI",
+    "qpeari12": {"path": "QPE_ARI12H", "base": FLASH_BASE, "label": "12 hr rain, ARI",
                  "unit": "yr", "range": (0, 100), "ramp": "heat",
                  "floor": 1.0, "every": 60},
-    "qpeari24": {"path": "RadarOnly_QPE_24H_ARI", "label": "24 hr rain, ARI",
+    "qpeari24": {"path": "QPE_ARI24H", "base": FLASH_BASE, "label": "24 hr rain, ARI",
                  "unit": "yr", "range": (0, 100), "ramp": "heat",
                  "floor": 1.0, "every": 60},
     # ── Lightning.
@@ -1293,22 +1297,22 @@ MRMS_PRODUCTS = {
     "ltgprob60": {"path": "LightningProbabilityNext60minGrid",
                   "label": "Lightning Prob. 60 min", "unit": "%",
                   "range": (0, 100), "ramp": "heat", "floor": 5.0, "every": 5},
-    "ltgdensity": {"path": "LightningDensityNLDN30min",
+    "ltgdensity": {"path": "NLDN_CG_030min_AvgDensity",
                    "label": "Lightning Density 30 min", "unit": "fl/km2/min",
                    "range": (0, 10), "ramp": "heat", "floor": 0.05, "every": 5},
-    "ltgdensity1": {"path": "LightningDensityNLDN01min",
+    "ltgdensity1": {"path": "NLDN_CG_001min_AvgDensity",
                     "label": "Lightning Density 1 min", "unit": "fl/km2/min",
                     "range": (0, 5), "ramp": "heat", "floor": 0.02, "every": 5},
     # A lightning jump is a sudden rise in flash rate, and it tends to come
     # before a storm turns severe rather than after. That makes it one of the
     # few genuinely leading signals in the whole mosaic.
-    "ltgdensity5": {"path": "LightningDensityNLDN05min",
+    "ltgdensity5": {"path": "NLDN_CG_005min_AvgDensity",
                     "label": "Lightning Density 5 min", "unit": "fl/km2/min",
                     "range": (0, 8), "ramp": "heat", "floor": 0.02, "every": 5},
-    "ltgdensity15": {"path": "LightningDensityNLDN15min",
+    "ltgdensity15": {"path": "NLDN_CG_015min_AvgDensity",
                      "label": "Lightning Density 15 min", "unit": "fl/km2/min",
                      "range": (0, 10), "ramp": "heat", "floor": 0.03, "every": 5},
-    "ltgjump": {"path": "LightningJumpGrid", "label": "Lightning Jump",
+    "ltgjump": {"path": "LtgJumpGrid", "label": "Lightning Jump",
                 "unit": "", "range": (0, 10), "ramp": "heat",
                 "floor": 0.5, "every": 5},
     # ── Winter and the melting layer: where rain becomes snow, and the
@@ -1358,10 +1362,10 @@ MRMS_PRODUCTS = {
                   "label": "SAC Soil Saturation", "unit": "%",
                   "range": (0, 100), "ramp": "moisture", "floor": 1.0,
                   "every": 30},
-    "hpflow":    {"path": "QPE_MAXSTREAMFLOW", "base": FLASH_BASE,
+    "hpflow":    {"path": "HP_MAXSTREAMFLOW", "base": FLASH_BASE,
                   "label": "Hydrophobic Streamflow", "unit": "m3/s",
                   "range": (0, 500), "ramp": "precip", "floor": 1.0, "every": 15},
-    "hpunit":    {"path": "QPE_MAXUNITSTREAMFLOW", "base": FLASH_BASE,
+    "hpunit":    {"path": "HP_MAXUNITSTREAMFLOW", "base": FLASH_BASE,
                   "label": "Hydrophobic Unit Streamflow", "unit": "m3/s/km2",
                   "range": (0, 5), "ramp": "heat", "floor": 0.05, "every": 15},
     "brightbandbot": {"path": "BrightBandBottomHeight",
@@ -1526,18 +1530,6 @@ MRMS_PRODUCTS = {
     "ltgjumpmax": {"path": "LtgJumpGrid_Max_005min", "range": (0, 10),
                    "ramp": "heat", "unit": "sigma",
                    "label": "Lightning Jump 5m Max", "every": 5},
-    "cgdensity1": {"path": "NLDN_CG_001min_AvgDensity", "range": (0, 5),
-                   "ramp": "heat", "unit": "flashes/km2/min",
-                   "label": "Cloud-to-Ground 1 min", "every": 5},
-    "cgdensity5": {"path": "NLDN_CG_005min_AvgDensity", "range": (0, 5),
-                   "ramp": "heat", "unit": "flashes/km2/min",
-                   "label": "Cloud-to-Ground 5 min", "every": 5},
-    "cgdensity15": {"path": "NLDN_CG_015min_AvgDensity", "range": (0, 5),
-                    "ramp": "heat", "unit": "flashes/km2/min",
-                    "label": "Cloud-to-Ground 15 min", "every": 10},
-    "cgdensity30": {"path": "NLDN_CG_030min_AvgDensity", "range": (0, 5),
-                    "ramp": "heat", "unit": "flashes/km2/min",
-                    "label": "Cloud-to-Ground 30 min", "every": 10},
 
     # What kind of precipitation the algorithm thinks it is, before the
     # gauges get a say, and the first-pass multi-sensor totals.
@@ -1557,11 +1549,6 @@ MRMS_PRODUCTS = {
                     "ramp": "viridis", "unit": "",
                     "label": "Gauge Influence 24 hr", "every": 60},
 
-    # The remaining FLASH model outputs. Streamflow is what the water is
-    # doing, soil saturation is whether the ground can take any more.
-    "hpsoil": {"path": "QPE_MAXSOILSAT", "base": FLASH_BASE, "range": (0, 1),
-               "ramp": "moisture", "unit": "fraction",
-               "label": "Hydrophobic Soil Saturation", "every": 15},
 
 }
 
@@ -1705,6 +1692,25 @@ def build_mrms():
     names = list(MRMS_PRODUCTS)
     start = int((state.get("__cursor__") or {}).get("at", 0)) % max(1, len(names))
     names = names[start:] + names[:start]
+
+    # A product nobody has ever built goes to the front of the queue.
+    #
+    # The menu is drawn from the manifest, and the manifest only carries what
+    # has actually been built, so a product that has not had its turn yet does
+    # not exist as far as the page is concerned. With a rotating cursor and a
+    # ceiling per pass, a catalogue this size takes the better part of an hour
+    # to come round once, and for that whole hour the menu shows a fraction of
+    # what is on offer and looks broken rather than busy.
+    #
+    # Refreshing something already on screen is worth less than putting
+    # something on screen for the first time, so first builds jump the queue.
+    # This costs nothing in the steady state: once everything has been built
+    # once, the set is empty and the rotation is exactly as it was.
+    never = [n for n in names if not (state.get(n) or {}).get("last")]
+    if never:
+        rest = [n for n in names if n not in set(never)]
+        names = never + rest
+
     pass_started = time.time()
     stopped_at = start
 
