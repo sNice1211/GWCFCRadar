@@ -619,12 +619,32 @@ def main():
     fixed = pinned_url()
     log(f"address is pinned to {fixed}, republishing only if it is lost"
         if fixed else "watching the tunnel log")
+    # Twenty seconds, not sixty. The thing being watched for is the address
+    # changing, and it changes without warning: a quick tunnel reconnects on
+    # its own and is handed a brand new one. Every second between that and
+    # noticing is a second the site is pointed at an address that is already
+    # dead, so the gap should be as small as costs nothing, and one local file
+    # read plus at most one request costs nothing.
+    last_beat = 0.0
     while True:
         try:
             publish_if_changed()
         except Exception as e:
             log(f"error: {e}")
-        time.sleep(60)
+        # A heartbeat, so an empty log means "not running" and nothing else.
+        # "The publisher has said nothing" was ambiguous between a watcher
+        # that had died, one that had never started, and one that was working
+        # perfectly and simply had nothing to report, and those want three
+        # different responses.
+        now = time.monotonic()
+        if now - last_beat >= 600:
+            last_beat = now
+            try:
+                with open(STATE) as f:
+                    log(f"watching; the site is on {f.read().strip() or '(nothing)'}")
+            except OSError:
+                log("watching; nothing published yet")
+        time.sleep(20)
 
 
 if __name__ == "__main__":
