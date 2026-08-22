@@ -1828,6 +1828,11 @@ body {
 .sub-bubble .sb-icon { font-size: 13px; display: inline-flex; align-items: center; }
 /* Any bubble at any level can be dragged now, not just the top row. */
 .sub-bubble.dragging { opacity: 0.45; border-style: dashed; }
+/* A product the chosen radar physically cannot measure. Still tappable, so
+   the tap can explain itself, but visibly not on offer. */
+.sub-bubble.unavailable { opacity: 0.4; }
+.sub-bubble.unavailable .sb-label { text-decoration: line-through; }
+.sub-bubble.unavailable:hover { opacity: 0.55; transform: none; }
 .sb-drag {
   flex-shrink: 0; cursor: grab; touch-action: none;
   padding: 2px 3px; margin: -4px -6px -4px 2px;
@@ -17909,7 +17914,9 @@ let _prProduct = 'reflectivity';
 // once made a mosaic out of things that are not a mosaic, and stacked their
 // overlapping edges on top of each other where they met.
 let _prSite = null;
-// Which antenna cut, 1 to 4, for the products that have them in Level 3.
+// Which antenna cut for the products that have them in Level 3. One based,
+// and as many as the site really publishes: four for a NEXRAD, four plus the
+// long range sweep for a terminal.
 let _prTilt = 1;
 // Which level the last draw actually used. "auto" means the menu cannot know
 // until the Pi answers, and the tilt chips only make sense on Level 3.
@@ -17925,7 +17932,10 @@ try {
   if (lv && PR_LEVELS[lv]) _prLevel = lv;
   if (pd && PR_PRODUCTS[pd]) _prProduct = pd;
   if (st) _prSite = st;
-  if (tl >= 1 && tl <= 4) _prTilt = tl;
+  // Up to eight, not four. The terminals publish four cuts plus a long range
+  // sweep, so a remembered tilt of 5 was thrown away on every reload and the
+  // menu silently dropped back to the lowest cut.
+  if (tl >= 1 && tl <= 8) _prTilt = tl;
 } catch (e) {}
 
 // ── PLAYBACK: scrub through the Pi's own frame history ─────────────────────
@@ -18317,17 +18327,67 @@ const L3_BUCKET = 'https://unidata-nexrad-level3.s3.amazonaws.com';
 
 // The bucket's own product codes, per product and per tilt. The two radar
 // families speak different dialects of the same thing: N0B is a NEXRAD's base
-// reflectivity, TZ0 is a terminal's. Missing entries are honest, so velocity
-// stops at two tilts and the terminals carry no dual-pol at all.
+// reflectivity, TZ0 is a terminal's.
+//
+// Every code here is one the decoder in this browser genuinely registers -
+// src/parse/level3/src/products holds one folder per product, and each folder
+// names the three letter codes it answers to. Listing a code the decoder does
+// not carry would put a chip in the menu that fetches a file and then fails,
+// which is worse than not offering it, so this table was checked against that
+// folder rather than written from memory.
+//
+// What that check turned up was that most of this table was short. The dual
+// pol products were listed at one tilt each when the Weather Service
+// publishes four. Velocity stopped at two because tilts three and four are
+// not more N?G files at all: they are a different product entirely, code 99,
+// spelled N2U and N3U. The terminals were listed at two tilts of the four
+// they scan, and their long range sweep - the one that lets an airport radar
+// see past 90 km - was not here at all.
 const PR_BUCKET = {
-  reflectivity: { k: ['N0B', 'N1B', 'N2B', 'N3B'], t: ['TZ0', 'TZ1'] },
-  velocity:     { k: ['N0G', 'N1G'],               t: ['TV0', 'TV1'] },
-  corrcoeff:    { k: ['N0C'] },
-  diffrefl:     { k: ['N0X'] },
-  kdp:          { k: ['N0K'] },
-  hydroclass:   { k: ['N0H'] },
-  echotops:     { k: ['EET'] },
+  // 153 (N?B) for the terminals' 180, plus 186 for TZL, the 416 km sweep.
+  reflectivity: { k: ['N0B', 'N1B', 'N2B', 'N3B'],
+                  t: ['TZ0', 'TZ1', 'TZ2', 'TZ3', 'TZL'] },
+  // 154 carries the first two cuts; 99 carries the upper ones. Same
+  // measurement, same units, two product codes, because that is how the
+  // Weather Service publishes it.
+  velocity:     { k: ['N0G', 'N1G', 'N2U', 'N3U'],
+                  t: ['TV0', 'TV1', 'TV2', 'TV3'] },
+  // 56. The worker already knew how to read this one; nothing ever asked it.
+  srvelocity:   { k: ['N0S', 'N1S', 'N2S', 'N3S'] },
+  corrcoeff:    { k: ['N0C', 'N1C', 'N2C', 'N3C'] },   // 161
+  diffrefl:     { k: ['N0X', 'N1X', 'N2X', 'N3X'] },   // 159
+  kdp:          { k: ['N0K', 'N1K', 'N2K', 'N3K'] },   // 163
+  hydroclass:   { k: ['N0H', 'N1H', 'N2H', 'N3H'] },   // 165
+  echotops:     { k: ['EET'] },                        // 135
 };
+
+// Which products a terminal radar physically cannot make, said once so the
+// menu, the error message and the tests all read the same list. A TDWR is a
+// single polarity C-band machine: it has no second polarity to compare, so
+// there is no correlation, no differential reflectivity, no differential
+// phase and no hydrometeor classification to be had from it at any price.
+// Echo tops and storm relative velocity are computed by a NEXRAD's RPG from a
+// full volume the terminal's product generator does not build.
+const TDWR_CANNOT = ['corrcoeff', 'diffrefl', 'kdp', 'hydroclass',
+                     'echotops', 'srvelocity'];
+
+// Everything that still has no raw feed this browser can decode correctly.
+// VIL, composite reflectivity and spectrum width are all published as the old
+// sixteen level products, whose files carry a code from 0 to 15 rather than a
+// number, and the table that turns those codes back into kg/m² or dBZ is not
+// in the decoder yet. The Pi renders them as finished pictures instead, which
+// is why they still appear for the radars the Pi covers and nowhere else.
+const PR_PICTURE_ONLY = ['vil', 'composite', 'spectrum',
+                         'onehour', 'stormtotal'];
+
+// Can this site make this product at all? Answered from the tables above
+// rather than from a failed download, so the menu can say so before the tap.
+function _prSiteCanMake(site, product) {
+  if (PR_PICTURE_ONLY.includes(product)) return false;
+  if (!PR_BUCKET[product]) return false;
+  if (_isTdwrSite(site)) return !TDWR_CANNOT.includes(product);
+  return true;
+}
 
 // Which site the browser is currently decoding, or null when the picture on
 // screen came prebuilt from the Pi.
@@ -18408,16 +18468,22 @@ async function _l3BucketShow(site) {
   const label = (PR_PRODUCTS[product] || {}).label || product;
   if (!code) {
     if (typeof showToast === 'function') {
-      // Two honest reasons, said apart: some products have no raw Level 3
-      // file at all (they only exist as pictures the Pi pre-renders), and
-      // some sites simply do not publish this one.
-      if (!PR_BUCKET[product]) {
-        showToast(`${label} has no raw Level 3 feed to decode here; it is `
-                + 'built by the Pi for the radars the Pi covers.', 4500);
+      // Three honest reasons, said apart, so the answer is never just "it
+      // didn't work". Which one applies is decided from the tables above,
+      // before anything is downloaded.
+      const sid = String(site).toUpperCase();
+      if (PR_PICTURE_ONLY.includes(product)) {
+        showToast(`${label} is published only as the old sixteen level `
+                + 'product, which this browser cannot decode into real '
+                + 'numbers yet. The Pi renders it as a picture for the '
+                + 'radars the Pi covers.', 5000);
+      } else if (_isTdwrSite(site) && TDWR_CANNOT.includes(product)) {
+        showToast(`${sid} is a terminal radar. It has a single polarity and `
+                + `no volume product generator, so it never makes ${label}. `
+                + 'Reflectivity and velocity, four tilts each plus the long '
+                + 'range sweep, are what it does make.', 5000);
       } else {
-        showToast(`${label} is not published for ${String(site).toUpperCase()}. `
-                + 'The terminal radars carry no dual-pol, and the higher tilts '
-                + 'stop where the Weather Service stops writing them.', 4500);
+        showToast(`${label} is not published for ${sid}.`, 4500);
       }
     }
     return;
@@ -24386,22 +24452,48 @@ function _prRenderPiRow(level) {
       ? ((PR_BUCKET[b.product] || {})[
            _isTdwrSite(_prBucketSite) ? 't' : 'k'] || [])
       : ((PR_PRODUCTS[b.product] || {}).l3Tilts || []);
+    // A tilt remembered from a product with more cuts than this one has would
+    // leave no chip marked at all, because the highlight is drawn from
+    // _prTilt while the fetch quietly clamps. Clamp both to the same number.
+    if (_prProduct === b.product && cuts.length && _prTilt > cuts.length) {
+      _prTilt = cuts.length;
+    }
+    // Say before the tap what this radar can and cannot measure. A terminal
+    // has no second polarity, so the four dual-pol entries and the two the
+    // RPG computes from a full volume are not shortcomings of the download:
+    // they are not there to download. Shown greyed with the reason on the
+    // tooltip, rather than removed, so the row does not reshuffle itself
+    // under the finger every time a different pill is picked.
+    const canMake = !_prBucketSite || _prSiteCanMake(_prBucketSite, b.product);
+    if (!canMake) {
+      el.classList.add('unavailable');
+      el.title = `${String(_prBucketSite).toUpperCase()} does not publish `
+               + `${b.label}.`;
+    }
     if (_prOn && _prProduct === b.product && cuts.length > 1 &&
         (_prBucketSite || _prDrawnLvl === 'l3')) {
       const strip = document.createElement('span');
       strip.className = 'tilt-strip';
-      cuts.forEach((_, i) => {
+      cuts.forEach((code, i) => {
         const cut = i + 1;
+        // TZL is not a fifth antenna angle: it is the terminal's long range
+        // sweep, the same lowest cut reaching 416 km instead of 90. Numbering
+        // it "5" would read as an angle it does not have, so it says LR.
+        const isLR = /L$/.test(String(code));
         const chip = document.createElement('span');
         chip.className = 'tilt-chip' + (cut === _prTilt ? ' active' : '');
-        chip.textContent = cut;
-        chip.title = 'Tilt ' + cut;
+        chip.textContent = isLR ? 'LR' : cut;
+        chip.title = isLR ? 'Long range sweep, out to 416 km' : 'Tilt ' + cut;
+        // The active mark used to be set by comparing the chip's own text to
+        // the cut number, which stops working the moment a chip is labelled
+        // anything but its number. The number rides on the element instead.
+        chip.dataset.cut = String(cut);
         chip.onclick = async (ev) => {
           ev.stopPropagation();
           _prTilt = cut;
           try { localStorage.setItem('gwcfc_pr_tilt', String(cut)); } catch (e) {}
           strip.querySelectorAll('.tilt-chip').forEach(c =>
-            c.classList.toggle('active', c.textContent == String(cut)));
+            c.classList.toggle('active', c.dataset.cut === String(cut)));
           if (_prBucketSite) await _l3BucketShow(_prBucketSite);
           else await _prEnable();
         };
@@ -32044,7 +32136,13 @@ function _l3MeshNormalize(meshData, code) {
   if (!meshData || !meshData.length) return;
   var c = String(code || '').toLowerCase();
   var fam = _meshFamily(c);
-  if (fam === 'vel') {
+  // Storm relative velocity is the one velocity product that does NOT arrive
+  // in metres per second. It ships four bits per bin - a code into a table of
+  // sixteen speeds - and the worker already turns that code into knots on the
+  // way out. Running the metres-per-second conversion over it as well would
+  // have doubled every reading, so a 40 kt couplet would have drawn as 78.
+  var isSRM = /^n\ds$/.test(c);
+  if (fam === 'vel' && !isSRM) {
     for (var i = 8; i < meshData.length; i += 9) {
       var v = meshData[i];
       if (v === v) meshData[i] = v * 1.94384; // m/s -> kt
@@ -42322,7 +42420,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Found the real reason CC kept coming out a different wrong colour, and it was never in a colour table. To stay fast the renderer groups gates by value before colouring them, and it grouped them in quarter-unit steps. That is fine across reflectivity, which spans a hundred and ten dBZ. Correlation coefficient spans 1.05 in total, so the whole product collapsed into about five groups, and each group was painted whichever gate the loop happened to reach first. Twelve different CC values were coming out as three colours, and the answer moved with the weather rather than with the code. Groups are now sized to each product, so every value gets its own colour. A second bug underneath it: gate values are stored as 32 bit floats, where 0.95 is really 0.9499999881, so bands with edges at 0.95 rejected their own values and shifted them one band down. Every product is now checked pixel by pixel.";
+const APP_LATEST_UPDATE = "Every radar in the country now offers every product it actually makes. The table that says which file to fetch was short almost everywhere: correlation coefficient, differential reflectivity, differential phase and hydrometeor classification were listed at one antenna tilt each when the Weather Service publishes four, so three quarters of the dual-pol data was unreachable. Velocity stopped at two tilts because the upper cuts are published under a different product code entirely, which nothing here knew about. Storm relative velocity had no entry at all. The terminal radars were listed at two tilts of the four they scan, and their long range sweep, the one that lets an airport radar see past 90 km instead of stopping there, was missing completely - it is the LR chip now. Storm relative velocity was also about to be converted to knots twice, which would have reported a 40 kt couplet as 78. And the menu now says before you tap which products a radar cannot make: a terminal has one polarity, so correlation coefficient is not a failed download, it is not there to download. Every product code offered is checked against the decoder itself by a test, so nothing can be offered that cannot be read.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

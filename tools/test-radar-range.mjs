@@ -224,16 +224,22 @@ console.log('\n6. a merged cell keeps the value that carries the meaning');
   ok('a reflectivity core survives being merged with its quiet neighbours',
      maxRef === 68, String(maxRef));
 
-  // On correlation coefficient it is the opposite: a debris ball under a
-  // tornado is a HOLE of low values, and a merge that took the maximum would
-  // erase the one signature a warning gets written from.
+  // On correlation coefficient it is neither rule. A debris ball under a
+  // tornado is a HOLE of low values, so taking the maximum would erase the
+  // one signature a warning gets written from - but taking the minimum, as
+  // this used to, handed every merged cell in the far field to its worst
+  // gate and dragged the whole picture down into the debris colours. It
+  // merges by MEAN: the hole still pulls the cell well below the rain around
+  // it, without one bad gate speaking for eight.
   const cc = fakeL2({ gateSize: 0.25, gateCount: 1832, radials: 4, layer: 'CC',
     fill: (g) => (g === spikeAt ? 0.62 : 0.99) });
   const ccRes = runL2(cc, 'CC', { range_limit_km: 460 });
   let minCC = Infinity;
   for (let i = 8; i < ccRes.meshData.length; i += 9) minCC = Math.min(minCC, ccRes.meshData[i]);
-  ok('a correlation coefficient hole survives too, which needs the opposite rule',
-     Math.abs(minCC - 0.62) < 0.001, String(minCC));
+  ok('a correlation coefficient hole still shows after the merge',
+     minCC < 0.99 - 0.03, String(minCC));
+  ok('but it is averaged, not handed the worst gate outright',
+     minCC > 0.62 + 0.001, String(minCC));
 
   // And on velocity, a couplet is an inbound beside an outbound. Averaging
   // would cancel them; taking the maximum would lose the inbound half.
@@ -289,14 +295,16 @@ console.log('\n7. Level 3 reaches its full range too');
   ok('and its four-bit codes still decode to real speeds',
      low === -64, String(low));
 
-  // Correlation coefficient on Level 3 needs the same minimum rule as on
+  // Correlation coefficient on Level 3 follows the same mean rule as on
   // Level 2, and it is chosen from the product code rather than a name.
   const ccL3 = mod.processLevel3Data(mkL3(161, 1840, (b) => (b === 1600 ? 0.55 : 0.98)),
                                      SITE, { range_limit_km: 460 });
   let minCC = Infinity;
   for (let i = 8; i < ccL3.meshData.length; i += 9) minCC = Math.min(minCC, ccL3.meshData[i]);
-  ok('a Level 3 correlation hole survives the merge as well',
-     Math.abs(minCC - 0.55) < 0.001, String(minCC));
+  ok('a Level 3 correlation hole still shows after the merge',
+     minCC < 0.98 - 0.03, String(minCC));
+  ok('and Level 3 averages it exactly as Level 2 does',
+     minCC > 0.55 + 0.001, String(minCC));
 }
 
 console.log('\n8. an old caller cannot silently shorten it back');
