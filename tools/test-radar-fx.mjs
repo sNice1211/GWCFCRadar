@@ -606,7 +606,7 @@ console.log('\n12. correlation coefficient is not one flat green');
     return { wx, uniqueWx: new Set(wx).size,
              debris, rain, dRGB: lum(debris), rRGB: lum(rain),
              ramp, uniqueRamp: new Set(ramp).size,
-             below: fn(-1), lowEnd: hex(0.2) };
+             below: fn(-1), noise: fn(0.3), lowEnd: hex(0.2) };
   });
   // The actual complaint, as a number.
   ok('the range where all precipitation lives gets six different colours',
@@ -623,8 +623,16 @@ console.log('\n12. correlation coefficient is not one flat green');
      r.debris !== r.rain);
   ok('a value below the scale draws nothing rather than a colour',
      r.below === null, String(r.below));
-  ok('and the non-meteorological end is still drawn, not dropped',
-     /^#/.test(r.lowEnd), r.lowEnd);
+  // The floor, and the mistake it corrects. CC below about 0.45 is the
+  // speckle a radar returns from clear air. It is not weather and it covers
+  // most of a sweep on most days, so drawing it from the bottom of the range
+  // upward buried the actual weather under a wash of the lowest band. Every
+  // other product here already has this floor: reflectivity starts at 5 dBZ,
+  // velocity has a dead zone either side of nought, KDP ignores near-zero.
+  ok('the clear-air noise carpet is not painted at all',
+     r.noise === null, String(r.noise));
+  ok('but real non-meteorological targets above it still are',
+     /^#/.test(r.debris), r.debris);
 }
 
 console.log('\n13. correlation coefficient is not dragged down by the merge');
@@ -720,8 +728,11 @@ console.log('\n14. every product covers the range it claims to cover');
      mostlyBlank.length === 0,
      mostlyBlank.map(([k, v]) => `${k}:${v.painted}/61`).join(', '));
   ok('correlation coefficient in particular now has real resolution',
-     r.cc.distinct >= 10 && r.cc.blank === 0,
-     `${r.cc.distinct} colours, ${r.cc.blank} blank`);
+     r.cc.distinct >= 10, `${r.cc.distinct} colours`);
+  // Its blank part is the clear-air noise below 0.45, deliberately, and it
+  // must not creep upward into the range where weather lives.
+  ok('and what it leaves blank is only the noise below 0.45',
+     r.cc.last < 0.45, `blank up to ${r.cc.last}`);
 }
 
 console.log('\n15. nothing threw along the way');
