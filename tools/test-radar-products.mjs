@@ -272,6 +272,49 @@ console.log('\n5. every offered code has a family and a colour');
      hc.length === 0, hc.join(','));
 }
 
+console.log('\n5b. the colour scales cover the values real sweeps actually hold');
+{
+  // Every number below was measured off live Level 3 files, not guessed.
+  // A scale that discards the range its product actually lives in draws an
+  // empty map, and an empty map is indistinguishable from a broken feed.
+  const r = await page.evaluate(() => {
+    const kdp = _meshColorFn('n0k');
+    const vel = _meshColorFn('n0g');
+    const cc = _meshColorFn('n0c');
+    return {
+      // Measured at KMLB in a full rain shield: median 0, 90th percentile
+      // 0.15, heavy cores 1 to 4. The old scale drew nothing under 0.8.
+      kdpOrdinary: [0, 0.05, 0.15, 0.3, 0.5].map(v => kdp(v)),
+      kdpHeavy: [1, 2, 3, 4].map(v => kdp(v)),
+      kdpNegative: [-1.5, -0.6].map(v => kdp(v)),
+      kdpDistinct: new Set([0, 0.2, 0.4, 0.7, 1, 1.5, 2, 2.6, 3.4, 4.5]
+        .map(v => kdp(v))).size,
+      // The median gate of a live velocity sweep is about 2 kt. The old
+      // dead zone was 5 kt either side, so the commonest reading was a hole.
+      velNearZero: [-4, -2, 2, 4].map(v => vel(v)),
+      velIsodop: [-0.5, 0, 0.5].map(v => vel(v)),
+      // Nearly a tenth of a live CC sweep encodes above 1.0.
+      ccTop: [0.995, 1.01, 1.05].map(v => cc(v)),
+    };
+  });
+  ok('ordinary KDP paints, all of it',
+     r.kdpOrdinary.every(c => c), JSON.stringify(r.kdpOrdinary));
+  ok('and heavy KDP paints', r.kdpHeavy.every(c => c), JSON.stringify(r.kdpHeavy));
+  ok('and negative KDP, which the file really carries, paints too',
+     r.kdpNegative.every(c => c), JSON.stringify(r.kdpNegative));
+  ok('KDP spreads its range over many colours rather than a few',
+     r.kdpDistinct >= 8, String(r.kdpDistinct));
+  ok('velocity paints the gates either side of the isodop',
+     r.velNearZero.every(c => c), JSON.stringify(r.velNearZero));
+  ok('and the blank zero line is only a knot wide',
+     r.velIsodop.every(c => c === null), JSON.stringify(r.velIsodop));
+  ok('CC above 1.0 is not painted brilliant white',
+     r.ccTop.every(c => c && c.toLowerCase() !== '#fdfdfd'),
+     JSON.stringify(r.ccTop));
+  ok('and it reads as the top of the rain run, not a separate alarm',
+     r.ccTop[1] === r.ccTop[2], JSON.stringify(r.ccTop));
+}
+
 console.log('\n6. storm relative velocity is not converted twice');
 {
   // The worker turns product 56's four bit codes into knots itself. Running
