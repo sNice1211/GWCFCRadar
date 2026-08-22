@@ -151,15 +151,48 @@ fi
 
 step "3 of 5   Restarting what holds code in memory"
 # The pipelines are one-shot jobs fired by timers, so they read the new files
-# on their own next run and need nothing done to them. These three are long
-# running processes still holding the old code, so they have to be told.
-for unit in gwcfc-serve gwcfc-tunnel gwcfc-publish; do
+# on their own next run and need nothing done to them. These are long running
+# processes still holding the old code, so they have to be told.
+for unit in gwcfc-serve gwcfc-publish; do
   if systemctl --user restart "$unit" 2>/dev/null; then
     good "$unit restarted"
   else
     bad "$unit would not restart. Run: bash $REPO/pi/install.sh"
   fi
 done
+
+# The tunnel is NOT in that list, and leaving it out is the fix rather than an
+# oversight.
+#
+# A quick tunnel is handed a brand new random address every time it starts.
+# Restarting it here therefore threw the working address away on every single
+# run, and for the next minute the site was pointed at one that had just died.
+# This script was called ten times today and the log shows ten starts on eight
+# addresses: the repair tool was the single largest cause of the fault it was
+# being run to repair.
+#
+# It carries no code of ours, so a new version never needs it restarted. The
+# only reason to touch it is that it is not working, so that is now the only
+# time it is touched.
+if systemctl --user is-active --quiet gwcfc-tunnel \
+   && [ -x "$PY" ] \
+   && "$PY" - <<PYEOF >/dev/null 2>&1
+import sys
+sys.path.insert(0, "$REPO/pi")
+import publish_url as p
+f = p.candidates()
+sys.exit(0 if (f and p.answers(f[0], timeout=8)) else 1)
+PYEOF
+then
+  good "gwcfc-tunnel is carrying traffic, so its address is left alone"
+else
+  if systemctl --user restart gwcfc-tunnel 2>/dev/null; then
+    good "gwcfc-tunnel restarted, since it was not carrying traffic"
+    note "this rolls a new address; the publisher will catch up in a moment"
+  else
+    bad "gwcfc-tunnel would not restart. Run: bash $REPO/pi/install.sh"
+  fi
+fi
 
 step "4 of 5   Timers"
 for t in gwcfc-models gwcfc-radar gwcfc-sat gwcfc-snd gwcfc-cyclones gwcfc-update; do
@@ -181,6 +214,16 @@ if [ -x "$PY" ]; then
   # ending on a failure and a second command to type. The three reasons a
   # tunnel carries no traffic have completely different fixes and cannot be
   # told apart from the address alone.
+  # Publish before checking, not after failing.
+  #
+  # The watcher is meant to notice a new address within a minute, and every
+  # run of this script has ended with "the site is pointed somewhere else"
+  # anyway. Whatever is wrong with it, the person who ran this wants the site
+  # working when it finishes, and one forced publish costs a second and needs
+  # nothing to be diagnosed first. --force only skips the "unchanged, so
+  # nothing to do" shortcut; it still refuses to publish an address that does
+  # not answer, so it cannot make things worse.
+  "$PY" "$REPO/pi/publish_url.py" --force >/dev/null 2>&1 || true
   "$PY" "$REPO/pi/publish_url.py" --check || {
     printf '\n'
     "$PY" "$REPO/pi/tunnel_doctor.py"

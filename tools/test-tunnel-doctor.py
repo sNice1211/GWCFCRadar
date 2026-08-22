@@ -258,6 +258,38 @@ ok("user units are restarted as the user, not as root",
 ok("fix.sh offers it exactly when names are what is broken",
    "fixnet.sh" in fixsh and "getent hosts" in fixsh)
 
+print("\n10. the repair tool stops causing the fault it repairs")
+# A quick tunnel is handed a brand new random address every time it starts.
+# fix.sh restarted it on every run, so every repair threw the working address
+# away and left the site pointed at a dead one for the next minute. The log
+# off the Pi showed ten starts on eight addresses in one evening.
+ok("a healthy tunnel is left alone", "left alone" in fixsh)
+ok("and is only restarted when it is NOT carrying traffic",
+   "was not carrying traffic" in fixsh)
+ok("the check is the same one the publisher uses, not a guess",
+   "p.answers(" in fixsh and "p.candidates()" in fixsh)
+# serve.py holds our code in memory and does need restarting; the tunnel
+# holds none of ours and never does.
+ok("serve and the publisher are still restarted, since they hold our code",
+   "for unit in gwcfc-serve gwcfc-publish" in fixsh)
+# Every run ended with "the site is pointed somewhere else". Whatever is
+# wrong with the watcher, the person who ran this wants it right at the end.
+_calls = [ln.strip() for ln in fixsh.splitlines()
+          if "publish_url.py" in ln and "--" in ln]
+ok("and the address is published before it is reported on",
+   len(_calls) >= 2 and "--force" in _calls[0] and "--check" in _calls[1],
+   " | ".join(_calls))
+
+print("\n11. an empty publisher log means one thing only")
+pub = open(os.path.join(ROOT, "pi", "publish_url.py")).read()
+# "The publisher has said nothing" was ambiguous between a watcher that had
+# died, one that never started, and one working perfectly with nothing to
+# report. Those want three different responses.
+ok("the watcher leaves a heartbeat", "watching; the site is on" in pub)
+# The address changes without warning, so the gap between it changing and
+# being noticed is the whole cost.
+ok("and it looks more often than once a minute", "time.sleep(20)" in pub)
+
 print()
 if failed:
     print(f"{failed} FAILED, {passed} passed")
