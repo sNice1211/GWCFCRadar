@@ -38,7 +38,7 @@ console.log('\n1. the source itself');
 const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
 
 ok('there is no em dash anywhere in the page', !html.includes('—'));
-ok('the desk is reachable from the StormStream settings card',
+ok('the desk is reachable from the Alerts settings card',
    /_adUiOpen\(\)/.test(html) && /Write an Alert/.test(html));
 ok('StormStream has its own toggle for including your products',
    /lqm-ss-includemine/.test(html) && /_adUiIncludeSS/.test(html));

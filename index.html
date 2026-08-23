@@ -30182,43 +30182,101 @@ function _applyLoadSpot() {
     map.on('contextmenu', _cmOpen);
     map.on('movestart zoomstart', _cmClose);
 
-    // Double tap opens it too, because a touch screen has no right button.
+    // ── Double tap opens the menu, because a touch screen has no right
+    // button ────────────────────────────────────────────────────────────
     //
-    // The catch is that double click already means "zoom in", and taking
-    // that away from everybody to give a menu to phone users would be a bad
-    // trade. So the two are told apart by what actually touched the screen:
-    // the pointer type of the press that started the gesture, remembered
-    // here and read when the double click arrives.
+    // This used to listen for the browser's own dblclick event and only act
+    // on it when the gesture had started with a finger. That is the part
+    // that did not work: a double TAP is not a reliable dblclick. iOS Safari
+    // often swallows the second tap into its own double-tap-to-zoom, Android
+    // browsers delay it behind the 300ms click delay, and Leaflet's touch
+    // handling can turn the pair into two separate clicks before the browser
+    // ever decides they were one gesture. Waiting on an event that may never
+    // arrive is why the feature was invisible on a phone.
     //
-    // Disabling the zoom has to happen on the FIRST press rather than in the
-    // double click handler, because by the time a dblclick fires Leaflet has
-    // already decided to zoom. Re-enabled on the next mouse press, so a
-    // laptop with a touch screen keeps both behaviours, each on its own
-    // input, rather than losing one because the hardware merely could do the
-    // other.
-    let touched = false;
-    const remember = (type) => {
-      touched = (type === 'touch' || type === 'pen');
-      if (!map.doubleClickZoom) return;
-      try {
-        touched ? map.doubleClickZoom.disable() : map.doubleClickZoom.enable();
-      } catch (e) {}
+    // So the gesture is measured here instead of being asked for: two taps
+    // inside AD_TAP_MS of each other and within AD_TAP_PX of the same spot
+    // is a double tap, full stop. That is deterministic, it works the same
+    // on every touch browser, and it can be tested.
+    const CM_TAP_MS = 400;    // longer than a real double tap, shorter than two deliberate taps
+    const CM_TAP_PX = 32;     // a fingertip does not land twice on the same pixel
+    let _tapAt = 0, _tapX = 0, _tapY = 0;
+
+    // A mouse double click still zooms, which is what a mouse user expects,
+    // unless the setting below is turned on. Touch never zooms on a double
+    // tap: the menu is worth more there than a zoom step that pinch already
+    // does better.
+    const wantsMouseMenu = () => {
+      try { return localStorage.getItem('lqm_dbltapmenu') === 'true'; } catch (e) { return false; }
     };
+
+    const openAt = (clientX, clientY) => {
+      if (!map.getContainer) return;
+      const rect = map.getContainer().getBoundingClientRect();
+      const pt = L.point(clientX - rect.left, clientY - rect.top);
+      _cmOpen({
+        latlng: map.containerPointToLatLng(pt),
+        containerPoint: pt,
+        originalEvent: { clientX, clientY, preventDefault() {}, stopPropagation() {} },
+      });
+    };
+
+    const onTap = (clientX, clientY) => {
+      const now = Date.now();
+      const near = Math.abs(clientX - _tapX) <= CM_TAP_PX
+                && Math.abs(clientY - _tapY) <= CM_TAP_PX;
+      if (_tapAt && (now - _tapAt) <= CM_TAP_MS && near) {
+        _tapAt = 0;
+        openAt(clientX, clientY);
+        return;
+      }
+      _tapAt = now; _tapX = clientX; _tapY = clientY;
+    };
+
     const c = map.getContainer && map.getContainer();
     if (c) {
+      // pointerup rather than click: a click on a touch screen is the
+      // browser's own delayed synthesis of the tap, and it is exactly the
+      // step that was dropping the second one.
+      const touchUp = (e) => {
+        // Only a tap on the map itself. A tap that lands on a marker, a
+        // popup or any control on top of the map is that thing's business.
+        if (e.target && e.target.closest
+            && e.target.closest('.leaflet-marker-icon, .leaflet-popup, .leaflet-control, #map-ctx-menu')) return;
+        onTap(e.clientX, e.clientY);
+      };
       if (window.PointerEvent) {
-        c.addEventListener('pointerdown',
-          (e) => remember(e.pointerType), { passive: true });
+        c.addEventListener('pointerup', (e) => {
+          if (e.pointerType === 'mouse') return;   // the mouse path is below
+          touchUp(e);
+        }, { passive: true });
       } else {
-        // Safari before Pointer Events. Two listeners, same question.
-        c.addEventListener('touchstart', () => remember('touch'), { passive: true });
-        c.addEventListener('mousedown', () => remember('mouse'), { passive: true });
+        // Safari before Pointer Events.
+        c.addEventListener('touchend', (e) => {
+          const t = e.changedTouches && e.changedTouches[0];
+          if (t) touchUp({ target: e.target, clientX: t.clientX, clientY: t.clientY });
+        }, { passive: true });
       }
+      // Stop the browser zooming the page on the second tap. Without this
+      // iOS treats the pair as its own gesture and the menu appears under a
+      // page that has just scaled.
+      c.addEventListener('dblclick', (e) => {
+        if (wantsMouseMenu()) e.preventDefault();
+      });
     }
-    map.on('dblclick', (e) => {
-      if (!touched) return;                  // a mouse double click still zooms
-      _cmOpen(e);
-    });
+
+    // The mouse, opt in. Kept off by default because double click means zoom
+    // to anyone holding a mouse, and silently taking that away is worse than
+    // not offering the menu on an input that already has a right button.
+    map.on('dblclick', (e) => { if (wantsMouseMenu()) _cmOpen(e); });
+    const syncDblZoom = () => {
+      if (!map.doubleClickZoom) return;
+      try {
+        wantsMouseMenu() ? map.doubleClickZoom.disable() : map.doubleClickZoom.enable();
+      } catch (e) {}
+    };
+    syncDblZoom();
+    window._cmSyncDblZoom = syncDblZoom;
   };
   arm();
   document.addEventListener('mousedown', (e) => {
@@ -38043,6 +38101,18 @@ function selectProduct(p) {
         <span id="lqm-citynamesize-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">12px</span>
       </div>
     </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Double Click Opens Menu</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-dbltapmenu" onchange="lqmToggleSetting('dbltapmenu',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0 2px;line-height:1.5;">
+      Double tapping the map with a finger always opens the right-click menu. Turn this on to make a mouse
+      double click do the same, which gives up double click to zoom in.
+    </div>
   </div>
 
   <!-- ─── RADAR ─── -->
@@ -38549,6 +38619,14 @@ function selectProduct(p) {
         <span id="lqm-alertopacity-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:28px;">65%</span>
       </div>
     </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Alert Desk</span>
+      <button class="lqm-settings-btn" onclick="_adUiOpen()">Write an Alert</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0 2px;line-height:1.5;">
+      The Alert Desk is where you write your own warnings and watches. Everything issued there is marked
+      SIMULATED wherever it appears, so it can never be mistaken for a real National Weather Service product.
+    </div>
   </div>
 
   <!-- ─── STORMSTREAM MODE: hands-off cycling through active alerts in a
@@ -38611,10 +38689,6 @@ function selectProduct(p) {
         <div class="lqm-toggle-track"></div>
         <div class="lqm-toggle-knob"></div>
       </label>
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Alert Desk</span>
-      <button class="lqm-settings-btn" onclick="_adUiOpen()">Write an Alert</button>
     </div>
     <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0 2px;line-height:1.5;">
       Cycles the map through active alerts in your coverage area with an on-screen info card - built for
@@ -40430,6 +40504,13 @@ function lqmToggleSetting(key, val) {
     setUnitPref('precip', val);
   } else if (key === 'distunit') {
     setUnitPref('dist', val);
+  } else if (key === 'dbltapmenu') {
+    // The map's own double-click zoom has to be turned off in step, or a
+    // mouse double click would open the menu and zoom at the same time.
+    if (typeof window._cmSyncDblZoom === 'function') {
+      try { localStorage.setItem('lqm_dbltapmenu', val); } catch (e) {}
+      window._cmSyncDblZoom();
+    }
   } else if (key === 'stateborders') {
     _toggleBorders('state', val);
   } else if (key === 'countyborders') {
@@ -43331,7 +43412,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "There is an Alert Desk now, in the StormStream section of Settings. You pick the product (tornado, severe thunderstorm, flash flood, extreme wind, snow squall, the tropical and storm surge ones, all the matching watches, a special weather statement), set the area by drawing it on the map or by clicking and searching for counties, and dial each hazard on a five-stop scale: None, Low, Moderate, High, Extreme. Beside every one of those is an optional amount box, so you can say 2.75 in of hail rather than just High, and leaving it blank is fine. What comes out is a real product shape: a headline, then WHAT, WHERE, WHEN, IMPACTS and SOURCE, previewed live as you write it. Tornado warnings can carry Particularly Dangerous Situation or Tornado Emergency wording, and an emergency paints its own colour. Once issued it behaves like any other alert: it draws on the map, files into the Alerts panel, rides to the pop-out window, fires the chime and the notification, and StormStream can cycle to it, which has its own toggle so a stream running off real warnings never cuts to a drill by accident. It expires on its own and drops into a history you can re-issue from, and you can continue it, extend it, upgrade a severe thunderstorm warning to a tornado warning, or cancel it. Everything you write here is marked SIMULATED in every place it appears: the headline, the panel card, the popup, the text itself, a dashed polygon instead of a solid one, and a badge in the corner of the map for as long as one is live, so a screenshot can never pass for a real National Weather Service warning.";
+const APP_LATEST_UPDATE = "Three things. The Alert Desk has moved out of StormStream and into the Alerts section of Settings, which is where it belongs. Double tapping the map now opens the right-click menu on a phone, and actually works this time: it used to wait for the browser to report a double click, which a touch screen often never does, so the gesture is measured directly now. A mouse still zooms on a double click unless you turn on the new Double Click Opens Menu switch. And the reason a few settings did nothing at all: the settings handler is wrapped by a second copy further down the page, and that copy only passed a short list of settings through to the first one. Anything outside the list quietly saved your choice and then did nothing, which is what had killed the state, county and province border switches. It now passes on everything it does not handle itself.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -43805,9 +43886,20 @@ function lqmSetPressureOpacity(val) {
 
 // Extend lqmToggleSetting for new options
 const _origLqmToggle = lqmToggleSetting;
+// The keys this override answers for itself. Everything else is the original
+// function's job.
+//
+// This used to be the other way round: a short allow-list was forwarded to the
+// original and every key outside it fell through to a localStorage write and
+// nothing else. That is a trap, because adding a setting to the original
+// function looks like it works and silently does nothing, and it is what left
+// the state, county and province border toggles dead - the original had real
+// branches for all three that could never be reached. Listing what this
+// function handles, and passing on everything else, means a new setting works
+// wherever it is written rather than only in the one place someone remembered.
+const _LQM_OWN_KEYS = ['crosshair', 'contrast', 'coords', 'compass', 'scale', 'flash'];
 lqmToggleSetting = function(key, val) {
-  if (['smooth','autoplay','labels','follow','gpshud','breadcrumb','location',
-       'windunit','tempunit','pressureunit','precipunit','distunit'].includes(key)) { _origLqmToggle(key,val); return; }
+  if (!_LQM_OWN_KEYS.includes(key)) { _origLqmToggle(key, val); return; }
   try { localStorage.setItem('lqm_'+key, typeof val==='boolean'?(val?'1':'0'):val); } catch(e){}
   if (key==='crosshair') {
     document.body.classList.toggle('gwcfc-crosshair', val);
@@ -43903,6 +43995,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const cbVal = localStorage.getItem('lqm_countyborders'); if(cbVal==='true') { const el=document.getElementById('lqm-set-countyborders'); if(el){el.checked=true;lqmToggleSetting('countyborders',true);} }
     const pbVal = localStorage.getItem('lqm_provinceborders'); if(pbVal==='false') { const el=document.getElementById('lqm-set-provinceborders'); if(el){el.checked=false;lqmToggleSetting('provinceborders',false);} }
     const cnsVal = localStorage.getItem('lqm_citynamesize'); if(cnsVal) { const el=document.getElementById('lqm-set-citynamesize'); if(el){el.value=cnsVal;lqmSetCityNameSize(cnsVal);} }
+    const dtmVal = localStorage.getItem('lqm_dbltapmenu'); if(dtmVal==='true') { const el=document.getElementById('lqm-set-dbltapmenu'); if(el){el.checked=true;lqmToggleSetting('dbltapmenu',true);} }
     // Units & Time - _units itself is already loaded from lqm_unit_* at script
     // parse time (see _loadUnitPrefs); this just syncs the dropdowns to match.
     const windEl = document.getElementById('lqm-set-windunit');     if (windEl) windEl.value = _units.wind;
