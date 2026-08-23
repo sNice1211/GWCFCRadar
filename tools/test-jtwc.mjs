@@ -357,6 +357,12 @@ console.log("\n9. an unreadable feed is not allowed to look like calm weather");
      r.notFeed.n === 0 && /not the JTWC feed/.test(r.notFeed.why), r.notFeed.why);
   ok('and it quotes what did arrive, so the cause is visible',
      /bad format/.test(r.notFeed.why), r.notFeed.why);
+  // There is more than one relay now, so a failure names every one it tried
+  // rather than only the first. That is the difference between "JTWC is not
+  // loading" and "all three relays refused, here is what each said".
+  ok('and it names every relay it tried, not just the first',
+     /sparkradar/.test(r.notFeed.why) && /allorigins/.test(r.notFeed.why)
+     && /corsproxy/.test(r.notFeed.why), r.notFeed.why);
   ok('a refusal names the status it was refused with',
      /HTTP 503/.test(r.http.why), r.http.why);
   // The other half, and the one that keeps this honest: a real but empty

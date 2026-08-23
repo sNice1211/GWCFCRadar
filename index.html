@@ -2365,6 +2365,81 @@ body.wx-smooth-radar .leaflet-radarPane-pane canvas {
   image-rendering: auto;
 }
 
+
+/* ── GRAPHIC MAKER ───────────────────────────────────────────────────────
+   Deliberately plain chrome. The thing being judged is the picture in the
+   middle, and a busy editor around it makes colour choices harder to read. */
+#gm-modal {
+  position: fixed; inset: 0; z-index: 4000; display: none;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.72);
+  backdrop-filter: blur(3px);
+}
+#gm-shell {
+  display: flex; flex-direction: column;
+  width: min(1180px, 96vw); height: min(780px, 92vh);
+  background: #0b0e13; border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 12px; overflow: hidden;
+  box-shadow: 0 24px 70px -20px rgba(0,0,0,0.8);
+}
+#gm-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.1);
+  background: #10141b;
+}
+#gm-title {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--accent2);
+}
+.gm-spacer { flex: 1 1 auto; }
+#gm-body { flex: 1 1 auto; display: flex; min-height: 0; }
+#gm-stage {
+  flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+  padding: 18px; overflow: auto; background: #070910;
+}
+#gm-canvas { border-radius: 4px; box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
+             touch-action: none; cursor: move; }
+#gm-side {
+  flex: 0 0 300px; overflow-y: auto; padding: 12px 14px 20px;
+  border-left: 1px solid rgba(255,255,255,0.1); background: #0d1118;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.gm-grp { display: flex; flex-direction: column; gap: 8px; }
+.gm-h {
+  font-family: var(--mono); font-size: 9px; letter-spacing: 1.6px;
+  text-transform: uppercase; color: rgba(255,255,255,0.45);
+}
+.gm-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.gm-row > input[type=range] { flex: 1 1 90px; }
+.gm-lbl { font-size: 11px; color: rgba(255,255,255,0.72); min-width: 62px; }
+.gm-btn, #gm-preset, .gm-row select {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.6px;
+  padding: 5px 10px; border-radius: 6px; cursor: pointer;
+  background: rgba(255,255,255,0.07); color: #e7eaee;
+  border: 1px solid rgba(255,255,255,0.16);
+}
+.gm-btn:hover { background: rgba(255,255,255,0.14); border-color: var(--accent2); }
+.gm-btn.gm-primary { background: var(--accent2); border-color: var(--accent2); color: #06202a; font-weight: 700; }
+.gm-btn.gm-danger:hover { border-color: #e0563f; color: #ffb3a6; }
+.gm-text {
+  width: 100%; resize: vertical; border-radius: 6px; padding: 6px 8px;
+  background: rgba(255,255,255,0.06); color: #fff;
+  border: 1px solid rgba(255,255,255,0.16); font-size: 12px;
+}
+.gm-layers { display: flex; flex-direction: column; gap: 4px; max-height: 150px; overflow-y: auto; }
+.gm-layer {
+  text-align: left; font-size: 11px; padding: 5px 8px; border-radius: 5px;
+  background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.8);
+  border: 1px solid transparent; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.gm-layer.on { border-color: var(--accent2); color: #fff; }
+.gm-empty { font-size: 11px; color: rgba(255,255,255,0.35); font-style: italic; }
+@media (max-width: 760px) {
+  #gm-body { flex-direction: column; }
+  #gm-side { flex: 1 1 auto; border-left: 0; border-top: 1px solid rgba(255,255,255,0.1); }
+}
+
 /* ── TROPICAL / SEVERE MODEL PANELS ── */
 
 #severe-model-panel {
@@ -7381,6 +7456,32 @@ footer {
   gap: 14px;
   align-items: flex-start;
   min-height: 0;
+}
+
+/* A heading INSIDE a merged category card. Cards that were merged keep their
+   own names, because "Wind Particles" and "Wave Particles" are still the two
+   things in there and losing those words would make the card a mystery. They
+   read as separators rather than titles: smaller, ruled above, and the first
+   one is not pushed down since it is already at the top of the card. */
+.lqm-settings-category.lqm-sub-head {
+  font-size: 0.78rem;
+  letter-spacing: 1.4px;
+  opacity: 0.82;
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.09);
+}
+.lqm-settings-group[data-merge-label] > .lqm-settings-category.lqm-sub-head {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+/* Merged cards sit flush, so the group reads as one card rather than several
+   stacked ones with gaps between them. */
+.lqm-settings-group[data-merge]:not([data-merge-label]) {
+  margin-top: -6px;
+  border-top: 0;
+  padding-top: 0;
 }
 #lqm-set-rail {
   display: flex;
@@ -26200,6 +26301,66 @@ function _jtwcProxy(url, asText) {
        + `&maxAge=900&url=${encodeURIComponent(url)}`;
 }
 
+// More than one way to reach the feed.
+//
+// Everything above went through a single cache host, which meant that host
+// being down, rate limited or blocked took the whole layer with it, and the
+// only symptom was an empty ocean. One upstream with no alternative is the
+// most likely reason this kept being reported as broken after the format
+// parameter was fixed: the parsing was right and nothing was arriving to
+// parse.
+//
+// They are tried in order and the first one that returns something shaped
+// like the feed wins. Each is a plain public relay, so no key is involved
+// and adding another is one line.
+const JTWC_PROXIES = [
+  { id: 'sparkradar', build: (u) => _jtwcProxy(u, true) },
+  { id: 'allorigins', build: (u) => 'https://api.allorigins.win/raw?url='
+                                    + encodeURIComponent(u) },
+  { id: 'corsproxy',  build: (u) => 'https://corsproxy.io/?url='
+                                    + encodeURIComponent(u) },
+];
+
+// Which relay last worked, so the diagnostics can say so and so a later
+// fetch in the same session starts with the one already known to answer
+// rather than walking the dead one again.
+let _jtwcGoodProxy = null;
+
+// Fetch one URL through whichever relay answers. Returns
+// { text, via } or { error } naming every relay tried and what each said,
+// because "JTWC is not loading" is unactionable and "all three relays
+// refused" is not.
+async function _jtwcFetchVia(url) {
+  const order = _jtwcGoodProxy
+    ? [].concat(JTWC_PROXIES.filter(p => p.id === _jtwcGoodProxy),
+                JTWC_PROXIES.filter(p => p.id !== _jtwcGoodProxy))
+    : JTWC_PROXIES;
+  const tried = [];
+  for (const p of order) {
+    let text = null;
+    try {
+      const r = await fetchWithTimeout(p.build(url), 12000);
+      if (!r.ok) { tried.push(`${p.id}: HTTP ${r.status}`); continue; }
+      text = await r.text();
+    } catch (e) {
+      tried.push(`${p.id}: ${(e && e.message) || e}`);
+      continue;
+    }
+    text = _jtwcUnwrap(text);
+    if (text && text.indexOf('<item') >= 0) {
+      _jtwcGoodProxy = p.id;
+      return { text, via: p.id };
+    }
+    // Quote what did arrive. A relay handing back its own error page and a
+    // dead upstream look identical from the outside, and the first hundred
+    // characters of the body is what tells them apart.
+    const snip = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+    tried.push(`${p.id}: answered, but not the JTWC feed`
+               + (snip ? `: ${snip}` : ' (empty)'));
+  }
+  return { error: tried.join('; ') };
+}
+
 // Some cache services hand plain text back wrapped in a JSON envelope. If
 // that is what arrived, the feed is inside it rather than missing, and
 // unwrapping costs nothing when it is not.
@@ -26251,23 +26412,9 @@ function _jtwcParseKt(text) {
 async function _jtwcFetchBasin(basin) {
   const url = `https://www.metoc.navy.mil/jtwc/rss/jtwc.rss?${basin.id}`;
   const fail = (why) => { const a = []; a.error = why; return a; };
-  let text = null;
-  try {
-    const r = await fetchWithTimeout(_jtwcProxy(url, true), 12000);
-    if (!r.ok) return fail(`the cache answered HTTP ${r.status}`);
-    text = await r.text();
-  } catch (e) {
-    return fail('could not reach the cache: ' + ((e && e.message) || e));
-  }
-  text = _jtwcUnwrap(text);
-  if (!text) return fail('the cache answered with nothing at all');
-  if (text.indexOf('<item') < 0) {
-    // Reached something, but not the feed. Worth saying what did arrive,
-    // because that is the difference between a dead upstream and a proxy
-    // handing back its own error page.
-    return fail('what came back was not the JTWC feed: '
-      + text.replace(/\s+/g, ' ').trim().slice(0, 120));
-  }
+  const got = await _jtwcFetchVia(url);
+  if (got.error) return fail(got.error);
+  const text = got.text;
 
   const out = [];
   const items = text.split(/<item[\s>]/i).slice(1);
@@ -37724,7 +37871,7 @@ function selectProduct(p) {
   </div>
 
   <!-- ─── RADAR ─── -->
-  <div class="lqm-settings-group" data-cat="radar">
+  <div class="lqm-settings-group" data-merge="radar" data-merge-label="Radar" data-merge-icon="ic-storm" data-cat="radar">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-storm></use></svg> Radar</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Smooth Animation</span>
@@ -37807,7 +37954,7 @@ function selectProduct(p) {
 
   <!-- ─── RADAR COLORS: value filter + custom colors (raw families), and
        picture recolor for the four products with no raw feed at all ─── -->
-  <div class="lqm-settings-group" data-cat="radar">
+  <div class="lqm-settings-group" data-merge="radar" data-cat="radar">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Radar Colors</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Product</span>
@@ -38019,7 +38166,7 @@ function selectProduct(p) {
   </div>
 
   <!-- ─── WIND PARTICLES ─── -->
-  <div class="lqm-settings-group" data-cat="layers">
+  <div class="lqm-settings-group" data-cat="layers" data-merge="particles" data-merge-label="Particles" data-merge-icon="ic-wind">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg> Wind Particles</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Speed</span>
@@ -38064,7 +38211,7 @@ function selectProduct(p) {
   </div>
 
   <!-- ─── WAVE PARTICLES ─── -->
-  <div class="lqm-settings-group" data-cat="layers">
+  <div class="lqm-settings-group" data-merge="particles" data-cat="layers">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wave></use></svg> Wave Particles</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Speed</span>
@@ -38109,7 +38256,7 @@ function selectProduct(p) {
   </div>
 
   <!-- ─── UNITS & TIME ─── -->
-  <div class="lqm-settings-group" data-cat="units">
+  <div class="lqm-settings-group" data-merge="units" data-merge-label="Units & Location" data-merge-icon="ic-ruler" data-cat="units">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-ruler></use></svg> Units &amp; Time</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Wind &amp; Speed</span>
@@ -38172,7 +38319,7 @@ function selectProduct(p) {
   </div>
 
   <!-- ─── LOCATION ─── -->
-  <div class="lqm-settings-group" data-cat="units">
+  <div class="lqm-settings-group" data-merge="units" data-cat="units">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> Location</div>
     <div class="lqm-settings-row" id="lqm-follow-row" style="display:none;">
       <span class="lqm-settings-lbl">Follow Me</span>
@@ -38295,11 +38442,15 @@ function selectProduct(p) {
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-image></use></svg> Custom Graphics</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Add Graphic</span>
-      <label class="lqm-settings-btn" style="cursor:pointer;">
-        Upload
-        <input type="file" id="lqm-sg-upload" accept=".png,.jpg,.jpeg,.gif,.svg,.pdf,image/png,image/jpeg,image/gif,image/svg+xml,application/pdf"
-          style="display:none;" onchange="_sgUiFileChange(this)">
-      </label>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button type="button" class="lqm-settings-btn" id="lqm-sg-design"
+                onclick="_gmOpen()">Design</button>
+        <label class="lqm-settings-btn" style="cursor:pointer;">
+          Upload
+          <input type="file" id="lqm-sg-upload" accept=".png,.jpg,.jpeg,.gif,.svg,.pdf,image/png,image/jpeg,image/gif,image/svg+xml,application/pdf"
+            style="display:none;" onchange="_sgUiFileChange(this)">
+        </label>
+      </div>
     </div>
     <div id="lqm-sg-list" class="lqm-sg-list"></div>
     <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0 2px;line-height:1.5;">
@@ -39927,6 +40078,7 @@ function _lqmSetBuildRail() {
   const groups = Array.from(
     document.querySelectorAll('#lqm-set-content .lqm-settings-group'));
   const html = [];
+  const seen = new Set();
   groups.forEach((g, i) => {
     const head = g.querySelector('.lqm-settings-category');
     if (!head) return;
@@ -39938,13 +40090,39 @@ function _lqmSetBuildRail() {
     // ids in the markup were a first cut that lumped several sections under
     // one tab, which meant three tabs lit at once and three cards on screen
     // for a click on one of them. The name is the category.
-    const id = label.toLowerCase().replace(/[^a-z0-9]+/g, '-')
-                    .replace(/^-|-$/g, '') || ('sec' + i);
+    const own = label.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+                     .replace(/^-|-$/g, '') || ('sec' + i);
+
+    // ── Merged categories ────────────────────────────────────────────────
+    // Some settings are one subject split across several cards purely
+    // because they were written at different times: wind particles and wave
+    // particles are both "particles", radar and radar colours are both
+    // "radar". Fifteen tabs for eleven subjects makes the rail longer than
+    // it needs to be and buries the thing being looked for.
+    //
+    // A card can name a merge group it belongs to, and one card in that
+    // group names the tab. They then share a single tab, and each card's own
+    // heading becomes a sub-heading INSIDE it rather than a card title, so
+    // nothing loses its name and the grouping is visible.
+    //
+    // Deliberately data-driven rather than a list here: the markup says what
+    // belongs together, which is the only place that can go stale.
+    const merge = g.dataset.merge;
+    const id = merge || own;
     g.dataset.cat = id;
+    if (merge) {
+      head.classList.add('lqm-sub-head');
+      // Only the card that names the group keeps a tab.
+      if (!g.dataset.mergeLabel) { if (seen.has(id)) return; }
+    }
+    if (seen.has(id)) return;
+    seen.add(id);
+    const tabLabel = g.dataset.mergeLabel || label;
+    const tabIcon = g.dataset.mergeIcon || icon;
     html.push(`<button type="button" class="lqm-set-tab" data-tab="${id}"
        onclick="lqmSettingsCat('${id}')"><svg class=svgi width=1em height=1em
-       style=vertical-align:-.15em><use href=#${icon}></use></svg>`
-      + `<span>${label}</span></button>`);
+       style=vertical-align:-.15em><use href=#${tabIcon}></use></svg>`
+      + `<span>${tabLabel}</span></button>`);
   });
   rail.innerHTML = html.join('');
   rail.dataset.built = '1';
@@ -42966,7 +43144,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Sharpness, on both the satellite and the radar. The satellite was never asking for high density tiles, so on a phone a 256 pixel tile was being stretched across about 768 real pixels of screen: every image was magnified three times before it reached the glass, and no amount of resolution upstream could survive that. It asks for the resolution the screen actually has now. It was also being drawn with the hard-edged rendering the radar uses, which is right for radar, whose colour bands mean something, and wrong for a photograph of clouds; satellite is smoothed and radar stays crisp. On the server the composites were being thinned to 1600 pixels on the long side, which for a CONUS scan meant throwing away six of every seven pixels and putting three and a half kilometres of ground behind each one. That ceiling was sized for a Raspberry Pi and is now per sector, so CONUS keeps about three and a half times more detail and the mesoscale boxes are untouched. Radar was capped at 1600 pixels too, which on a 460 km sweep is coarser than the gates being drawn, so the ceiling is raised and picked from the device. And the radar menu now asks the site itself what it is publishing rather than assuming: a radar that is down for maintenance says so instead of offering eight products that all fail."
+const APP_LATEST_UPDATE = "Three things. Settings had fifteen tabs for eleven subjects, because sections written at different times never got merged: wind particles and wave particles are both particles, radar and radar colours are both radar, units and location belong together. Those now share one tab each, and each section keeps its own name as a heading inside the card so nothing gets lost. Second, there is a graphic maker beside the upload button. Text, boxes, colours, fonts, four output sizes and three templates to start from, and whatever you make lands in the same library an uploaded PNG does, so the drag editor and the StormStream overlay already work with it. It is built so the canvas you edit on is about a third of the output size and every redraw is folded into a single animation frame, which is what keeps dragging smooth: full resolution is only ever reached once, when you press add. Third, JTWC. The parsing was already right; the problem was that everything went through one relay host, so that host being down or rate limited took the whole layer with it and the only symptom was an empty ocean. There are three relays now, tried in turn, the one that works is remembered, and if all of them fail it tells you what each one said instead of showing a calm sea."
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -47895,6 +48073,488 @@ function _sgHandleUpload(file) {
     _sgAddGraphicFromBlob(file, file.name.replace(/\.[^.]+$/, ''), file.type);
   }
 }
+// ── GRAPHIC MAKER ──────────────────────────────────────────────────────────
+//
+// Draw a broadcast graphic here instead of leaving to make one somewhere else
+// and coming back with a PNG. It lands in exactly the same library the upload
+// button fills, so everything downstream - the drag editor, the opacity, the
+// StormStream overlay - already works and none of it had to learn a new kind
+// of graphic.
+//
+// The performance rule this is built around: NEVER render at output size
+// while editing. A 1920x1080 canvas repainted on every pointermove is what
+// makes an editor feel like treacle. So the canvas on screen is about a third
+// of that, every redraw is coalesced into one animation frame however many
+// events arrived, and full resolution is reached exactly once, on export.
+// Handles are drawn INTO the canvas rather than being DOM nodes, so dragging
+// touches no layout and no style recalculation at all.
+const GM_PRESETS = [
+  { id: 'wide',   label: '16:9 Broadcast', w: 1920, h: 1080 },
+  { id: 'lower',  label: 'Lower Third',    w: 1920, h: 400  },
+  { id: 'square', label: 'Square',         w: 1080, h: 1080 },
+  { id: 'story',  label: 'Story 9:16',     w: 1080, h: 1920 },
+];
+const GM_FONTS = [
+  { id: 'sans',  label: 'Sans',      css: 'system-ui, "Segoe UI", Arial, sans-serif' },
+  { id: 'cond',  label: 'Condensed', css: '"Arial Narrow", "Roboto Condensed", sans-serif' },
+  { id: 'mono',  label: 'Mono',      css: 'ui-monospace, "SF Mono", Menlo, monospace' },
+  { id: 'serif', label: 'Serif',     css: 'Georgia, "Times New Roman", serif' },
+];
+// The preview is capped on its long side. Everything in the editor works in
+// OUTPUT coordinates and is scaled at draw time, so changing this number
+// changes only how sharp the preview is, never where anything sits.
+const GM_PREVIEW_MAX = 760;
+
+let _gmState = null;
+let _gmCanvas = null, _gmCtx = null;
+let _gmRaf = 0;
+let _gmDrag = null;
+
+function _gmDefault() {
+  return {
+    w: 1920, h: 1080,
+    bg: 'transparent',           // 'transparent' | a css colour
+    layers: [],
+    sel: null,
+    nextId: 1,
+  };
+}
+
+// Scale from output pixels to preview pixels.
+function _gmScale() {
+  if (!_gmState) return 1;
+  return Math.min(GM_PREVIEW_MAX / _gmState.w, GM_PREVIEW_MAX / _gmState.h, 1);
+}
+
+function _gmFontCss(id) {
+  const f = GM_FONTS.find(x => x.id === id) || GM_FONTS[0];
+  return f.css;
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────
+// One function draws both the preview and the export. The only difference is
+// the scale it is handed and whether selection furniture is included, which
+// is what guarantees the exported file looks like what was on screen.
+function _gmPaint(ctx, scale, withChrome) {
+  const st = _gmState;
+  const W = st.w * scale, H = st.h * scale;
+  ctx.clearRect(0, 0, W, H);
+
+  if (st.bg && st.bg !== 'transparent') {
+    ctx.fillStyle = st.bg;
+    ctx.fillRect(0, 0, W, H);
+  } else if (withChrome) {
+    // A checkerboard so transparent reads as transparent rather than black,
+    // which is the single most common confusion when exporting an overlay.
+    const s = 12;
+    for (let y = 0; y < H; y += s) {
+      for (let x = 0; x < W; x += s) {
+        ctx.fillStyle = ((x / s + y / s) | 0) % 2 ? '#1b1f24' : '#23282e';
+        ctx.fillRect(x, y, s, s);
+      }
+    }
+  }
+
+  st.layers.forEach((L) => {
+    ctx.save();
+    ctx.globalAlpha = L.opacity == null ? 1 : L.opacity;
+    const x = L.x * scale, y = L.y * scale;
+    const w = L.w * scale, h = L.h * scale;
+    if (L.type === 'rect') {
+      ctx.fillStyle = L.fill;
+      const r = Math.min(L.radius * scale, w / 2, h / 2);
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+      else ctx.rect(x, y, w, h);
+      ctx.fill();
+    } else if (L.type === 'text') {
+      const size = L.size * scale;
+      ctx.font = `${L.weight} ${size}px ${_gmFontCss(L.font)}`;
+      ctx.fillStyle = L.fill;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = L.align;
+      const tx = L.align === 'center' ? x + w / 2
+               : L.align === 'right' ? x + w : x;
+      // Wrapped by hand rather than by the browser, because canvas has no
+      // wrapping of its own and a headline that runs off the edge is the
+      // most likely thing anyone will type.
+      const words = String(L.text).split(/\s+/);
+      let line = '', ly = y;
+      const lh = size * 1.18;
+      words.forEach((word) => {
+        const test = line ? line + ' ' + word : word;
+        if (ctx.measureText(test).width > w && line) {
+          ctx.fillText(line, tx, ly); ly += lh; line = word;
+        } else { line = test; }
+      });
+      if (line) ctx.fillText(line, tx, ly);
+    }
+    ctx.restore();
+
+    if (withChrome && st.sel === L.id) {
+      ctx.save();
+      ctx.strokeStyle = '#3fb3c2';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(x - 1, y - 1, w + 2, h + 2);
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#3fb3c2';
+      ctx.fillRect(x + w - 5, y + h - 5, 10, 10);
+      ctx.restore();
+    }
+  });
+}
+
+// Every redraw goes through here, so a burst of pointer events costs one
+// paint rather than one paint each.
+function _gmDraw() {
+  if (_gmRaf) return;
+  _gmRaf = requestAnimationFrame(() => {
+    _gmRaf = 0;
+    if (!_gmCtx || !_gmState) return;
+    _gmPaint(_gmCtx, _gmScale(), true);
+  });
+}
+
+// ── Layers ────────────────────────────────────────────────────────────────
+function _gmAdd(type) {
+  const st = _gmState;
+  const id = st.nextId++;
+  if (type === 'text') {
+    st.layers.push({ id, type: 'text', text: 'TORNADO WARNING',
+      x: Math.round(st.w * 0.08), y: Math.round(st.h * 0.4),
+      w: Math.round(st.w * 0.84), h: Math.round(st.h * 0.18),
+      size: Math.round(st.h * 0.11), weight: 700, font: 'cond',
+      fill: '#ffffff', align: 'left', opacity: 1 });
+  } else {
+    st.layers.push({ id, type: 'rect',
+      x: Math.round(st.w * 0.06), y: Math.round(st.h * 0.34),
+      w: Math.round(st.w * 0.88), h: Math.round(st.h * 0.3),
+      fill: '#c1121f', radius: 12, opacity: 1 });
+  }
+  st.sel = id;
+  _gmSyncProps(); _gmDraw();
+}
+
+function _gmDelete() {
+  const st = _gmState;
+  if (st.sel == null) return;
+  st.layers = st.layers.filter(l => l.id !== st.sel);
+  st.sel = null;
+  _gmSyncProps(); _gmDraw();
+}
+
+function _gmOrder(dir) {
+  const st = _gmState;
+  const i = st.layers.findIndex(l => l.id === st.sel);
+  if (i < 0) return;
+  const j = i + dir;
+  if (j < 0 || j >= st.layers.length) return;
+  const [l] = st.layers.splice(i, 1);
+  st.layers.splice(j, 0, l);
+  _gmDraw(); _gmSyncProps();
+}
+
+function _gmSel() {
+  return _gmState && _gmState.layers.find(l => l.id === _gmState.sel) || null;
+}
+
+// ── Templates ─────────────────────────────────────────────────────────────
+// Somewhere to start, because an empty canvas is the hardest part of making
+// a graphic and these are the three shapes a weather channel actually uses.
+const GM_TEMPLATES = {
+  warning: (st) => {
+    st.w = 1920; st.h = 1080; st.bg = 'transparent'; st.layers = []; st.nextId = 1;
+    st.layers.push({ id: st.nextId++, type: 'rect', x: 0, y: 760, w: 1920, h: 200,
+      fill: '#8b0000', radius: 0, opacity: 0.94 });
+    st.layers.push({ id: st.nextId++, type: 'rect', x: 0, y: 960, w: 1920, h: 10,
+      fill: '#ffd400', radius: 0, opacity: 1 });
+    st.layers.push({ id: st.nextId++, type: 'text', text: 'TORNADO WARNING',
+      x: 60, y: 790, w: 1800, h: 90, size: 76, weight: 800, font: 'cond',
+      fill: '#ffffff', align: 'left', opacity: 1 });
+    st.layers.push({ id: st.nextId++, type: 'text', text: 'Take shelter now',
+      x: 60, y: 884, w: 1800, h: 50, size: 38, weight: 400, font: 'sans',
+      fill: '#ffd9d9', align: 'left', opacity: 1 });
+  },
+  lower: (st) => {
+    st.w = 1920; st.h = 400; st.bg = 'transparent'; st.layers = []; st.nextId = 1;
+    st.layers.push({ id: st.nextId++, type: 'rect', x: 0, y: 210, w: 1200, h: 120,
+      fill: '#0b1620', radius: 0, opacity: 0.92 });
+    st.layers.push({ id: st.nextId++, type: 'rect', x: 0, y: 210, w: 14, h: 120,
+      fill: '#3fb3c2', radius: 0, opacity: 1 });
+    st.layers.push({ id: st.nextId++, type: 'text', text: 'Live Radar',
+      x: 40, y: 232, w: 1120, h: 50, size: 44, weight: 700, font: 'sans',
+      fill: '#ffffff', align: 'left', opacity: 1 });
+    st.layers.push({ id: st.nextId++, type: 'text', text: 'GWCFC Radar',
+      x: 40, y: 288, w: 1120, h: 32, size: 24, weight: 400, font: 'mono',
+      fill: '#9fb3c0', align: 'left', opacity: 1 });
+  },
+  title: (st) => {
+    st.w = 1920; st.h = 1080; st.bg = '#06080c'; st.layers = []; st.nextId = 1;
+    st.layers.push({ id: st.nextId++, type: 'text', text: 'SEVERE WEATHER COVERAGE',
+      x: 160, y: 430, w: 1600, h: 130, size: 92, weight: 800, font: 'cond',
+      fill: '#ffffff', align: 'center', opacity: 1 });
+    st.layers.push({ id: st.nextId++, type: 'rect', x: 810, y: 590, w: 300, h: 6,
+      fill: '#3fb3c2', radius: 3, opacity: 1 });
+  },
+};
+
+function _gmTemplate(id) {
+  const fn = GM_TEMPLATES[id];
+  if (!fn || !_gmState) return;
+  fn(_gmState);
+  _gmState.sel = null;
+  _gmResize();
+  _gmSyncProps();
+  _gmDraw();
+}
+
+// ── The panel ─────────────────────────────────────────────────────────────
+function _gmOpen() {
+  if (!_gmState) _gmState = _gmDefault();
+  let el = document.getElementById('gm-modal');
+  if (!el) { el = _gmBuild(); document.body.appendChild(el); }
+  el.style.display = 'flex';
+  if (!_gmState.layers.length) _gmTemplate('warning');
+  else { _gmResize(); _gmSyncProps(); _gmDraw(); }
+}
+
+function _gmClose() {
+  const el = document.getElementById('gm-modal');
+  if (el) el.style.display = 'none';
+}
+
+function _gmResize() {
+  if (!_gmCanvas || !_gmState) return;
+  const sc = _gmScale();
+  // The backing store is sized in device pixels so the preview is sharp on a
+  // high-density screen, and the CSS size stays in layout pixels.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = Math.round(_gmState.w * sc), h = Math.round(_gmState.h * sc);
+  _gmCanvas.style.width = w + 'px';
+  _gmCanvas.style.height = h + 'px';
+  _gmCanvas.width = Math.round(w * dpr);
+  _gmCanvas.height = Math.round(h * dpr);
+  _gmCtx = _gmCanvas.getContext('2d');
+  _gmCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function _gmBuild() {
+  const el = document.createElement('div');
+  el.id = 'gm-modal';
+  el.innerHTML = `
+    <div id="gm-shell">
+      <div id="gm-head">
+        <span id="gm-title">Graphic Maker</span>
+        <select id="gm-preset" onchange="_gmSetPreset(this.value)">
+          ${GM_PRESETS.map(p => `<option value="${p.id}">${p.label} ${p.w}x${p.h}</option>`).join('')}
+        </select>
+        <span class="gm-spacer"></span>
+        <button type="button" class="gm-btn" onclick="_gmClose()">Close</button>
+        <button type="button" class="gm-btn gm-primary" onclick="_gmExport()">Add to library</button>
+      </div>
+      <div id="gm-body">
+        <div id="gm-stage"><canvas id="gm-canvas"></canvas></div>
+        <div id="gm-side">
+          <div class="gm-grp">
+            <div class="gm-h">Start from</div>
+            <div class="gm-row">
+              <button type="button" class="gm-btn" onclick="_gmTemplate('warning')">Warning</button>
+              <button type="button" class="gm-btn" onclick="_gmTemplate('lower')">Lower third</button>
+              <button type="button" class="gm-btn" onclick="_gmTemplate('title')">Title</button>
+            </div>
+          </div>
+          <div class="gm-grp">
+            <div class="gm-h">Add</div>
+            <div class="gm-row">
+              <button type="button" class="gm-btn" onclick="_gmAdd('text')">Text</button>
+              <button type="button" class="gm-btn" onclick="_gmAdd('rect')">Box</button>
+            </div>
+            <div class="gm-row">
+              <label class="gm-lbl">Background</label>
+              <input type="color" id="gm-bg" value="#06080c" oninput="_gmSetBg(this.value)">
+              <button type="button" class="gm-btn" onclick="_gmSetBg('transparent')">Clear</button>
+            </div>
+          </div>
+          <div class="gm-grp" id="gm-props"></div>
+          <div class="gm-grp">
+            <div class="gm-h">Layers</div>
+            <div id="gm-layers" class="gm-layers"></div>
+            <div class="gm-row">
+              <button type="button" class="gm-btn" onclick="_gmOrder(-1)">Back</button>
+              <button type="button" class="gm-btn" onclick="_gmOrder(1)">Front</button>
+              <button type="button" class="gm-btn gm-danger" onclick="_gmDelete()">Delete</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  _gmCanvas = el.querySelector('#gm-canvas');
+  _gmWirePointer(_gmCanvas);
+  el.addEventListener('mousedown', (e) => { if (e.target === el) _gmClose(); });
+  return el;
+}
+
+function _gmSetPreset(id) {
+  const p = GM_PRESETS.find(x => x.id === id);
+  if (!p || !_gmState) return;
+  _gmState.w = p.w; _gmState.h = p.h;
+  _gmResize(); _gmDraw();
+}
+
+function _gmSetBg(v) {
+  if (!_gmState) return;
+  _gmState.bg = v;
+  _gmDraw();
+}
+
+// ── Pointer: drag to move, corner to resize ───────────────────────────────
+// Pointer events rather than mouse events, so a stylus and a finger work
+// without a second code path, and setPointerCapture means a fast drag that
+// leaves the canvas does not strand the layer mid-move.
+function _gmWirePointer(cv) {
+  const at = (e) => {
+    const r = cv.getBoundingClientRect();
+    const sc = _gmScale();
+    return { x: (e.clientX - r.left) / sc, y: (e.clientY - r.top) / sc };
+  };
+  cv.addEventListener('pointerdown', (e) => {
+    if (!_gmState) return;
+    const p = at(e);
+    const sc = _gmScale();
+    // Topmost first, because that is what the eye thinks it is clicking.
+    for (let i = _gmState.layers.length - 1; i >= 0; i--) {
+      const L = _gmState.layers[i];
+      const onHandle = _gmState.sel === L.id
+        && Math.abs(p.x - (L.x + L.w)) < 14 / sc
+        && Math.abs(p.y - (L.y + L.h)) < 14 / sc;
+      if (onHandle) {
+        _gmDrag = { id: L.id, mode: 'size', ox: p.x, oy: p.y, w: L.w, h: L.h };
+        break;
+      }
+      if (p.x >= L.x && p.x <= L.x + L.w && p.y >= L.y && p.y <= L.y + L.h) {
+        _gmState.sel = L.id;
+        _gmDrag = { id: L.id, mode: 'move', ox: p.x - L.x, oy: p.y - L.y };
+        break;
+      }
+    }
+    if (!_gmDrag) _gmState.sel = null;
+    try { cv.setPointerCapture(e.pointerId); } catch (err) {}
+    _gmSyncProps(); _gmDraw();
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!_gmDrag || !_gmState) return;
+    const L = _gmState.layers.find(l => l.id === _gmDrag.id);
+    if (!L) return;
+    const p = at(e);
+    if (_gmDrag.mode === 'move') {
+      L.x = Math.round(p.x - _gmDrag.ox);
+      L.y = Math.round(p.y - _gmDrag.oy);
+    } else {
+      L.w = Math.max(20, Math.round(_gmDrag.w + (p.x - _gmDrag.ox)));
+      L.h = Math.max(16, Math.round(_gmDrag.h + (p.y - _gmDrag.oy)));
+    }
+    _gmDraw();                    // coalesced, so a fast drag is still one paint
+  });
+  const end = (e) => {
+    if (!_gmDrag) return;
+    _gmDrag = null;
+    try { cv.releasePointerCapture(e.pointerId); } catch (err) {}
+    _gmSyncProps();
+  };
+  cv.addEventListener('pointerup', end);
+  cv.addEventListener('pointercancel', end);
+}
+
+// ── Properties for the selected layer ─────────────────────────────────────
+function _gmSyncProps() {
+  const box = document.getElementById('gm-props');
+  const list = document.getElementById('gm-layers');
+  if (!box || !_gmState) return;
+  const L = _gmSel();
+  if (list) {
+    list.innerHTML = _gmState.layers.slice().reverse().map(l => {
+      const name = l.type === 'text'
+        ? String(l.text).slice(0, 22) || 'Text' : 'Box';
+      return `<button type="button" class="gm-layer${l.id === _gmState.sel ? ' on' : ''}"
+        onclick="_gmPick(${l.id})">${_ccEsc ? _ccEsc(name) : name}</button>`;
+    }).join('') || '<div class="gm-empty">Nothing yet</div>';
+  }
+  if (!L) { box.innerHTML = '<div class="gm-h">Selected</div>'
+                          + '<div class="gm-empty">Click something on the canvas</div>'; return; }
+  const common = `
+    <div class="gm-row"><label class="gm-lbl">Colour</label>
+      <input type="color" value="${L.fill}" oninput="_gmProp('fill',this.value)"></div>
+    <div class="gm-row"><label class="gm-lbl">Opacity</label>
+      <input type="range" min="0" max="1" step="0.05" value="${L.opacity}"
+             oninput="_gmProp('opacity',parseFloat(this.value))"></div>`;
+  box.innerHTML = '<div class="gm-h">Selected</div>' + (L.type === 'text' ? `
+    <div class="gm-row"><textarea class="gm-text" rows="2"
+      oninput="_gmProp('text',this.value)">${(L.text || '').replace(/</g, '&lt;')}</textarea></div>
+    <div class="gm-row"><label class="gm-lbl">Size</label>
+      <input type="range" min="12" max="200" value="${L.size}"
+             oninput="_gmProp('size',parseInt(this.value,10))"></div>
+    <div class="gm-row"><label class="gm-lbl">Font</label>
+      <select onchange="_gmProp('font',this.value)">
+        ${GM_FONTS.map(f => `<option value="${f.id}"${f.id === L.font ? ' selected' : ''}>${f.label}</option>`).join('')}
+      </select></div>
+    <div class="gm-row"><label class="gm-lbl">Weight</label>
+      <select onchange="_gmProp('weight',parseInt(this.value,10))">
+        ${[400, 600, 700, 800].map(w => `<option value="${w}"${w === L.weight ? ' selected' : ''}>${w}</option>`).join('')}
+      </select></div>
+    <div class="gm-row"><label class="gm-lbl">Align</label>
+      <select onchange="_gmProp('align',this.value)">
+        ${['left', 'center', 'right'].map(a => `<option value="${a}"${a === L.align ? ' selected' : ''}>${a}</option>`).join('')}
+      </select></div>` + common : `
+    <div class="gm-row"><label class="gm-lbl">Corner</label>
+      <input type="range" min="0" max="80" value="${L.radius}"
+             oninput="_gmProp('radius',parseInt(this.value,10))"></div>` + common);
+}
+
+function _gmPick(id) { if (_gmState) { _gmState.sel = id; _gmSyncProps(); _gmDraw(); } }
+
+// Property edits repaint but do NOT rebuild the property panel, or the input
+// being dragged would be replaced underneath the finger and the drag would
+// stop dead on the first change.
+function _gmProp(k, v) {
+  const L = _gmSel();
+  if (!L) return;
+  L[k] = v;
+  if (k === 'text') {
+    const list = document.getElementById('gm-layers');
+    if (list) {
+      const b = list.querySelector('.gm-layer.on');
+      if (b) b.textContent = String(v).slice(0, 22) || 'Text';
+    }
+  }
+  _gmDraw();
+}
+
+// ── Export ────────────────────────────────────────────────────────────────
+// The one and only place full output resolution is touched.
+async function _gmExport() {
+  if (!_gmState) return;
+  const cv = document.createElement('canvas');
+  cv.width = _gmState.w; cv.height = _gmState.h;
+  const ctx = cv.getContext('2d');
+  const sel = _gmState.sel;
+  _gmState.sel = null;                 // no selection furniture in the file
+  try {
+    _gmPaint(ctx, 1, false);
+  } finally {
+    _gmState.sel = sel;
+  }
+  const blob = await new Promise(res => cv.toBlob(res, 'image/png'));
+  if (!blob) {
+    if (typeof showToast === 'function') showToast('Could not render that graphic.', 3000);
+    return;
+  }
+  const first = _gmState.layers.find(l => l.type === 'text');
+  const name = (first && String(first.text).slice(0, 28)) || 'Graphic';
+  await _sgAddGraphicFromBlob(blob, name, 'image/png');
+  _gmClose();
+}
+
 function _sgUiFileChange(input) {
   const file = input.files && input.files[0];
   if (file) _sgHandleUpload(file);
