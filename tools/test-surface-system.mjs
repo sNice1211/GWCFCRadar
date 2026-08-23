@@ -124,13 +124,21 @@ await page.evaluate(() => {
     const lit = stops.filter(([r, g, b]) => r + g + b > 24);
     return lit.length > 0 && lit.every(([r, g, b]) => r > g && g > b && (g - b) >= 8);
   };
+  // Ink: dark and near-neutral. No channel runs far ahead of the others, and
+  // the whole thing stays dark. This is what says a popup is black rather
+  // than "a very dark red", which is what it would be if the sweep caught it.
+  window.__isInk = (stops) => {
+    if (!stops.length) return false;
+    return stops.every(([r, g, b]) =>
+      Math.max(r, g, b) - Math.min(r, g, b) <= 18 && (r + g + b) / 3 <= 60);
+  };
 });
 
 // Every surface named in the system, by the selector the CSS uses.
-// #eas-panel and #animbar are deliberately not red and are checked on their
-// own below.
+// #eas-panel, #nwr-rec-panel and #animbar are deliberately not red, and the
+// alert popup is deliberately black. All four are checked on their own below.
 const PANELS = [
-  '#alerts-panel', '#nwr-rec-panel', '#tropical-model-panel',
+  '#alerts-panel', '#tropical-model-panel',
   '#severe-model-panel', '#snd-panel', '#hd-panel', '#fnv3-panel',
   '#stormcone-panel', '#sc-style-panel', '#sc-points-panel', '#gps-hud',
   '#inspector-readout', '#ov-info-tooltip', '#overlay-pills-row',
@@ -248,15 +256,30 @@ console.log('\n5. map popups');
     const wrap = __surface('.ap-popup-container .leaflet-popup-content-wrapper');
     const tip = __surface('.ap-popup-container .leaflet-popup-tip');
     map.closePopup(pop);
-    return { wrap, tip };
+
+    // The NWR station popup belongs to the weather-radio family, so it is
+    // orange while the alert popup beside it is black.
+    const np = L.popup({ className: 'nwr-popup' }).setLatLng([28.5, -80.7])
+      .setContent('<div class="nwr-inner">station</div>').openOn(map);
+    await new Promise(r3 => setTimeout(r3, 200));
+    const nwrWrap = __surface('.nwr-popup .leaflet-popup-content-wrapper');
+    map.closePopup(np);
+    return { wrap, tip, nwrWrap, nwrOrange: __isOrange(nwrWrap.stops) };
   });
   ok('an alert popup is a gradient', r.wrap.gradient, r.wrap.image);
-  ok('and it is red', await page.evaluate(s => __isRed(s), r.wrap.stops),
+  // Black, not red: this one sits ON the weather, so it stays out of the way
+  // of the colours underneath it.
+  ok('and it is black rather than red', await page.evaluate(s => __isInk(s), r.wrap.stops),
+     JSON.stringify(r.wrap.stops));
+  ok('it did not quietly become a very dark red',
+     !(await page.evaluate(s => __isRed(s) && !__isInk(s), r.wrap.stops)),
      JSON.stringify(r.wrap.stops));
   ok('its little arrow is a gradient too, so it does not hang off as a flat tab',
      r.tip.gradient, r.tip.image);
-  ok('and the arrow matches the panel it points at',
-     await page.evaluate(s => __isRed(s), r.tip.stops), JSON.stringify(r.tip.stops));
+  ok('and the arrow matches the popup it points at',
+     await page.evaluate(s => __isInk(s), r.tip.stops), JSON.stringify(r.tip.stops));
+  ok('the NWR station popup beside it is orange, not black or red',
+     r.nwrWrap.gradient && r.nwrOrange, r.nwrWrap.image);
 }
 
 console.log('\n6. the right-click menu and the map controls');
@@ -381,6 +404,20 @@ console.log('\n8b. the two surfaces that keep their own colour');
   ok('and it is orange, the colour its own header already used',
      r.easOrange, r.eas.image);
   ok('its cards are orange too', r.cardOrange, r.card.image);
+
+  // The weather-radio family: EAS, the NWR station popup and the recordings
+  // panel are one subject and share one colour.
+  const nwr = await page.evaluate(() => {
+    const panel = __surfaceOrStub('#nwr-rec-panel');
+    const head = __surfaceOrStub('#nwr-rec-header');
+    return { panel, head,
+             panelOrange: __isOrange(panel.stops), headOrange: __isOrange(head.stops),
+             panelRed: __isRed(panel.stops) && !__isOrange(panel.stops) };
+  });
+  ok('the NWR recordings panel is a gradient', nwr.panel.gradient, nwr.panel.image);
+  ok('and orange, in the same family as EAS', nwr.panelOrange, nwr.panel.image);
+  ok('not red, which is what the sweep had made it', !nwr.panelRed);
+  ok('its header is orange too', nwr.headOrange, nwr.head.image);
 }
 
 console.log('\n9. nothing became unreadable');
