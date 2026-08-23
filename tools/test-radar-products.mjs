@@ -357,6 +357,72 @@ console.log('\n5c. no palette resolves finer than its own product noise');
      r.debrisVsRain > 200, String(r.debrisVsRain));
 }
 
+
+console.log('\n5d. resolution is at least as fine as the data');
+{
+  // Radar was capped at 1600 px, and a 460 km sweep is 920 km across: 575 m
+  // a pixel, more than twice the 250 m gate it is drawing. The far half of
+  // every long-range sweep was thrown away before it reached the screen.
+  const r = await page.evaluate(() => {
+    const src = String(_meshToImage);
+    const cap = /MESH_MAX_PX\s*=\s*_devGB/.test(src);
+    const target = /TARGET_KM_PER_PX\s*=\s*([\d.]+)/.exec(src);
+    return {
+      deviceAware: cap,
+      target: target ? Number(target[1]) : null,
+      // Big desktop numbers, since that is where the ceiling matters.
+      hasBigCeiling: /3072|2560/.test(src),
+    };
+  });
+  ok('the pixel ceiling is chosen from the device, not fixed', r.deviceAware);
+  ok('and reaches past 1600 on a machine that can hold it', r.hasBigCeiling);
+  ok('the target is at least as fine as a 250 m gate',
+     r.target !== null && r.target <= 0.25, String(r.target));
+}
+
+console.log('\n5e. satellite is treated as a photograph, radar as data');
+{
+  const r = await page.evaluate(() => {
+    const src = String(_makeGoesLayer);
+    const css = [...document.styleSheets].flatMap(sh => {
+      try { return [...sh.cssRules].map(x => x.cssText); } catch (e) { return []; }
+    }).join('\n');
+    return {
+      retina: /detectRetina:\s*true/.test(src),
+      photoClass: /wx-photo/.test(src),
+      photoSmooth: /\.wx-photo[^{]*\{[^}]*image-rendering:\s*(auto|smooth|high-quality)/
+        .test(css.replace(/\s+/g, ' ')),
+      radarCrisp: /image-rendering:\s*pixelated/.test(css),
+    };
+  });
+  ok('satellite asks for high-density tiles', r.retina);
+  ok('and is marked as imagery so it is smoothed', r.photoClass);
+  ok('the smoothing rule really exists', r.photoSmooth);
+  ok('while radar stays crisp, because its bands mean something', r.radarCrisp);
+}
+
+console.log('\n5f. the menu believes the site over the table');
+{
+  const r = await page.evaluate(() => {
+    // Pretend the probe came back saying this NEXRAD only has reflectivity,
+    // which is what a site part way through maintenance looks like.
+    _l3Avail.set('KTEST', { at: Date.now(), done: true,
+                            set: new Set(['reflectivity']) });
+    const offered = Object.keys(PR_PRODUCTS).filter(p => _prSiteCanMake('KTEST', p));
+    // And a site nobody has probed still gets the full table.
+    const unprobed = Object.keys(PR_PRODUCTS).filter(p => _prSiteCanMake('KNEW', p));
+    // A site that answered with nothing offers nothing.
+    _l3Avail.set('KDEAD', { at: Date.now(), done: true, set: new Set() });
+    const dead = Object.keys(PR_PRODUCTS).filter(p => _prSiteCanMake('KDEAD', p));
+    return { offered, unprobed: unprobed.length, dead: dead.length };
+  });
+  ok('a probed site offers only what it publishes',
+     r.offered.join(',') === 'reflectivity', r.offered.join(','));
+  ok('an unprobed site still offers the whole family, so a network problem '
+     + 'cannot empty the menu', r.unprobed >= 8, String(r.unprobed));
+  ok('and a site publishing nothing offers nothing', r.dead === 0, String(r.dead));
+}
+
 console.log('\n6. storm relative velocity is not converted twice');
 {
   // The worker turns product 56's four bit codes into knots itself. Running

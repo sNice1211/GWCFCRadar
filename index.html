@@ -2318,6 +2318,20 @@ body {
   image-rendering: high-quality;
 }
 
+/* Anything that is a PHOTOGRAPH rather than banded data: satellite imagery,
+   and the server-built RGB composites. These are continuous fields, so the
+   browser's smoothing is telling the truth when it blends two neighbouring
+   pixels, and switching it off only makes cloud edges look like Lego. The
+   opposite is true of radar, which is why radar lives under .wx-crisp below.
+   Stated on the tile container so it covers every tile the layer owns. */
+.wx-photo,
+.wx-photo img,
+.wx-photo canvas {
+  image-rendering: auto;
+  image-rendering: smooth;
+  image-rendering: high-quality;
+}
+
 /* Radar overlays are DATA, not photographs, so they are not smoothed.
    A radar picture is drawn in bands with meaning at the edges: 35 dBZ is
    about where a shower becomes a storm, 50 is where hail starts mattering.
@@ -18651,7 +18665,14 @@ const PR_PICTURE_ONLY = ['vil', 'composite', 'spectrum',
 function _prSiteCanMake(site, product) {
   if (PR_PICTURE_ONLY.includes(product)) return false;
   if (!PR_BUCKET[product]) return false;
-  if (_isTdwrSite(site)) return !TDWR_CANNOT.includes(product);
+  if (_isTdwrSite(site) && TDWR_CANNOT.includes(product)) return false;
+  // If this site has actually been probed, believe the probe over the table.
+  // The table says what the family can do; the probe says what this antenna
+  // is publishing this afternoon, which is the question the menu is really
+  // asking. Unprobed or unreachable falls back to the table, so the menu is
+  // never emptied by a network problem.
+  const known = typeof _l3AvailKnown === 'function' && _l3AvailKnown(site);
+  if (known) return known.has(product);
   return true;
 }
 
@@ -18668,6 +18689,101 @@ const _NEXRAD_T_SITES = ['TJUA'];
 function _isTdwrSite(site) {
   const id = String(site).toUpperCase();
   return id.startsWith('T') && !_NEXRAD_T_SITES.includes(id);
+}
+
+// ── WHAT THIS EXACT RADAR REALLY PUBLISHES ────────────────────────────────
+//
+// The tables above say what a NEXRAD and a terminal radar can make in
+// general. That is not the same as what a given site is publishing right now,
+// and the difference is not academic: sites go down for maintenance, some
+// never carried a product the rest of the network does, and a site in clear
+// air stops writing the precipitation products entirely.
+//
+// Offering a product the site is not publishing costs a tap, a wait and an
+// error popup, and reads as the app being broken rather than the site being
+// quiet. So the bucket is asked. One listing per product code, capped at a
+// single key because the question is "is there anything", not "what is the
+// newest", which makes each probe about as cheap as an HTTP request gets.
+//
+// Cached per site for the session. A radar's product list does not change
+// minute to minute, and re-probing on every menu open would turn a menu into
+// a dozen network requests.
+const _L3_AVAIL_TTL_MS = 20 * 60 * 1000;
+const _l3Avail = new Map();          // SITE -> { at, set:Set<product>, done }
+
+function _l3AvailKnown(site) {
+  const e = _l3Avail.get(String(site).toUpperCase());
+  if (!e || !e.done) return null;
+  if (Date.now() - e.at > _L3_AVAIL_TTL_MS) return null;
+  return e.set;
+}
+
+// Does this site have anything at all under this code in the last few hours?
+async function _l3CodeExists(site, code) {
+  const sid = String(site).toUpperCase().replace(/^([KT])/, m => m === 'K' ? '' : '');
+  // Two hours back. The base products write every few minutes, but the
+  // accumulations and echo tops are slower, and one empty hour on a slow
+  // product is not the same as the product not existing.
+  for (let back = 0; back < 3; back++) {
+    const t = new Date(Date.now() - back * 3600000);
+    const p = `${sid}_${code}_${t.getUTCFullYear()}_`
+            + `${String(t.getUTCMonth() + 1).padStart(2, '0')}_`
+            + `${String(t.getUTCDate()).padStart(2, '0')}_`
+            + `${String(t.getUTCHours()).padStart(2, '0')}_`;
+    let xml = null;
+    try {
+      xml = await fetch(`${L3_BUCKET}/?list-type=2&max-keys=1&prefix=${p}`,
+                        { cache: 'no-store', signal: _abortSignal(12000) })
+        .then(r => r.ok ? r.text() : null);
+    } catch (e) { return null; }     // network trouble is not an answer
+    if (xml === null) return null;
+    if (/<Key>/.test(xml)) return true;
+  }
+  return false;
+}
+
+// Probe every product this family could have, in parallel, once per site.
+//
+// Fails OPEN on purpose. If the bucket cannot be reached the answer is null,
+// and null means "carry on offering everything", because hiding a working
+// product because the network hiccuped is the worse mistake by far.
+async function _l3ProbeSite(site) {
+  const SITE = String(site).toUpperCase();
+  const cached = _l3AvailKnown(SITE);
+  if (cached) return cached;
+  const pending = _l3Avail.get(SITE);
+  if (pending && pending.inflight) return pending.inflight;
+
+  const fam = _isTdwrSite(SITE) ? 't' : 'k';
+  const products = Object.keys(PR_BUCKET)
+    .filter(p => (PR_BUCKET[p][fam] || []).length);
+
+  const inflight = (async () => {
+    const found = new Set();
+    let reachable = false;
+    await Promise.all(products.map(async (p) => {
+      const code = (PR_BUCKET[p][fam] || [])[0];
+      if (!code) return;
+      const yes = await _l3CodeExists(SITE, code);
+      if (yes !== null) reachable = true;
+      if (yes) found.add(p);
+    }));
+    if (!reachable) { _l3Avail.delete(SITE); return null; }
+    _l3Avail.set(SITE, { at: Date.now(), set: found, done: true });
+    // The row on screen was drawn before the answer came back, so redraw it
+    // now that the truth is known.
+    try {
+      if (typeof _prRenderPiRow === 'function' && _prBucketSite
+          && String(_prBucketSite).toUpperCase() === SITE
+          && document.getElementById('sub-bubbles')) {
+        _prRenderPiRow(_prLevel === 'auto' ? 'l3' : _prLevel);
+      }
+    } catch (e) {}
+    return found;
+  })();
+
+  _l3Avail.set(SITE, { at: Date.now(), set: new Set(), done: false, inflight });
+  return inflight;
 }
 
 function _l3BucketCode(site, product, tilt) {
@@ -18756,6 +18872,12 @@ async function _l3BucketShow(site) {
   }
   const wasBucket = _prBucketSite;
   _prBucketSite = String(site).toUpperCase();
+  // Ask the bucket what this antenna is really publishing. Deliberately not
+  // awaited: the picture must not wait on the menu's homework, and the probe
+  // redraws the row itself when it lands.
+  if (typeof _l3ProbeSite === 'function') {
+    try { _l3ProbeSite(_prBucketSite); } catch (e) {}
+  }
   _prOn = true;
   _prClear();                       // the Pi's images, if any, come down
   if (typeof _refreshNexradSiteStyles === 'function') _refreshNexradSiteStyles();
@@ -21839,8 +21961,31 @@ function _makeGoesLayer(timeStr, opacity) {
     keepBuffer:        _isIOS ? 1 : 2,
     updateWhenIdle:    _isIOS,
     updateWhenZooming: false,
+    // Ask the server for the resolution the screen actually has.
+    //
+    // This was the single biggest reason satellite looked soft. Without it
+    // Leaflet requests 256 pixel tiles and then draws each one across 256 CSS
+    // pixels, which on a phone at devicePixelRatio 3 is 768 real pixels of
+    // screen showing 256 pixels of picture. Every satellite image was being
+    // magnified three times before it ever reached the glass, and no amount
+    // of resolution upstream could survive that.
+    //
+    // detectRetina doubles the WIDTH and HEIGHT sent to the WMS on a
+    // high-density display, so a tile arrives with four times the pixels and
+    // lands one-to-one. Satellite is a photograph and scales beautifully;
+    // this is exactly the case the option exists for.
+    detectRetina: true,
   };
-  return L.tileLayer.wms(`${cfg.url}?_cb=${Date.now()}`, opts).addTo(map);
+  const layer = L.tileLayer.wms(`${cfg.url}?_cb=${Date.now()}`, opts);
+  // Satellite is imagery, not banded data, so it must NOT inherit the crisp
+  // rendering the radar panes force. Blending between neighbouring cloud-top
+  // temperatures is physically sensible; blending between two reflectivity
+  // bands invents a dBZ nobody measured, which is why radar is kept hard.
+  layer.on('add', () => {
+    const c = layer.getContainer && layer.getContainer();
+    if (c) c.classList.add('wx-photo');
+  });
+  return layer.addTo(map);
 }
 
 // Put a frame list on screen and on the bar. Both the WMS path and the Pi
@@ -24793,6 +24938,27 @@ function _prRenderPiRow(level) {
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
+  // A site that is publishing nothing at all, said plainly. Radars go down
+  // for maintenance, and when one does every product is greyed at once, which
+  // without a word of explanation reads as the app having broken rather than
+  // the antenna being off.
+  if (_prBucketSite && typeof _l3AvailKnown === 'function') {
+    const known = _l3AvailKnown(_prBucketSite);
+    if (known && known.size === 0) {
+      const el = document.createElement('div');
+      el.className = 'sub-bubble';
+      el.innerHTML = '<span class="sb-icon">'
+                   + '<svg class=svgi width=1em height=1em '
+                   + 'style=vertical-align:-.15em><use href=#ic-info></use></svg>'
+                   + `</span><span class="sb-label">${String(_prBucketSite).toUpperCase()} is off air</span>`;
+      el.onclick = () => { if (typeof showToast === 'function') {
+        showToast(`${String(_prBucketSite).toUpperCase()} has published nothing in `
+                + 'the last three hours. The radar is most likely down for '
+                + 'maintenance. Pick another site, or try again later.', 5000); } };
+      wrap.appendChild(el);
+    }
+  }
+
   // Said out loud rather than left as an empty row. A Pi that is off, or has
   // not built this level yet, is the ordinary case and it should read as an
   // answer rather than as the menu being broken.
@@ -31875,10 +32041,37 @@ function _meshToImage(result, product, forceBounds) {
   // that, and a typical scan, whose box only reaches as far as its echoes do,
   // still lands well inside the cap at better than a quarter kilometre per
   // pixel.
-  var MESH_MAX_PX = (typeof _isIOS !== 'undefined' && _isIOS) ? 1200 : 1600;
+  //
+  // Those numbers were set for a Raspberry Pi era and a 460 km sweep walks
+  // straight past them: 920 km across 1600 pixels is 575 m a pixel, more than
+  // twice the size of the gate it is drawing, so the far half of every
+  // long-range sweep was being thrown away before it reached the screen. The
+  // ceiling is raised to match what the data actually carries, and it is
+  // chosen from the device rather than fixed, because the thing being
+  // protected is a phone's memory and a desktop does not have that problem.
+  //
+  // navigator.deviceMemory is in gigabytes and is absent on Safari, so a
+  // missing value is treated as the middle of the range rather than the worst
+  // case: iOS is already handled by its own branch.
+  var _devGB = (typeof navigator !== 'undefined' && navigator.deviceMemory) || 4;
+  var MESH_MAX_PX;
+  if (typeof _isIOS !== 'undefined' && _isIOS) {
+    // iPhones hold a decoded canvas per loop frame and are the platform that
+    // actually fell over, so they get the most headroom back but not all of
+    // it. 1800 is 13 MB a frame against 1200's 5.8 MB.
+    MESH_MAX_PX = _devGB >= 6 ? 2048 : 1800;
+  } else {
+    MESH_MAX_PX = _devGB >= 8 ? 3072 : _devGB >= 4 ? 2560 : 1800;
+  }
+  // A gate is 250 m, so drawing finer than that invents detail the radar
+  // never had. Aiming at half a gate lets a diagonal edge land on a pixel
+  // boundary instead of stair-stepping, which is most of what "blocky" means
+  // when the resolution itself is already right.
+  var TARGET_KM_PER_PX = 0.125;
   var SIZE = 1000;
   if (kmAcross > 0) {
-    SIZE = Math.max(1000, Math.min(MESH_MAX_PX, Math.round(kmAcross / 0.25)));
+    SIZE = Math.max(1000, Math.min(MESH_MAX_PX,
+                                   Math.round(kmAcross / TARGET_KM_PER_PX)));
   }
 
   var canvas = document.createElement('canvas');
@@ -42773,7 +42966,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The app can be added to a phone home screen properly now. There were icons and a service worker but no web app manifest, and without one no browser will ever offer to install: the icon links only decorated a bookmark. It launches without the browser bar, the tile uses the logo, and Android gets a maskable version so the corners are not cropped off inside the launcher circle. iOS reads none of that, so it has its own tags as well. There are also two shortcuts on the icon, one straight to warnings and one straight to EAS. Second, both the warnings panel and the EAS panel have a pop-out button in the corner. It opens that panel in its own small window you can pin on top of everything else, on a second monitor or beside whatever you are doing, and it mirrors the real panel rather than being a copy, so it updates on the same beat and can never drift out of date. Clicking a row in the pop-out acts on the real panel behind it. Pressing the button again brings the window forward instead of opening a second one."
+const APP_LATEST_UPDATE = "Sharpness, on both the satellite and the radar. The satellite was never asking for high density tiles, so on a phone a 256 pixel tile was being stretched across about 768 real pixels of screen: every image was magnified three times before it reached the glass, and no amount of resolution upstream could survive that. It asks for the resolution the screen actually has now. It was also being drawn with the hard-edged rendering the radar uses, which is right for radar, whose colour bands mean something, and wrong for a photograph of clouds; satellite is smoothed and radar stays crisp. On the server the composites were being thinned to 1600 pixels on the long side, which for a CONUS scan meant throwing away six of every seven pixels and putting three and a half kilometres of ground behind each one. That ceiling was sized for a Raspberry Pi and is now per sector, so CONUS keeps about three and a half times more detail and the mesoscale boxes are untouched. Radar was capped at 1600 pixels too, which on a 460 km sweep is coarser than the gates being drawn, so the ceiling is raised and picked from the device. And the radar menu now asks the site itself what it is publishing rather than assuming: a radar that is down for maintenance says so instead of offering eight products that all fail."
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

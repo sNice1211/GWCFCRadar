@@ -456,14 +456,21 @@ console.log('\n8. saved rules survive a fresh visit');
   });
   const r = await seeded.page.evaluate(() => {
     _renderMesh(window.__threeSquares(10, 30, 50, 'KTLX'), 'n0b', 'KTLX');
-    return { n: window.__opaque(), px: window.__sample(2),
+    // As a FRACTION of the canvas, not a pixel count. The canvas is sized to
+    // the sweep and to the device now, so a raw count changes whenever the
+    // render resolution does and says nothing about whether the filter
+    // worked. What is being asserted is "one of the three squares survived",
+    // and that is a share of the picture at any resolution.
+    const area = _l3Canvas ? _l3Canvas.width * _l3Canvas.height : 0;
+    const n = window.__opaque();
+    return { n, area, frac: area ? n / area : 0, px: window.__sample(2),
              f: !!_fxFilterFor('ref'), c: !!_fxPaletteFor('ref') };
   });
   ok('the saved filter and colors load on boot', r.f && r.c,
      JSON.stringify(r));
   ok('and the very first draw obeys them: one square, painted red',
-     r.n > 0 && r.n < 200000 && r.px[0] === 255 && r.px[1] === 0,
-     r.n + ' ' + JSON.stringify(r.px));
+     r.frac > 0 && r.frac < 0.2 && r.px[0] === 255 && r.px[1] === 0,
+     `${(r.frac * 100).toFixed(1)}% of ${r.area}px ` + JSON.stringify(r.px));
   ok('nothing threw on the seeded boot', seeded.errors.length === 0,
      seeded.errors.join(' | '));
   await seeded.page.close();

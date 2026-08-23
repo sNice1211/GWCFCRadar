@@ -287,7 +287,40 @@ def _sun_elevation(when, lat, lon):
         np.sin(la) * np.sin(dec) + np.cos(la) * np.cos(dec) * np.cos(ha))))
 
 
-def _read_abi(bucket, key, max_edge=MAX_EDGE_PX):
+# How much of the satellite's own resolution to keep.
+#
+# MAX_EDGE_PX is 1600 and is shared with the model pipeline, where it is the
+# right number: a model grid is coarse to begin with and 1600 is already finer
+# than the data. ABI is the opposite. A CONUS scan is 10000 pixels across at
+# half a kilometre, so decimating it to 1600 throws away six of every seven
+# pixels and puts about 3.5 km on the ground behind each one. Full disk is
+# worse: 21696 across, decimated fourteen to one.
+#
+# That is where "very pixelated" came from, and it was never recoverable in
+# the browser, because the detail had already been dropped here.
+#
+# These pipelines no longer run on a Raspberry Pi, so the memory this was
+# protecting is not the constraint it was. The numbers below are per sector,
+# because the sectors are wildly different sizes and one ceiling cannot serve
+# a 1000 pixel mesoscale box and a 21696 pixel full disk at once.
+SAT_EDGE_PX = {
+    "conus":    int(os.environ.get("GWCFC_SAT_EDGE_CONUS", "5000")),
+    "fulldisk": int(os.environ.get("GWCFC_SAT_EDGE_FD", "3400")),
+    # The mesoscale boxes are only about a thousand pixels natively, so this
+    # ceiling never binds and they come through untouched, which is what you
+    # want for the sector aimed at the storm.
+    "meso1":    int(os.environ.get("GWCFC_SAT_EDGE_MESO", "2400")),
+    "meso2":    int(os.environ.get("GWCFC_SAT_EDGE_MESO", "2400")),
+}
+SAT_EDGE_DEFAULT = int(os.environ.get("GWCFC_SAT_EDGE_DEFAULT", "3000"))
+
+
+def _sat_edge(sector):
+    """The pixel ceiling for one sector, falling back to a sane middle."""
+    return SAT_EDGE_PX.get(str(sector).lower(), SAT_EDGE_DEFAULT)
+
+
+def _read_abi(bucket, key, max_edge=SAT_EDGE_DEFAULT):
     """One ABI NetCDF into (values, lats, lons), already thinned.
 
     The 0.5 km bands are 21 million points and this board will not hold
@@ -415,7 +448,9 @@ def build_rgb(sat_key, sector, recipe_key, now=None):
     data, lats, lons = {}, None, None
     for b in recipe["bands"]:
         try:
-            vals, la, lo = _read_abi(bucket, keys[b])
+            # Per sector, so a mesoscale box keeps all of its detail and a
+            # full disk is still allowed to be large without being absurd.
+            vals, la, lo = _read_abi(bucket, keys[b], _sat_edge(sector))
         except Exception as e:
             log(f"  sat {sat_key}/{sector}/{recipe_key}: band {b}: {e}")
             return False
