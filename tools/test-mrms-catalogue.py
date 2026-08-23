@@ -45,6 +45,25 @@ src = open(RADAR, encoding="utf-8").read()
 html = open(HTML, encoding="utf-8").read()
 
 PRODUCTS = None
+# The namespace the catalogue is read in, collected from the module itself.
+#
+# This used to be a hand-written {"MRMS_BASE": ..., "FLASH_BASE": ...}, which
+# meant adding a third NOAA tree to the pipeline turned this whole file into a
+# NameError at import. Both MRMS suites had been dead since REFL3D_BASE was
+# added, and a dead test is worse than no test: it is a green check that was
+# never run. Reading the constants out of the source keeps them in step by
+# construction.
+def _base_names(source):
+    ns = {}
+    for n in ast.parse(source).body:
+        if not isinstance(n, ast.Assign):
+            continue
+        target = getattr(n.targets[0], "id", "")
+        if target.endswith("_BASE") and isinstance(n.value, ast.Constant):
+            ns[target] = n.value.value
+    return ns
+
+
 for node in ast.parse(src).body:
     if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "MRMS_PRODUCTS":
         # eval rather than literal_eval: a product can name a constant for
@@ -54,7 +73,7 @@ for node in ast.parse(src).body:
         # this stays a reader rather than an importer.
         PRODUCTS = eval(ast.get_source_segment(src, node.value),
                         {"__builtins__": {}},
-                        {"MRMS_BASE": "2D", "FLASH_BASE": "FLASH"})
+                        _base_names(src))
 assert PRODUCTS, "MRMS_PRODUCTS not found"
 
 
@@ -65,7 +84,8 @@ dupes = sorted({p for p in paths if paths.count(p) > 1})
 # Two keys pointing at one NOAA grid would be one download shown twice and
 # two entries competing for the same slot in the menu.
 ok("no two products fetch the same grid", not dupes, str(dupes))
-need = {"path", "label", "unit", "range", "ramp", "floor", "every"}
+# "floor" is optional; see the note in test-mrms.py.
+need = {"path", "label", "unit", "range", "ramp", "every"}
 missing = {k: sorted(need - set(v)) for k, v in PRODUCTS.items() if need - set(v)}
 ok("every product declares everything the builder reads",
    not missing, str(missing)[:200])
@@ -114,7 +134,12 @@ m = re.search(r"const MRMS_GROUPS = \[(.*?)\n\];", html, re.S)
 ok("the page's group table can be read", bool(m))
 rules = re.findall(r"id: '(\w+)',\s*label: '[^']+',\s*\n\s*match: k => /(.+?)/\.test\(k\)",
                    m.group(1)) if m else []
-ok("and it has all six groups", len(rules) == 6, str([r[0] for r in rules]))
+# Counting them was the wrong test: adding a group broke it, and the thing
+# that actually matters is that no product falls through into "Other".
+ok("the group table has real rules in it", len(rules) >= 6, str([r[0] for r in rules]))
+homeless = [k for k in PRODUCTS
+            if not any(re.search(pat.replace("\\", "\\"), k) for _, pat in rules)]
+ok("and every product matches one of them", not homeless, str(homeless[:12]))
 
 
 def group_of(key):
@@ -185,7 +210,13 @@ ok("both can be changed without editing code",
 # half of the catalogue is never built at all. Not slow: absent.
 ok("the pass starts where the last one stopped", '__cursor__' in src)
 ok("and wraps rather than running off the end",
-   "names[start:] + names[:start]" in src)
+   re.search(r"(\w+)\[start:\] \+ \1\[:start\]", src) is not None)
+# The cursor has to name the product the pass stopped on. It used to be
+# computed from the walk position, which stops matching the moment the walk
+# order is changed - and it is, twice, by the rotation and by moving
+# never-built products to the front.
+ok("and the cursor is taken from the catalogue's own order, not the walk",
+   "order.index(name)" in src)
 ok("a pass that finishes the catalogue starts again from the top",
    re.search(r"else:\s*\n\s*#.*\n\s*#.*\n\s*stopped_at = 0", src) is not None
    or "stopped_at = 0" in src)
@@ -225,8 +256,11 @@ ok("the signed products are still marked signed",
    str({k: PRODUCTS[k].get("signed") for k in ("sfctemp", "wetbulb")}))
 # A temperature grid where negative readings are real must not be cut at
 # zero the way a reflectivity grid is.
+# Differential reflectivity runs negative in real weather, so the ZDR levels
+# belong on this list beside the two temperature grids.
 ok("and nothing new was marked signed by accident",
-   sorted(k for k, v in PRODUCTS.items() if v.get("signed")) == ["sfctemp", "wetbulb"],
+   sorted(k for k, v in PRODUCTS.items() if v.get("signed"))
+   == ["sfctemp", "wetbulb", "zdr3d05", "zdr3d2", "zdr3d4"],
    str(sorted(k for k, v in PRODUCTS.items() if v.get("signed"))))
 
 print()

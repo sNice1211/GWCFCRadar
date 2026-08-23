@@ -1024,7 +1024,15 @@ REFL3D_BASE = "https://mrms.ncep.noaa.gov/data/3DRefl"
 # The ceiling still exists because the radar frames share this timer and
 # matter more than any single mosaic, but it is a ceiling on a busy pass now
 # rather than a cap that the ordinary case runs into every time.
-MRMS_PASS_SECS = float(os.environ.get("GWCFC_MRMS_PASS_SECS", "210"))
+# Half the timer window, and not a second more.
+#
+# This was raised to 210 to get more of the catalogue built per pass, which
+# was treating the symptom: products were not building because a missing
+# "floor" key was killing the pass outright, not because there was too little
+# time. With that fixed the extra sixty seconds buys nothing and costs the
+# thing that matters, since the radar frames are built on this same five
+# minute timer and a pass that runs 210 seconds leaves them ninety.
+MRMS_PASS_SECS = float(os.environ.get("GWCFC_MRMS_PASS_SECS", "150"))
 MRMS_PASS_MAX = int(os.environ.get("GWCFC_MRMS_PASS_MAX", "30"))
 # ── The MRMS catalogue ──────────────────────────────────────────────────────
 # Every entry is one national grid published at a fixed address, so adding a
@@ -1654,6 +1662,45 @@ def _mrms_due(name, spec, state, now):
     return (now - prev).total_seconds() >= want * 60.0
 
 
+def _mrms_walk_order(order, state):
+    """The order this pass walks the catalogue in.
+
+    Two rules, and they are the whole of the pipeline's fairness.
+
+    First, start where the last pass stopped. A budget that runs out half way
+    through, walked from the top every time, means the second half of the
+    catalogue is never built at all: those products would not exist rather
+    than being slow.
+
+    Second, anything never yet built goes to the front. The menu is drawn from
+    the manifest and the manifest only carries what has been built, so a
+    product waiting its turn does not exist as far as the page is concerned.
+    With a rotating cursor and a per-pass ceiling a catalogue this size takes
+    most of an hour to come round once, and for that hour the menu looks
+    broken rather than busy. Refreshing something already on screen is worth
+    less than putting something on screen for the first time. In the steady
+    state this set is empty and the rotation is exactly as it was.
+
+    "built" rather than "last": the failure path also stamps "last", so keying
+    off that meant one failed attempt promoted a product out of the never-built
+    set and back into the slow rotation, with the failure backoff then
+    stretching its next try to an hour. A product that failed once early could
+    take most of a day to appear, which from the outside is indistinguishable
+    from it not being in the catalogue.
+
+    Pulled out of build_mrms so it can be read, and tested, on its own.
+    """
+    if not order:
+        return []
+    start = int((state.get("__cursor__") or {}).get("at", 0)) % len(order)
+    names = order[start:] + order[:start]
+    never = [n for n in names if not (state.get(n) or {}).get("built")]
+    if not never:
+        return names
+    seen = set(never)
+    return never + [n for n in names if n not in seen]
+
+
 def build_mrms():
     """Every due product into OUT_DIR/mrms, plus the manifest the page reads.
 
@@ -1689,35 +1736,25 @@ def build_mrms():
     # the second half never built at all: the products at the end would not
     # exist rather than being slow. Starting where the last pass stopped means
     # everything comes round.
-    names = list(MRMS_PRODUCTS)
-    start = int((state.get("__cursor__") or {}).get("at", 0)) % max(1, len(names))
-    names = names[start:] + names[:start]
-
-    # A product nobody has ever built goes to the front of the queue.
-    #
-    # The menu is drawn from the manifest, and the manifest only carries what
-    # has actually been built, so a product that has not had its turn yet does
-    # not exist as far as the page is concerned. With a rotating cursor and a
-    # ceiling per pass, a catalogue this size takes the better part of an hour
-    # to come round once, and for that whole hour the menu shows a fraction of
-    # what is on offer and looks broken rather than busy.
-    #
-    # Refreshing something already on screen is worth less than putting
-    # something on screen for the first time, so first builds jump the queue.
-    # This costs nothing in the steady state: once everything has been built
-    # once, the set is empty and the rotation is exactly as it was.
-    never = [n for n in names if not (state.get(n) or {}).get("last")]
-    if never:
-        rest = [n for n in names if n not in set(never)]
-        names = never + rest
+    order = list(MRMS_PRODUCTS)
+    names = _mrms_walk_order(order, state)
 
     pass_started = time.time()
-    stopped_at = start
+    # Only used if the loop body never runs at all. Every path that ends the
+    # pass early sets it from the catalogue's own order, and finishing the
+    # whole catalogue sets it to zero in the for/else below.
+    stopped_at = 0
 
     for i, name in enumerate(names):
         spec = MRMS_PRODUCTS[name]
         if built >= MRMS_PASS_MAX or (time.time() - pass_started) > MRMS_PASS_SECS:
-            stopped_at = (start + i) % len(names)
+            # Off the catalogue's own order, not off the walk position.
+            # `names` has been rotated once and then reordered again to put
+            # never-built products first, so (start + i) had stopped pointing
+            # at `name` some time ago: the cursor named an unrelated product
+            # and the rotation quietly skipped whole runs of the catalogue,
+            # which is the opposite of the fairness it exists for.
+            stopped_at = order.index(name)
             log(f"mrms: pass budget reached after {built} products, "
                 f"resuming at {name} next time")
             break
@@ -1726,81 +1763,108 @@ def build_mrms():
         if not disk_ok(out):
             log(f"mrms: only {free_mb(out):.0f} MB free, skipping the rest of "
                 "this pass. Frames will be pruned harder until there is room.")
-            stopped_at = (start + i) % len(names)
+            stopped_at = order.index(name)
             break
         base = spec.get("base", MRMS_BASE)
         url = f"{base}/{spec['path']}/MRMS_{spec['path']}.latest.grib2.gz"
         t0 = time.time()
+        # One product, one guard, and it covers the whole of building it.
+        #
+        # This used to wrap the download alone, which is only the failure that
+        # was thought of in advance. Everything after it - a catalogue entry
+        # missing a key, a grid whose shape the reshape cannot take, a palette
+        # name with no table, a disk that fills between the check and the save
+        # - threw straight out of build_mrms and ended the pass, so one bad
+        # product took every product after it down with it. A pipeline that
+        # builds a hundred and twenty-nine independent things should lose one
+        # of them at a time.
+        failed = None
         try:
             got = _mrms_read(url)
+            if not got:
+                raise RuntimeError("no grid came back")
+            arr, south, north, west, east = got
+            # MRMS writes -1 and -3 for missing and out of coverage. On a product
+            # where negative readings are real - temperature above all - that
+            # would erase half the map, so those opt out.
+            if spec.get("signed"):
+                arr[arr < -900] = np.nan
+            else:
+                arr[arr < 0] = np.nan
+            # Halve the grid by taking each 2x2 block's maximum, not by slicing.
+            # A rotation track is a filament one or two cells wide, and plain
+            # slicing deletes every filament that falls on a dropped row; these
+            # are both maximum-over-time products, so the block maximum is the
+            # honest way to shrink them.
+            nj, ni = arr.shape
+            with np.errstate(all="ignore"):
+                import warnings
+                with warnings.catch_warnings():
+                    # A 2x2 block that is entirely out of coverage is all NaN, and
+                    # nanmax warning about each one would flood the log for what
+                    # is the ordinary state of most of the grid.
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    arr = np.nanmax(
+                        arr[:nj - nj % 2, :ni - ni % 2]
+                        .reshape(nj // 2, 2, ni // 2, 2), axis=(1, 3))
+            lo, hi = spec["range"]
+            norm = (arr - lo) / float(hi - lo)
+            # A product's own floor is optional, and forty-three of them do not
+            # carry one. spec["floor"] raised KeyError on the first of those, and
+            # nothing in this loop caught it, so the exception left build_mrms
+            # entirely and took every remaining product in the pass with it. A
+            # third of the catalogue could not be built at all, and the symptom
+            # was a menu that was simply short rather than an error anywhere.
+            #
+            # No floor means no extra floor: keep every real reading and let the
+            # palette's own first band decide what gets painted, which is what
+            # band_alpha below is for.
+            floor = spec.get("floor")
+            keep = np.isfinite(arr)
+            if floor is not None:
+                keep &= (arr >= floor)
+            idx = np.clip(np.nan_to_num(norm) * 255.0, 0, 255).astype(np.uint8)
+            rgb = lut_for(spec["ramp"], lo, hi)[idx]
+            alpha = np.where(keep, 205, 0).astype(np.uint8)
+            # MRMS already declares a floor per product, which is the one to keep
+            # where it is stricter. This adds the palette's own: a reading below
+            # the first band has no colour of its own and would be painted in the
+            # first band's, which is how a whole state ends up washed pale blue.
+            band_alpha(spec["ramp"], idx, alpha, lo, hi)
+            del arr, norm, keep, idx
+            # One folder per scan, named for the time it was built, exactly the
+            # way the radar frames and the satellite composites are. MRMS used to
+            # overwrite a single PNG per product, which meant the page could only
+            # ever show "now": an overwritten file is not a loop, and there is no
+            # way to animate one frame.
+            fdir = now.strftime("%Y%m%d_%H%M%S")
+            fout = os.path.join(out, fdir)
+            os.makedirs(fout, exist_ok=True)
+            path = os.path.join(fout, f"{name}.png")
+            Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA").save(
+                path, optimize=True)
+            del rgb, alpha
+            man["products"][name] = {
+                "file": f"{fdir}/{name}.png", "label": spec["label"],
+                "unit": spec["unit"], "min": lo, "max": hi,
+                "bounds": [[south, west], [north, east]],
+                "built": now.isoformat(),
+            }
+            built += 1
+            secs = round(time.time() - t0, 1)
+            state[name] = {"last": now.isoformat(), "built": now.isoformat(),
+                           "fails": 0, "secs": secs}
+            log(f"  mrms {name}: built in {secs}s")
         except Exception as e:
-            log(f"  mrms {name}: {e}")
-            got = None
-        if not got:
+            failed = e
+        if failed is not None:
+            log(f"  mrms {name}: {failed}")
             st = state.get(name) or {}
             st["fails"] = int(st.get("fails", 0)) + 1
             st["last"] = now.isoformat()
             st["secs"] = round(time.time() - t0, 1)
             state[name] = st
             continue
-        arr, south, north, west, east = got
-        # MRMS writes -1 and -3 for missing and out of coverage. On a product
-        # where negative readings are real - temperature above all - that
-        # would erase half the map, so those opt out.
-        if spec.get("signed"):
-            arr[arr < -900] = np.nan
-        else:
-            arr[arr < 0] = np.nan
-        # Halve the grid by taking each 2x2 block's maximum, not by slicing.
-        # A rotation track is a filament one or two cells wide, and plain
-        # slicing deletes every filament that falls on a dropped row; these
-        # are both maximum-over-time products, so the block maximum is the
-        # honest way to shrink them.
-        nj, ni = arr.shape
-        with np.errstate(all="ignore"):
-            import warnings
-            with warnings.catch_warnings():
-                # A 2x2 block that is entirely out of coverage is all NaN, and
-                # nanmax warning about each one would flood the log for what
-                # is the ordinary state of most of the grid.
-                warnings.simplefilter("ignore", RuntimeWarning)
-                arr = np.nanmax(
-                    arr[:nj - nj % 2, :ni - ni % 2]
-                    .reshape(nj // 2, 2, ni // 2, 2), axis=(1, 3))
-        lo, hi = spec["range"]
-        norm = (arr - lo) / float(hi - lo)
-        keep = np.isfinite(arr) & (arr >= spec["floor"])
-        idx = np.clip(np.nan_to_num(norm) * 255.0, 0, 255).astype(np.uint8)
-        rgb = lut_for(spec["ramp"], lo, hi)[idx]
-        alpha = np.where(keep, 205, 0).astype(np.uint8)
-        # MRMS already declares a floor per product, which is the one to keep
-        # where it is stricter. This adds the palette's own: a reading below
-        # the first band has no colour of its own and would be painted in the
-        # first band's, which is how a whole state ends up washed pale blue.
-        band_alpha(spec["ramp"], idx, alpha, lo, hi)
-        del arr, norm, keep, idx
-        # One folder per scan, named for the time it was built, exactly the
-        # way the radar frames and the satellite composites are. MRMS used to
-        # overwrite a single PNG per product, which meant the page could only
-        # ever show "now": an overwritten file is not a loop, and there is no
-        # way to animate one frame.
-        fdir = now.strftime("%Y%m%d_%H%M%S")
-        fout = os.path.join(out, fdir)
-        os.makedirs(fout, exist_ok=True)
-        path = os.path.join(fout, f"{name}.png")
-        Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA").save(
-            path, optimize=True)
-        del rgb, alpha
-        man["products"][name] = {
-            "file": f"{fdir}/{name}.png", "label": spec["label"],
-            "unit": spec["unit"], "min": lo, "max": hi,
-            "bounds": [[south, west], [north, east]],
-            "built": now.isoformat(),
-        }
-        built += 1
-        secs = round(time.time() - t0, 1)
-        state[name] = {"last": now.isoformat(), "fails": 0, "secs": secs}
-        log(f"  mrms {name}: built in {secs}s")
     else:
         # The loop finished without hitting the budget, so the whole
         # catalogue was considered and the next pass starts from the top.
@@ -1823,8 +1887,13 @@ def build_mrms():
         meta["file"] = frames[-1]["file"]
     man["keep_hours"] = MRMS_KEEP_HOURS
 
-    if man["products"]:
-        write_json(os.path.join(out, "mrms.json"), man)
+    # Written even when it is empty. The guard here used to skip the write in
+    # that case, which sounds protective and is not: this manifest is rebuilt
+    # from what is actually on disk, so empty means nothing survived, and
+    # leaving the previous one in place points the page at files that were
+    # pruned an hour ago. A menu of layers that all 404 is worse than an
+    # honest empty one.
+    write_json(os.path.join(out, "mrms.json"), man)
     try:
         write_json(_mrms_state_path(), state)
     except Exception as e:

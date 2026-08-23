@@ -686,6 +686,45 @@ ok("and an hour before new year is the previous year",
    svc._hours_before("2026010100", 3) == "2025123121")
 
 
+# ── The cache, which used to raise on every hit ───────────────────────────
+# CACHE_SECS was named in two places and defined in none, so _cache_read threw
+# NameError the moment a cache file actually existed. The miss path was safe,
+# because getmtime raises OSError first and that IS caught, which is exactly
+# why nobody noticed: it only ever failed on the second request for a point,
+# which is the one the cache exists to make fast.
+print("\nthe sounding cache")
+import tempfile
+
+ok("there is a cache lifetime, and it is a number",
+   isinstance(getattr(svc, "CACHE_SECS", None), (int, float)),
+   repr(getattr(svc, "CACHE_SECS", None)))
+ok("it is long enough to be worth having, and short enough to stay current",
+   60 <= svc.CACHE_SECS <= 3600, str(getattr(svc, "CACHE_SECS", None)))
+ok("and it can be changed without editing code",
+   "GWCFC_SOUNDING_CACHE_SECS" in src)
+
+with tempfile.TemporaryDirectory() as tmp:
+    real_dir = svc.CACHE_DIR
+    svc.CACHE_DIR = tmp
+    try:
+        key = svc._cache_key("rap", 28.5, -80.7, None)
+        ok("a miss is a miss, not a crash", svc._cache_read(key) is None)
+        svc._cache_write(key, {"hello": "world"})
+        got = svc._cache_read(key)
+        # This is the line that used to raise NameError.
+        ok("and a hit comes back, which is what used to throw",
+           got == {"hello": "world"}, repr(got))
+
+        # Wind the file's clock past the lifetime and it should be ignored.
+        path = os.path.join(tmp, key + ".json")
+        old_t = time.time() - (svc.CACHE_SECS + 60)
+        os.utime(path, (old_t, old_t))
+        ok("a stale entry is ignored rather than served",
+           svc._cache_read(key) is None)
+    finally:
+        svc.CACHE_DIR = real_dir
+
+
 print()
 if failed:
     print(f"{failed} FAILED, {passed} passed")

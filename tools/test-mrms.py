@@ -42,6 +42,25 @@ def ok(name, cond, extra=""):
 src = open(SRC, encoding="utf-8").read()
 tree = ast.parse(src)
 
+# The namespace the catalogue is read in, collected from the module itself.
+#
+# This used to be a hand-written {"MRMS_BASE": ..., "FLASH_BASE": ...}, which
+# meant adding a third NOAA tree to the pipeline turned this whole file into a
+# NameError at import. Both MRMS suites had been dead since REFL3D_BASE was
+# added, and a dead test is worse than no test: it is a green check that was
+# never run. Reading the constants out of the source keeps them in step by
+# construction.
+def _base_names(source):
+    ns = {}
+    for n in ast.parse(source).body:
+        if not isinstance(n, ast.Assign):
+            continue
+        target = getattr(n.targets[0], "id", "")
+        if target.endswith("_BASE") and isinstance(n.value, ast.Constant):
+            ns[target] = n.value.value
+    return ns
+
+
 # ── Pull the catalogue out as real Python without importing the module ──
 catalogue = None
 for node in tree.body:
@@ -52,7 +71,7 @@ for node in tree.body:
         # else, so this stays a reader rather than an importer.
         catalogue = eval(ast.get_source_segment(src, node.value),
                          {"__builtins__": {}},
-                         {"MRMS_BASE": "2D", "FLASH_BASE": "FLASH"})
+                         _base_names(src))
 if catalogue is None:
     print("could not find MRMS_PRODUCTS")
     sys.exit(1)
@@ -67,10 +86,16 @@ exec(due_src, ns)
 _mrms_due = ns["_mrms_due"]
 
 print("\n1. the catalogue is well formed")
-required = {"path", "label", "unit", "range", "ramp", "floor"}
+# "floor" is deliberately not here. It is optional, and forty-three products
+# do without it; what matters is that when one IS given it is a number, which
+# is checked below.
+required = {"path", "label", "unit", "range", "ramp"}
 missing = {k: sorted(required - set(v)) for k, v in catalogue.items()
            if required - set(v)}
 ok("every product declares the fields the builder reads", not missing, str(missing))
+bad_floor = {k: v["floor"] for k, v in catalogue.items()
+             if "floor" in v and not isinstance(v["floor"], (int, float))}
+ok("a floor, where one is given, is a number", not bad_floor, str(bad_floor))
 ok("the catalogue is genuinely large now", len(catalogue) >= 30, str(len(catalogue)))
 
 paths = [v["path"] for v in catalogue.values()]
@@ -99,9 +124,14 @@ for k, v in catalogue.items():
 ok("the fast lane is not the whole catalogue",
    len(tiers.get(5, [])) < len(catalogue),
    f"{len(tiers.get(5, []))} of {len(catalogue)}")
-ok("slow-moving totals are not on the fast lane",
-   all(catalogue[k].get("every", 5) >= 15 for k in catalogue if k.startswith("qpe")),
-   str({k: catalogue[k].get("every") for k in catalogue if k.startswith("qpe")}))
+# An hour or more of accumulated rainfall barely moves in five minutes. The
+# sub-hourly ones do: MRMS republishes the fifteen minute total every couple
+# of minutes, so it belongs on the fast lane and this used to fail it for the
+# crime of starting with the same three letters.
+slow_qpe = {k: v.get("every", 5) for k, v in catalogue.items()
+            if k.startswith("qpe") and not k.endswith("15m")}
+ok("hourly and longer totals are not on the fast lane",
+   all(v >= 15 for v in slow_qpe.values()), str(slow_qpe))
 ok("rotation and hail stay on the fast lane",
    catalogue["rotation"].get("every") == 5 and catalogue["mesh"].get("every") == 5,
    str([catalogue["rotation"].get("every"), catalogue["mesh"].get("every")]))

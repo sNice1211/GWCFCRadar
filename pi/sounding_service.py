@@ -64,6 +64,18 @@ import types
 from datetime import datetime, timedelta, timezone
 
 CACHE_DIR = os.path.expanduser("~/wxdata/soundings")
+# How long a cached sounding stays good for.
+#
+# This constant was referenced in two places and defined in none, so
+# _cache_read raised NameError the moment a cache file actually existed. The
+# miss path was safe (getmtime raises OSError first, which is caught), which
+# is why it went unnoticed: the failure only ever happened on the second
+# request for the same point, exactly when the cache was about to pay off.
+#
+# Fifteen minutes because the RAP analysis these are drawn from publishes
+# hourly and the cache key already carries the hour, so this only governs how
+# long a "now" request is reused within its own hour.
+CACHE_SECS = float(os.environ.get("GWCFC_SOUNDING_CACHE_SECS", "900"))
 
 # What a point can be asked for, and what NOAA calls it.
 #

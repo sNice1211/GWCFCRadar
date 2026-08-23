@@ -166,8 +166,22 @@ for path, src in (("gfs_pipeline.py", gfs_src), ("radar_pipeline.py", radar_src)
        'LUTS[spec["ramp"]]' not in src and 'lut_for(spec["ramp"], lo, hi)' in src)
 ok("the single-site radar path hides its own clutter through band_alpha",
    radar_src.count("band_alpha(") >= 2, str(radar_src.count("band_alpha(")))
-ok("and MRMS does as well, on top of its own per-product floor",
-   'keep = np.isfinite(arr) & (arr >= spec["floor"])' in radar_src)
+# The per-product floor is optional now: forty-three products carry none, and
+# reading it as a required key was a KeyError that ended the whole pass. What
+# has to stay true is that the palette's own first band is still applied on
+# top, whether or not the product declares a floor of its own.
+ok("MRMS keeps every real reading, and the product floor only narrows it",
+   'floor = spec.get("floor")' in radar_src
+   and 'keep = np.isfinite(arr)' in radar_src
+   and 'keep &= (arr >= floor)' in radar_src)
+# Comments stripped first: the note explaining why the old subscript is gone
+# mentions it by name, and matching that would fail the test for saying so.
+radar_code = "\n".join(l for l in radar_src.splitlines()
+                       if not l.lstrip().startswith("#"))
+ok("and a missing floor can no longer raise",
+   'spec["floor"]' not in radar_code)
+ok("with band_alpha still applied on top of it",
+   'band_alpha(spec["ramp"], idx, alpha, lo, hi)' in radar_src)
 # The old hand-written floor was an index, not a value: 18 on the -10 to 75
 # scale is minus four, so nine dBZ of nothing was being painted.
 ok("the old hand-written index floor is gone",

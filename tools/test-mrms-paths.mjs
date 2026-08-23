@@ -117,8 +117,13 @@ console.log('\n4. the pass can get through the catalogue');
      passes * 5 <= 30, `${entries.length} products, ${perPass} a pass, `
      + `${passes} passes = ${passes * 5} min`);
   // The ordering rule that makes the first hour bearable.
+  // This used to pin the exact old expression, including its "last" key,
+  // which is the bug: the failure path stamps "last" too, so one failed
+  // attempt cost a product its priority. The rule now lives in its own
+  // function and keys off a build actually happening.
   ok('products never built jump the queue',
-     /never\s*=\s*\[n for n in names if not \(state\.get\(n\) or \{\}\)\.get\("last"\)\]/
+     /def _mrms_walk_order\(/.test(py)
+     && /never\s*=\s*\[n for n in names if not \(state\.get\(n\) or \{\}\)\.get\("built"\)\]/
        .test(py));
 }
 
