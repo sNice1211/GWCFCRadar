@@ -146,14 +146,21 @@ await page.evaluate(() => {
 });
 
 // Every surface named in the system, by the selector the CSS uses.
-// #eas-panel, #nwr-rec-panel and #animbar are deliberately not red, and the
-// alert popup is deliberately black. All four are checked on their own below.
+// #eas-panel and #nwr-rec-panel are orange, #animbar is cyan, and the alert
+// popup and the overlay panels are black. All of those are checked on their
+// own below; what is left here is the red family.
 const PANELS = [
   '#alerts-panel', '#tropical-model-panel',
   '#severe-model-panel', '#snd-panel', '#hd-panel', '#fnv3-panel',
   '#stormcone-panel', '#sc-style-panel', '#sc-points-panel', '#gps-hud',
   '#inspector-readout', '#ov-info-tooltip', '#overlay-pills-row',
   '#txt-font-menu', '#forecast-panel', '#lqm-settings-overlay',
+];
+// The panels an overlay opens sit over the map while you read what is under
+// them, so they take the same near-black the alert popup does. The overlay
+// LIST is not among them: that is a menu you drive the app from, so it stays
+// in the house colour and is checked in PANELS above.
+const OVERLAY_PANELS = [
   '#spc-controls', '#wpc-controls', '#fw-controls', '#cpc-controls',
   '#meso-panel', '#storm-reports-panel', '#tornado-tracks-panel',
 ];
@@ -186,6 +193,23 @@ console.log('\n2. every panel shell is a gradient, and it is red');
   const noBevel = all.filter(([, r]) => !/inset/.test(r.shadow)).map(([s]) => s);
   ok('each has the inset bevel that makes the edge read as an edge',
      noBevel.length === 0, noBevel.join(' '));
+}
+
+console.log('\n2b. the overlay panels are black, and the overlay list is not');
+{
+  const r = await page.evaluate((sels) =>
+    Object.fromEntries(sels.map(s => [s, __surfaceOrStub(s)])), OVERLAY_PANELS);
+  const all = Object.entries(r);
+  ok('every overlay panel is reachable', all.every(([, v]) => !v.missing),
+     all.filter(([, v]) => v.missing).map(([s]) => s).join(' '));
+  ok('each is a gradient', all.every(([, v]) => v.gradient),
+     all.filter(([, v]) => !v.gradient).map(([s]) => s).join(' '));
+  const notInk = await page.evaluate((sels) =>
+    sels.filter(s => !__isInk(__surfaceOrStub(s).stops)), OVERLAY_PANELS);
+  ok('and black rather than red', notInk.length === 0, notInk.join(' '));
+  // The distinction that was actually chosen: panels black, list red.
+  const listRed = await page.evaluate(() => __isRed(__surfaceOrStub('#overlay-pills-row').stops));
+  ok('while the overlay list itself stays in the house colour', listRed);
 }
 
 console.log('\n3. the dim behind a modal is red too, not neutral black');
