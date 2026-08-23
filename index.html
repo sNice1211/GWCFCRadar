@@ -10556,8 +10556,15 @@ function _popCss(accent) {
   return `
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
+    /* A pop-out is a separate document, so the page's own stylesheet does not
+       reach it. The surface system is restated here in miniature rather than
+       linked, because a pinned window that looks like a different app from
+       the panel it came out of is the whole problem this was meant to solve. */
     body {
-      margin: 0; background: #06080c; color: #e8eaec;
+      margin: 0; color: #ffe9e6;
+      background: #2e0000;
+      background-image: linear-gradient(180deg, #3d0101 0%, #170000 100%);
+      background-attachment: fixed;
       font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
       font-size: 13px; line-height: 1.45;
       -webkit-font-smoothing: antialiased;
@@ -10566,7 +10573,9 @@ function _popCss(accent) {
       position: sticky; top: 0; z-index: 5;
       display: flex; align-items: center; gap: 10px;
       padding: 9px 12px;
-      background: #0b0e14;
+      background-image: linear-gradient(180deg, #7e1010 0%, #440101 100%);
+      box-shadow: inset 0 1px 0 rgba(255,186,176,0.30),
+                  inset 0 -1px 0 rgba(0,0,0,0.60), 0 4px 12px -4px rgba(0,0,0,0.7);
       border-bottom: 1px solid ${accent}55;
     }
     header .t {
@@ -10576,9 +10585,9 @@ function _popCss(accent) {
     }
     header .c {
       font-family: ui-monospace, monospace; font-size: 10px;
-      color: rgba(255,255,255,0.45); margin-right: auto;
+      color: rgba(255,230,225,0.60); margin-right: auto;
     }
-    header .s { font-size: 10px; color: rgba(255,255,255,0.35); }
+    header .s { font-size: 10px; color: rgba(255,230,225,0.48); }
     header .s.stale { color: #ffb020; }
     header .s.gone { color: #ff5555; }
     main { padding: 10px 12px 18px; display: flex; flex-direction: column; gap: 6px; }
@@ -10586,16 +10595,23 @@ function _popCss(accent) {
     /* Rows come across as whatever the panel drew. Give them a floor so a
        mirrored row is still readable without the page's own cascade. */
     main > * {
-      background: rgba(255,255,255,0.035);
-      border: 1px solid rgba(255,255,255,0.09);
+      background-image: linear-gradient(180deg, rgba(255,120,110,0.13) 0%, rgba(0,0,0,0.26) 100%);
+      border: 1px solid rgba(190,20,20,0.55);
       border-radius: 8px;
       padding: 8px 10px;
       cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255,186,176,0.18),
+                  inset 0 -1px 0 rgba(0,0,0,0.42);
     }
-    main > *:hover { background: rgba(255,255,255,0.07); border-color: ${accent}66; }
+    main > *:hover {
+      background-image: linear-gradient(180deg, #a81818 0%, #6d0404 100%);
+      border-color: ${accent}66;
+    }
     main svg { width: 1em; height: 1em; vertical-align: -0.15em; }
-    .empty { color: rgba(255,255,255,0.4); font-style: italic;
-             border: 0 !important; background: none !important; cursor: default !important; }
+    .empty { color: rgba(255,230,225,0.45); font-style: italic;
+             border: 0 !important; background: none !important;
+             background-image: none !important; box-shadow: none !important;
+             cursor: default !important; }
     @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
   `;
 }
@@ -43432,7 +43448,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Server side fixes. The big one: forty-three of the hundred and twenty-nine MRMS products had no floor setting, and the code read that setting as if every product had one. That threw an error which nothing caught, so it did not skip one product, it ended the whole build for that round. A third of the catalogue could never appear, and the only symptom was a short menu. Each product is now built inside its own guard, so one bad one is one bad one. The rotation that decides which products get built each round was also naming the wrong product when it saved its place, so it skipped whole runs of the catalogue, and a product that failed once lost its priority and could take most of a day to show up. Both fixed. MRMS is back to taking at most half of the five minute window, so it stops crowding the radar frames it shares a timer with. Soundings had a setting that was used twice and defined nowhere, which crashed on every cache hit, meaning the second look at the same spot always failed. And the two test suites that would have caught the MRMS bug had been broken for a while, which is why it was never caught.";
+const APP_LATEST_UPDATE = "Everything is red now, and everything is a gradient. Settings was built in neutral greys on a page whose every other surface is red, so it looked like a borrowed piece from another app. It is in the app's own colours now. Beyond that, every panel, every popup, every menu, every modal, the map's right-click menu, the drawing tools, the toolbars and the animation bar, which was a solid cyan strip across the bottom, all now use one shared set of red gradients. Each surface is lit from the top with a one pixel highlight along its top edge and a shadow along the bottom, which is what makes it read as a raised slab instead of a rectangle painted on the map. Things you press are lit from above; things that are pressed in, like slider tracks and text boxes, are lit from below. The pop-out alert windows carry their own copy of it, so a pinned window matches the app it came from. It is all defined in one place, so changing it later is a handful of lines rather than a hundred panels. One thing the change broke and this fixes: the animation bar's tick times were pure black, which read fine on cyan and not at all on red.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -47312,6 +47328,394 @@ function closeCredits() {
 #feedback-status.ok   { color: #3ddc84; }
 #feedback-status.err  { color: #ff6a6a; }
 #feedback-status.info { color: rgba(212,232,255,0.55); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   THE SURFACE SYSTEM
+   One place that decides what every panel, popup, menu and modal in this
+   app is made of.
+
+   Two things were wrong before this. The app's own colours are red, and a
+   lot of panels had been written at different times in dark navy, so the
+   Settings panel and half the overlays looked like they belonged to a
+   different application. And every surface was a single flat colour, which
+   reads as a rectangle painted on the map rather than a thing sitting on
+   top of it.
+
+   Both are fixed the same way: a small set of gradient tokens, applied by
+   name to every surface. A gradient is what gives an edge somewhere to be:
+   light at the top where a light would fall, dark at the bottom, a one
+   pixel highlight along the top lip and a matching shadow along the
+   bottom. That pair of inset lines is the whole 3D effect, and it costs
+   nothing to draw.
+
+   These use background-IMAGE rather than background. A gradient is an
+   image, and an image paints above the background colour, so this layers
+   over whatever each panel already declared without having to fight a
+   hundred existing rules (several of which are !important) one at a time.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* The slab a panel is cut from. Lit from above. */
+  --grad-panel:   linear-gradient(180deg, #7e1010 0%, #560303 38%, #2e0000 100%);
+  /* A card sitting inside a panel: the same light, one step down. */
+  --grad-surface: linear-gradient(180deg, #6b0c0c 0%, #3a0101 100%);
+  /* A row or chip inside a card. Kept translucent so the panel shows through
+     and the stack still reads as three depths rather than three colours. */
+  --grad-card:    linear-gradient(180deg, rgba(255,120,110,0.13) 0%, rgba(0,0,0,0.26) 100%);
+  /* Something meant to be pressed. */
+  --grad-raise:   linear-gradient(180deg, #a81818 0%, #6d0404 100%);
+  --grad-raise-h: linear-gradient(180deg, #c62020 0%, #8a0808 100%);
+  /* Something already pressed, lit from below so it reads as pushed in. */
+  --grad-sunk:    linear-gradient(180deg, #2b0000 0%, #4d0404 100%);
+  /* The dim behind a modal. Warm rather than neutral black, so the red of
+     the page carries through it. */
+  --grad-scrim:   radial-gradient(130% 100% at 50% 0%,
+                    rgba(94,4,4,0.80) 0%, rgba(10,0,0,0.90) 70%, rgba(0,0,0,0.94) 100%);
+
+  /* The bevel. Top lip catches the light, bottom lip falls into shadow. */
+  --edge-3d: inset 0 1px 0 rgba(255,186,176,0.30), inset 0 -1px 0 rgba(0,0,0,0.60);
+  --edge-3d-soft: inset 0 1px 0 rgba(255,186,176,0.18), inset 0 -1px 0 rgba(0,0,0,0.42);
+  /* And the drop, so the slab has somewhere to sit. */
+  --lift-3d: 0 12px 30px -10px rgba(0,0,0,0.85), 0 2px 6px rgba(0,0,0,0.45);
+  --lift-3d-sm: 0 6px 16px -6px rgba(0,0,0,0.75);
+  --edge-red: rgba(190,20,20,0.55);
+}
+
+/* ── 1. Panel shells ──────────────────────────────────────────────────── */
+#alerts-panel,
+#eas-panel,
+#nwr-rec-panel,
+#tropical-model-panel,
+#severe-model-panel,
+#snd-panel,
+#hd-panel,
+#fnv3-panel,
+#stormcone-panel,
+#sc-style-panel,
+#sc-points-panel,
+#gps-hud,
+#inspector-readout,
+#ov-info-tooltip,
+#overlay-pills-row,
+#map-ctx-menu,
+#txt-font-menu,
+#forecast-panel,
+#lqm-settings-overlay,
+#gm-shell,
+#ad-shell,
+#dtb-color-modal,
+#tutorial-modal-inner,
+#spc-controls, #wpc-controls, #fw-controls, #cpc-controls,
+#meso-panel, #storm-reports-panel, #tornado-tracks-panel,
+.models-style-panel,
+.ss-firstrun-card,
+.sg-page-picker-card,
+.cyc-ens-panel,
+.draw-toolbar, .text-toolbar, .measure-toolbar, .stormcone-toolbar,
+.tool-flyout {
+  background-image: var(--grad-panel);
+  box-shadow: var(--lift-3d), var(--edge-3d);
+  border-color: var(--edge-red);
+}
+
+/* ── 2. Scrims ────────────────────────────────────────────────────────── */
+#cc-modal,
+#gm-modal,
+#ad-modal,
+#dtb-color-modal-overlay,
+#tab-lock-overlay,
+#credits-modal-overlay,
+#feedback-modal-overlay,
+#ss-firstrun-modal,
+#sg-page-picker,
+#sg-editor-overlay,
+#forecast-modal,
+#tut-modal,
+#tutorial-modal,
+#gwcfc-auth-modal,
+#avatar-crop-modal,
+#loading {
+  background-image: var(--grad-scrim);
+}
+
+/* ── 3. Cards inside a panel ──────────────────────────────────────────── */
+.alert-card,
+.eas-card,
+.trop-storm-card,
+.cyc-ens-card,
+.feature-card,
+.ad-item,
+.lqm-settings-group,
+.snd-card,
+.sg-item {
+  background-image: var(--grad-card);
+  box-shadow: var(--edge-3d-soft);
+}
+
+/* ── 4. Bubbles and pills: the map's own controls ─────────────────────── */
+.layer-row,
+.sub-bubble,
+.right-bubble,
+.sat-region-bubble,
+#overlay-toggle-btn,
+.ov-pill,
+.overlay-pill-demo {
+  background-image: var(--grad-raise);
+  box-shadow: var(--lift-3d-sm), var(--edge-3d);
+}
+.sub-bubble:hover,
+.right-bubble:hover,
+.layer-row:hover,
+.sat-region-bubble:hover,
+#overlay-toggle-btn:hover,
+.ov-pill:hover {
+  background-image: var(--grad-raise-h);
+}
+/* Pressed reads as pressed: lit from below, and sitting a pixel lower. */
+.sub-bubble.active,
+.right-bubble.active,
+.layer-row.active,
+.ov-pill.active,
+.overlay-pill-demo.active,
+#overlay-toggle-btn.open {
+  background-image: var(--grad-sunk);
+  box-shadow: var(--edge-3d), inset 0 2px 5px rgba(0,0,0,0.55);
+}
+
+/* ── 5. Map popups ────────────────────────────────────────────────────── */
+/* Leaflet builds a popup as a wrapper plus a tip, and the tip has to match
+   the top of the wrapper's gradient or the little arrow shows as a
+   different colour hanging off the corner. */
+.ap-popup-container .leaflet-popup-content-wrapper,
+.data-popup .leaflet-popup-content-wrapper,
+.nwr-popup .leaflet-popup-content-wrapper,
+.hh-popup .leaflet-popup-content-wrapper,
+.alert-popup .leaflet-popup-content-wrapper,
+.cc-popup .leaflet-popup-content-wrapper {
+  background-image: var(--grad-panel) !important;
+  box-shadow: var(--lift-3d), var(--edge-3d) !important;
+}
+.ap-popup-container .leaflet-popup-tip,
+.data-popup .leaflet-popup-tip,
+.nwr-popup .leaflet-popup-tip,
+.hh-popup .leaflet-popup-tip,
+.alert-popup .leaflet-popup-tip,
+.cc-popup .leaflet-popup-tip {
+  background-image: linear-gradient(180deg, #2e0000 0%, #560303 100%) !important;
+}
+.city-tooltip,
+.sc-dot-time.leaflet-tooltip {
+  background-image: var(--grad-surface) !important;
+  box-shadow: var(--lift-3d-sm), var(--edge-3d-soft) !important;
+}
+
+/* ── 6. Settings, in the app's own colours ────────────────────────────── */
+/* The panel that started all this. It was built in neutral greys on a page
+   whose every other surface is red, so it read as a borrowed component. */
+#lqm-set-shell {
+  background-image: var(--grad-panel);
+}
+#lqm-set-rail {
+  background-image: linear-gradient(180deg, #4a0202 0%, #240000 100%);
+  border-right: 1px solid var(--edge-red);
+}
+#lqm-set-content {
+  background-image: linear-gradient(180deg, #3d0101 0%, #1e0000 100%);
+}
+.lqm-settings-group {
+  border-color: var(--edge-red);
+}
+.lqm-settings-category {
+  background-image: linear-gradient(180deg, rgba(255,120,110,0.16) 0%, rgba(0,0,0,0.10) 100%);
+  border-radius: 7px;
+  padding: 5px 8px;
+  box-shadow: var(--edge-3d-soft);
+}
+.lqm-set-tab {
+  background-image: var(--grad-card);
+  box-shadow: var(--edge-3d-soft);
+  border: 1px solid transparent;
+}
+.lqm-set-tab:hover { background-image: var(--grad-raise); }
+.lqm-set-tab.on {
+  background-image: var(--grad-raise);
+  border-color: var(--edge-red);
+  box-shadow: var(--edge-3d), 0 0 0 1px rgba(255,90,80,0.25);
+}
+.lqm-settings-btn,
+.lqm-settings-select,
+.lqm-settings-row select,
+.lqm-settings-row input[type="text"],
+.lqm-settings-row input[type="number"] {
+  background-image: var(--grad-raise);
+  box-shadow: var(--edge-3d-soft);
+  border-color: var(--edge-red);
+  color: #ffe9e6;
+}
+.lqm-settings-btn:hover { background-image: var(--grad-raise-h); }
+/* The track a slider runs in should look cut into the panel, not laid on it. */
+.lqm-slider {
+  background-image: var(--grad-sunk);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.7);
+}
+/* The toggle, same idea: the track is sunk, the knob is raised. */
+.lqm-toggle-track {
+  background-image: var(--grad-sunk);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.7);
+}
+.lqm-toggle input:checked ~ .lqm-toggle-track {
+  background-image: linear-gradient(180deg, #d02020 0%, #8a0606 100%);
+}
+.lqm-toggle-knob {
+  background-image: linear-gradient(180deg, #fff 0%, #d9c9c7 100%);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+
+/* ── 7. The desk and the graphic maker, brought into the same family ──── */
+#gm-head, #ad-head {
+  background-image: linear-gradient(180deg, #6d0909 0%, #440101 100%);
+  border-bottom: 1px solid var(--edge-red);
+}
+#gm-side, #ad-side {
+  background-image: linear-gradient(180deg, #3d0101 0%, #1e0000 100%);
+  border-left-color: var(--edge-red);
+}
+#gm-stage { background-image: linear-gradient(180deg, #1a0000 0%, #070000 100%); }
+.gm-btn, .ad-btn, #gm-preset {
+  background-image: var(--grad-raise);
+  box-shadow: var(--edge-3d-soft);
+  border-color: var(--edge-red);
+}
+.gm-btn:hover, .ad-btn:hover { background-image: var(--grad-raise-h); }
+#ad-preview { background-image: linear-gradient(180deg, #1a0000 0%, #080000 100%); }
+
+/* ── 8. Panel headers and footers ─────────────────────────────────────── */
+/* A header darker than its panel is what makes the panel look like it has a
+   lid rather than being one flat sheet. */
+.panel-head, .panel-header,
+#alerts-panel-head, #eas-panel-head,
+#snd-head, #hd-head, #fnv3-tabs {
+  background-image: linear-gradient(180deg, #6d0909 0%, #3f0101 100%);
+  box-shadow: var(--edge-3d-soft);
+}
+
+/* A pop-out window is a separate document and gets its own copy of this in
+   _popCss; nothing here reaches it. */
+
+/* ── 9. Everything else that is a surface ─────────────────────────────── */
+/* The first pass covered the panels people open. This is the rest: the bars
+   and toolbars that are always on screen, and the handful of overlays that
+   were still in navy from before the app settled on red. The animation bar
+   was the loudest of them, a solid cyan strip across the bottom of a red
+   application. */
+#animbar,
+#export-toolbar, #xsec-toolbar, #radius-toolbar, #dist-toolbar,
+#poly-toolbar, #draw-toolbar, #text-toolbar, #stormcone-toolbar,
+#tt-toolbar, #cs-toolbar,
+#top-search-bar,
+#tut-dialog-header,
+.sg-editor-toolbar,
+.leaflet-control-attribution,
+.leaflet-control-scale-line {
+  background-image: var(--grad-panel);
+  box-shadow: var(--lift-3d-sm), var(--edge-3d);
+  border-color: var(--edge-red);
+}
+#animbar { border-color: var(--edge-red); color: #ffe9e6; }
+.leaflet-control-scale-line { color: #ffe9e6; border-color: var(--edge-red); }
+
+/* The cyclone ensemble was written in navy end to end. */
+.cyc-ens-panel, .cyc-ens-head { background-image: var(--grad-panel); }
+.cyc-ens-stat, .cyc-ens-card { background-image: var(--grad-card); box-shadow: var(--edge-3d-soft); }
+.cyc-ens-pick, .cyc-ens-x { background-image: var(--grad-raise); box-shadow: var(--edge-3d-soft); }
+.cyc-ens-x:hover, .cyc-ens-pick:hover { background-image: var(--grad-raise-h); }
+
+/* The sounding was already red, just flat. */
+.snd-card, .snd-src, .snd-x, .snd-big, .snd-err, .snd-tab {
+  background-image: var(--grad-card);
+  box-shadow: var(--edge-3d-soft);
+}
+.snd-src:hover, .snd-x:hover, .snd-big:hover, .snd-tab:hover {
+  background-image: var(--grad-raise);
+}
+.snd-tab.on { background-image: var(--grad-raise); box-shadow: var(--edge-3d); }
+.snd-meter { background-image: var(--grad-sunk); box-shadow: inset 0 1px 3px rgba(0,0,0,0.7); }
+
+/* Small round and square buttons everywhere: same slab, smaller. */
+#animbar button, #animbar .zoom-btn,
+.dtb-btn, .rm-btn,
+#tut-close-btn, #gwcfc-auth-close, #export-close,
+#lqm-ai-snap, #lqm-ai-voice, #lqm-ai-upload,
+.panel-pop, .sg-editor-toolbar button {
+  background-image: var(--grad-raise);
+  box-shadow: var(--edge-3d-soft);
+  border-color: var(--edge-red);
+}
+#animbar button:hover, #animbar .zoom-btn:hover,
+.dtb-btn:hover, .rm-btn:hover,
+#tut-close-btn:hover, #gwcfc-auth-close:hover, #export-close:hover,
+#lqm-ai-snap:hover, #lqm-ai-voice:hover, #lqm-ai-upload:hover,
+.panel-pop:hover, .sg-editor-toolbar button:hover {
+  background-image: var(--grad-raise-h);
+}
+#animbar button.active, .dtb-btn.active, .rm-btn.active, .panel-pop.open {
+  background-image: var(--grad-sunk);
+  box-shadow: var(--edge-3d), inset 0 2px 5px rgba(0,0,0,0.55);
+}
+/* A text field is a hole in the panel, so it is lit the other way up. */
+#lqm-ai-input, #top-search-bar input, .ad-input, .ad-text, .gm-text {
+  background-image: var(--grad-sunk);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.6);
+  border-color: var(--edge-red);
+  color: #ffe9e6;
+}
+/* A disabled control should look like it is not there to be pressed. */
+#export-toolbar .dtb-btn:disabled, .dtb-btn:disabled, .ad-btn:disabled {
+  background-image: var(--grad-sunk);
+  box-shadow: none;
+  opacity: 0.45;
+}
+
+/* ── 10. What the red broke, put right ────────────────────────────────── */
+/* The animation bar's tick labels were pure black, which was legible on the
+   cyan it used to be and is not on the red it is now. This is the cost of a
+   sweeping colour change and the reason the contrast check in
+   tools/test-surface-system.mjs exists. */
+#timeline-labels { color: #ffd9d4; text-shadow: 0 1px 2px rgba(0,0,0,0.85); }
+#timeline {
+  background-image: var(--grad-sunk);
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.75);
+}
+#timeline::-webkit-slider-thumb {
+  background-image: linear-gradient(180deg, #ff6a5e 0%, #c01010 100%);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,220,215,0.55);
+}
+#timeline::-moz-range-thumb {
+  background-image: linear-gradient(180deg, #ff6a5e 0%, #c01010 100%);
+  border: 0;
+}
+#anim-time, #anim-time-display { color: #ffe9e6; }
+
+/* The drawing tools down the right edge were the last navy left, with a cyan
+   selected state that belonged to no other part of the app. */
+.tool-btn {
+  background-image: var(--grad-raise);
+  border-color: var(--edge-red);
+  color: #ffdedb;
+  box-shadow: var(--edge-3d-soft);
+}
+.tool-btn:hover {
+  background-image: var(--grad-raise-h);
+  color: #fff;
+  border-color: rgba(255,90,80,0.85);
+}
+.tool-btn.active {
+  background-image: var(--grad-sunk);
+  border-color: rgba(255,90,80,0.9);
+  color: #ff8a7e;
+  box-shadow: var(--edge-3d), inset 0 2px 5px rgba(0,0,0,0.6),
+              0 0 10px rgba(200,30,20,0.35);
+}
 </style>
 <div id="feedback-modal-overlay" onclick="if(event.target===this)closeFeedback()">
   <div id="feedback-modal">
