@@ -72,6 +72,17 @@ await page.route('**://**', route => {
 });
 await page.goto('file://' + join(ROOT, 'index.html'), { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(3500);
+// Open as much of the interface as will open, so the sweep in section 9 sees
+// the panels that are only built the first time they are shown.
+await page.evaluate(() => {
+  document.querySelectorAll('#tut-modal, #tutorial-modal').forEach(e => { e.style.display = 'none'; });
+  ['alerts-panel', 'eas-panel', 'nwr-rec-panel', 'overlay-pills-row', 'gps-hud',
+   'overlay-launcher'].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.style.display = 'flex';
+  });
+});
+await page.waitForTimeout(400);
 
 // Reads what the browser really computed, and pulls the rgb triples out of
 // whatever gradient it ended up with.
@@ -420,7 +431,65 @@ console.log('\n8b. the two surfaces that keep their own colour');
   ok('its header is orange too', nwr.headOrange, nwr.head.image);
 }
 
-console.log('\n9. nothing became unreadable');
+console.log('\n9. the sweep: nothing in the UI is still flat');
+{
+  // Read the CSS and you check what you remembered to check. This walks every
+  // visible element in the real page instead and reports anything painting a
+  // flat fill, which is the only way to answer "every single thing" honestly.
+  //
+  // Most of what this originally found was not forgotten. It was written with
+  // the `background` SHORTHAND at a higher specificity than the surface
+  // system, and the shorthand resets background-image to none, so the gradient
+  // was set and then thrown away by a rule that only meant to set a colour.
+  const r = await page.evaluate(() => {
+    // A swatch is a reading, not a surface. Gradient one and it lies about
+    // the palette, so these are meant to be flat and are checked separately.
+    const KEY = '.radar-pal-swatch,.trop-model-swatch,.spc-swatch,.alert-swatch,'
+              + '.ov-panel-swatch,.atcf-swatch,.dtb-pal-swatch,#dtb-color-swatch,'
+              + '#txt-color-swatch,.insp-swatch,.cyc-ens-legend i,.xs-legend i';
+    const flat = [];
+    document.querySelectorAll('*').forEach(el => {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return;
+      if (/gradient|url\(/.test(cs.backgroundImage || '')) return;
+      if (el.closest(KEY) || el.matches(KEY)) return;
+      // Leaflet's own tile and canvas layers paint the weather, not the UI.
+      if (el.closest('.leaflet-tile-pane, .leaflet-overlay-pane, canvas, svg')) return;
+      const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/
+        .exec(cs.backgroundColor || '');
+      if (!m) return;
+      if ((m[4] === undefined ? 1 : Number(m[4])) < 0.04) return;
+      const box = el.getBoundingClientRect();
+      if (box.width < 6 || box.height < 6) return;
+      const cls = (typeof el.className === 'string' && el.className.trim())
+        ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+      flat.push((el.id ? '#' + el.id : el.tagName.toLowerCase() + cls)
+                + ' ' + cs.backgroundColor);
+    });
+    return [...new Set(flat)];
+  });
+  ok('no visible element paints a flat fill', r.length === 0,
+     `${r.length} left`);
+  if (r.length) r.forEach(x => console.log('       still flat: ' + x));
+
+  // And the other half of the claim: the colour keys are still flat, because
+  // a gradient on one of those would misrepresent the scale it stands for.
+  const keys = await page.evaluate(() => {
+    const out = { checked: 0, gradient: [] };
+    ['.radar-pal-swatch', '.spc-swatch', '.alert-swatch', '.atcf-swatch',
+     '.dtb-pal-swatch', '.ov-panel-swatch'].forEach(sel => {
+      const st = __surfaceOrStub(sel);
+      out.checked++;
+      if (st.gradient) out.gradient.push(sel);
+    });
+    return out;
+  });
+  ok('every colour key stays a flat colour, because it is a reading',
+     keys.gradient.length === 0, keys.gradient.join(' '));
+  console.log(`       (${keys.checked} colour keys held flat on purpose)`);
+}
+
+console.log('\n9b. nothing became unreadable');
 {
   // A gradient behind text is only an improvement if the text still reads.
   // Checked as a real contrast ratio against the darkest stop of whatever is
@@ -464,7 +533,28 @@ console.log('\n9. nothing became unreadable');
      bad.length === 0, bad.join(' | '));
 }
 
-console.log('\n10. nothing threw');
+console.log('\n10. the About card is gone');
+{
+  const r = await page.evaluate(() => {
+    lqmOpenSettings();
+    _lqmSetBuildRail();
+    const tabs = Array.from(document.querySelectorAll('#lqm-set-rail .lqm-set-tab'))
+      .map(t => t.textContent.trim());
+    const cards = Array.from(
+      document.querySelectorAll('#lqm-set-content .lqm-settings-group'))
+      .map(g => g.querySelector('.lqm-settings-category').textContent.trim());
+    if (typeof lqmCloseSettings === 'function') lqmCloseSettings();
+    return { tabs, cards, credits: !!document.getElementById('lqm-credits-btn') };
+  });
+  ok('there is no About tab', !r.tabs.includes('About'), r.tabs.join(' | '));
+  ok('and no About card', !r.cards.includes('About'), r.cards.join(' | '));
+  // The card held the only Settings route to the credits, but not the only
+  // route in the app, so removing it does not orphan the modal.
+  ok('the credits are still reachable from the menu', r.credits);
+  console.log(`       (${r.tabs.length} tabs: ${r.tabs.join(', ')})`);
+}
+
+console.log('\n11. nothing threw');
 ok('no uncaught page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();

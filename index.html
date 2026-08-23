@@ -38778,16 +38778,6 @@ function selectProduct(p) {
   </div>
 
   <!-- ─── ABOUT ─── -->
-  <div class="lqm-settings-group" data-cat="about">
-    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-info></use></svg> About</div>
-    <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:2px 0 8px;letter-spacing:1px;line-height:1.7;">
-      GWCFC Radar
-    </div>
-    <div class="lqm-settings-row">
-      <span class="lqm-settings-lbl">Credits</span>
-      <button class="lqm-settings-btn" onclick="openCredits()">View <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-arrow></use></svg></button>
-    </div>
-  </div>
 
     </div>
   </div>
@@ -40950,18 +40940,18 @@ function lqmSetTZ(tz) {
   <div class="ui-diagram">
     <div class="ui-diagram-title">Overlay rows, example</div>
     <div style="display:flex; flex-direction:column; gap:6px; font-family:var(--mono); font-size:12px;">
-      <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; background:rgba(0,255,200,0.06); border:1px solid rgba(0,255,200,0.25); border-radius:6px;">
-        <span style="width:8px;height:8px;border-radius:50%;background:var(--accent2);flex-shrink:0;"></span>
+      <div class="status-strip" style="display:flex; align-items:center; gap:8px; padding:6px 10px; background:rgba(0,255,200,0.06); border:1px solid rgba(0,255,200,0.25); border-radius:6px;">
+        <span class="status-dot" style="width:8px;height:8px;border-radius:50%;background:var(--accent2);flex-shrink:0;"></span>
         <span style="flex:1;color:#fff;">Alert Polygons</span>
         <span style="color:rgba(255,255,255,0.3);">⠿</span>
       </div>
       <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px;">
-        <span style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.2);flex-shrink:0;"></span>
+        <span class="status-dot" style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.2);flex-shrink:0;"></span>
         <span style="flex:1;color:rgba(212,232,255,0.7);">Storm Centers</span>
         <span style="color:rgba(255,255,255,0.3);">⠿</span>
       </div>
       <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:6px;">
-        <span style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.2);flex-shrink:0;"></span>
+        <span class="status-dot" style="width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,0.2);flex-shrink:0;"></span>
         <span style="flex:1;color:rgba(212,232,255,0.7);">Ambient Weather</span>
         <span style="color:rgba(255,255,255,0.3);">⠿</span>
       </div>
@@ -43461,7 +43451,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The panels are sorted into three families now, and each one is a choice rather than whatever it happened to be. Red is the app and the warning side of it: WX Alerts, the Alert Desk, the models, the tools, Settings. Orange is the weather radio side: EAS, the NWR station popup and the alert recordings panel. All three of those were already orange inside, the colour just never reached their shells. Black is the alert popup on the map, which sits on top of the weather, so it stays out of the way of the colours underneath it. Everything still has its gradient and its raised edge, and the animation bar keeps its own cyan.";
+const APP_LATEST_UPDATE = "The About section is gone from Settings, which takes it down to nine tabs. The credits still have their own button in the menu, so nothing was lost. And the gradient now really does reach everything. The test for this stopped reading the stylesheet and started walking the actual page, listing anything still painting a flat colour, which turned up twenty one more things: the overlay pills, the update bar, the profile button, the search button, the toolbar flyout, the toggle knobs, the page itself, and most of the tutorial. Most of them were not forgotten. They were written using the background shortcut, which quietly erases a gradient every time it sets a colour, so the gradient was being applied and then thrown away. Two things stay flat on purpose. Colour keys, the little squares in a legend, because that exact colour is what the reading means and shading it would be a lie about the scale. And anything whose colour is itself information, like the city temperature dots and the status lights, keeps its colour and gets a see-through shine laid over the top instead, so it looks like a bead without changing what it says.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -47896,6 +47886,182 @@ function closeCredits() {
 }
 .nwr-btn-rec:hover {
   background-image: linear-gradient(180deg, rgba(215,30,30,0.55) 0%, rgba(140,0,0,0.40) 100%);
+}
+
+/* ── 13. The last flat surfaces ───────────────────────────────────────── */
+/* Found by sweeping the live DOM rather than reading the CSS, which is how
+   tools/test-surface-system.mjs now checks this permanently.
+   Most of these were not missed. They were written with the `background`
+   SHORTHAND at a higher specificity than the surface system, and the
+   shorthand resets background-image to none, so the gradient was set and then
+   thrown away by a rule that only meant to set a colour. The overlay pills are
+   the clearest case: `.ov-pill` gets the gradient, `#overlay-pills-row
+   .ov-pill` outranks it with an id and wipes it. So these are restated at the
+   specificity that actually wins. */
+
+#overlay-pills-row .ov-pill {
+  background-image: var(--grad-raise);
+  box-shadow: var(--edge-3d-soft);
+}
+#overlay-pills-row .ov-pill:hover { background-image: var(--grad-raise-h); }
+#overlay-pills-row .ov-pill.active {
+  background-image: var(--grad-sunk);
+  box-shadow: var(--edge-3d), inset 0 2px 5px rgba(0,0,0,0.55);
+}
+.ov-bullet {
+  background-image: radial-gradient(circle at 35% 30%, #7fe3ff 0%, #008CBA 55%, #004a63 100%);
+}
+#overlay-pills-row .ov-pill.active .ov-bullet {
+  background-image: radial-gradient(circle at 35% 30%, #ff9d92 0%, #d02020 55%, #6a0000 100%);
+}
+
+#update-bar {
+  background-image: linear-gradient(180deg, #4a0303 0%, #1c0000 100%);
+  box-shadow: var(--lift-3d-sm), var(--edge-3d);
+  border-color: var(--edge-red);
+}
+#lqm-profile-btn, #lqm-search-go, #past-alerts-toggle, #clean-hint {
+  background-image: var(--grad-raise);
+  box-shadow: var(--edge-3d-soft);
+  border-color: var(--edge-red);
+}
+#lqm-profile-btn:hover, #lqm-search-go:hover, #past-alerts-toggle:hover {
+  background-image: var(--grad-raise-h);
+}
+#lqm-profile-avatar-sm {
+  background-image: linear-gradient(180deg, #b02020 0%, #5a0000 100%);
+  box-shadow: var(--edge-3d-soft);
+}
+.lqm-icon-wrap {
+  background-image: linear-gradient(180deg, rgba(160,20,20,0.55) 0%, rgba(30,0,0,0.85) 100%);
+  box-shadow: var(--edge-3d-soft);
+}
+#tb-flyout {
+  background-image: var(--grad-panel);
+  box-shadow: var(--lift-3d), var(--edge-3d);
+  border-color: var(--edge-red);
+}
+/* The knob on a toggle is a bead, so it is lit like one. */
+.lqm-toggle-knob, .lqm-toggle-thumb {
+  background-image: radial-gradient(circle at 38% 28%, #ffffff 0%, #dfe6ea 45%, #9fb0ba 100%);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+/* The speed box lives on the animation bar, so it is lit in that bar's light
+   rather than the app's. */
+#speed-wrap {
+  background-image: linear-gradient(180deg, rgba(255,255,255,0.34) 0%, rgba(0,60,84,0.28) 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.4), inset 0 -1px 0 rgba(0,0,0,0.3);
+}
+/* The attribution chip's own rule is !important, so this has to be too. */
+.leaflet-control-attribution {
+  background-image: var(--grad-panel) !important;
+  box-shadow: var(--lift-3d-sm), var(--edge-3d) !important;
+}
+/* The page itself, and the floor the map sits on where a tile has not arrived. */
+body {
+  background-image: linear-gradient(180deg, #7a0505 0%, #3a0000 55%, #180000 100%);
+  background-attachment: fixed;
+}
+#map { background-image: linear-gradient(180deg, #24070a 0%, #0b0204 100%); }
+
+/* ── The city dots, shaded rather than recoloured ─────────────────────── */
+/* Each dot's fill is set inline from tempColor(), so the colour IS the
+   temperature reading. Replacing it would throw the reading away. This is a
+   shading laid OVER it instead: a highlight where a light would catch a bead
+   and a darkening at the rim. The hue underneath is untouched, so the dot
+   still says what it said and now looks like a bead rather than a disc. */
+.city-dot {
+  background-image: radial-gradient(circle at 34% 28%,
+                      rgba(255,255,255,0.55) 0%,
+                      rgba(255,255,255,0.10) 38%,
+                      rgba(0,0,0,0.30) 100%);
+}
+
+/* ── What deliberately stays flat ─────────────────────────────────────── */
+/* A swatch is not a surface, it is a reading. It says "this exact colour on
+   the map means this value", and a gradient on it would be a lie about the
+   palette: the eye would read two values where the scale has one. Every
+   colour key in the app is listed here so the rule is explicit rather than an
+   oversight, and tools/test-surface-system.mjs asserts they are still flat. */
+.radar-pal-swatch, .trop-model-swatch, .spc-swatch, .alert-swatch,
+.ov-panel-swatch, .atcf-swatch, .dtb-pal-swatch, #dtb-color-swatch,
+#txt-color-swatch, .insp-swatch, .cyc-ens-legend i, .xs-legend i,
+#inspector-readout .insp-swatch {
+  background-image: none !important;
+}
+
+/* ── 14. The rest of the sweep ────────────────────────────────────────── */
+/* Everything the DOM sweep in tools/test-surface-system.mjs still reported.
+   Two kinds, and they need opposite treatment.
+
+   Things whose colour is only decoration get a gradient outright. Things
+   whose colour is a READING - a temperature dot, a connected/not status
+   light, the knob of a toggle that shows its state by colour - get a
+   translucent SHADING laid over the top instead, so the hue underneath still
+   says what it said and the shape gains its bead. Replacing those fills would
+   throw the information away, which is the same reason the colour keys stay
+   flat entirely. */
+
+/* Beads: shaded, not recoloured. !important because each of these takes its
+   fill from an inline `background` shorthand, and inline beats a stylesheet.
+   The shorthand is also why they survived the earlier passes: it resets
+   background-image to none every time it sets a colour. */
+.city-dot, .status-dot, .lqm-toggle-knob, .lqm-toggle-thumb {
+  background-image: radial-gradient(circle at 34% 28%,
+                      rgba(255,255,255,0.55) 0%,
+                      rgba(255,255,255,0.10) 38%,
+                      rgba(0,0,0,0.30) 100%) !important;
+}
+.status-strip {
+  background-image: linear-gradient(180deg, rgba(0,255,200,0.13) 0%, rgba(0,0,0,0.22) 100%) !important;
+  box-shadow: var(--edge-3d-soft);
+}
+
+/* ── The tutorial, which is its own little document ──────────────────── */
+/* Its own rule is `background: rgba(0,0,0,0.72) !important`, so matching it
+   takes an !important of its own. The shorthand there is also what was
+   clearing the gradient. */
+#tutorial-modal-overlay, #tut-modal-overlay {
+  background-image: var(--grad-scrim) !important;
+}
+#tutorial-modal-inner {
+  background-image: var(--grad-panel) !important;
+  box-shadow: var(--lift-3d), var(--edge-3d);
+}
+#tut-close-btn {
+  background-image: var(--grad-raise) !important;
+  box-shadow: var(--edge-3d-soft);
+}
+#tut-close-btn:hover { background-image: var(--grad-raise-h) !important; }
+#toc {
+  background-image: linear-gradient(180deg, #4a0202 0%, #200000 100%);
+  box-shadow: var(--edge-3d);
+}
+.hero-badge, .step-num, .lr-badge {
+  background-image: var(--grad-card);
+  box-shadow: var(--edge-3d-soft);
+}
+.lr-badge.info {
+  background-image: linear-gradient(180deg, rgba(0,140,186,0.28) 0%, rgba(0,0,0,0.24) 100%);
+}
+.section-icon, .callout, .precip-bar-wrap {
+  background-image: linear-gradient(180deg, rgba(255,120,110,0.12) 0%, rgba(0,0,0,0.34) 100%);
+  box-shadow: var(--edge-3d-soft);
+}
+.callout.warn {
+  background-image: linear-gradient(180deg, rgba(255,150,60,0.16) 0%, rgba(0,0,0,0.34) 100%);
+}
+.ui-diagram, .model-demo {
+  background-image: linear-gradient(180deg, #1a0000 0%, #050000 100%);
+  box-shadow: var(--edge-3d);
+}
+.layer-row-demo {
+  background-image: var(--grad-raise);
+  box-shadow: var(--lift-3d-sm), var(--edge-3d);
+}
+.layer-row-demo.active {
+  background-image: var(--grad-sunk);
+  box-shadow: var(--edge-3d), inset 0 2px 5px rgba(0,0,0,0.55);
 }
 </style>
 <div id="feedback-modal-overlay" onclick="if(event.target===this)closeFeedback()">
