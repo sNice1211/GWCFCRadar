@@ -112,11 +112,25 @@ await page.evaluate(() => {
     const lit = stops.filter(([r, g, b]) => r + g + b > 24);
     return lit.length > 0 && lit.every(([r, g, b]) => r > g && r > b);
   };
+  // Cyan: blue leads and green is close behind it.
+  window.__isCyan = (stops) => {
+    const lit = stops.filter(([r, g, b]) => r + g + b > 24);
+    return lit.length > 0 && lit.every(([r, g, b]) => b > r && g > r);
+  };
+  // Orange: red leads, but green is well clear of blue. That middle term is
+  // what separates orange from the red everything else is, and it is the
+  // check that would catch the panel quietly going red again.
+  window.__isOrange = (stops) => {
+    const lit = stops.filter(([r, g, b]) => r + g + b > 24);
+    return lit.length > 0 && lit.every(([r, g, b]) => r > g && g > b && (g - b) >= 8);
+  };
 });
 
 // Every surface named in the system, by the selector the CSS uses.
+// #eas-panel and #animbar are deliberately not red and are checked on their
+// own below.
 const PANELS = [
-  '#alerts-panel', '#eas-panel', '#nwr-rec-panel', '#tropical-model-panel',
+  '#alerts-panel', '#nwr-rec-panel', '#tropical-model-panel',
   '#severe-model-panel', '#snd-panel', '#hd-panel', '#fnv3-panel',
   '#stormcone-panel', '#sc-style-panel', '#sc-points-panel', '#gps-hud',
   '#inspector-readout', '#ov-info-tooltip', '#overlay-pills-row',
@@ -285,6 +299,20 @@ console.log('\n7. the pop-out window, which is its own document');
       row: g(w.document.querySelector('main > *')),
     };
     try { w.close(); } catch (e) {}
+
+    // And the EAS one, which has to come out orange rather than red or the
+    // pinned window does not look related to the panel it came from.
+    const esrc = document.getElementById('eas-panel-body');
+    if (esrc) esrc.innerHTML = '<div class="a">AN EAS ALERT</div>';
+    _popOutPanel('eas');
+    await new Promise(r2 => setTimeout(r2, 350));
+    const ew = _popWins.eas && _popWins.eas.win;
+    if (ew) {
+      const eg = (el) => el ? ew.getComputedStyle(el).backgroundImage : '';
+      out.easBody = eg(ew.document.body);
+      out.easHeader = eg(ew.document.querySelector('header'));
+      try { ew.close(); } catch (e) {}
+    }
     return out;
   });
   ok('the window opens', r.opened);
@@ -298,6 +326,14 @@ console.log('\n7. the pop-out window, which is its own document');
   }), [r.body, r.header, r.row]);
   ok('and all three are red, so a pinned window matches the app it came from',
      reds.every(Boolean), JSON.stringify(reds));
+  const easHues = await page.evaluate((vals) => vals.map(v => {
+    const stops = [...String(v).matchAll(/rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/g)]
+      .map(m => [Number(m[1]), Number(m[2]), Number(m[3])]);
+    return { orange: __isOrange(stops), gradient: /gradient/.test(String(v)) };
+  }), [r.easBody, r.easHeader]);
+  ok('the EAS window opened too', !!r.easBody);
+  ok('and it is orange, matching the panel it came out of',
+     easHues.every(h => h.gradient && h.orange), JSON.stringify(easHues));
 }
 
 console.log('\n8. the bars that are always on screen');
@@ -305,7 +341,7 @@ console.log('\n8. the bars that are always on screen');
   // These are not panels people open, they are the furniture. The animation
   // bar was the loudest thing left: a solid cyan strip across the bottom of a
   // red application.
-  const BARS = ['#animbar', '#export-toolbar', '#draw-toolbar', '#text-toolbar',
+  const BARS = ['#export-toolbar', '#draw-toolbar', '#text-toolbar',
                 '#poly-toolbar', '#dist-toolbar', '#radius-toolbar',
                 '#stormcone-toolbar', '#xsec-toolbar', '#top-search-bar'];
   const r = await page.evaluate((sels) =>
@@ -317,8 +353,34 @@ console.log('\n8. the bars that are always on screen');
   ok('and every one of them is a gradient', flat.length === 0, flat.join(' '));
   const notRed = await page.evaluate((sels) =>
     sels.filter(s => !__isRed(__surfaceOrStub(s).stops)), BARS);
-  ok('and red, including the animation bar that used to be cyan',
-     notRed.length === 0, notRed.join(' '));
+  ok('and red', notRed.length === 0, notRed.join(' '));
+}
+
+console.log('\n8b. the two surfaces that keep their own colour');
+{
+  // The animation bar is cyan with a red border, and that pairing is what
+  // makes it findable on a map that is otherwise red end to end. A sweep took
+  // it once already; this is what stops that happening again quietly.
+  const r = await page.evaluate(() => {
+    const bar = __surface('#animbar');
+    const labels = getComputedStyle(document.querySelector('#timeline-labels')).color;
+    const border = getComputedStyle(document.querySelector('#animbar')).borderTopColor;
+    const eas = __surfaceOrStub('#eas-panel');
+    const card = __surfaceOrStub('.eas-card');
+    return { bar, labels, border, eas, card,
+             barCyan: __isCyan(bar.stops), easOrange: __isOrange(eas.stops),
+             cardOrange: __isOrange(card.stops), barRed: __isRed(bar.stops) };
+  });
+  ok('the animation bar is a gradient', r.bar.gradient, r.bar.image);
+  ok('and it is cyan again, not red', r.barCyan && !r.barRed, r.bar.image);
+  ok('it kept its red border, which is the pairing that makes it findable',
+     /170,\s*0,\s*0/.test(r.border), r.border);
+  ok('its tick times are black again, which is what reads on cyan',
+     /rgb\(0,\s*0,\s*0\)/.test(r.labels), r.labels);
+  ok('the EAS panel is a gradient', r.eas.gradient, r.eas.image);
+  ok('and it is orange, the colour its own header already used',
+     r.easOrange, r.eas.image);
+  ok('its cards are orange too', r.cardOrange, r.card.image);
 }
 
 console.log('\n9. nothing became unreadable');
