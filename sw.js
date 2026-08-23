@@ -177,6 +177,19 @@ self.addEventListener('fetch', e => {
     return;
   }
 
+  // The install manifest and the launcher icons. A browser re-reads these
+  // whenever it is deciding whether to offer "Add to Home Screen", and on a
+  // phone that decision often happens on the worst connection of the day.
+  // Caching them means an installed app also has its own icon and metadata
+  // available offline, which is what stops the tile falling back to a
+  // screenshot of the page.
+  if (url.origin === self.location.origin
+      && (url.pathname.endsWith('.webmanifest')
+          || url.pathname.includes('/icons/'))) {
+    e.respondWith(cacheFirst(e.request, STATIC_TTL_MS, STATIC_CACHE));
+    return;
+  }
+
   if (STATIC_HOSTS.has(url.hostname)) {
     e.respondWith(cacheFirst(e.request, STATIC_TTL_MS, STATIC_CACHE));
     return;
