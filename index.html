@@ -2599,6 +2599,17 @@ body.wx-smooth-radar .leaflet-radarPane-pane canvas {
   .ad-haz-name { min-width: 100%; }
 }
 
+:root { --mb-city-size: 12px; }
+.mb-city {
+  position: absolute; transform: translate(-50%, -50%);
+  white-space: nowrap; pointer-events: none; user-select: none;
+  font-family: var(--display), system-ui, sans-serif;
+  font-size: var(--mb-city-size);
+  font-weight: 600; letter-spacing: 0.2px;
+  color: #ffffff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000, 0 1px 2px rgba(0,0,0,0.9);
+}
+
 /* ── TROPICAL / SEVERE MODEL PANELS ── */
 
 #severe-model-panel {
@@ -38028,7 +38039,7 @@ function selectProduct(p) {
     <div id="lqm-set-content">
 
   <!-- ─── DISPLAY ─── -->
-  <div class="lqm-settings-group" data-cat="general">
+  <div class="lqm-settings-group" data-merge="map" data-merge-label="Map" data-merge-icon="ic-map" data-cat="general">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-desktop></use></svg> Display</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Map Style</span>
@@ -38067,7 +38078,7 @@ function selectProduct(p) {
 
   </div>
 
-  <div class="lqm-settings-group" data-cat="map">
+  <div class="lqm-settings-group" data-merge="map" data-cat="map">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-map></use></svg> Map Borders &amp; Labels</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">State Borders</span>
@@ -38089,6 +38100,14 @@ function selectProduct(p) {
       <span class="lqm-settings-lbl">Province Borders</span>
       <label class="lqm-toggle">
         <input type="checkbox" id="lqm-set-provinceborders" checked onchange="lqmToggleSetting('provinceborders',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">City Names</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-citylabels" onchange="lqmToggleSetting('citylabels',this.checked)">
         <div class="lqm-toggle-track"></div>
         <div class="lqm-toggle-knob"></div>
       </label>
@@ -40511,6 +40530,8 @@ function lqmToggleSetting(key, val) {
       try { localStorage.setItem('lqm_dbltapmenu', val); } catch (e) {}
       window._cmSyncDblZoom();
     }
+  } else if (key === 'citylabels') {
+    _toggleBorders('cities', val);
   } else if (key === 'stateborders') {
     _toggleBorders('state', val);
   } else if (key === 'countyborders') {
@@ -40521,18 +40542,17 @@ function lqmToggleSetting(key, val) {
   try { localStorage.setItem('lqm_' + key, val); } catch(e){}
 }
 
+// These two used to hide DOM elements with classes (border-state,
+// city-label) that nothing in the app ever created, so both switches moved
+// a setting and changed nothing on screen. They drive real map layers now,
+// built lazily the first time one is turned on.
 function _toggleBorders(borderType, show) {
-  const cls = 'border-' + borderType;
-  document.querySelectorAll('.' + cls).forEach(el => {
-    el.style.display = show ? '' : 'none';
-  });
+  if (typeof _mbSet === 'function') _mbSet(borderType, show);
 }
 
 function lqmSetCityNameSize(size) {
-  const sizeNum = parseInt(size);
-  document.querySelectorAll('.city-label, .city-name').forEach(el => {
-    el.style.fontSize = sizeNum + 'px';
-  });
+  const sizeNum = (typeof _mbCitySize === 'function')
+    ? _mbCitySize(size) : (parseInt(size, 10) || 12);
   const val = document.getElementById('lqm-citynamesize-val');
   if (val) val.textContent = sizeNum + 'px';
   try { localStorage.setItem('lqm_citynamesize', sizeNum); } catch(e){}
@@ -43412,7 +43432,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Three things. The Alert Desk has moved out of StormStream and into the Alerts section of Settings, which is where it belongs. Double tapping the map now opens the right-click menu on a phone, and actually works this time: it used to wait for the browser to report a double click, which a touch screen often never does, so the gesture is measured directly now. A mouse still zooms on a double click unless you turn on the new Double Click Opens Menu switch. And the reason a few settings did nothing at all: the settings handler is wrapped by a second copy further down the page, and that copy only passed a short list of settings through to the first one. Anything outside the list quietly saved your choice and then did nothing, which is what had killed the state, county and province border switches. It now passes on everything it does not handle itself.";
+const APP_LATEST_UPDATE = "Map borders and labels are real now. State lines, county lines, province lines and city names all draw on the map, above the radar so a county line is visible over an echo, and below the warning polygons so a warning still wins. Before this they were four switches that saved your choice and did nothing at all: the code behind them hid page elements with names that nothing in the app ever created, so there was no layer to turn on or off. County lines only draw from zoom 6 in, and only the counties actually on screen, because three thousand of them at once is a grey smear that hides the weather instead of locating it. City names thin by population as you zoom out, so a wide view shows the big places instead of a wall of text, and the size slider now has something to size. Each file is fetched once, the first time you turn its switch on, and if one cannot load it says why instead of just not appearing. Display and Map Borders and Labels now share one Settings tab, called Map.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -43996,6 +44016,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const pbVal = localStorage.getItem('lqm_provinceborders'); if(pbVal==='false') { const el=document.getElementById('lqm-set-provinceborders'); if(el){el.checked=false;lqmToggleSetting('provinceborders',false);} }
     const cnsVal = localStorage.getItem('lqm_citynamesize'); if(cnsVal) { const el=document.getElementById('lqm-set-citynamesize'); if(el){el.value=cnsVal;lqmSetCityNameSize(cnsVal);} }
     const dtmVal = localStorage.getItem('lqm_dbltapmenu'); if(dtmVal==='true') { const el=document.getElementById('lqm-set-dbltapmenu'); if(el){el.checked=true;lqmToggleSetting('dbltapmenu',true);} }
+    const clVal = localStorage.getItem('lqm_citylabels'); if(clVal==='true') { const el=document.getElementById('lqm-set-citylabels'); if(el){el.checked=true;lqmToggleSetting('citylabels',true);} }
     // Units & Time - _units itself is already loaded from lqm_unit_* at script
     // parse time (see _loadUnitPrefs); this just syncs the dropdowns to match.
     const windEl = document.getElementById('lqm-set-windunit');     if (windEl) windEl.value = _units.wind;
@@ -49276,6 +49297,320 @@ setTimeout(() => {
 }, 2500);
 
 _adSimBadge();
+</script>
+
+<script>
+// ── MAP BORDERS AND LABELS ──────────────────────────────────────────────
+// State lines, county lines, province lines and city names, drawn ON TOP of
+// the radar rather than under it. That is the whole point of them: a warning
+// polygon means nothing until you can see which county it covers, and a
+// basemap label buried under 45 dBZ of reflectivity is not a label.
+//
+// These four switches existed in Settings long before this and did nothing at
+// all. Two separate reasons, both worth naming so they are not rebuilt by
+// accident:
+//
+//  1. The handlers hid DOM elements with classes (border-state, city-label)
+//     that were never created by anything. There was no layer to toggle.
+//  2. lqmToggleSetting is overridden further down the page, and the override
+//     used to swallow every key it did not know, so even the handler that did
+//     exist was unreachable. That half is fixed separately.
+//
+// Data comes from the same jsDelivr host the app already depends on for
+// Leaflet and for the Natural Earth coastline, so it is one more path on a
+// connection that is already open and already preconnected in the head.
+
+const MB_SRC = {
+  // Natural Earth admin-1 boundary LINES: US states, Canadian provinces and
+  // Mexican states in one file, at 10m detail. Lines rather than polygons
+  // because a border is a line, and polygons would mean drawing every shared
+  // edge twice.
+  admin1: 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_admin_1_states_provinces_lines.geojson',
+  // Every US county, keyed by FIPS. The file the whole mapping world uses for
+  // this, so it is stable and it is cached at the edge.
+  counties: 'https://cdn.jsdelivr.net/gh/plotly/datasets@master/geojson-counties-fips.json',
+  // Populated places with a population figure, which is what makes thinning
+  // by importance possible instead of thinning at random.
+  places: 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_populated_places_simple.geojson',
+};
+
+// Natural Earth renames and re-cases its property keys between releases, so
+// nothing here reads a single fixed key. Ask for the value, list the spellings.
+function _mbProp(f, names) {
+  const p = (f && f.properties) || {};
+  for (const n of names) {
+    if (p[n] != null && p[n] !== '') return p[n];
+  }
+  return null;
+}
+
+const _mbCache = {};      // url -> Promise of parsed GeoJSON
+function _mbFetch(url) {
+  if (_mbCache[url]) return _mbCache[url];
+  _mbCache[url] = (async () => {
+    const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  })().catch(err => {
+    // Forget a failure, so turning the switch off and on again is a retry
+    // rather than a permanent no.
+    delete _mbCache[url];
+    throw err;
+  });
+  return _mbCache[url];
+}
+
+function _mbSay(msg) {
+  if (typeof _lqmToast === 'function') { _lqmToast(msg); return; }
+  if (typeof showToast === 'function') { showToast(msg, 3000); return; }
+  console.warn(msg);
+}
+
+// ── Panes ────────────────────────────────────────────────────────────────
+// Borders sit at 401: above the radar at 400, below the alert polygons at
+// 403. County lines under a tornado warning would be the wrong way round.
+// Labels sit above everything, because a name covered by a polygon is not a
+// name. Both ignore the pointer, so nothing here can steal a click.
+let _mbPanesReady = false;
+function _mbPanes() {
+  if (_mbPanesReady || typeof map === 'undefined' || !map) return _mbPanesReady;
+  if (!map.getPane('bordersPane')) {
+    const p = map.createPane('bordersPane');
+    p.style.zIndex = 401;
+    p.style.pointerEvents = 'none';
+  }
+  if (!map.getPane('mapLabelsPane')) {
+    const p = map.createPane('mapLabelsPane');
+    p.style.zIndex = 640;
+    p.style.pointerEvents = 'none';
+  }
+  _mbPanesReady = true;
+  return true;
+}
+
+let _mbCanvasR = null;
+function _mbCanvas() {
+  // One shared canvas for every border line, the same reason the alert
+  // polygons use one: a few thousand separate SVG nodes is what turns a pan
+  // into a slideshow.
+  if (!_mbCanvasR) _mbCanvasR = L.canvas({ pane: 'bordersPane', padding: 0.25 });
+  return _mbCanvasR;
+}
+
+const MB_STYLE = {
+  state:    { color: '#ffffff', weight: 1.5, opacity: 0.85, fill: false },
+  province: { color: '#cfe4ff', weight: 1.2, opacity: 0.7,  fill: false },
+  county:   { color: '#ffffff', weight: 0.7, opacity: 0.42, fill: false },
+};
+
+const _mbLayers = { state: null, province: null, county: null };
+const _mbOn = { state: false, province: false, county: false, cities: false };
+const _mbLoading = {};
+
+// ── State and province lines ─────────────────────────────────────────────
+async function _mbBuildAdmin1(kind) {
+  const data = await _mbFetch(MB_SRC.admin1);
+  const want = kind === 'state' ? ['USA', 'United States of America', 'United States']
+                                : ['CAN', 'Canada'];
+  const feats = (data.features || []).filter(f => {
+    const c = _mbProp(f, ['adm0_a3', 'ADM0_A3', 'adm0_name', 'ADM0_NAME', 'iso_a2']);
+    // A file whose country key this build does not recognise is drawn whole
+    // rather than not at all: too many lines beats an empty map, and it is
+    // obvious enough to report.
+    if (c == null) return true;
+    return want.some(w => String(c).toLowerCase() === String(w).toLowerCase());
+  });
+  return L.geoJSON({ type: 'FeatureCollection', features: feats }, {
+    pane: 'bordersPane', renderer: _mbCanvas(), interactive: false,
+    smoothFactor: 1.6, style: () => MB_STYLE[kind],
+  });
+}
+
+// ── County lines ─────────────────────────────────────────────────────────
+// Three thousand two hundred shapes is too many to keep on the map at once,
+// and at low zoom they are a grey smear that hides the weather rather than
+// locating it. So: nothing below zoom 6, and above it only the counties whose
+// bounding box is actually on screen, rebuilt when the view settles.
+const MB_COUNTY_MIN_ZOOM = 6;
+let _mbCountyFeats = null;
+
+function _mbBbox(geom) {
+  let n = -90, s = 90, e = -180, w = 180;
+  const walk = (node) => {
+    if (!Array.isArray(node)) return;
+    if (typeof node[0] === 'number' && typeof node[1] === 'number') {
+      if (node[1] > n) n = node[1];
+      if (node[1] < s) s = node[1];
+      if (node[0] > e) e = node[0];
+      if (node[0] < w) w = node[0];
+      return;
+    }
+    node.forEach(walk);
+  };
+  walk(geom && geom.coordinates);
+  return [w, s, e, n];
+}
+
+async function _mbLoadCounties() {
+  if (_mbCountyFeats) return _mbCountyFeats;
+  const data = await _mbFetch(MB_SRC.counties);
+  // The box is measured once here rather than per pan. Walking three thousand
+  // polygons on every map move is the difference between a filter that is free
+  // and one that is the reason the map stutters.
+  _mbCountyFeats = (data.features || []).map(f => ({ f, bb: _mbBbox(f.geometry) }));
+  return _mbCountyFeats;
+}
+
+function _mbCountyRefresh() {
+  if (!_mbOn.county || !_mbCountyFeats || typeof map === 'undefined') return;
+  if (_mbLayers.county) { try { map.removeLayer(_mbLayers.county); } catch (e) {} _mbLayers.county = null; }
+  if (map.getZoom() < MB_COUNTY_MIN_ZOOM) return;
+  const b = map.getBounds().pad(0.25);
+  const w = b.getWest(), s = b.getSouth(), e = b.getEast(), n = b.getNorth();
+  const feats = [];
+  for (let i = 0; i < _mbCountyFeats.length; i++) {
+    const bb = _mbCountyFeats[i].bb;
+    if (bb[2] < w || bb[0] > e || bb[3] < s || bb[1] > n) continue;
+    feats.push(_mbCountyFeats[i].f);
+  }
+  if (!feats.length) return;
+  _mbLayers.county = L.geoJSON({ type: 'FeatureCollection', features: feats }, {
+    pane: 'bordersPane', renderer: _mbCanvas(), interactive: false,
+    smoothFactor: 1.8, style: () => MB_STYLE.county,
+  }).addTo(map);
+}
+
+// ── City names ───────────────────────────────────────────────────────────
+// Thinned by population against zoom, then capped. Without the cap a zoomed
+// out view of the eastern seaboard is a solid block of text, and with only a
+// cap the names you get are whichever happened to come first in the file
+// rather than the ones worth showing.
+const MB_CITY_CAP = 90;
+let _mbCityFeats = null;
+let _mbCityLayer = null;
+
+function _mbCityMinPop(z) {
+  if (z <= 3) return 3000000;
+  if (z <= 4) return 1200000;
+  if (z <= 5) return 500000;
+  if (z <= 6) return 200000;
+  if (z <= 7) return 80000;
+  if (z <= 8) return 30000;
+  if (z <= 9) return 12000;
+  if (z <= 10) return 4000;
+  return 0;
+}
+
+async function _mbLoadCities() {
+  if (_mbCityFeats) return _mbCityFeats;
+  const data = await _mbFetch(MB_SRC.places);
+  _mbCityFeats = (data.features || []).map(f => {
+    const c = (f.geometry && f.geometry.coordinates) || [0, 0];
+    return {
+      name: _mbProp(f, ['name', 'NAME', 'nameascii', 'NAMEASCII']) || '',
+      pop: Number(_mbProp(f, ['pop_max', 'POP_MAX', 'pop_min', 'POP_MAX'])) || 0,
+      lat: c[1], lng: c[0],
+    };
+  }).filter(c => c.name && Number.isFinite(c.lat) && Number.isFinite(c.lng))
+    // Sorted once, biggest first, so the cap always keeps the most
+    // significant places rather than the first ones read.
+    .sort((a, b) => b.pop - a.pop);
+  return _mbCityFeats;
+}
+
+function _mbCityRefresh() {
+  if (!_mbOn.cities || !_mbCityFeats || typeof map === 'undefined') return;
+  if (_mbCityLayer) { try { map.removeLayer(_mbCityLayer); } catch (e) {} _mbCityLayer = null; }
+  const z = map.getZoom();
+  const minPop = _mbCityMinPop(z);
+  const b = map.getBounds();
+  const out = [];
+  for (let i = 0; i < _mbCityFeats.length && out.length < MB_CITY_CAP; i++) {
+    const c = _mbCityFeats[i];
+    if (c.pop < minPop) break;             // the list is sorted, so this is the end of it
+    if (!b.contains([c.lat, c.lng])) continue;
+    out.push(c);
+  }
+  if (!out.length) return;
+  _mbCityLayer = L.layerGroup(out.map(c => L.marker([c.lat, c.lng], {
+    pane: 'mapLabelsPane', interactive: false, keyboard: false,
+    icon: L.divIcon({
+      className: '', iconSize: [0, 0], iconAnchor: [0, 0],
+      html: '<span class="mb-city">' + _mbEsc(c.name) + '</span>',
+    }),
+  }))).addTo(map);
+}
+
+function _mbEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, ch =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// ── The switches ─────────────────────────────────────────────────────────
+async function _mbSet(kind, on) {
+  _mbOn[kind] = !!on;
+  if (typeof map === 'undefined' || !map) return;
+  _mbPanes();
+
+  if (!on) {
+    if (kind === 'cities') {
+      if (_mbCityLayer) { try { map.removeLayer(_mbCityLayer); } catch (e) {} _mbCityLayer = null; }
+    } else if (_mbLayers[kind]) {
+      try { map.removeLayer(_mbLayers[kind]); } catch (e) {}
+      _mbLayers[kind] = null;
+    }
+    return;
+  }
+
+  if (_mbLoading[kind]) return;
+  _mbLoading[kind] = true;
+  try {
+    if (kind === 'county') {
+      await _mbLoadCounties();
+      _mbCountyRefresh();
+    } else if (kind === 'cities') {
+      await _mbLoadCities();
+      _mbCityRefresh();
+    } else {
+      if (!_mbLayers[kind]) _mbLayers[kind] = await _mbBuildAdmin1(kind);
+      if (_mbOn[kind]) _mbLayers[kind].addTo(map);
+    }
+  } catch (err) {
+    // The reason, not a shrug. Offline, a blocked CDN and a source that moved
+    // are three different problems, and a switch that flips with nothing
+    // appearing is indistinguishable from all three.
+    const why = (err && err.message) ? err.message : 'unknown error';
+    _mbSay('Could not load ' + kind + ' data: ' + why);
+    console.warn('map borders (' + kind + '):', err);
+  } finally {
+    _mbLoading[kind] = false;
+  }
+}
+
+// One listener for both viewport-thinned layers, and only after the view has
+// settled: rebuilding mid-pan is work thrown away a frame later.
+let _mbMoveTimer = null;
+function _mbArm() {
+  if (typeof map === 'undefined' || !map) { setTimeout(_mbArm, 300); return; }
+  _mbPanes();
+  map.on('moveend zoomend', () => {
+    clearTimeout(_mbMoveTimer);
+    _mbMoveTimer = setTimeout(() => { _mbCountyRefresh(); _mbCityRefresh(); }, 140);
+  });
+}
+_mbArm();
+
+// The slider drives one custom property on the pane rather than touching every
+// label, so dragging it is one style write instead of ninety.
+function _mbCitySize(px) {
+  const n = Math.max(6, Math.min(28, parseInt(px, 10) || 12));
+  try {
+    const pane = map && map.getPane && map.getPane('mapLabelsPane');
+    if (pane) pane.style.setProperty('--mb-city-size', n + 'px');
+  } catch (e) {}
+  document.documentElement.style.setProperty('--mb-city-size', n + 'px');
+  return n;
+}
 </script>
 
 <script>
