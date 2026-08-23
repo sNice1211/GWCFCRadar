@@ -344,6 +344,33 @@ console.log('\n8. the settings tab');
   ok('and the Map tab shows both cards, each keeping its own name',
      r.shown.length === 2 && r.shown.includes('Display')
      && r.shown.some(n => /Borders/.test(n)), r.shown.join(' | '));
+  // The custom graphics library only ever shows while StormStream is
+  // running, so the two were always one subject split across two cards.
+  ok('StormStream and Custom Graphics share a tab too, called StormStream',
+     r.names.includes('StormStream')
+     && !r.names.includes('Custom Graphics')
+     && !r.names.includes('StormStream Mode'), r.names.join(' | '));
+}
+
+console.log('\n8b. the StormStream tab holds both of its cards');
+{
+  const r = await page.evaluate(() => {
+    lqmOpenSettings();
+    lqmSettingsCat('stormstream');
+    const shown = Array.from(document.querySelectorAll('#lqm-set-content .lqm-settings-group'))
+      .filter(g => !g.hidden)
+      .map(g => g.querySelector('.lqm-settings-category').textContent.trim());
+    const graphicsWorks = !!document.getElementById('lqm-sg-design')
+                       && !!document.getElementById('lqm-sg-upload')
+                       && !!document.getElementById('lqm-sg-list');
+    if (typeof lqmCloseSettings === 'function') lqmCloseSettings();
+    return { shown, graphicsWorks };
+  });
+  ok('both cards are on the one tab', r.shown.length === 2, r.shown.join(' | '));
+  ok('StormStream Mode keeps its own heading', r.shown.includes('StormStream Mode'),
+     r.shown.join(' | '));
+  ok('so does Custom Graphics', r.shown.includes('Custom Graphics'), r.shown.join(' | '));
+  ok('and the graphics controls still work from there', r.graphicsWorks);
 }
 
 console.log('\n9. nothing threw');
