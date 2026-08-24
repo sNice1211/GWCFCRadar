@@ -529,6 +529,33 @@ console.log('\n5d. live guidance follows the drive');
   ok('and the finished maneuvers grey out in the list', a.doneRows === 2,
      String(a.doneRows));
 
+  // Three fixes exactly on the road but midway between the line's drawn
+  // points - this geometry spaces them ~5 km apart, like a real highway.
+  // Distance to the nearest drawn point is huge here; distance to the
+  // line itself is zero. Measuring the former cried "left the route" to
+  // a car that never did.
+  const askedMid = osrmAsked.length;
+  const mid = await page.evaluate(() => {
+    _navOnPosition(28.0, -80.975);
+    _navOnPosition(28.0, -80.925);
+    _navOnPosition(28.0, -80.875);
+    return document.getElementById('nav-turn-main').textContent;
+  });
+  ok('driving between the line\'s drawn points is still on the route',
+     osrmAsked.length === askedMid && !/rerout/i.test(mid), mid);
+
+  // A fix that is off the line but admits an enormous error bar proves
+  // nothing: "somewhere within 400 m" cannot convict a car 170 m out.
+  const askedAcc = osrmAsked.length;
+  const accr = await page.evaluate(() => {
+    _navOnPosition(27.9985, -80.87, 400);
+    _navOnPosition(27.9985, -80.87, 400);
+    _navOnPosition(27.9985, -80.87, 400);
+    return document.getElementById('nav-turn-main').textContent;
+  });
+  ok('a wildly uncertain fix does not count against the route',
+     osrmAsked.length === askedAcc && !/rerout/i.test(accr), accr);
+
   // Three fixes well off the road ask for a fresh route from the car.
   const asked0 = osrmAsked.length;
   const b = await page.evaluate(async () => {

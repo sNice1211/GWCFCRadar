@@ -26288,7 +26288,7 @@ function _startLocationTracking() {
     // many listeners, rather than a second GPS subscription to drain the
     // battery twice.
     if (typeof _navOnPosition === 'function') {
-      try { _navOnPosition(lat, lng); } catch (e) {}
+      try { _navOnPosition(lat, lng, acc); } catch (e) {}
     }
   }, err => {
     _stopLocationTracking();
@@ -27083,26 +27083,44 @@ function _navRenderSteps() {
 // car; three fixes past this in a row means a genuinely different road.
 const NAV_OFF_ROUTE_M = 90;
 
-function _navOnPosition(lat, lon) {
+function _navOnPosition(lat, lon, acc) {
   if (!_navNavOn || _navArrived) return;
   const rt = _navRoutes[_navSel];
   if (!rt || !rt.coords || rt.coords.length < 2) return;
 
-  // Where along the route this fix sits: the nearest vertex, and how far
-  // from it the car actually is.
-  let posIdx = 0, offM = Infinity;
-  for (let i = 0; i < rt.coords.length; i++) {
-    const d = _navMeters(lat, lon, rt.coords[i][1], rt.coords[i][0]);
-    if (d < offM) { offM = d; posIdx = i; }
+  // Where along the route this fix sits. Distance is measured to the
+  // nearest point ON each line segment, not to the nearest drawn vertex:
+  // a long straight road is drawn with vertices far apart, and midway
+  // between two of them the car can be 200 m from either vertex while
+  // sitting exactly on the line. Vertex distance alone cried "off route"
+  // there; segment distance does not.
+  let posIdx = 0, offM = Infinity, alongAt = 0;
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  for (let i = 0; i < rt.coords.length - 1; i++) {
+    const ax = (rt.coords[i][0] - lon) * cosLat, ay = rt.coords[i][1] - lat;
+    const bx = (rt.coords[i + 1][0] - lon) * cosLat, by = rt.coords[i + 1][1] - lat;
+    const dx = bx - ax, dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? -(ax * dx + ay * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const px = ax + t * dx, py = ay + t * dy;
+    const d = Math.sqrt(px * px + py * py) * 111320;
+    if (d < offM) {
+      offM = d;
+      posIdx = t > 0.5 ? i + 1 : i;
+      alongAt = (rt.cum[i] || 0) + t * ((rt.cum[i + 1] || 0) - (rt.cum[i] || 0));
+    }
   }
 
   // The camera stays on the car, close enough to read street shapes.
   try { map.setView([lat, lon], Math.max(map.getZoom(), 15)); } catch (e) {}
 
   // Off the route: not on one stray fix, which is just GPS being GPS, but
-  // on three in a row. Then ask for a fresh route from where the car
-  // really is to the same destinations.
-  if (offM > NAV_OFF_ROUTE_M) {
+  // on three in a row. A fix that admits its own error bar is huge widens
+  // the bar to match: a reading of "somewhere within 300 m" cannot prove
+  // the car left a road 90 m away. Then ask for a fresh route from where
+  // the car really is to the same destinations.
+  if (offM > NAV_OFF_ROUTE_M + (Number(acc) > 0 ? Number(acc) : 0)) {
     _navOffCount++;
     if (_navOffCount >= 3 && _navStops.length >= 2) {
       _navOffCount = 0;
@@ -27142,7 +27160,7 @@ function _navOnPosition(lat, lon) {
 
   // Distance to the turn along the road, not as the crow flies; and what
   // is left of the whole trip, scaled from the router's own timing.
-  const along = Math.max(0, (rt.cum[st.idx] || 0) - (rt.cum[posIdx] || 0));
+  const along = Math.max(0, (rt.cum[st.idx] || 0) - alongAt);
 
   // Say each maneuver twice, the way a navigator does: once when it
   // becomes the next thing, once again close to the turn itself. Not on
@@ -27156,7 +27174,7 @@ function _navOnPosition(lat, lon) {
     _navSpokeNear = true;
     _navSay(phrase());
   }
-  const remain = Math.max(0, (rt.cum[rt.cum.length - 1] || 0) - (rt.cum[posIdx] || 0));
+  const remain = Math.max(0, (rt.cum[rt.cum.length - 1] || 0) - alongAt);
   const total = rt.cum[rt.cum.length - 1] || 1;
   const secsLeft = rt.secs * (remain / total);
   const eta = new Date(Date.now() + secsLeft * 1000);
@@ -45176,7 +45194,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Voice fix: spoken directions actually play now. The old code silenced its own sentences by cancelling and speaking in the same instant; the voice now waits a beat when interrupting itself, speaks instantly on a tap, picks an English voice, and holds the sentence so the browser cannot cut it off mid-word.";
+const APP_LATEST_UPDATE = 'Navigation fix: no more false "you left the route" alarms. Your position is now measured against the road line itself, and shaky GPS fixes no longer count against you.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
