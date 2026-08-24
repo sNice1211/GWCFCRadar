@@ -8385,6 +8385,42 @@ footer {
   border-radius: 5px; padding: 2px 5px; color: #000;
 }
 #nav-note { font-size: 9px; opacity: 0.7; line-height: 1.45; margin-top: 6px; }
+/* The next-turn banner: the one thing a driver glances at, so it is the
+   biggest thing in the panel while navigation is running. */
+#nav-turn {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 8px; padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,223,107,0.5);
+  background-image: linear-gradient(180deg, rgba(255,223,107,0.16) 0%, rgba(0,0,0,0.3) 100%);
+  box-shadow: var(--edge-3d-soft);
+}
+#nav-turn-arrow { font-size: 26px; line-height: 1; flex-shrink: 0; }
+#nav-turn-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+#nav-turn-main { font-size: 13px; font-weight: 700; line-height: 1.25; }
+#nav-turn-sub { font-size: 9px; opacity: 0.8; font-family: var(--mono); }
+#nav-gorow { margin-top: 8px; display: flex; }
+#nav-go { flex: 1; font-weight: 700; padding: 8px 10px; }
+#nav-go.live {
+  background-image: linear-gradient(180deg, #2b0000 0%, #4d0404 100%);
+  box-shadow: inset 0 2px 5px rgba(0,0,0,0.55);
+}
+#nav-steps { margin-top: 8px; max-height: 180px; overflow-y: auto; }
+.nav-step {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 6px; border-radius: 6px; font-size: 10px;
+  opacity: 0.75;
+}
+.nav-step.cur {
+  opacity: 1; font-weight: 700;
+  background-image: var(--grad-card);
+  box-shadow: var(--edge-3d-soft);
+  border: 1px solid rgba(255,223,107,0.35);
+}
+.nav-step.done { opacity: 0.35; }
+.nav-step-arrow { flex-shrink: 0; width: 16px; text-align: center; }
+.nav-step-text { flex: 1; min-width: 0; }
+.nav-step-dist { flex-shrink: 0; font-family: var(--mono); font-size: 8px; opacity: 0.8; }
 #nav-report-title {
   font-size: 8px; font-weight: 700; letter-spacing: 1.5px;
   text-transform: uppercase; opacity: 0.7; margin: 10px 0 4px;
@@ -9476,7 +9512,17 @@ body.clean-mode #clean-hint { opacity: 1; }
 <div id="nav-panel" style="display:none;">
   <div id="nav-head">
     <span><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> Navigation</span>
-    <button id="nav-close" onclick="_navClose()" title="Close">&times;</button>
+    <span style="display:flex;align-items:center;gap:2px;">
+      <span id="nav-grab" class="dtb-drag" title="Drag to move">⠿</span>
+      <button id="nav-close" onclick="_navClose()" title="Close">&times;</button>
+    </span>
+  </div>
+  <div id="nav-turn" style="display:none;">
+    <span id="nav-turn-arrow"></span>
+    <span id="nav-turn-body">
+      <span id="nav-turn-main"></span>
+      <span id="nav-turn-sub"></span>
+    </span>
   </div>
   <div id="nav-stops"></div>
   <div id="nav-addrow">
@@ -9496,6 +9542,10 @@ body.clean-mode #clean-hint { opacity: 1; }
   </div>
   <div id="nav-report-hint" style="display:none;"></div>
   <div id="nav-routes"></div>
+  <div id="nav-gorow" style="display:none;">
+    <button id="nav-go" class="nav-btn" onclick="_navGo()">Start Navigation</button>
+  </div>
+  <div id="nav-steps" style="display:none;"></div>
   <div id="nav-note"></div>
   <div id="nav-legend">
     <span><i style="background:#3a4148;"></i>clear</span>
@@ -26194,6 +26244,12 @@ function _startLocationTracking() {
     }
     if (_locFollow) map.panTo(ll);
     _updateGpsHud(pos);
+    // Live navigation rides the same fixes the marker does: one watch,
+    // many listeners, rather than a second GPS subscription to drain the
+    // battery twice.
+    if (typeof _navOnPosition === 'function') {
+      try { _navOnPosition(lat, lng); } catch (e) {}
+    }
   }, err => {
     _stopLocationTracking();
     try { localStorage.removeItem('gwcfc_location'); } catch(e) {}
@@ -26252,6 +26308,10 @@ let _navPlacing = null; // a report type waiting for a tap on the map
 let _navReportLayer = null;
 let _navTrackTimer = null;
 const _navWxCache = new Map();  // "lat,lon" -> { at, lvl }, ~17 mi squares
+let _navNavOn = false;          // live turn-by-turn guidance running
+let _navStepIdx = 0;            // which maneuver is next
+let _navOffCount = 0;           // consecutive fixes seen off the route
+let _navArrived = false;
 
 function _navOpen() {
   if (typeof lqmCloseSettings === 'function') { try { lqmCloseSettings(); } catch (e) {} }
@@ -26282,6 +26342,7 @@ function _navClose() {
   const el = document.getElementById('nav-panel');
   if (el) el.style.display = 'none';
   _navGen++;
+  if (_navNavOn) _navEndNav();
   _navDisarmReport();
   _navTrackStop();
   if (_navLayer) { try { map.removeLayer(_navLayer); } catch (e) {} _navLayer = null; }
@@ -26387,7 +26448,7 @@ async function _navRoute() {
     // Alternatives are only offered for a simple A-to-B ask; with stops in
     // between OSRM answers with the one route through them all.
     const r = await fetchWithTimeout('https://router.project-osrm.org/route/v1/driving/'
-      + coords + '?alternatives=true&overview=full&geometries=geojson', 15000);
+      + coords + '?alternatives=true&overview=full&geometries=geojson&steps=true', 15000);
     if (r.ok) d = await r.json();
   } catch (e) {}
   if (gen !== _navGen) return;
@@ -26401,12 +26462,16 @@ async function _navRoute() {
     const pts = (rt.geometry && rt.geometry.coordinates) || [];
     const { segs, worst } = await _navGrade(pts);
     if (gen !== _navGen) return;
-    graded.push({ dist: rt.distance, secs: rt.duration, coords: pts, segs, worst });
+    graded.push({ dist: rt.distance, secs: rt.duration, coords: pts, segs, worst,
+                  steps: _navParseSteps(rt, pts), cum: _navCum(pts) });
   }
   _navRoutes = graded;
   _navSel = 0;
-  _navPaint();
+  // A reroute in the middle of live guidance must not yank the camera off
+  // the driver's position to show the whole route.
+  _navPaint(!_navNavOn);
   _navRenderRoutes();
+  if (_navNavOn) { _navStepIdx = 0; _navRenderSteps(); }
   // And keep it honest: the sky does not hold still for a road trip, so as
   // long as routes are on screen their colors are re-read on a timer.
   _navTrackStart();
@@ -26636,6 +26701,7 @@ function _navSelect(i) {
   _navSel = i;
   _navPaint();
   _navRenderRoutes();
+  if (_navNavOn) { _navStepIdx = 0; _navRenderSteps(); }
 }
 
 function _navFmtDist(m) {
@@ -26658,9 +26724,12 @@ function _navFmtTime(secs) {
 function _navRenderRoutes() {
   const el = document.getElementById('nav-routes');
   const note = document.getElementById('nav-note');
+  const gorow = document.getElementById('nav-gorow');
+  if (gorow) gorow.style.display = _navRoutes.length ? 'flex' : 'none';
   if (!el) return;
   if (!_navRoutes.length) {
     el.innerHTML = '';
+    if (_navNavOn) _navEndNav();
     if (note) note.textContent = _navStops.length >= 2 ? (note.textContent || '')
       : 'Routes appear here once there are two stops.';
     return;
@@ -26685,6 +26754,260 @@ function _navRenderRoutes() {
       + ' Rechecked every few minutes while routes are showing.';
   }
 }
+
+// ── LIVE TURN-BY-TURN GUIDANCE ────────────────────────────────────────────
+// The half of a maps app that happens while you drive. The router already
+// describes every maneuver (steps=true); this follows the phone's own GPS
+// fixes along the chosen route, keeps the camera on the car, tells you what
+// the road does next and how far away that is, notices when you have left
+// the route and asks for a new one, and says so when you have arrived. It
+// listens to the SAME location watch the blue dot uses - one GPS
+// subscription, many listeners.
+
+// Meters between two points, flat-earth style: at street scale the error is
+// centimeters and it costs nothing, which matters at one call per vertex
+// per GPS fix.
+function _navMeters(lat1, lon1, lat2, lon2) {
+  const kx = Math.cos(((lat1 + lat2) / 2) * Math.PI / 180) * 111320;
+  const dx = (lon2 - lon1) * kx;
+  const dy = (lat2 - lat1) * 110540;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+// Running distance along the route, one entry per vertex, so "how far to
+// the turn" is a subtraction instead of a walk.
+function _navCum(pts) {
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) {
+    cum.push(cum[i - 1] + _navMeters(pts[i - 1][1], pts[i - 1][0], pts[i][1], pts[i][0]));
+  }
+  return cum;
+}
+
+// What the router said, folded to one flat list of maneuvers with plain
+// words, an arrow, and where along the geometry each one sits.
+function _navStepText(st) {
+  const t = (st.maneuver && st.maneuver.type) || '';
+  const mod = (st.maneuver && st.maneuver.modifier) || '';
+  const onto = st.name ? ' onto ' + st.name : '';
+  const on = st.name ? ' on ' + st.name : '';
+  if (t === 'depart') return 'Head out' + on;
+  if (t === 'arrive') return 'Arrive at your destination';
+  if (t === 'roundabout' || t === 'rotary')
+    return 'At the roundabout, take exit ' + ((st.maneuver && st.maneuver.exit) || 1);
+  if (t === 'merge') return 'Merge' + onto;
+  if (t === 'on ramp') return 'Take the ramp' + onto;
+  if (t === 'off ramp') return 'Take the exit' + onto;
+  if (t === 'fork') return 'Keep ' + (mod || 'ahead') + ' at the fork';
+  if (t === 'end of road') return ('Turn ' + (mod || 'ahead')).trim() + onto;
+  if (mod === 'uturn') return 'Make a U-turn';
+  if (!mod || mod === 'straight') return 'Continue' + on;
+  return 'Turn ' + mod + onto;
+}
+function _navStepArrow(st) {
+  const t = (st.maneuver && st.maneuver.type) || '';
+  const mod = (st.maneuver && st.maneuver.modifier) || '';
+  if (t === 'arrive') return '\u{1F3C1}';
+  if (t === 'roundabout' || t === 'rotary') return '⟳';
+  if (mod === 'uturn') return '⤴';
+  if (/left/.test(mod)) return /slight/.test(mod) ? '↖' : '⬅';
+  if (/right/.test(mod)) return /slight/.test(mod) ? '↗' : '➡';
+  return '⬆';
+}
+function _navParseSteps(rt, pts) {
+  const out = [];
+  ((rt.legs || [])).forEach(leg => (leg.steps || []).forEach(st => {
+    const loc = (st.maneuver && st.maneuver.location) || null;
+    if (!loc) return;
+    // Where along the drawn line this maneuver lives: nearest vertex. The
+    // geometry is dense enough that "nearest" and "exact" are the same road.
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      const d = _navMeters(loc[1], loc[0], pts[i][1], pts[i][0]);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    out.push({ text: _navStepText(st), arrow: _navStepArrow(st),
+               lat: loc[1], lon: loc[0], idx: best, dist: st.distance || 0 });
+  }));
+  out.sort((a, b) => a.idx - b.idx);
+  return out;
+}
+
+// Short distances the way a driver hears them: feet then miles, or meters
+// then kilometers, following the Units tab.
+function _navFmtShort(m) {
+  const pref = (typeof _units !== 'undefined' && _units && _units.dist) || 'mi';
+  if (pref === 'km') {
+    if (m < 950) return Math.max(10, Math.round(m / 10) * 10) + ' m';
+    return (m / 1000).toFixed(1) + ' km';
+  }
+  const ft = m * 3.28084;
+  if (ft < 900) return Math.max(50, Math.round(ft / 50) * 50) + ' ft';
+  return (m / 1609.344).toFixed(1) + ' mi';
+}
+
+function _navGo() {
+  if (_navNavOn) _navEndNav();
+  else _navStartNav();
+}
+
+function _navStartNav() {
+  if (!_navRoutes[_navSel]) return;
+  _navNavOn = true;
+  _navStepIdx = 0;
+  _navOffCount = 0;
+  _navArrived = false;
+  const go = document.getElementById('nav-go');
+  if (go) { go.textContent = 'End Navigation'; go.classList.add('live'); }
+  _navSetTurn('\u{1F6F0}', 'Waiting for GPS…',
+    'Guidance follows your position from here.');
+  const turn = document.getElementById('nav-turn');
+  if (turn) turn.style.display = 'flex';
+  const steps = document.getElementById('nav-steps');
+  if (steps) steps.style.display = 'block';
+  _navRenderSteps();
+  // One GPS subscription for the whole app: if the blue dot is not already
+  // running, start it the same way the GPS settings toggle does.
+  if (!_locMarker && typeof _startLocationTracking === 'function') {
+    _startLocationTracking();
+    const cb = document.getElementById('lqm-set-location');
+    if (cb) cb.checked = true;
+  } else if (_locMarker) {
+    const ll = _locMarker.getLatLng();
+    _navOnPosition(ll.lat, ll.lng);
+  }
+}
+
+function _navEndNav() {
+  _navNavOn = false;
+  _navArrived = false;
+  const go = document.getElementById('nav-go');
+  if (go) { go.textContent = 'Start Navigation'; go.classList.remove('live'); }
+  const turn = document.getElementById('nav-turn');
+  if (turn) turn.style.display = 'none';
+  const steps = document.getElementById('nav-steps');
+  if (steps) { steps.style.display = 'none'; steps.innerHTML = ''; }
+}
+
+function _navSetTurn(arrow, main, sub) {
+  const a = document.getElementById('nav-turn-arrow');
+  const m = document.getElementById('nav-turn-main');
+  const s = document.getElementById('nav-turn-sub');
+  if (a) a.textContent = arrow;
+  if (m) m.textContent = main;
+  if (s) s.textContent = sub;
+}
+
+function _navRenderSteps() {
+  const el = document.getElementById('nav-steps');
+  const rt = _navRoutes[_navSel];
+  if (!el || !rt || !rt.steps) return;
+  el.innerHTML = rt.steps.map((st, i) =>
+    `<div class="nav-step${i === _navStepIdx ? ' cur' : i < _navStepIdx ? ' done' : ''}" data-step="${i}">`
+    + `<span class="nav-step-arrow">${st.arrow}</span>`
+    + `<span class="nav-step-text">${_navEsc(st.text)}</span>`
+    + `<span class="nav-step-dist">${st.dist > 40 ? _navFmtShort(st.dist) : ''}</span>`
+    + `</div>`).join('');
+  const cur = el.querySelector('.nav-step.cur');
+  if (cur && cur.scrollIntoView) {
+    try { cur.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+  }
+}
+
+// How far off the road counts as off the route. GPS wanders ~10-30 m in a
+// car; three fixes past this in a row means a genuinely different road.
+const NAV_OFF_ROUTE_M = 90;
+
+function _navOnPosition(lat, lon) {
+  if (!_navNavOn || _navArrived) return;
+  const rt = _navRoutes[_navSel];
+  if (!rt || !rt.coords || rt.coords.length < 2) return;
+
+  // Where along the route this fix sits: the nearest vertex, and how far
+  // from it the car actually is.
+  let posIdx = 0, offM = Infinity;
+  for (let i = 0; i < rt.coords.length; i++) {
+    const d = _navMeters(lat, lon, rt.coords[i][1], rt.coords[i][0]);
+    if (d < offM) { offM = d; posIdx = i; }
+  }
+
+  // The camera stays on the car, close enough to read street shapes.
+  try { map.setView([lat, lon], Math.max(map.getZoom(), 15)); } catch (e) {}
+
+  // Off the route: not on one stray fix, which is just GPS being GPS, but
+  // on three in a row. Then ask for a fresh route from where the car
+  // really is to the same destinations.
+  if (offM > NAV_OFF_ROUTE_M) {
+    _navOffCount++;
+    if (_navOffCount >= 3 && _navStops.length >= 2) {
+      _navOffCount = 0;
+      _navSetTurn('↻', 'Rerouting…', 'You left the route; finding a new one.');
+      _navStops[0] = { name: 'My Location', lat, lon };
+      _navRenderStops();
+      _navRoute();
+      return;
+    }
+  } else {
+    _navOffCount = 0;
+  }
+
+  // Arrived: near the end of the line, in real meters.
+  const last = rt.coords[rt.coords.length - 1];
+  if (_navMeters(lat, lon, last[1], last[0]) < 50) {
+    _navArrived = true;
+    _navSetTurn('\u{1F3C1}', 'You have arrived', 'Navigation will end by itself.');
+    _navStepIdx = Math.max(0, (rt.steps || []).length - 1);
+    _navRenderSteps();
+    setTimeout(() => { if (_navArrived) _navEndNav(); }, 8000);
+    return;
+  }
+
+  // The next maneuver: the first one still ahead of the car.
+  const steps = rt.steps || [];
+  let next = steps.length - 1;
+  for (let i = 0; i < steps.length; i++) {
+    if (steps[i].idx > posIdx) { next = i; break; }
+  }
+  if (next !== _navStepIdx) { _navStepIdx = next; _navRenderSteps(); }
+  const st = steps[next];
+  if (!st) return;
+
+  // Distance to the turn along the road, not as the crow flies; and what
+  // is left of the whole trip, scaled from the router's own timing.
+  const along = Math.max(0, (rt.cum[st.idx] || 0) - (rt.cum[posIdx] || 0));
+  const remain = Math.max(0, (rt.cum[rt.cum.length - 1] || 0) - (rt.cum[posIdx] || 0));
+  const total = rt.cum[rt.cum.length - 1] || 1;
+  const secsLeft = rt.secs * (remain / total);
+  const eta = new Date(Date.now() + secsLeft * 1000);
+  const hh = eta.getHours(), mm = String(eta.getMinutes()).padStart(2, '0');
+  const clock = ((hh % 12) || 12) + ':' + mm + (hh < 12 ? ' AM' : ' PM');
+  _navSetTurn(st.arrow, 'In ' + _navFmtShort(along) + ', ' + st.text.charAt(0).toLowerCase() + st.text.slice(1),
+    _navFmtTime(secsLeft) + ' · ' + _navFmtDist(remain) + ' · arrive ' + clock);
+}
+
+// ── The panel is a window: grab the handle, put it where you want it ──────
+(function _navDragInit() {
+  document.addEventListener('pointerdown', (e) => {
+    const grip = e.target.closest('#nav-grab');
+    if (!grip) return;
+    const panel = document.getElementById('nav-panel');
+    if (!panel) return;
+    e.preventDefault();
+    const r = panel.getBoundingClientRect();
+    const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    const move = (ev) => {
+      const x = Math.min(Math.max(ev.clientX - dx, 4), window.innerWidth - 60);
+      const y = Math.min(Math.max(ev.clientY - dy, 4), window.innerHeight - 60);
+      panel.style.left = x + 'px';
+      panel.style.top = y + 'px';
+      panel.style.right = 'auto';
+    };
+    const up = () => { document.removeEventListener('pointermove', move); };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up, { once: true });
+    document.addEventListener('pointercancel', up, { once: true });
+  });
+})();
 
 // ── ROAD REPORTS ──────────────────────────────────────────────────────────
 // The other half of a maps app: what the road is actually like, from the
@@ -44518,7 +44841,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "The reorder controls are back to the classic drag handle. The little up and down arrow buttons on the overlay list and the layer menus are gone, and you reorder by grabbing the dots handle and dragging, the way it was before.";
+const APP_LATEST_UPDATE = "Navigation drives with you now. Press Start Navigation on a route and it follows your GPS like the maps app: a big banner tells you the next turn and how far away it is by road, the full step list scrolls along with you, the camera stays on your position, it reroutes by itself if you leave the route, and it tells you when you have arrived. The panel also grew a drag handle, so you can put it anywhere on the screen.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

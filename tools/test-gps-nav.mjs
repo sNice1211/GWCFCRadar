@@ -53,11 +53,20 @@ ok('the tutorial promises the tabs that exist',
 // A straight west-to-east route at 28N, and an alternative that dips south.
 const line = (lat) => Array.from({ length: 21 },
   (_, i) => [-81 + i * 0.05, lat]);
+// Each route carries the router's own maneuver list, the way steps=true
+// really answers: depart, one mid-route turn, arrive.
+const legsFor = (pts, road) => [{ steps: [
+  { maneuver: { type: 'depart', location: pts[0] }, name: 'A1A', distance: 40000 },
+  { maneuver: { type: 'turn', modifier: 'right', location: pts[10] }, name: road, distance: 55000 },
+  { maneuver: { type: 'arrive', location: pts[pts.length - 1] }, name: '', distance: 0 },
+] }];
 const OSRM = {
   code: 'Ok',
   routes: [
-    { distance: 100000, duration: 3600, geometry: { coordinates: line(28.0) } },
-    { distance: 120000, duration: 4500, geometry: { coordinates: line(27.5) } },
+    { distance: 100000, duration: 3600, geometry: { coordinates: line(28.0) },
+      legs: legsFor(line(28.0), 'Ocean Blvd') },
+    { distance: 120000, duration: 4500, geometry: { coordinates: line(27.5) },
+      legs: legsFor(line(27.5), 'River Rd') },
   ],
 };
 const NOMINATIM = [
@@ -368,6 +377,120 @@ console.log('\n5c. reporting what the road is like');
   ok('a note can be added after the fact', r.noted === 'unmarked car', r.noted);
   ok('removing a report clears pin and record alike',
      r.pinsAfter === 0 && r.emptied === 0, `${r.pinsAfter} pins, ${r.emptied} records`);
+}
+
+console.log('\n5d. live guidance follows the drive');
+{
+  const a = await page.evaluate(() => {
+    const out = {};
+    out.steps = (_navRoutes[0].steps || []).map(s => s.text);
+    // Starting guidance with no blue dot yet must start the one shared
+    // location watch, not a second one of its own.
+    window.__realSLT = _startLocationTracking;
+    let started = false;
+    _startLocationTracking = () => { started = true; };
+    _navGo();
+    out.on = _navNavOn;
+    out.started = started;
+    out.turnShown = document.getElementById('nav-turn').style.display !== 'none';
+    out.waiting = document.getElementById('nav-turn-main').textContent;
+    out.goLabel = document.getElementById('nav-go').textContent;
+    out.listRows = document.querySelectorAll('#nav-steps .nav-step').length;
+    // First fix lands at the western end of the route.
+    _navOnPosition(28.0, -80.98);
+    out.first = document.getElementById('nav-turn-main').textContent;
+    out.sub = document.getElementById('nav-turn-sub').textContent;
+    // The drive passes the mid-route turn; the banner moves on to arrival.
+    _navOnPosition(28.0, -80.4);
+    out.after = document.getElementById('nav-turn-main').textContent;
+    out.curIdx = _navStepIdx;
+    out.doneRows = document.querySelectorAll('#nav-steps .nav-step.done').length;
+    return out;
+  });
+  ok('the route knows its maneuvers, in plain words',
+     a.steps.length === 3 && a.steps[0] === 'Head out on A1A'
+       && a.steps[1] === 'Turn right onto Ocean Blvd'
+       && a.steps[2] === 'Arrive at your destination', a.steps.join(' | '));
+  ok('starting guidance starts the shared location watch',
+     a.on && a.started && a.goLabel === 'End Navigation');
+  ok('and waits honestly for the first fix',
+     a.turnShown && /waiting for gps/i.test(a.waiting), a.waiting);
+  ok('the full step list is on screen', a.listRows === 3, String(a.listRows));
+  ok('the first fix announces the next turn with a road distance',
+     /^In .+, turn right onto Ocean Blvd$/.test(a.first), a.first);
+  ok('with time left, distance left and an arrival clock',
+     /(min|hr)/.test(a.sub) && /(mi|km)/.test(a.sub) && /arrive/.test(a.sub)
+       && /(AM|PM)/.test(a.sub), a.sub);
+  ok('past the turn, the banner moves on to the arrival step',
+     a.curIdx === 2 && /arrive at your destination/i.test(a.after), a.after);
+  ok('and the finished maneuvers grey out in the list', a.doneRows === 2,
+     String(a.doneRows));
+
+  // Three fixes well off the road ask for a fresh route from the car.
+  const asked0 = osrmAsked.length;
+  const b = await page.evaluate(async () => {
+    _navOnPosition(27.7, -80.4);
+    const afterOne = document.getElementById('nav-turn-main').textContent;
+    _navOnPosition(27.7, -80.4);
+    _navOnPosition(27.7, -80.4);
+    const banner = document.getElementById('nav-turn-main').textContent;
+    await new Promise(res => setTimeout(res, 500));
+    return { afterOne, banner, stop0: _navStops[0].name, on: _navNavOn,
+             rows: document.querySelectorAll('#nav-steps .nav-step').length };
+  });
+  ok('one stray fix is just GPS being GPS - no reroute yet',
+     !/rerout/i.test(b.afterOne), b.afterOne);
+  ok('three in a row reroute from where the car really is',
+     osrmAsked.length === asked0 + 1 && /rerout/i.test(b.banner)
+       && b.stop0 === 'My Location',
+     `asks +${osrmAsked.length - asked0}, ${b.banner}, from ${b.stop0}`);
+  ok('and asked the router from the car\'s position',
+     /-80\.4,27\.7/.test(osrmAsked[osrmAsked.length - 1] || ''),
+     (osrmAsked[osrmAsked.length - 1] || '').slice(60, 140));
+  ok('guidance survives the reroute with the new steps on screen',
+     b.on && b.rows === 3, `${b.on}, ${b.rows} rows`);
+
+  // Reaching the end of the line is the end of the trip.
+  const c = await page.evaluate(async () => {
+    const rt = _navRoutes[_navSel];
+    const last = rt.coords[rt.coords.length - 1];
+    _navOnPosition(last[1], last[0]);
+    const main = document.getElementById('nav-turn-main').textContent;
+    const arrived = _navArrived;
+    // Put the world back for the sections after this one.
+    _navEndNav();
+    _startLocationTracking = window.__realSLT;
+    _navStops[0] = { name: 'Orlando, Orange County', lat: 28.54, lon: -81.38 };
+    _navRenderStops();
+    await _navRoute();
+    return { main, arrived };
+  });
+  ok('arriving says so, and ends guidance by itself',
+     c.arrived && /you have arrived/i.test(c.main), c.main);
+}
+
+console.log('\n5e. the panel moves by its handle');
+{
+  const r = await page.evaluate(() => {
+    const panel = document.getElementById('nav-panel');
+    const grab = document.getElementById('nav-grab');
+    if (!grab) return { hasGrip: false };
+    const before = panel.getBoundingClientRect();
+    grab.dispatchEvent(new PointerEvent('pointerdown',
+      { clientX: before.left + 6, clientY: before.top + 8, bubbles: true, pointerId: 1 }));
+    document.dispatchEvent(new PointerEvent('pointermove',
+      { clientX: 140, clientY: 220, bubbles: true, pointerId: 1 }));
+    document.dispatchEvent(new PointerEvent('pointerup',
+      { clientX: 140, clientY: 220, bubbles: true, pointerId: 1 }));
+    const after = panel.getBoundingClientRect();
+    const moved = Math.abs(after.left - before.left) > 30
+               || Math.abs(after.top - before.top) > 30;
+    panel.style.left = ''; panel.style.top = ''; panel.style.right = '';
+    return { hasGrip: grab.classList.contains('dtb-drag'), moved,
+             at: `${Math.round(after.left)},${Math.round(after.top)}` };
+  });
+  ok('the head carries a drag handle', r.hasGrip);
+  ok('and dragging it moves the panel', r.moved, r.at);
 }
 
 console.log('\n6. choosing, rearranging, removing');
