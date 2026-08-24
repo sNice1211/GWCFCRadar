@@ -27170,16 +27170,46 @@ function _navOnPosition(lat, lon) {
 // The browser's own voice (speechSynthesis), so nothing is downloaded and
 // nothing leaves the device. The engine call is separated from the mute
 // gate so the gate is testable and the engine is swappable.
+// Held here so the browser cannot garbage-collect the sentence while it is
+// still being spoken, which is a real Chrome behaviour and sounds like the
+// voice cutting out mid-word.
+let _navSpeakU = null;
+let _navSpeakTimer = null;
 function _navSpeak(text) {
   try {
     const ss = window.speechSynthesis;
     if (!ss || typeof SpeechSynthesisUtterance === 'undefined') return;
-    // One instruction at a time: a queue of stale directions read aloud in
-    // order would narrate where you were, not where you are.
+    const go = () => {
+      try {
+        // Chrome sometimes leaves the engine stuck paused; resume is free.
+        try { ss.resume(); } catch (e2) {}
+        const u = new SpeechSynthesisUtterance(text);
+        u.rate = 1.0;
+        u.volume = 1.0;
+        // An English voice when the platform offers a list; the default
+        // otherwise. getVoices can legitimately be empty on first call.
+        try {
+          const vs = ss.getVoices ? ss.getVoices() : [];
+          const v = vs.find(x => /^en[-_]/i.test(x.lang) && x.default)
+                 || vs.find(x => /^en/i.test(x.lang));
+          if (v) u.voice = v;
+        } catch (e2) {}
+        _navSpeakU = u;
+        ss.speak(u);
+      } catch (e2) {}
+    };
+    if (_navSpeakTimer) { clearTimeout(_navSpeakTimer); _navSpeakTimer = null; }
+    // One instruction at a time - but cancel() and an immediate speak()
+    // race each other in Chrome and the NEW sentence loses: it is queued
+    // and then killed by its own cancel, which plays as silence. So when
+    // something was actually talking, cancel now and speak a beat later.
+    // When nothing was, speak immediately, which also keeps the very
+    // first spoken word inside the tap gesture that browsers require to
+    // unlock audio at all.
+    const busy = ss.speaking || ss.pending;
     ss.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.0;
-    ss.speak(u);
+    if (busy) _navSpeakTimer = setTimeout(go, 120);
+    else go();
   } catch (e) {}
 }
 function _navSay(text) { if (_navVoiceOn) _navSpeak(text); }
@@ -45146,7 +45176,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Tap to hear it: during navigation, tapping the big instruction banner replays the current direction out loud, and tapping any step in the list speaks that step. A tap speaks even while the voice is muted, because asking with your finger is not the same as automatic narration.";
+const APP_LATEST_UPDATE = "Voice fix: spoken directions actually play now. The old code silenced its own sentences by cancelling and speaking in the same instant; the voice now waits a beat when interrupting itself, speaks instantly on a tap, picks an English voice, and holds the sentence so the browser cannot cut it off mid-word.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
