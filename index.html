@@ -8262,6 +8262,112 @@ footer {
 .gps-hud-val  { color: rgba(255,255,255,0.9); }
 @media (max-width:480px) { #gps-hud { right: 6px; bottom: 120px; } }
 
+/* ── NAVIGATION PANEL ─────────────────────────────────────────────────────
+   Same family as every other panel: the red slab, lit from above. */
+#nav-panel {
+  position: fixed;
+  top: 70px;
+  right: 10px;
+  z-index: 1101;
+  width: 300px;
+  max-width: calc(100vw - 20px);
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  border-radius: 12px;
+  border: 1px solid var(--edge-red, rgba(190,20,20,0.55));
+  background: #2e0000;
+  background-image: var(--grad-panel);
+  box-shadow: var(--lift-3d), var(--edge-3d);
+  color: #ffe9e6;
+  font-size: 11px;
+  padding: 0 10px 10px;
+}
+#nav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 -10px 8px;
+  padding: 9px 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  font-size: 12px;
+  background-image: linear-gradient(180deg, #6d0909 0%, #3f0101 100%);
+  box-shadow: var(--edge-3d-soft);
+  border-radius: 12px 12px 0 0;
+}
+#nav-close {
+  background: none;
+  border: none;
+  color: #ffb3ab;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+#nav-addrow { display: flex; gap: 6px; margin: 8px 0; }
+#nav-search {
+  flex: 1;
+  min-width: 0;
+  background: #1c0000;
+  background-image: var(--grad-sunk);
+  border: 1px solid var(--edge-red, rgba(190,20,20,0.55));
+  border-radius: 7px;
+  color: #ffe9e6;
+  font-size: 11px;
+  padding: 6px 8px;
+  box-shadow: inset 0 1px 3px rgba(0,0,0,0.7);
+}
+.nav-btn {
+  background: #6d0404;
+  background-image: var(--grad-raise);
+  border: 1px solid var(--edge-red, rgba(190,20,20,0.55));
+  border-radius: 7px;
+  color: #ffe9e6;
+  font-size: 11px;
+  padding: 5px 10px;
+  cursor: pointer;
+  box-shadow: var(--edge-3d-soft);
+}
+.nav-btn:hover { background-image: var(--grad-raise-h); }
+.nav-stop, .nav-sug, .nav-route {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: 4px 0;
+  border-radius: 8px;
+  background-image: var(--grad-card);
+  box-shadow: var(--edge-3d-soft);
+}
+.nav-sug, .nav-route { cursor: pointer; }
+.nav-sug:hover, .nav-route:hover { background-image: var(--grad-raise); }
+.nav-route.sel {
+  background-image: var(--grad-sunk);
+  box-shadow: var(--edge-3d), inset 0 2px 5px rgba(0,0,0,0.55);
+  border: 1px solid rgba(255,90,80,0.45);
+}
+.nav-stop-name, .nav-sug-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-stop-btn {
+  background: none; border: none; cursor: pointer;
+  color: #ffb3ab; font-size: 12px; line-height: 1; padding: 1px 3px;
+}
+.nav-stop-btn:disabled { opacity: 0.25; cursor: default; }
+.nav-route-eta { font-family: var(--mono); font-size: 10px; white-space: nowrap; }
+.nav-worst {
+  font-size: 8px; font-weight: 700; letter-spacing: 1px;
+  border-radius: 5px; padding: 2px 5px; color: #000;
+}
+#nav-note { font-size: 9px; opacity: 0.7; line-height: 1.45; margin-top: 6px; }
+#nav-legend {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; font-size: 8px; letter-spacing: 0.5px; opacity: 0.85;
+}
+#nav-legend i {
+  display: inline-block; width: 14px; height: 5px;
+  border-radius: 2px; margin-right: 3px; vertical-align: middle;
+}
+@media (max-width: 480px) { #nav-panel { top: 60px; right: 5px; width: 270px; } }
+
 /* ── CROSSHAIR ── */
 body.gwcfc-crosshair #map { cursor: crosshair !important; }
 body.gwcfc-crosshair #map::after {
@@ -9291,6 +9397,30 @@ body.clean-mode #clean-hint { opacity: 1; }
 <!-- GPS HUD OVERLAY -->
 <div id="gps-hud" style="display:none;">
   <div class="gps-hud-title">&#x25CF;&nbsp;GPS</div>
+</div>
+
+<!-- NAVIGATION PANEL: destinations in, weather-colored routes out -->
+<div id="nav-panel" style="display:none;">
+  <div id="nav-head">
+    <span><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> Navigation</span>
+    <button id="nav-close" onclick="_navClose()" title="Close">&times;</button>
+  </div>
+  <div id="nav-stops"></div>
+  <div id="nav-addrow">
+    <input id="nav-search" type="text" placeholder="Add a place&hellip;"
+           autocomplete="off" onkeydown="if(event.key==='Enter')_navSearch()">
+    <button class="nav-btn" onclick="_navSearch()">Add</button>
+  </div>
+  <div id="nav-suggest" style="display:none;"></div>
+  <div id="nav-routes"></div>
+  <div id="nav-note"></div>
+  <div id="nav-legend">
+    <span><i style="background:#3a4148;"></i>clear</span>
+    <span><i style="background:#ffd400;"></i>low</span>
+    <span><i style="background:#ff8c00;"></i>moderate</span>
+    <span><i style="background:#ff2a2a;"></i>high</span>
+    <span><i style="background:#e034ff;"></i>extreme</span>
+  </div>
 </div>
 
 <!-- POLY TOOLBAR -->
@@ -26014,6 +26144,323 @@ function _stopLocationTracking() {
   try { localStorage.removeItem('gwcfc_location'); } catch(e) {}
 }
 
+// ── GPS NAVIGATION ─────────────────────────────────────────────────────────
+// The maps-app experience, with the weather in the picture. Destinations go
+// in a list that can be reordered; OSRM's public router answers with one or
+// more routes and a driving time for each; and the chosen route is painted
+// by the weather alerts it passes through, on the same five-step intensity
+// scale the Alert Desk uses. The road keeps its normal color where nothing
+// is happening - a route that is all yellow would say nothing when the real
+// message is "the middle third crosses a tornado warning".
+
+// Severity 0-4 -> paint. 0 is the ordinary road color, not a warning color.
+const NAV_COLORS = ['#3a4148', '#ffd400', '#ff8c00', '#ff2a2a', '#e034ff'];
+const NAV_LEVELS = ['None', 'Low', 'Moderate', 'High', 'Extreme'];
+
+let _navStops = [];     // { name, lat, lon }
+let _navRoutes = [];    // { dist, secs, coords: [[lon,lat]...], segs, worst }
+let _navSel = 0;
+let _navLayer = null;   // everything drawn on the map, removed as one
+let _navGen = 0;        // late answers from an abandoned request stay dead
+let _navSuggest = [];   // last geocoder answers, offered as rows
+
+function _navOpen() {
+  if (typeof lqmCloseSettings === 'function') { try { lqmCloseSettings(); } catch (e) {} }
+  const el = document.getElementById('nav-panel');
+  if (el) el.style.display = 'block';
+  // If you are on the map, you are the natural starting point.
+  if (!_navStops.length && _locMarker) {
+    const ll = _locMarker.getLatLng();
+    _navStops.push({ name: 'My Location', lat: ll.lat, lon: ll.lng });
+  }
+  _navRenderStops();
+  _navRenderRoutes();
+}
+
+function _navClose() {
+  const el = document.getElementById('nav-panel');
+  if (el) el.style.display = 'none';
+  _navGen++;
+  if (_navLayer) { try { map.removeLayer(_navLayer); } catch (e) {} _navLayer = null; }
+  _navRoutes = [];
+}
+
+function _navEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ── Places: OpenStreetMap's geocoder ──────────────────────────────────────
+async function _navSearch() {
+  const box = document.getElementById('nav-search');
+  const q = box ? box.value.trim() : '';
+  if (!q) return;
+  const sug = document.getElementById('nav-suggest');
+  if (sug) { sug.style.display = 'block'; sug.textContent = 'Searching…'; }
+  let rows = [];
+  try {
+    const r = await fetchWithTimeout('https://nominatim.openstreetmap.org/search?format=json&limit=5&q='
+      + encodeURIComponent(q), 10000);
+    if (r.ok) rows = await r.json();
+  } catch (e) {}
+  _navSuggest = (Array.isArray(rows) ? rows : []).map(p => ({
+    name: p.display_name || q,
+    lat: parseFloat(p.lat), lon: parseFloat(p.lon),
+  })).filter(p => isFinite(p.lat) && isFinite(p.lon));
+  if (!sug) return;
+  if (!_navSuggest.length) {
+    sug.textContent = 'Nothing found for that. Try adding a state or country.';
+    return;
+  }
+  sug.innerHTML = _navSuggest.map((p, i) =>
+    `<div class="nav-sug" onclick="_navPick(${i})">`
+    + `<span class="nav-sug-name" title="${_navEsc(p.name)}">${_navEsc(p.name)}</span>`
+    + `</div>`).join('');
+}
+
+function _navPick(i) {
+  const p = _navSuggest[i];
+  if (!p) return;
+  // The full display name is a paragraph; the first two comma parts are the
+  // name a person would say.
+  const short = p.name.split(',').slice(0, 2).join(',').trim();
+  _navStops.push({ name: short, lat: p.lat, lon: p.lon });
+  _navSuggest = [];
+  const sug = document.getElementById('nav-suggest');
+  if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
+  const box = document.getElementById('nav-search');
+  if (box) box.value = '';
+  _navRenderStops();
+  _navRoute();
+}
+
+function _navRemoveStop(i) {
+  _navStops.splice(i, 1);
+  _navRenderStops();
+  _navRoute();
+}
+
+function _navMoveStop(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= _navStops.length) return;
+  const t = _navStops[i]; _navStops[i] = _navStops[j]; _navStops[j] = t;
+  _navRenderStops();
+  _navRoute();
+}
+
+function _navRenderStops() {
+  const el = document.getElementById('nav-stops');
+  if (!el) return;
+  if (!_navStops.length) {
+    el.innerHTML = '<div id="nav-empty" style="font-size:10px;opacity:.7;padding:4px 2px;">'
+      + 'Add a starting point and at least one destination.</div>';
+    return;
+  }
+  el.innerHTML = _navStops.map((s, i) => {
+    const tag = i === 0 ? 'A' : String.fromCharCode(65 + Math.min(i, 25));
+    return `<div class="nav-stop" data-stop="${i}">`
+      + `<b style="opacity:.8;">${tag}</b>`
+      + `<span class="nav-stop-name" title="${_navEsc(s.name)}">${_navEsc(s.name)}</span>`
+      + `<button class="nav-stop-btn" onclick="_navMoveStop(${i},-1)" ${i === 0 ? 'disabled' : ''} title="Earlier">&#9650;</button>`
+      + `<button class="nav-stop-btn" onclick="_navMoveStop(${i},1)" ${i === _navStops.length - 1 ? 'disabled' : ''} title="Later">&#9660;</button>`
+      + `<button class="nav-stop-btn" onclick="_navRemoveStop(${i})" title="Remove">&times;</button>`
+      + `</div>`;
+  }).join('');
+}
+
+// ── Routes: OSRM's public router ──────────────────────────────────────────
+async function _navRoute() {
+  const gen = ++_navGen;
+  _navRoutes = []; _navSel = 0;
+  if (_navLayer) { try { map.removeLayer(_navLayer); } catch (e) {} _navLayer = null; }
+  if (_navStops.length < 2) { _navRenderRoutes(); return; }
+  const note = document.getElementById('nav-note');
+  if (note) note.textContent = 'Finding routes…';
+  const coords = _navStops.map(s => `${s.lon},${s.lat}`).join(';');
+  let d = null;
+  try {
+    // Alternatives are only offered for a simple A-to-B ask; with stops in
+    // between OSRM answers with the one route through them all.
+    const r = await fetchWithTimeout('https://router.project-osrm.org/route/v1/driving/'
+      + coords + '?alternatives=true&overview=full&geometries=geojson', 15000);
+    if (r.ok) d = await r.json();
+  } catch (e) {}
+  if (gen !== _navGen) return;
+  if (!d || d.code !== 'Ok' || !Array.isArray(d.routes) || !d.routes.length) {
+    if (note) note.textContent = 'No route found. The router may be busy, or a stop may be unreachable by road.';
+    _navRenderRoutes();
+    return;
+  }
+  _navRoutes = d.routes.map(rt => {
+    const pts = (rt.geometry && rt.geometry.coordinates) || [];
+    const { segs, worst } = _navGrade(pts);
+    return { dist: rt.distance, secs: rt.duration, coords: pts, segs, worst };
+  });
+  _navSel = 0;
+  _navPaint();
+  _navRenderRoutes();
+}
+
+// One route's weather, read from the live alert polygons already on the map.
+// Sampled rather than point-by-point: a cross-country line has tens of
+// thousands of vertices and the polygons are big; every ~25th of the route
+// is plenty to color it honestly.
+function _navGrade(pts) {
+  if (!pts.length) return { segs: [], worst: 0 };
+  const step = Math.max(1, Math.floor(pts.length / 200));
+  const segs = [];
+  let worst = 0;
+  let cur = null;
+  for (let i = 0; i < pts.length; i += step) {
+    const end = Math.min(i + step, pts.length - 1);
+    const mid = pts[Math.floor((i + end) / 2)];
+    const lvl = _navSeverity(mid[1], mid[0]);
+    if (lvl > worst) worst = lvl;
+    const piece = pts.slice(i, end + 1).map(c => [c[1], c[0]]);
+    if (cur && cur.lvl === lvl) {
+      cur.latlngs = cur.latlngs.concat(piece.slice(1));
+    } else {
+      cur = { lvl, latlngs: piece };
+      segs.push(cur);
+    }
+    if (end >= pts.length - 1) break;
+  }
+  return { segs, worst };
+}
+
+// The worst active alert covering one point, 0-4. NWS spells its severity
+// out on every alert; the Alert Desk's simulated products carry the same
+// property, so both are read the same way.
+const _NAV_SEV = { minor: 1, moderate: 2, severe: 3, extreme: 4 };
+function _navSeverity(lat, lon) {
+  const feats = (typeof _lastAlertFeatures !== 'undefined' && _lastAlertFeatures) || [];
+  let worst = 0;
+  for (const f of feats) {
+    const g = f && f.geometry;
+    if (!g) continue;
+    const sev = _NAV_SEV[String(f.properties && f.properties.severity || '').toLowerCase()] || 1;
+    if (sev <= worst) continue;      // cannot change the answer, skip the math
+    const polys = g.type === 'Polygon' ? [g.coordinates]
+                : g.type === 'MultiPolygon' ? g.coordinates : null;
+    if (!polys) continue;
+    // A cheap rectangle first, computed once per feature and remembered on
+    // it, so the ray casting only runs for polygons that could possibly win.
+    if (!f._navBox) {
+      let w = 180, e = -180, s = 90, n = -90;
+      for (const poly of polys) for (const pt of poly[0]) {
+        if (pt[0] < w) w = pt[0]; if (pt[0] > e) e = pt[0];
+        if (pt[1] < s) s = pt[1]; if (pt[1] > n) n = pt[1];
+      }
+      f._navBox = { w, e, s, n };
+    }
+    const b = f._navBox;
+    if (lon < b.w || lon > b.e || lat < b.s || lat > b.n) continue;
+    for (const poly of polys) {
+      if (_ssPointInRawRing(lon, lat, poly[0])) { worst = sev; break; }
+    }
+  }
+  return worst;
+}
+
+function _navPaint() {
+  if (_navLayer) { try { map.removeLayer(_navLayer); } catch (e) {} }
+  _navLayer = L.layerGroup();
+  _navRoutes.forEach((rt, i) => {
+    if (i === _navSel) return;    // the chosen one is drawn last, on top
+    const line = L.polyline(rt.coords.map(c => [c[1], c[0]]),
+      { color: '#8593a1', weight: 5, opacity: 0.55 });
+    line.on('click', () => _navSelect(i));
+    _navLayer.addLayer(line);
+  });
+  const sel = _navRoutes[_navSel];
+  if (sel) {
+    // A pale casing under the colors, so the route reads as one road and
+    // the ordinary segments stay visible over any basemap.
+    _navLayer.addLayer(L.polyline(sel.coords.map(c => [c[1], c[0]]),
+      { color: '#dfe6ee', weight: 9, opacity: 0.85 }));
+    sel.segs.forEach(sg => {
+      _navLayer.addLayer(L.polyline(sg.latlngs,
+        { color: NAV_COLORS[sg.lvl] || NAV_COLORS[0], weight: 6, opacity: 0.95 }));
+    });
+  }
+  // Lettered pins for the stops themselves.
+  _navStops.forEach((s, i) => {
+    _navLayer.addLayer(L.marker([s.lat, s.lon], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div style="width:20px;height:20px;border-radius:50% 50% 50% 0;`
+          + `transform:rotate(-45deg);background:#c62020;border:2px solid #fff;`
+          + `box-shadow:0 2px 5px rgba(0,0,0,.6);display:flex;align-items:center;`
+          + `justify-content:center;"><b style="transform:rotate(45deg);color:#fff;`
+          + `font-size:10px;">${String.fromCharCode(65 + Math.min(i, 25))}</b></div>`,
+        iconSize: [20, 20], iconAnchor: [10, 20],
+      }),
+    }));
+  });
+  _navLayer.addTo(map);
+  const sel2 = _navRoutes[_navSel];
+  if (sel2 && sel2.coords.length) {
+    try {
+      map.fitBounds(L.latLngBounds(sel2.coords.map(c => [c[1], c[0]])),
+        { padding: [60, 60] });
+    } catch (e) {}
+  }
+}
+
+function _navSelect(i) {
+  if (i === _navSel || !_navRoutes[i]) return;
+  _navSel = i;
+  _navPaint();
+  _navRenderRoutes();
+}
+
+function _navFmtDist(m) {
+  // The same Distance preference the Units tab sets, read live.
+  const pref = (typeof _units !== 'undefined' && _units && _units.dist) || 'mi';
+  const mi = m / 1609.344;
+  const km = m / 1000;
+  const one = (v) => (v < 10 ? v.toFixed(1) : String(Math.round(v)));
+  if (pref === 'km') return one(km) + ' km';
+  if (pref === 'both') return one(mi) + ' mi / ' + one(km) + ' km';
+  return one(mi) + ' mi';
+}
+
+function _navFmtTime(secs) {
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return mins + ' min';
+  return Math.floor(mins / 60) + ' hr ' + (mins % 60) + ' min';
+}
+
+function _navRenderRoutes() {
+  const el = document.getElementById('nav-routes');
+  const note = document.getElementById('nav-note');
+  if (!el) return;
+  if (!_navRoutes.length) {
+    el.innerHTML = '';
+    if (note) note.textContent = _navStops.length >= 2 ? (note.textContent || '')
+      : 'Routes appear here once there are two stops.';
+    return;
+  }
+  el.innerHTML = _navRoutes.map((rt, i) => {
+    const eta = new Date(Date.now() + rt.secs * 1000);
+    const hh = eta.getHours(), mm = String(eta.getMinutes()).padStart(2, '0');
+    const clock = ((hh % 12) || 12) + ':' + mm + (hh < 12 ? ' AM' : ' PM');
+    const worstTag = rt.worst > 0
+      ? `<span class="nav-worst" style="background:${NAV_COLORS[rt.worst]};">${NAV_LEVELS[rt.worst].toUpperCase()}</span>`
+      : '';
+    return `<div class="nav-route${i === _navSel ? ' sel' : ''}" data-route="${i}" onclick="_navSelect(${i})">`
+      + `<span style="flex:1;min-width:0;">Route ${i + 1} ${worstTag}</span>`
+      + `<span class="nav-route-eta">${_navFmtTime(rt.secs)} &middot; ${_navFmtDist(rt.dist)} &middot; ${clock}</span>`
+      + `</div>`;
+  }).join('');
+  if (note) {
+    const sel = _navRoutes[_navSel];
+    note.textContent = sel && sel.worst > 0
+      ? `The chosen route crosses ${NAV_LEVELS[sel.worst].toLowerCase()}-level weather. The colored stretches say where.`
+      : 'The chosen route is clear of active weather alerts right now.';
+  }
+}
+
 // ── FULLSCREEN ──
 function toggleFullscreen() {
   if (!document.fullscreenElement) document.documentElement.requestFullscreen();
@@ -38758,7 +39205,7 @@ function selectProduct(p) {
   </div>
 
   <!-- ─── UNITS & TIME ─── -->
-  <div class="lqm-settings-group" data-merge="units" data-merge-label="Units & Location" data-merge-icon="ic-ruler" data-cat="units">
+  <div class="lqm-settings-group" data-merge="units" data-merge-label="Units" data-merge-icon="ic-ruler" data-cat="units">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-ruler></use></svg> Units &amp; Time</div>
     <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Wind &amp; Speed</span>
@@ -38820,9 +39267,20 @@ function selectProduct(p) {
     </div>
   </div>
 
-  <!-- ─── LOCATION ─── -->
-  <div class="lqm-settings-group" data-merge="units" data-cat="units">
-    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> Location</div>
+  <!-- ─── GPS: location tracking, and turn-by-turn style navigation with
+       weather-colored routes. What was the Location card lives here now,
+       because everything in it is about where you are and where you are
+       going, which is not a unit of measurement. ─── -->
+  <div class="lqm-settings-group" data-cat="gps">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> GPS</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Show My Location</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-location" onchange="lqmToggleSetting('location',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
     <div class="lqm-settings-row" id="lqm-follow-row" style="display:none;">
       <span class="lqm-settings-lbl">Follow Me</span>
       <label class="lqm-toggle">
@@ -38846,6 +39304,19 @@ function selectProduct(p) {
         <div class="lqm-toggle-track"></div>
         <div class="lqm-toggle-knob"></div>
       </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Navigation</span>
+      <button class="lqm-settings-btn" onclick="_navOpen()">Open Navigation</button>
+    </div>
+    <div style="font-size:9px;opacity:.65;line-height:1.45;padding:2px 4px 0;">
+      Navigation works like the maps app on your phone, with weather in the
+      picture. Add destinations, put them in any order, and get several
+      routes with an ETA for each. The chosen route is painted by the
+      weather alerts it drives through, on the intensity scale: the normal
+      road color where there is nothing, yellow for low, orange for
+      moderate, red for high and magenta for extreme. Routing by OSRM,
+      place search by OpenStreetMap.
     </div>
   </div>
 
@@ -40923,7 +41394,7 @@ function lqmSetTZ(tz) {
     <div class="feature-card">
       <div class="fc-icon"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gear></use></svg></div>
       <div class="fc-title">LOGO MENU</div>
-      <p class="fc-body">Tap the <strong>GWCFC logo</strong>, top-center, for <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gear></use></svg> Settings</strong>, <strong>this Tutorial</strong>, and <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-star></use></svg> Credits</strong> (every data source and library the radar is built on). Settings covers the map, radar and model colours, layer opacity, particles, alerts, StormStream, and a full <strong>Units &amp; Location</strong> tab, Wind Speed (mph/km/h/knots), Temperature (°F/°C), Pressure (mb/inHg), Rain &amp; Hail (inches/mm), and Distance (miles/km), each with a "both" option. Changing any of them updates every layer that shows that kind of value immediately, no reload needed.</p>
+      <p class="fc-body">Tap the <strong>GWCFC logo</strong>, top-center, for <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-gear></use></svg> Settings</strong>, <strong>this Tutorial</strong>, and <strong><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-star></use></svg> Credits</strong> (every data source and library the radar is built on). Settings covers the map, radar, model and satellite colours, layer opacity, particles, alerts, StormStream, a <strong>GPS</strong> tab with location tracking and weather-aware navigation, and a full <strong>Units</strong> tab, Wind Speed (mph/km/h/knots), Temperature (°F/°C), Pressure (mb/inHg), Rain &amp; Hail (inches/mm), and Distance (miles/km), each with a "both" option. Changing any of them updates every layer that shows that kind of value immediately, no reload needed.</p>
     </div>
   </div>
 
@@ -43661,7 +44132,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Satellite got a big day. The pictures are smooth now instead of pixelated, and a new Global Mosaic branch in the satellite menu shows the whole planet, including Himawari's western Pacific and Meteosat's Africa, updated hourly. Settings has a new Satellite Colors tab that recolors every satellite picture live, with presets like Inverted IR and Green Night Vision. Map borders and city labels load reliably now, and mesoscale discussions and JTWC outlooks are fetched by the server first, so they work instead of depending on flaky public relays.";
+const APP_LATEST_UPDATE = "Settings has a new GPS tab. Everything about your location lives there now (the Units tab is back to just units), plus a full navigation mode like the maps app on your phone: add destinations in any order, compare several routes with an ETA for each, and the chosen route is painted by the weather it drives through - normal road color when clear, then yellow, orange, red and magenta as the alerts along it get worse.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
