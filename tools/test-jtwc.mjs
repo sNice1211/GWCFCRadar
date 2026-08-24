@@ -118,7 +118,7 @@ console.log('\n1. the pill is there, with both of its controls');
     return {
       ovid: pill.dataset.ovid,
       name: (pill.querySelector('.ov-rowname') || {}).textContent,
-      drag: !!pill.querySelector('.ov-drag'),
+      arrows: pill.querySelectorAll('.ov-nudge').length === 2,
       info: !!pill.querySelector('.ov-info-btn'),
       // Overlay pills read OV_DESCRIPTIONS; the left menu bubbles read
       // LAYER_DESCRIPTIONS. Two tables, two audiences.
@@ -129,7 +129,7 @@ console.log('\n1. the pill is there, with both of its controls');
   ok('the JTWC pill exists in Overlays', !!r, 'no pill');
   ok('under its own id', r && r.ovid === 'jtwc-outlook', r && r.ovid);
   ok('and it is named so you can tell what it is', r && /JTWC/.test(r.name), r && r.name);
-  ok('it has a drag handle', r && r.drag);
+  ok('it has both reorder arrows', r && r.arrows);
   ok('and an info button', r && r.info);
   ok('which has something real to say',
      r && r.described && r.desc.length > 100, String(r && r.desc.length));

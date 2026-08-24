@@ -1109,7 +1109,7 @@ body {
   box-shadow: 0 0 10px rgba(170,0,0,0.3);
 }
 
-/* Vertical, drag-to-reorder overlay list */
+/* Vertical overlay list, reordered with the arrow buttons */
 #overlay-pills-row {
   display: flex;
   flex-direction: column;
@@ -1166,13 +1166,6 @@ body {
   font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: 0.3px;
   cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.ov-drag {
-  flex-shrink: 0; cursor: grab; touch-action: none;
-  padding: 2px 3px; margin: -4px -2px -4px 0;
-  color: rgba(255,255,255,0.4); font-size: 13px; line-height: 0.7; letter-spacing: 1px;
-  display: flex; align-items: center;
-}
-.ov-drag:hover { color: var(--accent2); }
 /* Reorder arrows: dragging needs a steady hand and a real mouse, and half
    of this app's users have neither (a phone thumb, a PS5 cursor). One tap
    per step works everywhere, so every reorderable row carries both. */
@@ -1213,7 +1206,6 @@ body {
   border: 1px solid rgba(255,255,255,0.18); border-radius: 4px;
   font-family: var(--display); font-size: 11px; padding: 2px 4px;
 }
-.ov-drag:active { cursor: grabbing; }
 .ov-info-btn {
   flex-shrink: 0; cursor: pointer; touch-action: none;
   padding: 2px 3px; margin: -4px 0 -4px -2px;
@@ -1459,7 +1451,6 @@ body {
   }
   .sub-bubble-main .sb-label { display: none; }
   .sub-bubble-main .sb-icon { font-size: 15px; }
-  .sub-bubble-main .sb-drag { display: none; }
 
   /* Active main bubble , show its label again so you can tell what's on */
   .sub-bubble-main.active {
@@ -1470,7 +1461,6 @@ body {
   }
   .sub-bubble-main.active .sb-label { display: inline; }
   .sub-bubble-main.active .sb-icon { font-size: 13px; }
-  .sub-bubble-main.active .sb-drag { display: flex; }
 
   /* Float buttons , tighter on tiny screens */
   #lqm-ai-btn { bottom: var(--fab-bottom, 80px); width: 40px; height: 40px; }
@@ -1907,18 +1897,7 @@ body {
 .sub-bubble.unavailable { opacity: 0.4; }
 .sub-bubble.unavailable .sb-label { text-decoration: line-through; }
 .sub-bubble.unavailable:hover { opacity: 0.55; transform: none; }
-.sb-drag {
-  flex-shrink: 0; cursor: grab; touch-action: none;
-  padding: 2px 3px; margin: -4px -6px -4px 2px;
-  color: rgba(255,255,255,0.35); font-size: 12px; line-height: 0.7; letter-spacing: 1px;
-  display: flex; align-items: center;
-  /* Pinned to the first line: a label that wraps to two lines should not
-     drag its handle down the side of the pill with it. */
-  align-self: flex-start;
-}
 .sub-bubble .ov-info-btn { align-self: flex-start; }
-.sb-drag:hover { color: #ffd700; }
-.sb-drag:active { cursor: grabbing; }
 
 /* ── SATELLITE REGION SELECTOR ── */
 #sat-region-row {
@@ -6107,9 +6086,9 @@ body.shot-mode > button {
 .drag-grip:active { cursor: grabbing; }
 .dg-dots { font-size: 15px; line-height: 1; letter-spacing: -3px; }
 .dg-label { font-family: var(--mono); font-size: 8px; letter-spacing: 2px; text-transform: uppercase; }
-/* Drag handle grip - same "⠿" glyph and style as the overlay pills list
-   (.ov-drag), reused on every draggable toolbar/panel for one consistent
-   look across the app. */
+/* Drag handle grip - the "⠿" glyph the overlay pills once used, kept on
+   every draggable toolbar/panel for one consistent look across the app.
+   (The pills themselves reorder with arrow buttons now.) */
 .dtb-drag {
   display: flex; align-items: center; justify-content: center;
   cursor: grab; user-select: none; touch-action: none; padding: 0 6px;
@@ -25697,11 +25676,6 @@ function renderSubBubbles(tab) {
       b.action();
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
-    const drag = document.createElement('span');
-    drag.className = 'sb-drag';
-    drag.title = 'Drag to reorder';
-    drag.textContent = '⠿';
-    el.appendChild(drag);
     el.appendChild(_sbNudgeBtn(el, -1, true));
     el.appendChild(_sbNudgeBtn(el, 1, true));
     wrap.appendChild(el);
@@ -25875,13 +25849,6 @@ function _sbDecorate() {
     if (!el.querySelector('.ov-info-btn')) {
       el.appendChild(_makeInfoBtn(_sbDescribe(el)));
     }
-    if (!el.querySelector('.sb-drag')) {
-      const drag = document.createElement('span');
-      drag.className = 'sb-drag';
-      drag.title = 'Drag to reorder';
-      drag.textContent = '⠿';
-      el.appendChild(drag);
-    }
     if (!el.querySelector('.sb-nudge')) {
       el.appendChild(_sbNudgeBtn(el, -1, false));
       el.appendChild(_sbNudgeBtn(el, 1, false));
@@ -25951,92 +25918,6 @@ let _sbReordering = false;
   } else { start(); }
 })();
 
-// Drag-reorder for every level below the top one. The top level has its own,
-// older, path just below, and keeps it so the order people have already saved
-// there is not thrown away.
-(function _sbSubDragInit() {
-  let drag = null;
-  function onDown(e) {
-    const handle = e.target.closest('.sb-drag'); if (!handle) return;
-    const row = handle.closest('.sub-bubble'); if (!row) return;
-    if (row.classList.contains('sub-bubble-main')) return;   // not this one
-    if (!document.getElementById('sub-bubbles').contains(row)) return;
-    e.preventDefault();
-    drag = { row };
-    // Tell the decorator to leave the column alone until this is finished,
-    // or every move would be put straight back by the saved order.
-    _sbDragging = true;
-    row.classList.add('dragging');
-    try { handle.setPointerCapture(e.pointerId); } catch (_) {}
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp, { once: true });
-    document.addEventListener('pointercancel', onUp, { once: true });
-  }
-  function onMove(e) {
-    if (!drag) return;
-    const wrap = document.getElementById('sub-bubbles'); if (!wrap) return;
-    const others = _sbRows().filter(r => r !== drag.row);
-    let placed = false;
-    for (const sib of others) {
-      const rect = sib.getBoundingClientRect();
-      if (e.clientY < rect.top + rect.height / 2) {
-        wrap.insertBefore(drag.row, sib); placed = true; break;
-      }
-    }
-    if (!placed) {
-      const anchor = wrap.querySelector('#sat-region-row');
-      wrap.insertBefore(drag.row, anchor || null);
-    }
-  }
-  function onUp() {
-    if (!drag) return;
-    drag.row.classList.remove('dragging');
-    drag = null;
-    document.removeEventListener('pointermove', onMove);
-    // Written down BEFORE the decorator is let back in, so what it re-applies
-    // is where the row was just dropped rather than where it started.
-    _sbStoreOrder(_sbCtxKey(), _sbRows().map(_sbRowKey));
-    _sbDragging = false;
-  }
-  document.addEventListener('pointerdown', onDown);
-})();
-
-// Same pointer-based drag-reorder as the overlay pills list (_ovDragInit),
-// vertical (clientY) since #sub-bubbles is a column, same as that list.
-(function _sbDragInit() {
-  let drag = null;
-  function rows() { return Array.from(document.querySelectorAll('#sub-bubbles .sub-bubble-main')); }
-  function onDown(e) {
-    const handle = e.target.closest('.sb-drag'); if (!handle) return;
-    const row = handle.closest('.sub-bubble-main'); if (!row) return;
-    e.preventDefault();
-    drag = { row };
-    row.classList.add('dragging');
-    try { handle.setPointerCapture(e.pointerId); } catch(_) {}
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp, { once: true });
-    document.addEventListener('pointercancel', onUp, { once: true });
-  }
-  function onMove(e) {
-    if (!drag) return;
-    const wrap = document.getElementById('sub-bubbles'); if (!wrap) return;
-    const others = rows().filter(r => r !== drag.row);
-    let placed = false;
-    for (const sib of others) {
-      const rect = sib.getBoundingClientRect();
-      if (e.clientY < rect.top + rect.height / 2) { wrap.insertBefore(drag.row, sib); placed = true; break; }
-    }
-    if (!placed) wrap.appendChild(drag.row);
-  }
-  function onUp() {
-    if (!drag) return;
-    drag.row.classList.remove('dragging');
-    drag = null;
-    document.removeEventListener('pointermove', onMove);
-    _sbSaveOrder();
-  }
-  document.addEventListener('pointerdown', onDown);
-})();
 
 
 const TAB_SECTIONS = {
@@ -40543,7 +40424,7 @@ Surface analysis fronts, WPC excessive rainfall, CPC outlooks, mesoscale
   Ambient Weather stations, storm centres, Cloud Capture photos
 Model guidance: GFS, GEM, UKMO, ARPEGE, JMA, ECMWF AIFS, CMA, BoM, the GFS/ICON/GEM
   ensembles, and NDFD. Frames run F+000 to F+120 at a six hour step.
-Overlays are drag-to-reorder, and the order sets what draws on top.
+Overlays reorder with their arrow buttons, and the order sets what draws on top.
 
 === SHARING A VIEW ===
 A link can carry a whole setup, so you can hand someone one instead of talking
@@ -44565,7 +44446,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "StormStream got its overhaul. The broadcast frame is fully 3D now, every surface a gradient with a real gold outline instead of yellow. Its settings grew a Per-Warning Setup: pick a warning type and choose which radar product and which overlays the stream switches to when that kind of alert comes on air. And reordering finally works everywhere for everyone: every overlay pill and every layer button now has one-tap up and down arrows next to the drag handle, so a phone thumb or a console cursor can reorder as easily as a mouse.";
+const APP_LATEST_UPDATE = "Cleanup: the old grab-and-drag handles are gone from the overlay list and the layer menus. The up and down arrows are the one way to reorder now, and they work the same with a mouse, a thumb, or a console cursor.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -46188,92 +46069,92 @@ document.addEventListener('DOMContentLoaded', () => {
   <div id="overlay-pills-row">
     <div class="ov-list-hint">Tap to toggle · drag <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-grip></use></svg> to reorder</div>
     <div class="ov-pill active" id="op-alerts" data-ovid="alerts" title="NWS Alert Polygons - Warnings &amp; Watches">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('alerts')">Alert Polygons</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('alerts')">Alert Polygons</span>
     </div>
     <div class="ov-pill" id="op-wx-alerts" data-ovid="wx-alerts" title="WX Alert Panel - list of active NWS warnings and watches">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wx-alerts')">WX Alert Panel</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wx-alerts')">WX Alert Panel</span>
     </div>
     <div class="ov-pill" id="op-eas-alerts" data-ovid="eas-alerts" title="EAS Alert Panel - live Emergency Alert System broadcasts">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('eas-alerts')">EAS Alert Panel</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('eas-alerts')">EAS Alert Panel</span>
     </div>
     <div class="ov-pill" id="op-spc-outlook" data-ovid="spc-outlook" title="SPC Convective Outlook (Day 1-8 Categorical/Tornado/Wind/Hail)">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-outlook')">SPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-outlook')">SPC Outlook</span>
     </div>
     <div class="ov-pill" id="op-spc-reports" data-ovid="spc-reports" title="Storm Reports - Local Storm Reports for tornado, hail, and wind from SPC">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-reports')">Storm Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spc-reports')">Storm Reports</span>
     </div>
     <!-- Rotation Tracks and Hail Swaths used to live here as two loose
          pills. They are two of nearly forty MRMS products now, and all of
          them live together under Radar > MRMS, which is the one place to
          look rather than two. -->
     <div class="ov-pill" id="op-nhc-outlook" data-ovid="nhc-outlook" title="NHC Tropical Outlook (5-day) + active systems">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('nhc-outlook')">NHC Outlook</span>
     </div>
     <div class="ov-pill" id="op-jtwc-outlook" data-ovid="jtwc-outlook" title="JTWC Tropical Outlook - western Pacific and Indian Ocean systems">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('jtwc-outlook')">JTWC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('jtwc-outlook')">JTWC Outlook</span>
     </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span>
     </div>
     <div class="ov-pill" id="op-lightning" data-ovid="lightning" title="Lightning Strikes - real-time strike data">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning Strikes</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('lightning')">Lightning Strikes</span>
     </div>
     <div class="ov-pill" id="op-wind-particles" data-ovid="wind-particles" title="Wind Particles - animated flow showing real-time Surface Wind direction and speed">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wind-particles')">Wind Particles</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wind-particles')">Wind Particles</span>
     </div>
     <div class="ov-pill" id="op-wave-particles" data-ovid="wave-particles" title="Wave Particles - animated flow showing real-time wave height and direction">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wave-particles')">Wave Particles</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wave-particles')">Wave Particles</span>
     </div>
     <div class="ov-pill" id="op-cloudcam" data-ovid="cloudcam" title="Cloud Capture - submit weather photos to the map">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('cloudcam')">Cloud Capture</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('cloudcam')">Cloud Capture</span>
     </div>
     <div class="ov-pill" id="op-radio" data-ovid="radio" title="NOAA Weather Radio (NWR) transmitter stations">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('radio')">NWR Stations</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('radio')">NWR Stations</span>
     </div>
     <div class="ov-pill active" id="op-forecasts" data-ovid="forecasts" title="Weather Forecasts - point forecast dots">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('forecasts')">Weather Forecasts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('forecasts')">Weather Forecasts</span>
     </div>
     <div class="ov-pill active" id="op-fronts" data-ovid="fronts" title="WPC Surface Analysis - fronts, highs, lows">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('fronts')">Surface Analysis</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('fronts')">Surface Analysis</span>
     </div>
     <div class="ov-pill" id="op-spotters" data-ovid="spotters" title="SpotterNetwork - Storm Spotter Positions">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotters')">Storm Spotters</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotters')">Storm Spotters</span>
     </div>
     <div class="ov-pill" id="op-spotter-reports" data-ovid="spotter-reports" title="SpotterNetwork Reports">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotter-reports')">Spotter Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('spotter-reports')">Spotter Reports</span>
     </div>
     <div class="ov-pill" id="op-chasers" data-ovid="chasers" title="Live Storm Chasers - SpotterNetwork real-time positions with heading">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('chasers')">Live Chasers</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('chasers')">Live Chasers</span>
     </div>
     <div class="ov-pill" id="op-fire-outlook" data-ovid="fire-outlook" title="SPC Fire Weather Outlook - Day 1 and Day 2">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('fire-outlook')">Fire Weather</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('fire-outlook')">Fire Weather</span>
     </div>
     <div class="ov-pill" id="op-meso-disc" data-ovid="meso-disc" title="SPC Mesoscale Discussions - active MCDs">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('meso-disc')">Meso Discussions</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('meso-disc')">Meso Discussions</span>
     </div>
     <div class="ov-pill" id="op-cpc-outlook" data-ovid="cpc-outlook" title="CPC Outlooks - 6-10 day and 8-14 day temperature and precipitation">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('cpc-outlook')">CPC Outlooks</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('cpc-outlook')">CPC Outlooks</span>
     </div>
     <div class="ov-pill" id="op-canada-alerts" data-ovid="canada-alerts" title="Environment Canada Weather Alerts">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('canada-alerts')">Canada Alerts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('canada-alerts')">Canada Alerts</span>
     </div>
     <div class="ov-pill" id="op-tornado-tracks" data-ovid="tornado-tracks" title="Tornado Tracks - NWS Damage Assessment Toolkit survey paths (last 60 days)">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('tornado-tracks')">Tornado Tracks</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('tornado-tracks')">Tornado Tracks</span>
     </div>
     <div class="ov-pill" id="op-wildfires" data-ovid="wildfires" title="Wildfire Reports - active large wildfires, updated in the last 48 hours">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wildfires')">Wildfire Reports</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wildfires')">Wildfire Reports</span>
     </div>
     <div class="ov-pill" id="op-traffic-cameras" data-ovid="traffic-cameras" title="Traffic Cameras - state DOT live camera feeds (Kansas, Maryland, Oregon, Kentucky, Iowa, South Dakota)">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('traffic-cameras')">Traffic Cameras</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('traffic-cameras')">Traffic Cameras</span>
     </div>
     <div class="ov-pill" id="op-wfo-offices" data-ovid="wfo-offices" title="NWS Forecast Offices - tap an office for its alerts and text products">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wfo-offices')">Forecast Offices</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wfo-offices')">Forecast Offices</span>
     </div>
     <div class="ov-pill" id="op-ambient-weather" data-ovid="ambient-weather" title="Ambient Weather Network - personal weather stations">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('ambient-weather')">Ambient Weather</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('ambient-weather')">Ambient Weather</span>
     </div>
     <div class="ov-pill" id="op-storm-centers" data-ovid="storm-centers" title="Storm Centers - radar-detected TVS and hail signatures">
-      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('storm-centers')">Storm Centers</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('storm-centers')">Storm Centers</span>
     </div>
   </div>
   <button id="overlay-toggle-btn" onclick="toggleOverlayLauncher()" title="Toggle overlays" aria-label="Toggle overlays">
@@ -47275,9 +47156,11 @@ function _ovInjectInfoButtons() {
     if (pill.querySelector('.ov-info-btn')) return; // already injected
     const ovid = pill.dataset.ovid;
     if (!ovid || !OV_DESCRIPTIONS[ovid]) return;
-    const drag = pill.querySelector('.ov-drag');
     const btn = _makeInfoBtn(OV_DESCRIPTIONS[ovid]);
-    if (drag) drag.insertAdjacentElement('beforebegin', btn);
+    // Ahead of the reorder arrows when they are already there, so the row
+    // reads name, info, arrows whichever of the two passes ran first.
+    const anchor = pill.querySelector('.ov-nudge');
+    if (anchor) anchor.insertAdjacentElement('beforebegin', btn);
     else pill.appendChild(btn);
   });
 }
@@ -48079,42 +47962,11 @@ function _ovLoadOrder(){
   _ovApplyMapOrder();
 }
 
-(function _ovDragInit(){
-  let drag=null;
-  function onDown(e){
-    const handle=e.target.closest('.ov-drag'); if(!handle) return;
-    const row=handle.closest('.ov-pill'); if(!row) return;
-    e.preventDefault();
-    drag={ row };
-    row.classList.add('dragging');
-    try { handle.setPointerCapture(e.pointerId); } catch(_){}
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp, { once:true });
-    document.addEventListener('pointercancel', onUp, { once:true });
-  }
-  function onMove(e){
-    if(!drag) return;
-    const cont=_ovContainer(); if(!cont) return;
-    const others=_ovRows().filter(r=>r!==drag.row);
-    let placed=false;
-    for(const sib of others){
-      const rect=sib.getBoundingClientRect();
-      if(e.clientY < rect.top + rect.height/2){ cont.insertBefore(drag.row, sib); placed=true; break; }
-    }
-    if(!placed) cont.appendChild(drag.row);
-    // Restack the map as the row moves, not only when it is dropped. Waiting
-    // for the drop meant the list and the map disagreed for the whole drag,
-    // which reads as the reorder not working at all.
-    _ovApplyMapOrder();
-  }
-  function onUp(){
-    document.removeEventListener('pointermove', onMove);
-    if(drag){ drag.row.classList.remove('dragging'); drag=null; _ovSaveOrder(); }
-  }
-  // One tap per step, next to the drag handle. Dragging asks for a steady
-  // pointer, and on a phone or a console cursor that is exactly what is not
-  // available - which read as "reordering does not work" even though the
-  // drag itself was fine with a mouse. The arrows work with any input.
+(function _ovOrderInit(){
+  // The arrows are the one way to reorder now. The old drag handle needed a
+  // steady pointer, which a phone thumb or a console cursor is not, and two
+  // controls for one job meant the unreliable one was still the obvious one.
+  // One tap per step works with any input.
   function nudge(row, dir){
     const cont=_ovContainer(); if(!cont) return;
     const rows=_ovRows();
@@ -48133,14 +47985,12 @@ function _ovLoadOrder(){
       const dn=document.createElement('span');
       dn.className='ov-nudge'; dn.title='Move down'; dn.textContent='▼';
       dn.addEventListener('click', e=>{ e.stopPropagation(); nudge(row,1); });
-      const handle=row.querySelector('.ov-drag');
-      row.insertBefore(up, handle||null);
-      row.insertBefore(dn, handle||null);
+      row.appendChild(up);
+      row.appendChild(dn);
     });
   }
   function attach(){
     const cont=_ovContainer(); if(!cont){ setTimeout(attach,300); return; }
-    cont.addEventListener('pointerdown', onDown);
     _ovLoadOrder();
     addNudges();
   }

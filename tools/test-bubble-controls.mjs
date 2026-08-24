@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Every bubble, at every depth, has an info button and a drag handle.
+ * Every bubble, at every depth, has an info button and reorder arrows.
  *
  *     node tools/test-bubble-controls.mjs
  *
@@ -91,7 +91,7 @@ await page.evaluate(() => {
       back: el.classList.contains('sb-back') || el.classList.contains('sb-note'),
       main: el.classList.contains('sub-bubble-main'),
       info: !!el.querySelector('.ov-info-btn'),
-      drag: !!el.querySelector('.sb-drag'),
+      arrows: el.querySelectorAll('.sb-nudge').length === 2,
       count: !!el.querySelector('.sb-count'),
     }));
   };
@@ -144,13 +144,13 @@ for (const [name, open, down] of menus) {
   totalRows += rows.length;
   totalLevels += levels.length;
   const noInfo = rows.filter(r => !r.info).map(r => r.label);
-  const noDrag = rows.filter(r => !r.drag).map(r => r.label);
+  const noArrows = rows.filter(r => !r.arrows).map(r => r.label);
   ok(`${name}: it built something to check`, rows.length > 0,
      `${levels.length} levels`);
   ok(`${name}: every bubble has an info button`,
      noInfo.length === 0, noInfo.join(', ').slice(0, 120));
-  ok(`${name}: every bubble has a drag handle`,
-     noDrag.length === 0, noDrag.join(', ').slice(0, 120));
+  ok(`${name}: every bubble has both reorder arrows`,
+     noArrows.length === 0, noArrows.join(', ').slice(0, 120));
 }
 // The decorator runs off a MutationObserver, so it has to have really fired
 // across every one of those rebuilds rather than once at boot.
@@ -213,7 +213,7 @@ console.log('\n3. the info buttons say something real');
      /No description has been written/.test(r.auto), r.auto.slice(0, 80));
 }
 
-console.log('\n4. dragging a sub-bubble really reorders it, and it sticks');
+console.log('\n4. the arrows really reorder a sub-bubble, and it sticks');
 {
   const r = await page.evaluate(async () => {
     const settle = () => new Promise(res => setTimeout(res, 90));
@@ -237,17 +237,14 @@ console.log('\n4. dragging a sub-bubble really reorders it, and it sticks');
     const before = labels();
     if (before.length < 2) return { before, skipped: true };
 
-    // Drag the last row above the first, through the real pointer path.
-    const rows = [...w().children].filter(e =>
+    // Walk the last row to the front, one arrow tap per step: the same
+    // path a thumb or a console cursor takes.
+    const rowsOf = () => [...w().children].filter(e =>
       e.classList.contains('sub-bubble') && !e.classList.contains('sb-back'));
-    const last = rows[rows.length - 1], first = rows[0];
-    const handle = last.querySelector('.sb-drag');
-    const fire = (type, y) => document.dispatchEvent(
-      new PointerEvent(type, { clientY: y, bubbles: true, pointerId: 1 }));
-    handle.dispatchEvent(new PointerEvent('pointerdown',
-      { clientY: last.getBoundingClientRect().top + 5, bubbles: true, pointerId: 1 }));
-    fire('pointermove', first.getBoundingClientRect().top + 1);
-    fire('pointerup', first.getBoundingClientRect().top + 1);
+    for (let step = 0; step < before.length - 1; step++) {
+      const rows2 = rowsOf();
+      rows2[rows2.length - 1 - step].querySelector('.sb-nudge').click();
+    }
     await settle();
     const after = labels();
 
@@ -267,9 +264,9 @@ console.log('\n4. dragging a sub-bubble really reorders it, and it sticks');
     return { before, after, reopened, otherLabels, saved };
   });
   if (r.skipped) {
-    ok('not enough rows to drag', false, JSON.stringify(r.before));
+    ok('not enough rows to reorder', false, JSON.stringify(r.before));
   } else {
-    ok('the dragged row moves to the front',
+    ok('the row walks all the way to the front',
        r.after[0] === r.before[r.before.length - 1],
        `${JSON.stringify(r.before)} -> ${JSON.stringify(r.after)}`);
     ok('and nothing was lost on the way',
@@ -289,7 +286,7 @@ console.log('\n4. dragging a sub-bubble really reorders it, and it sticks');
   }
 }
 
-console.log('\n4b. the decorator does not fight the drag, or itself');
+console.log('\n4b. the decorator does not undo the arrows, or fight itself');
 {
   const r = await page.evaluate(async () => {
     const settle = () => new Promise(res => setTimeout(res, 90));
@@ -297,30 +294,20 @@ console.log('\n4b. the decorator does not fight the drag, or itself');
     renderSubBubbles('regular'); await settle();
     toggleMrmsSub(); await settle();
     w().querySelector('[data-mrms-group="severe"]').click(); await settle();
-    const rows = [...w().children].filter(e =>
+    const rowsOf = () => [...w().children].filter(e =>
       e.classList.contains('sub-bubble') && !e.classList.contains('sb-back'));
-    if (rows.length < 3) return { skipped: true };
+    if (rowsOf().length < 3) return { skipped: true };
 
-    // A real drag is many pointermoves, not one. Each move is a mutation,
-    // which wakes the decorator, which would put the row straight back where
-    // the saved order says it goes. The single-move test above passed by
-    // luck: the order was saved before the frame ever arrived.
-    const last = rows[rows.length - 1];
-    const handle = last.querySelector('.sb-drag');
-    const top = rows[0].getBoundingClientRect().top;
-    handle.dispatchEvent(new PointerEvent('pointerdown',
-      { clientY: last.getBoundingClientRect().top + 5, bubbles: true, pointerId: 1 }));
-    const dragging = _sbDragging;
-    for (let i = 0; i < 4; i++) {
-      document.dispatchEvent(new PointerEvent('pointermove',
-        { clientY: top + 1, bubbles: true, pointerId: 1 }));
-      await settle();                    // let the decorator have its frame
-    }
-    const midDrag = [...w().children].filter(e =>
-      e.classList.contains('sub-bubble') && !e.classList.contains('sb-back'))[0];
-    document.dispatchEvent(new PointerEvent('pointerup',
-      { clientY: top + 1, bubbles: true, pointerId: 1 }));
-    await settle();
+    // An arrow tap is a mutation, which wakes the decorator, which reapplies
+    // the saved order. The tap saves BEFORE the decorator's frame arrives,
+    // so what it reapplies is the new order - the row must stay put through
+    // several settled frames rather than snapping back.
+    const rows = rowsOf();
+    const lastKey = _sbRowKey(rows[rows.length - 1]);
+    rows[rows.length - 1].querySelector('.sb-nudge').click();
+    const rightAfter = _sbRowKey(rowsOf()[rows.length - 2]) === lastKey;
+    for (let i = 0; i < 4; i++) await settle();
+    const stillThere = _sbRowKey(rowsOf()[rows.length - 2]) === lastKey;
 
     // And the pass must not wake itself: reordering is a mutation too, so an
     // unconditional insertBefore left a rAF loop running for the life of the
@@ -335,18 +322,15 @@ console.log('\n4b. the decorator does not fight the drag, or itself');
       };
       requestAnimationFrame(tick);
     });
-    return {
-      dragging, held: midDrag === last, after: _sbDragging,
-      // A spinning decorator would leave this true forever.
-      stillReordering: _sbReordering, frames,
-    };
+    // Put the row back where it started, for any section after this one.
+    rowsOf()[rows.length - 2].querySelectorAll('.sb-nudge')[1].click();
+    return { rightAfter, stillThere, stillReordering: _sbReordering, frames };
   });
   if (r.skipped) {
-    ok('enough rows to drag through', false);
+    ok('enough rows to reorder through', false);
   } else {
-    ok('the drag flag goes up when a row is picked up', r.dragging);
-    ok('and the row STAYS where it is dragged, move after move', r.held);
-    ok('the flag comes down when it is dropped', !r.after);
+    ok('the tap moves the row at once', r.rightAfter);
+    ok('and it STAYS moved once the decorator has had its frames', r.stillThere);
     ok('and the reorder guard is not left stuck on', !r.stillReordering);
   }
 }
@@ -358,7 +342,7 @@ console.log('\n5. the way back out is not a layer');
     toggleMrmsSub(); await settle();
     const back = document.querySelector('#sub-bubbles .sb-back');
     return back ? { info: !!back.querySelector('.ov-info-btn'),
-                    drag: !!back.querySelector('.sb-drag'),
+                    drag: !!back.querySelector('.sb-nudge'),
                     first: back === document.getElementById('sub-bubbles')
                              .querySelector('.sub-bubble') } : null;
   });
