@@ -612,12 +612,25 @@ console.log('\n5f. the voice speaks, and the mute button silences it');
     _navOnPosition(28.0, -80.98);
     out.saidTurn = window.__spoken.some(t =>
       /^In .+ (feet|miles|meters|kilometers), turn right onto Ocean Blvd$/.test(t));
+    // Tapping the banner replays the current instruction out loud.
+    const b0 = window.__spoken.length;
+    document.getElementById('nav-turn').click();
+    out.tapSaid = window.__spoken.length === b0 + 1
+      && /turn right onto Ocean Blvd/i.test(window.__spoken[window.__spoken.length - 1]);
+    // And a tap on any row in the step list speaks that step.
+    const s0 = window.__spoken.length;
+    document.querySelectorAll('#nav-steps .nav-step')[2].click();
+    out.stepTapSaid = window.__spoken.length === s0 + 1
+      && /arrive at your destination/i.test(window.__spoken[window.__spoken.length - 1]);
     const n = window.__spoken.length;
     _navVoiceToggle();
     out.mutedGlyph = document.getElementById('nav-voice').classList.contains('muted');
     out.stored = localStorage.getItem('gwcfc_navvoice');
     _navOnPosition(28.0, -80.4);      // past the turn: would normally speak
     out.mutedSilent = window.__spoken.length === n;
+    // A tap is an explicit ask: it speaks even while muted.
+    document.getElementById('nav-turn').click();
+    out.tapBeatsMute = window.__spoken.length === n + 1;
     _navVoiceToggle();
     out.unmutedSaid = window.__spoken.some(t => /voice guidance on/i.test(t));
     out.stored2 = localStorage.getItem('gwcfc_navvoice');
@@ -628,6 +641,9 @@ console.log('\n5f. the voice speaks, and the mute button silences it');
   ok('mute flips the button and stores the choice',
      r.mutedGlyph && r.stored === '0', `${r.mutedGlyph}, ${r.stored}`);
   ok('a muted voice says nothing, even past a turn', r.mutedSilent);
+  ok('tapping the banner replays the instruction out loud', r.tapSaid);
+  ok('tapping a step in the list speaks that step', r.stepTapSaid);
+  ok('a tap is an explicit ask: it speaks even while muted', r.tapBeatsMute);
   ok('unmuting says so and stores that too',
      r.unmutedSaid && r.stored2 === '1', `${r.unmutedSaid}, ${r.stored2}`);
 }

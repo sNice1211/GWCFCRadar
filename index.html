@@ -8418,6 +8418,7 @@ footer {
    biggest thing in the panel while navigation is running. */
 #nav-turn {
   display: flex; align-items: center; gap: 10px;
+  cursor: pointer;
   margin: 0 0 8px; padding: 9px 10px;
   border-radius: 10px;
   border: 1px solid rgba(255,223,107,0.5);
@@ -8439,6 +8440,7 @@ footer {
   display: flex; align-items: center; gap: 7px;
   padding: 4px 6px; border-radius: 6px; font-size: 10px;
   opacity: 0.75;
+  cursor: pointer;
 }
 .nav-step.cur {
   opacity: 1; font-weight: 700;
@@ -9548,7 +9550,8 @@ body.clean-mode #clean-hint { opacity: 1; }
       <button id="nav-close" onclick="_navClose()" title="Close">&times;</button>
     </span>
   </div>
-  <div id="nav-turn" style="display:none;">
+  <div id="nav-turn" style="display:none;" onclick="_navSayTurn()"
+       title="Tap to hear the instruction out loud">
     <span id="nav-turn-arrow"></span>
     <span id="nav-turn-body">
       <span id="nav-turn-main"></span>
@@ -27064,7 +27067,8 @@ function _navRenderSteps() {
   const rt = _navRoutes[_navSel];
   if (!el || !rt || !rt.steps) return;
   el.innerHTML = rt.steps.map((st, i) =>
-    `<div class="nav-step${i === _navStepIdx ? ' cur' : i < _navStepIdx ? ' done' : ''}" data-step="${i}">`
+    `<div class="nav-step${i === _navStepIdx ? ' cur' : i < _navStepIdx ? ' done' : ''}" data-step="${i}"`
+    + ` onclick="_navSayStep(${i})" title="Tap to hear this step">`
     + `<span class="nav-step-arrow">${st.arrow}</span>`
     + `<span class="nav-step-text">${_navEsc(st.text)}</span>`
     + `<span class="nav-step-dist">${st.dist > 40 ? _navFmtShort(st.dist) : ''}</span>`
@@ -27179,6 +27183,20 @@ function _navSpeak(text) {
   } catch (e) {}
 }
 function _navSay(text) { if (_navVoiceOn) _navSpeak(text); }
+
+// Tap the banner, hear the instruction. Deliberately NOT behind the mute:
+// the mute silences the automatic narration, and a finger on the banner
+// is the opposite of automatic.
+function _navSayTurn() {
+  const m = document.getElementById('nav-turn-main');
+  const t = m ? m.textContent.trim() : '';
+  if (t) _navSpeak(t);
+}
+function _navSayStep(i) {
+  const rt = _navRoutes[_navSel];
+  const st = rt && rt.steps && rt.steps[i];
+  if (st) _navSpeak(st.text);
+}
 
 // Distances the way a voice says them, not the way a label prints them.
 function _navSpeakDist(m) {
@@ -45128,7 +45146,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Place search digs deeper now. Besides the geocoder, a business-name search now also combs the map database itself for every place within about 50 miles whose name matches what you typed, however it is spelled or punctuated. So the Chick-fil-A in a small town shows up with its street address even when the big search engines overlook it.";
+const APP_LATEST_UPDATE = "Tap to hear it: during navigation, tapping the big instruction banner replays the current direction out loud, and tapping any step in the list speaks that step. A tap speaks even while the voice is muted, because asking with your finger is not the same as automatic narration.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
