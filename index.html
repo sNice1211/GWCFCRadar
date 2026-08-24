@@ -26403,6 +26403,42 @@ function _navEsc(s) {
 }
 
 // ── Places: OpenStreetMap's geocoder ──────────────────────────────────────
+// Every place within ~50 miles whose name or brand matches the words
+// typed, straight out of the OpenStreetMap database (Overpass). The words
+// are joined by "anything between them", so "chick fil a" matches
+// "Chick-fil-A" no matter how the mapper punctuated it. Tokens are
+// stripped to letters and digits first, which is also what keeps the
+// pattern safe to build from user input.
+async function _navNearbyByName(q, ref) {
+  const tokens = q.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (!tokens.length || tokens.length > 4) return [];
+  const re = tokens.join('[^a-zA-Z0-9]*');
+  const at = `(around:80000,${ref.lat.toFixed(4)},${ref.lon.toFixed(4)})`;
+  const ql = '[out:json][timeout:8];('
+    + `nwr["name"~"${re}",i]${at};`
+    + `nwr["brand"~"${re}",i]${at};`
+    + ');out center 24;';
+  try {
+    const r = await fetchWithTimeout(
+      'https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(ql), 9000);
+    if (!r.ok) return [];
+    const d = await r.json();
+    return ((d && d.elements) || []).map(el => {
+      const t = el.tags || {};
+      const lat = el.lat != null ? el.lat : (el.center && el.center.lat);
+      const lon = el.lon != null ? el.lon : (el.center && el.center.lon);
+      const bits = [
+        t.name || t.brand,
+        t['addr:street']
+          ? ((t['addr:housenumber'] ? t['addr:housenumber'] + ' ' : '') + t['addr:street'])
+          : null,
+        t['addr:city'],
+      ].filter(Boolean);
+      return { name: bits.join(', '), lat, lon };
+    }).filter(p => p.name && isFinite(p.lat) && isFinite(p.lon));
+  } catch (e) { return []; }
+}
+
 async function _navSearch() {
   const box = document.getElementById('nav-search');
   const q = box ? box.value.trim() : '';
@@ -26419,17 +26455,21 @@ async function _navSearch() {
     else { const c = map.getCenter(); ref = { lat: c.lat, lon: c.lng }; }
   } catch (e) {}
 
-  // Photon first: an OpenStreetMap geocoder built for finding NAMED places,
-  // businesses and chains included, typo-tolerant, and it takes a bias
-  // point so nearby matches outrank famous ones.
-  let rows = [];
-  try {
-    let u = 'https://photon.komoot.io/api/?limit=8&lang=en&q=' + encodeURIComponent(q);
-    if (ref) u += '&lat=' + ref.lat.toFixed(4) + '&lon=' + ref.lon.toFixed(4);
-    const r = await fetchWithTimeout(u, 8000);
-    if (r.ok) {
+  // Two askers at once. Photon: an OpenStreetMap geocoder built for
+  // finding NAMED places, businesses and chains included, typo-tolerant,
+  // with a bias point so nearby matches outrank famous ones. And for a
+  // query that looks like a business name, the OSM database itself is
+  // searched by name AROUND the reference point - a geocoder ranks the
+  // whole planet and can bury or miss the one in a small town, but "every
+  // place within 50 miles whose name matches these words" cannot.
+  const askPhoton = async () => {
+    try {
+      let u = 'https://photon.komoot.io/api/?limit=8&lang=en&q=' + encodeURIComponent(q);
+      if (ref) u += '&lat=' + ref.lat.toFixed(4) + '&lon=' + ref.lon.toFixed(4);
+      const r = await fetchWithTimeout(u, 8000);
+      if (!r.ok) return [];
       const d = await r.json();
-      rows = ((d && d.features) || []).map(f => {
+      return ((d && d.features) || []).map(f => {
         const p = f.properties || {};
         const g = (f.geometry && f.geometry.coordinates) || [];
         const bits = [
@@ -26440,8 +26480,21 @@ async function _navSearch() {
         ].filter(Boolean);
         return { name: [...new Set(bits)].join(', '), lat: g[1], lon: g[0] };
       }).filter(p => p.name && isFinite(p.lat) && isFinite(p.lon));
-    }
-  } catch (e) {}
+    } catch (e) { return []; }
+  };
+  const looksLikeName = !/[\d,]/.test(q) && q.split(/\s+/).length <= 4;
+  const [photonRows, nearbyRows] = await Promise.all([
+    askPhoton(),
+    (looksLikeName && ref) ? _navNearbyByName(q, ref) : Promise.resolve([]),
+  ]);
+  let rows = photonRows;
+  // Fold the nearby finds in, without listing the same doorway twice: the
+  // same store from two sources sits within a parking lot of itself.
+  nearbyRows.forEach(nr => {
+    const dup = rows.find(p => _navMeters(p.lat, p.lon, nr.lat, nr.lon) < 150);
+    if (!dup) rows.push(nr);
+    else if (nr.name.length > dup.name.length) dup.name = nr.name;
+  });
 
   // Nominatim stays as the spare, nudged toward what the map is showing.
   if (!rows.length) {
@@ -45075,7 +45128,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Navigation search knows places now, like the maps app: type chick fil a, a gas station, a store, any business, and it finds the real ones, nearest first, with the distance shown on every suggestion. Searches are biased to where you are (or where the map is looking), so the answer is the one down the road, not one three states away.";
+const APP_LATEST_UPDATE = "Place search digs deeper now. Besides the geocoder, a business-name search now also combs the map database itself for every place within about 50 miles whose name matches what you typed, however it is spelled or punctuated. So the Chick-fil-A in a small town shows up with its street address even when the big search engines overlook it.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

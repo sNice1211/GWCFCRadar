@@ -91,6 +91,8 @@ page.on('pageerror', e => errors.push(e.message));
 const osrmAsked = [];
 const photonAsked = [];
 let photonMode = 'off';
+const overpassAsked = [];
+let overpassMode = 'off';
 // The fake sky for the conditions service: 'clear' answers dry everywhere,
 // 'storm' puts a violent downpour over the eastern half of whatever list of
 // spots the page asks about.
@@ -122,6 +124,18 @@ await page.route('**://**', route => {
         store(-81.66, 30.33, 'Jacksonville'),
         store(-81.05, 28.02, 'Orlando'),
         store(-80.60, 28.30, 'Cocoa'),
+      ] }) });
+  }
+  if (url.includes('overpass-api.de/api/interpreter')) {
+    overpassAsked.push(decodeURIComponent(url));
+    if (overpassMode !== 'on') return route.abort();
+    return route.fulfill({ contentType: 'application/json',
+      body: JSON.stringify({ elements: [
+        { type: 'way', id: 1, center: { lat: 27.4930, lon: -81.4410 },
+          tags: { name: 'Chick-fil-A', 'addr:housenumber': '3603',
+                  'addr:street': 'US Highway 27 N', 'addr:city': 'Sebring' } },
+        { type: 'node', id: 2, lat: 28.02, lon: -81.05,
+          tags: { name: 'Chick-fil-A' } },
       ] }) });
   }
   if (url.includes('nominatim.openstreetmap.org/search'))
@@ -286,6 +300,45 @@ console.log('\n4b. it knows businesses, and answers with the one near you');
   ok('and the ask carried a near-me bias point',
      photonAsked.some(u => /lat=28\.0000&lon=-81\.0000/.test(u)),
      (photonAsked[photonAsked.length - 1] || '').slice(0, 120));
+}
+
+console.log('\n4c. the one in a small town is found even when geocoders miss it');
+{
+  // Sebring, Florida. Photon still answers with its three bigger-city
+  // stores; the raw-OSM nearby search is what surfaces the local one.
+  photonMode = 'on'; overpassMode = 'on';
+  const r = await page.evaluate(async () => {
+    map.setView([27.49, -81.44], 11, { animate: false });
+    await new Promise(res => setTimeout(res, 120));
+    document.getElementById('nav-search').value = 'chick fil a';
+    await _navSearch();
+    return {
+      names: _navSuggest.map(p => p.name),
+      first: _navSuggest[0],
+    };
+  });
+  ok('the Sebring store leads the list, address and all',
+     r.first && /Sebring/.test(r.first.name) && /3603 US Highway 27 N/.test(r.first.name)
+       && Math.abs(r.first.lat - 27.493) < 0.01,
+     JSON.stringify(r.first));
+  ok('the same store from two sources is listed once',
+     r.names.filter(n => /Orlando/.test(n)).length === 1
+       && r.names.length === 4, r.names.join(' | '));
+  const opUrl = overpassAsked[overpassAsked.length - 1] || '';
+  ok('the ask matches the name however it is punctuated',
+     /chick\[\^a-zA-Z0-9\]\*fil\[\^a-zA-Z0-9\]\*a/.test(opUrl)
+       && /around:80000,27\.49/.test(opUrl) && /"brand"~/.test(opUrl),
+     opUrl.slice(40, 200));
+
+  // An address-shaped query never bothers the nearby search at all.
+  const opCount = overpassAsked.length;
+  await page.evaluate(async () => {
+    document.getElementById('nav-search').value = '123 Main St, Orlando';
+    await _navSearch();
+  });
+  ok('an address-shaped query skips the nearby name search',
+     overpassAsked.length === opCount, String(overpassAsked.length - opCount));
+  photonMode = 'off'; overpassMode = 'off';
 }
 
 console.log('\n5. the paint on the map');
