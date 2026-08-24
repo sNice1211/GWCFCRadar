@@ -80,6 +80,10 @@ const errors = [];
 page.on('pageerror', e => errors.push(e.message));
 
 const osrmAsked = [];
+// The fake sky for the conditions service: 'clear' answers dry everywhere,
+// 'storm' puts a violent downpour over the eastern half of whatever list of
+// spots the page asks about.
+let wxMode = 'clear';
 await page.route('**://**', route => {
   const url = route.request().url();
   if (url.startsWith('file://')) return route.continue();
@@ -97,6 +101,17 @@ await page.route('**://**', route => {
   if (url.includes('nominatim.openstreetmap.org/search'))
     return route.fulfill({ contentType: 'application/json',
       body: JSON.stringify(NOMINATIM) });
+  if (url.includes('api.open-meteo.com/v1/forecast')) {
+    const lats = ((url.match(/latitude=([0-9.,-]+)/) || [, ''])[1] || '')
+      .split(',').filter(Boolean);
+    const n = lats.length;
+    const one = (stormy) => ({ current: stormy
+      ? { precipitation: 25, weather_code: 95, wind_gusts_10m: 40 }
+      : { precipitation: 0, weather_code: 0, wind_gusts_10m: 10 } });
+    const arr = lats.map((_, i) => one(wxMode === 'storm' && i >= Math.floor(n / 2)));
+    return route.fulfill({ contentType: 'application/json',
+      body: JSON.stringify(n === 1 ? arr[0] : arr) });
+  }
   return route.abort();
 });
 await page.goto('file://' + join(ROOT, 'index.html'), { waitUntil: 'domcontentloaded' });
@@ -244,6 +259,117 @@ console.log('\n5. the paint on the map');
      r.segLvls.join());
 }
 
+console.log('\n5b. real conditions color the road even with no alert out');
+{
+  // A violent downpour over the eastern half of the route, and not one
+  // alert polygon anywhere. The road must color anyway: the car gets wet
+  // whether or not a warning was issued.
+  wxMode = 'storm';
+  const r = await page.evaluate(async () => {
+    _lastAlertFeatures = [];
+    _navWxCache.clear();
+    await _navRoute();
+    const sel = _navRoutes[_navSel];
+    return {
+      worsts: _navRoutes.map(rt => rt.worst),
+      segLvls: sel.segs.map(sg => sg.lvl),
+      timer: !!_navTrackTimer,
+      note: document.getElementById('nav-note').textContent,
+    };
+  });
+  ok('a downpour with no warning still grades the route Extreme',
+     r.worsts[0] === 4, r.worsts.join());
+  ok('the dry start stays base color, the wet half is painted',
+     r.segLvls[0] === 0 && r.segLvls.includes(4), r.segLvls.join());
+  ok('the tracking timer is running while routes are shown', r.timer);
+  ok('and the note says the colors are re-read on their own',
+     /rechecked/i.test(r.note), r.note);
+
+  // The sky clears. The tracking pass, run by hand here, must lower the
+  // colors in place without waiting for a new route request.
+  wxMode = 'clear';
+  const reg = await page.evaluate(async () => {
+    const before = _navRoutes[0].worst;
+    _navWxCache.clear();
+    await _navRegrade();
+    return { before, after: _navRoutes[0].worst };
+  });
+  ok('the tracking pass re-reads the sky in place',
+     reg.before === 4 && reg.after === 0, JSON.stringify(reg));
+
+  // Back to the alert scenario the later sections expect.
+  await page.evaluate(async () => {
+    _navWxCache.clear();
+    _lastAlertFeatures = [
+      { type: 'Feature', properties: { severity: 'Severe', event: 'Tornado Warning' },
+        geometry: { type: 'Polygon', coordinates: [[
+          [-80.6, 27.9], [-80.4, 27.9], [-80.4, 28.1], [-80.6, 28.1], [-80.6, 27.9]]] } },
+    ];
+    await _navRoute();
+  });
+}
+
+console.log('\n5c. reporting what the road is like');
+{
+  const r = await page.evaluate(() => {
+    localStorage.removeItem('gwcfc_navreports');
+    const btns = Array.from(document.querySelectorAll('#nav-report-bar .nav-rep'))
+      .map(b => b.dataset.rep);
+    _navArmReport('police');
+    const armed = {
+      placing: _navPlacing,
+      lit: document.querySelector('.nav-rep[data-rep="police"]').classList.contains('arm'),
+      hint: document.getElementById('nav-report-hint').textContent,
+      cursor: document.getElementById('map').style.cursor,
+    };
+    map.fire('click', { latlng: L.latLng(28.2, -80.7) });
+    const placed = JSON.parse(localStorage.getItem('gwcfc_navreports') || '[]');
+    let pins = 0; _navReportLayer.eachLayer(() => pins++);
+    const disarmed = _navPlacing === null
+      && document.getElementById('nav-report-hint').style.display === 'none'
+      && document.getElementById('map').style.cursor === '';
+
+    // Armed and thought better of it.
+    _navArmReport('good');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    const escWorked = _navPlacing === null;
+
+    // A stale report planted straight into storage must not come back.
+    const a = JSON.parse(localStorage.getItem('gwcfc_navreports'));
+    a.push({ id: 'old1', type: 'police', lat: 28, lon: -80,
+             at: Date.now() - 5 * 3600000, note: '' });
+    localStorage.setItem('gwcfc_navreports', JSON.stringify(a));
+    _navDrawReports();
+    const afterTrim = JSON.parse(localStorage.getItem('gwcfc_navreports'));
+
+    _navReportNote(placed[0].id, 'unmarked car');
+    const noted = JSON.parse(localStorage.getItem('gwcfc_navreports'))[0].note;
+    _navDeleteReport(placed[0].id);
+    let pinsAfter = 0; _navReportLayer.eachLayer(() => pinsAfter++);
+    const emptied = JSON.parse(localStorage.getItem('gwcfc_navreports')).length;
+    return { btns, armed, placed, pins, disarmed, escWorked,
+             afterTrim, noted, pinsAfter, emptied };
+  });
+  ok('six things can be reported, police, bad weather and good news included',
+     r.btns.length === 6 && ['police', 'weather', 'good'].every(t => r.btns.includes(t)),
+     r.btns.join());
+  ok('arming one says what to do next and changes the cursor',
+     r.armed.placing === 'police' && r.armed.lit
+       && /tap the map/i.test(r.armed.hint) && r.armed.cursor === 'crosshair',
+     JSON.stringify(r.armed).slice(0, 200));
+  ok('a tap places it, stores it, and draws the pin',
+     r.placed.length === 1 && r.placed[0].type === 'police'
+       && Math.abs(r.placed[0].lat - 28.2) < 0.01 && r.pins === 1,
+     JSON.stringify(r.placed));
+  ok('and placing disarms, so the next tap is just a tap', r.disarmed);
+  ok('Escape cancels an armed report', r.escWorked);
+  ok('a five-hour-old report ages out instead of misleading anyone',
+     r.afterTrim.every(x => x.id !== 'old1'), JSON.stringify(r.afterTrim));
+  ok('a note can be added after the fact', r.noted === 'unmarked car', r.noted);
+  ok('removing a report clears pin and record alike',
+     r.pinsAfter === 0 && r.emptied === 0, `${r.pinsAfter} pins, ${r.emptied} records`);
+}
+
 console.log('\n6. choosing, rearranging, removing');
 {
   const asked0 = osrmAsked.length;
@@ -283,13 +409,25 @@ console.log('\n7. closed means gone');
 {
   const r = await page.evaluate(() => {
     _navClose();
+    let pins = 0;
+    if (_navReportLayer) _navReportLayer.eachLayer(() => pins++);
+    // One report left behind on purpose, to see that closing spares it.
+    _navPlacing = 'hazard';
+    _navPlaceReport(28.3, -80.9);
+    let pinsAfter = 0; _navReportLayer.eachLayer(() => pinsAfter++);
+    const kept = pinsAfter;
+    localStorage.removeItem('gwcfc_navreports');
     return {
       hidden: document.getElementById('nav-panel').style.display === 'none',
       layerGone: !_navLayer,
+      timerGone: !_navTrackTimer,
+      kept,
     };
   });
   ok('the panel hides', r.hidden);
   ok('and the routes leave the map with it', r.layerGone);
+  ok('the tracking timer stops with the panel', r.timerGone);
+  ok('but reports outlive the panel that filed them', r.kept === 1, String(r.kept));
 }
 
 console.log('\n8. nothing threw');

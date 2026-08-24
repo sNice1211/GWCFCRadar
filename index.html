@@ -8358,6 +8358,52 @@ footer {
   border-radius: 5px; padding: 2px 5px; color: #000;
 }
 #nav-note { font-size: 9px; opacity: 0.7; line-height: 1.45; margin-top: 6px; }
+#nav-report-title {
+  font-size: 8px; font-weight: 700; letter-spacing: 1.5px;
+  text-transform: uppercase; opacity: 0.7; margin: 10px 0 4px;
+}
+#nav-report-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+.nav-rep {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  padding: 6px 2px 5px;
+  font-size: 8px; letter-spacing: 0.5px; color: #ffe9e6;
+  border: 1px solid var(--edge-red, rgba(190,20,20,0.55));
+  border-radius: 8px; cursor: pointer;
+  background: #6d0404;
+  background-image: var(--grad-raise);
+  box-shadow: var(--edge-3d-soft);
+}
+.nav-rep-ico { font-size: 15px; line-height: 1.2; }
+.nav-rep:hover { background-image: var(--grad-raise-h); }
+/* Armed reads as pressed: you are in placing mode until you tap the map. */
+.nav-rep.arm {
+  background-image: var(--grad-sunk);
+  box-shadow: var(--edge-3d), inset 0 2px 5px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,90,80,0.5);
+}
+#nav-report-hint {
+  font-size: 9px; line-height: 1.45; margin-top: 6px;
+  padding: 6px 8px; border-radius: 8px;
+  background-image: var(--grad-card);
+  box-shadow: var(--edge-3d-soft);
+}
+.nav-rep-pin {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; border: 2px solid #fff;
+  background: linear-gradient(180deg, #3b4754 0%, #1d242b 100%);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.6);
+}
+.nav-rep-pin.good { background: linear-gradient(180deg, #1f8a3c 0%, #0d4a20 100%); }
+.nav-rep-note {
+  width: 100%; margin-top: 5px; font-size: 10px;
+  background: rgba(0,0,0,0.35); color: inherit;
+  border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
+  padding: 3px 6px;
+}
 #nav-legend {
   display: flex; gap: 8px; flex-wrap: wrap;
   margin-top: 8px; font-size: 8px; letter-spacing: 0.5px; opacity: 0.85;
@@ -9412,6 +9458,16 @@ body.clean-mode #clean-hint { opacity: 1; }
     <button class="nav-btn" onclick="_navSearch()">Add</button>
   </div>
   <div id="nav-suggest" style="display:none;"></div>
+  <div id="nav-report-title">Report something</div>
+  <div id="nav-report-bar">
+    <button class="nav-rep" data-rep="police" onclick="_navArmReport('police')"><span class="nav-rep-ico">&#x1F46E;</span><span>Police</span></button>
+    <button class="nav-rep" data-rep="crash" onclick="_navArmReport('crash')"><span class="nav-rep-ico">&#x1F4A5;</span><span>Crash</span></button>
+    <button class="nav-rep" data-rep="hazard" onclick="_navArmReport('hazard')"><span class="nav-rep-ico">&#x26A0;&#xFE0F;</span><span>Hazard</span></button>
+    <button class="nav-rep" data-rep="weather" onclick="_navArmReport('weather')"><span class="nav-rep-ico">&#x1F327;&#xFE0F;</span><span>Weather</span></button>
+    <button class="nav-rep" data-rep="traffic" onclick="_navArmReport('traffic')"><span class="nav-rep-ico">&#x1F697;</span><span>Traffic</span></button>
+    <button class="nav-rep" data-rep="good" onclick="_navArmReport('good')"><span class="nav-rep-ico">&#x1F44D;</span><span>Good</span></button>
+  </div>
+  <div id="nav-report-hint" style="display:none;"></div>
   <div id="nav-routes"></div>
   <div id="nav-note"></div>
   <div id="nav-legend">
@@ -26163,6 +26219,11 @@ let _navSel = 0;
 let _navLayer = null;   // everything drawn on the map, removed as one
 let _navGen = 0;        // late answers from an abandoned request stay dead
 let _navSuggest = [];   // last geocoder answers, offered as rows
+let _navWired = false;  // the map click / Escape hooks, attached once
+let _navPlacing = null; // a report type waiting for a tap on the map
+let _navReportLayer = null;
+let _navTrackTimer = null;
+const _navWxCache = new Map();  // "lat,lon" -> { at, lvl }, ~17 mi squares
 
 function _navOpen() {
   if (typeof lqmCloseSettings === 'function') { try { lqmCloseSettings(); } catch (e) {} }
@@ -26173,6 +26234,18 @@ function _navOpen() {
     const ll = _locMarker.getLatLng();
     _navStops.push({ name: 'My Location', lat: ll.lat, lon: ll.lng });
   }
+  // Wired once, guarded by state: an ordinary map tap means nothing to
+  // navigation unless a report button has been armed first.
+  if (!_navWired && typeof map !== 'undefined' && map) {
+    map.on('click', (e) => {
+      if (_navPlacing && e.latlng) _navPlaceReport(e.latlng.lat, e.latlng.lng);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') _navDisarmReport();
+    });
+    _navWired = true;
+  }
+  _navDrawReports();
   _navRenderStops();
   _navRenderRoutes();
 }
@@ -26181,8 +26254,12 @@ function _navClose() {
   const el = document.getElementById('nav-panel');
   if (el) el.style.display = 'none';
   _navGen++;
+  _navDisarmReport();
+  _navTrackStop();
   if (_navLayer) { try { map.removeLayer(_navLayer); } catch (e) {} _navLayer = null; }
   _navRoutes = [];
+  // The reports stay on the map: a hazard does not stop existing because
+  // the panel that filed it was closed.
 }
 
 function _navEsc(s) {
@@ -26291,22 +26368,69 @@ async function _navRoute() {
     _navRenderRoutes();
     return;
   }
-  _navRoutes = d.routes.map(rt => {
+  const graded = [];
+  for (const rt of d.routes) {
     const pts = (rt.geometry && rt.geometry.coordinates) || [];
-    const { segs, worst } = _navGrade(pts);
-    return { dist: rt.distance, secs: rt.duration, coords: pts, segs, worst };
-  });
+    const { segs, worst } = await _navGrade(pts);
+    if (gen !== _navGen) return;
+    graded.push({ dist: rt.distance, secs: rt.duration, coords: pts, segs, worst });
+  }
+  _navRoutes = graded;
   _navSel = 0;
   _navPaint();
   _navRenderRoutes();
+  // And keep it honest: the sky does not hold still for a road trip, so as
+  // long as routes are on screen their colors are re-read on a timer.
+  _navTrackStart();
 }
 
-// One route's weather, read from the live alert polygons already on the map.
+// Re-read every route's weather against the current alerts and conditions,
+// repaint in place (no bounds jump), and say so out loud if the chosen
+// route just got worse. This is what runs on the tracking timer.
+async function _navRegrade() {
+  if (!_navRoutes.length) return;
+  const gen = _navGen;
+  const before = _navRoutes[_navSel] ? _navRoutes[_navSel].worst : 0;
+  for (const rt of _navRoutes) {
+    const { segs, worst } = await _navGrade(rt.coords);
+    if (gen !== _navGen) return;
+    rt.segs = segs; rt.worst = worst;
+  }
+  _navPaint(false);
+  _navRenderRoutes();
+  const now = _navRoutes[_navSel] ? _navRoutes[_navSel].worst : 0;
+  if (now > before && typeof showToast === 'function') {
+    showToast('Weather on your route has worsened to '
+      + NAV_LEVELS[now].toLowerCase() + '. The colored stretches show where.', 7000);
+  }
+}
+
+const NAV_TRACK_MS = 180000;   // every three minutes, while routes are shown
+function _navTrackStart() {
+  if (_navTrackTimer) return;
+  _navTrackTimer = setInterval(() => { _navRegrade().catch(() => {}); }, NAV_TRACK_MS);
+}
+function _navTrackStop() {
+  if (_navTrackTimer) { clearInterval(_navTrackTimer); _navTrackTimer = null; }
+}
+
+// One route's weather, from two readings laid over each other and the worse
+// one winning at every point:
+//
+//   1. The live alert polygons already on the map - the official word.
+//   2. The actual conditions along the road, asked of Open-Meteo at a dozen
+//      spots down the route: rain rate, thunderstorms, freezing rain, snow,
+//      fog and wind gusts. A downpour with no warning attached still colors
+//      the road, because the car gets wet either way.
+//
 // Sampled rather than point-by-point: a cross-country line has tens of
 // thousands of vertices and the polygons are big; every ~25th of the route
 // is plenty to color it honestly.
-function _navGrade(pts) {
+async function _navGrade(pts) {
   if (!pts.length) return { segs: [], worst: 0 };
+  const wx = await _navWxAlong(pts);
+  const wxAt = (frac) => wx.length
+    ? wx[Math.min(wx.length - 1, Math.floor(frac * wx.length))] : 0;
   const step = Math.max(1, Math.floor(pts.length / 200));
   const segs = [];
   let worst = 0;
@@ -26314,7 +26438,7 @@ function _navGrade(pts) {
   for (let i = 0; i < pts.length; i += step) {
     const end = Math.min(i + step, pts.length - 1);
     const mid = pts[Math.floor((i + end) / 2)];
-    const lvl = _navSeverity(mid[1], mid[0]);
+    const lvl = Math.max(_navSeverity(mid[1], mid[0]), wxAt(i / pts.length));
     if (lvl > worst) worst = lvl;
     const piece = pts.slice(i, end + 1).map(c => [c[1], c[0]]);
     if (cur && cur.lvl === lvl) {
@@ -26326,6 +26450,76 @@ function _navGrade(pts) {
     if (end >= pts.length - 1) break;
   }
   return { segs, worst };
+}
+
+// Real conditions at one spot, folded to the same 0-4 scale the alerts use.
+// The thresholds are rain rate in mm/h: around 2.5 is where wipers go to
+// full, around 7.5 is where spray halves what you can see, past 20 people
+// pull over. Storms, ice, snow, fog and gusts raise the floor on top.
+function _navWxLevel(cur) {
+  let lvl = 0;
+  const p = cur.precipitation || 0;
+  if (p > 0.2) lvl = 1;
+  if (p > 2.5) lvl = 2;
+  if (p > 7.5) lvl = 3;
+  if (p > 20)  lvl = 4;
+  const c = cur.weather_code || 0;
+  if (c === 95 || c === 96 || c === 99) lvl = Math.max(lvl, 3);  // thunderstorm
+  if (c === 66 || c === 67)             lvl = Math.max(lvl, 3);  // freezing rain
+  if (c === 71 || c === 73 || c === 75 || c === 77 || c === 85 || c === 86)
+    lvl = Math.max(lvl, 2);                                       // snow
+  if (c === 45 || c === 48)             lvl = Math.max(lvl, 1);   // fog
+  const g = cur.wind_gusts_10m || 0;    // km/h
+  if (g > 90) lvl = Math.max(lvl, 3);
+  else if (g > 60) lvl = Math.max(lvl, 2);
+  return lvl;
+}
+
+// Conditions at up to a dozen spots down the route, one request for all of
+// them (Open-Meteo takes comma lists of coordinates). Spots are rounded to
+// quarter-degree squares and cached ten minutes, so repaints and nearby
+// routes reuse answers instead of re-asking. A failure returns nothing and
+// the alert polygons carry the coloring alone.
+async function _navWxAlong(pts) {
+  const N = Math.min(12, pts.length);
+  const spots = [];
+  for (let k = 0; k < N; k++) {
+    const p = pts[Math.floor(k * (pts.length - 1) / Math.max(1, N - 1))];
+    spots.push([Math.round(p[1] * 4) / 4, Math.round(p[0] * 4) / 4]);
+  }
+  const now = Date.now();
+  const need = [];
+  const seen = new Set();
+  spots.forEach(([la, lo]) => {
+    const key = la + ',' + lo;
+    const hit = _navWxCache.get(key);
+    if ((!hit || now - hit.at > 600000) && !seen.has(key)) {
+      seen.add(key);
+      need.push([la, lo, key]);
+    }
+  });
+  if (need.length) {
+    try {
+      const r = await fetchWithTimeout('https://api.open-meteo.com/v1/forecast'
+        + '?latitude=' + need.map(x => x[0]).join(',')
+        + '&longitude=' + need.map(x => x[1]).join(',')
+        + '&current=precipitation,weather_code,wind_gusts_10m'
+        + '&wind_speed_unit=kmh', 10000);
+      if (r.ok) {
+        const d = await r.json();
+        // One spot comes back as an object, several as an array.
+        const arr = Array.isArray(d) ? d : [d];
+        arr.forEach((one, i) => {
+          if (need[i]) _navWxCache.set(need[i][2],
+            { at: now, lvl: _navWxLevel(one && one.current || {}) });
+        });
+      }
+    } catch (e) {}
+  }
+  return spots.map(([la, lo]) => {
+    const hit = _navWxCache.get(la + ',' + lo);
+    return hit ? hit.lvl : 0;
+  });
 }
 
 // The worst active alert covering one point, 0-4. NWS spells its severity
@@ -26362,7 +26556,7 @@ function _navSeverity(lat, lon) {
   return worst;
 }
 
-function _navPaint() {
+function _navPaint(fit) {
   if (_navLayer) { try { map.removeLayer(_navLayer); } catch (e) {} }
   _navLayer = L.layerGroup();
   _navRoutes.forEach((rt, i) => {
@@ -26398,8 +26592,10 @@ function _navPaint() {
     }));
   });
   _navLayer.addTo(map);
+  // The tracking repaint passes fit=false: yanking the view every three
+  // minutes while someone reads the map would be worse than any weather.
   const sel2 = _navRoutes[_navSel];
-  if (sel2 && sel2.coords.length) {
+  if (fit !== false && sel2 && sel2.coords.length) {
     try {
       map.fitBounds(L.latLngBounds(sel2.coords.map(c => [c[1], c[0]])),
         { padding: [60, 60] });
@@ -26455,11 +26651,145 @@ function _navRenderRoutes() {
   }).join('');
   if (note) {
     const sel = _navRoutes[_navSel];
-    note.textContent = sel && sel.worst > 0
+    note.textContent = (sel && sel.worst > 0
       ? `The chosen route crosses ${NAV_LEVELS[sel.worst].toLowerCase()}-level weather. The colored stretches say where.`
-      : 'The chosen route is clear of active weather alerts right now.';
+      : 'The chosen route is clear: no alerts and no bad conditions along the road right now.')
+      + ' Rechecked every few minutes while routes are showing.';
   }
 }
+
+// ── ROAD REPORTS ──────────────────────────────────────────────────────────
+// The other half of a maps app: what the road is actually like, from the
+// person on it. Six kinds - police, a crash, a hazard on the road, bad
+// weather, a jam, and one for good news, because "the flooding two exits
+// up has drained" is worth reporting too. A report is placed by arming a
+// button and tapping the map (or using your own position), lives on this
+// device, and ages out after four hours, because a four-hour-old speed
+// trap is folklore, not information.
+const NAV_REPORT_TYPES = {
+  police:  { label: 'Police',      emoji: '\u{1F46E}' },
+  crash:   { label: 'Crash',       emoji: '\u{1F4A5}' },
+  hazard:  { label: 'Road Hazard', emoji: '⚠️' },
+  weather: { label: 'Bad Weather', emoji: '\u{1F327}️' },
+  traffic: { label: 'Traffic Jam', emoji: '\u{1F697}' },
+  good:    { label: 'Good News',   emoji: '\u{1F44D}' },
+};
+const NAV_REPORT_TTL = 4 * 3600000;
+const NAV_REPORT_KEY = 'gwcfc_navreports';
+
+function _navReportsLoad() {
+  try {
+    const a = JSON.parse(localStorage.getItem(NAV_REPORT_KEY) || '[]');
+    if (!Array.isArray(a)) return [];
+    return a.filter(r => r && NAV_REPORT_TYPES[r.type]
+      && isFinite(r.lat) && isFinite(r.lon)
+      && Date.now() - r.at < NAV_REPORT_TTL);
+  } catch (e) { return []; }
+}
+function _navReportsSave(a) {
+  try { localStorage.setItem(NAV_REPORT_KEY, JSON.stringify(a)); } catch (e) {}
+}
+
+function _navArmReport(type) {
+  if (_navPlacing === type) { _navDisarmReport(); return; }
+  _navDisarmReport();
+  if (!NAV_REPORT_TYPES[type]) return;
+  _navPlacing = type;
+  const btn = document.querySelector(`.nav-rep[data-rep="${type}"]`);
+  if (btn) btn.classList.add('arm');
+  const mapEl = document.getElementById('map');
+  if (mapEl) mapEl.style.cursor = 'crosshair';
+  const hint = document.getElementById('nav-report-hint');
+  if (hint) {
+    const R = NAV_REPORT_TYPES[type];
+    hint.style.display = 'block';
+    hint.innerHTML = `Tap the map where the <b>${R.label.toLowerCase()}</b> is.`
+      + (_locMarker ? ` Or <button class="nav-btn" onclick="_navReportHere()">at my location</button>.` : '')
+      + ` <button class="nav-btn" onclick="_navDisarmReport()">Cancel</button>`;
+  }
+}
+
+function _navDisarmReport() {
+  _navPlacing = null;
+  document.querySelectorAll('.nav-rep.arm').forEach(b => b.classList.remove('arm'));
+  const mapEl = document.getElementById('map');
+  if (mapEl) mapEl.style.cursor = '';
+  const hint = document.getElementById('nav-report-hint');
+  if (hint) { hint.style.display = 'none'; hint.innerHTML = ''; }
+}
+
+function _navReportHere() {
+  if (!_locMarker) return;
+  const ll = _locMarker.getLatLng();
+  _navPlaceReport(ll.lat, ll.lng);
+}
+
+function _navPlaceReport(lat, lon) {
+  const type = _navPlacing;
+  if (!type) return;
+  const rep = {
+    id: 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    type, lat, lon, at: Date.now(), note: '',
+  };
+  const a = _navReportsLoad();
+  a.push(rep);
+  _navReportsSave(a);
+  _navDisarmReport();
+  _navDrawReports(rep.id);
+}
+
+function _navDeleteReport(id) {
+  _navReportsSave(_navReportsLoad().filter(r => r.id !== id));
+  _navDrawReports();
+}
+
+function _navReportNote(id, val) {
+  const a = _navReportsLoad();
+  const rep = a.find(r => r.id === id);
+  if (rep) { rep.note = String(val).slice(0, 140); _navReportsSave(a); }
+}
+
+function _navAgo(at) {
+  const m = Math.max(0, Math.round((Date.now() - at) / 60000));
+  if (m < 1) return 'just now';
+  if (m < 60) return m + ' min ago';
+  return Math.round(m / 60) + ' hr ago';
+}
+
+function _navDrawReports(openId) {
+  if (typeof map === 'undefined' || !map) return;
+  if (!_navReportLayer) _navReportLayer = L.layerGroup().addTo(map);
+  _navReportLayer.clearLayers();
+  const a = _navReportsLoad();
+  _navReportsSave(a);   // the expiry trim, made permanent
+  a.forEach(rep => {
+    const R = NAV_REPORT_TYPES[rep.type];
+    const mk = L.marker([rep.lat, rep.lon], {
+      icon: L.divIcon({
+        className: '',
+        html: `<div class="nav-rep-pin${rep.type === 'good' ? ' good' : ''}">${R.emoji}</div>`,
+        iconSize: [26, 26], iconAnchor: [13, 13],
+      }),
+    });
+    mk.bindPopup(`<div class="alert-popup" style="min-width:160px;">`
+      + `<b>${R.emoji} ${R.label}</b><br>`
+      + `<span style="font-size:10px;opacity:.8;">${_navAgo(rep.at)} &middot; your report, this device only</span>`
+      + `<input class="nav-rep-note" placeholder="Add a note (optional)" maxlength="140" `
+      + `value="${_navEsc(rep.note)}" onchange="_navReportNote('${rep.id}', this.value)">`
+      + `<br><button class="nav-btn" style="margin-top:5px;" onclick="_navDeleteReport('${rep.id}')">Remove</button>`
+      + `</div>`);
+    _navReportLayer.addLayer(mk);
+    if (openId && rep.id === openId) {
+      setTimeout(() => { try { mk.openPopup(); } catch (e) {} }, 60);
+    }
+  });
+}
+
+// A report filed yesterday should greet you on today's map without the
+// panel having to be opened first. Deferred so the map exists.
+setTimeout(() => {
+  try { if (_navReportsLoad().length) _navDrawReports(); } catch (e) {}
+}, 3000);
 
 // ── FULLSCREEN ──
 function toggleFullscreen() {
@@ -39312,11 +39642,16 @@ function selectProduct(p) {
     <div style="font-size:9px;opacity:.65;line-height:1.45;padding:2px 4px 0;">
       Navigation works like the maps app on your phone, with weather in the
       picture. Add destinations, put them in any order, and get several
-      routes with an ETA for each. The chosen route is painted by the
-      weather alerts it drives through, on the intensity scale: the normal
-      road color where there is nothing, yellow for low, orange for
-      moderate, red for high and magenta for extreme. Routing by OSRM,
-      place search by OpenStreetMap.
+      routes with an ETA for each. The chosen route is painted by both the
+      weather alerts it drives through and the actual conditions on the
+      road (rain rate, storms, ice, snow, fog, gusts), on the intensity
+      scale: the normal road color where there is nothing, yellow for low,
+      orange for moderate, red for high and magenta for extreme, re-read
+      every few minutes while routes are showing. You can also report
+      things on the road, like police, a crash, a hazard, bad weather, a
+      jam, or good news; reports stay on this device and fade after four
+      hours. Routing by OSRM, place search by OpenStreetMap, conditions by
+      Open-Meteo.
     </div>
   </div>
 
@@ -44132,7 +44467,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Settings has a new GPS tab. Everything about your location lives there now (the Units tab is back to just units), plus a full navigation mode like the maps app on your phone: add destinations in any order, compare several routes with an ETA for each, and the chosen route is painted by the weather it drives through - normal road color when clear, then yellow, orange, red and magenta as the alerts along it get worse.";
+const APP_LATEST_UPDATE = "Navigation got smarter. The route colors now come from the actual conditions on the road (rain rate, storms, ice, snow, fog, gusts) as well as the alert polygons, and they re-check themselves every few minutes while routes are showing, so the road repaints as the weather moves. And you can report things now, like the maps app: police, a crash, a road hazard, bad weather, a traffic jam, or good news. Tap a report button, tap the map, done. Reports stay on your device and fade after four hours.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
