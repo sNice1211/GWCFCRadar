@@ -30,8 +30,8 @@ ok('it uses the radar app\'s own Firebase project, so the accounts are the same'
    /projectId:\s*"gwcfc-radar"/.test(html));
 ok('publishing writes to an outlooks collection with a latest pointer',
    /collection\('outlooks'\)\.doc\('latest'\)/.test(html));
-ok('the logo is the radar app\'s own icon file, not a redrawn one',
-   /<img id="logo" src="icons\/icon-512\.png"/.test(html));
+ok('the logo is the design\'s own mark, baked into the exported frame',
+   /icons\/two-frame\.png/.test(html) && !/<svg id="logo"/.test(html));
 ok('the icons come from the app\'s own sheet',
    /id="icon-sprite-defs"/.test(html)
    && (html.match(/use href="?#ic-/g) || []).length >= 8);
@@ -48,11 +48,12 @@ ok('the Alert Desk is the app\'s verbatim code',
    && /function _adBuild/.test(html) && /SIMULATED PRODUCT/.test(html));
 ok('the cone city list ships with the app\'s city database',
    /const CITIES = \[/.test(html));
-ok('type sizes follow the PDF\'s proportions of the graphic',
-   /#two-title\s*{\s*font-size:\s*clamp\(14px,\s*5\.96vh/.test(html)
-   && /\.head-pill\s*{\s*font-size:\s*clamp\(11px,\s*4\.94vh/.test(html)
-   && /\.legend-title\s*{\s*font-size:\s*clamp\(10px,\s*3\.65vh/.test(html)
-   && /\.chip\s*{\s*font-size:\s*clamp\(10px,\s*3\.43vh/.test(html));
+ok('the format IS the exported PDF page, overlaid on the map',
+   /<img id="two-frame" src="icons\/two-frame\.png"/.test(html)
+   && /pointer-events: none/.test(html));
+ok('the live pills sit exactly where the PDF put its pills',
+   /#live-time { left: 16\.9%; top: 12\.35%/.test(html)
+   && /#live-fcstr { left: 66\.18%; top: 12\.35%/.test(html));
 
 // Firebase is stubbed: real auth needs a network and a password nobody should
 // put in a test. Everything else on the page is the real thing.
@@ -117,31 +118,33 @@ await page.waitForTimeout(1200);
 
 console.log('\n2. the format matches the design');
 {
-  const r = await page.evaluate(() => ({
-    title: document.getElementById('two-title').textContent.trim(),
-    hasTime: /UTC/.test(document.getElementById('two-time').textContent),
-    fcstr: document.getElementById('two-fcstr').textContent,
-    syms: document.querySelectorAll('#legend-syms img').length,
-    symNums: Array.from(document.querySelectorAll('#legend-syms img'))
-      .map(i => (i.getAttribute('src').match(/two-sym(\d)/) || [])[1]),
-    chances: Array.from(document.querySelectorAll('#legend-chances .chip')).map(c => c.textContent),
-    alerts: Array.from(document.querySelectorAll('#legend-alerts .chip')).map(c => c.textContent),
-    mapUp: !!document.querySelector('#map .leaflet-map-pane'),
-    gold: getComputedStyle(document.querySelector('#two-title')).borderTopColor,
-  }));
-  ok('the title banner carries the center\'s name',
-     /guta weather\/climate forecasting center/i.test(r.title), r.title);
-  ok('the header stamps an issue time and a forecaster slot',
+  const r = await page.evaluate(() => {
+    const frame = document.getElementById('two-frame');
+    const fr = frame.getBoundingClientRect();
+    const mapR = document.getElementById('map').getBoundingClientRect();
+    togglePanel('p-tools');
+    const palette = Array.from(document.querySelectorAll('#tool-syms img'))
+      .map(i => (i.getAttribute('src').match(/two-sym(\d)/) || [])[1]);
+    togglePanel('p-tools');
+    return {
+      frameSrc: frame.getAttribute('src'),
+      fullBleed: fr.width >= innerWidth - 2 && fr.height >= innerHeight - 2
+              && mapR.width >= innerWidth - 2,
+      overMap: getComputedStyle(frame).pointerEvents === 'none',
+      hasTime: /UTC/.test(document.getElementById('two-time').textContent),
+      fcstr: document.getElementById('two-fcstr').textContent,
+      palette,
+      mapUp: !!document.querySelector('#map .leaflet-map-pane'),
+    };
+  });
+  ok('the exported PDF page covers the whole window, over a full-bleed map',
+     r.frameSrc === 'icons/two-frame.png' && r.fullBleed, JSON.stringify(r));
+  ok('and it never eats a map click', r.overMap);
+  ok('the live pills stamp an issue time and a forecaster',
      r.hasTime && r.fcstr.length > 0, r.fcstr);
-  ok('five storm symbols, numbered 5 down to 1',
-     r.syms === 5 && r.symNums.join(',') === '5,4,3,2,1', r.symNums.join(','));
-  ok('the four disturbance chances are in the key',
-     r.chances.join(',') === 'Extreme,High,Medium,Low', r.chances.join(','));
-  ok('the three alert levels are in the key',
-     r.alerts.join(',') === 'Emer.,Warning,Watch', r.alerts.join(','));
+  ok('the palette offers the five PDF symbols, 5 down to 1',
+     r.palette.join(',') === '5,4,3,2,1', r.palette.join(','));
   ok('the map is live under the format', r.mapUp);
-  ok('everything wears the gold outline',
-     /232,\s*184,\s*0/.test(r.gold), r.gold);
 }
 
 console.log('\n3. testing mode is open, and the flag is the only reason');
