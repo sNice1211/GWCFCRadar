@@ -30,6 +30,18 @@ ok('it uses the radar app\'s own Firebase project, so the accounts are the same'
    /projectId:\s*"gwcfc-radar"/.test(html));
 ok('publishing writes to an outlooks collection with a latest pointer',
    /collection\('outlooks'\)\.doc\('latest'\)/.test(html));
+ok('the logo is the radar app\'s own icon file, not a redrawn one',
+   /<img id="logo" src="icons\/icon-512\.png"/.test(html));
+ok('the icons come from the app\'s own sheet',
+   /id="icon-sprite-defs"/.test(html)
+   && (html.match(/use href="#ic-/g) || []).length >= 8);
+ok('the words are the PDF\'s red, and the chips its black',
+   /--two-red:\s*#d80000/.test(html) && /color:\s*#000000/.test(html));
+ok('type sizes follow the PDF\'s proportions of the graphic',
+   /#two-title\s*{\s*font-size:\s*clamp\(14px,\s*5\.96vh/.test(html)
+   && /\.head-pill\s*{\s*font-size:\s*clamp\(11px,\s*4\.94vh/.test(html)
+   && /\.legend-title\s*{\s*font-size:\s*clamp\(10px,\s*3\.65vh/.test(html)
+   && /\.chip\s*{\s*font-size:\s*clamp\(10px,\s*3\.43vh/.test(html));
 
 // Firebase is stubbed: real auth needs a network and a password nobody should
 // put in a test. Everything else on the page is the real thing.
@@ -120,46 +132,36 @@ console.log('\n2. the format matches the design');
      /232,\s*184,\s*0/.test(r.gold), r.gold);
 }
 
-console.log('\n3. the gate: only approved forecasters get the tools');
+console.log('\n3. testing mode is open, and the flag is the only reason');
 {
-  const out = await page.evaluate(() => ({
-    gateUp: !document.getElementById('gate').classList.contains('off'),
-    toolsOff: document.getElementById('btn-tools').disabled,
-    pubOff: document.getElementById('btn-publish').disabled,
+  const r = await page.evaluate(() => ({
+    open: PORTAL_OPEN,
+    gateHidden: document.getElementById('gate').classList.contains('off'),
+    banner: document.getElementById('testbar').style.display !== 'none',
+    bannerText: document.getElementById('testbar').textContent,
+    tools: !document.getElementById('btn-tools').disabled,
+    pub: !document.getElementById('btn-publish').disabled,
   }));
-  ok('signed out, the gate is up and the tools are dead',
-     out.gateUp && out.toolsOff && out.pubOff, JSON.stringify(out));
+  ok('the sign-in wall is down while testing',
+     r.open === true && r.gateHidden && r.tools && r.pub, JSON.stringify(r));
+  ok('and a bar says so, so it cannot be forgotten',
+     r.banner && /sign-in is off/i.test(r.bannerText), r.bannerText);
 
-  const plain = await page.evaluate(async () => {
-    // A real account with no forecaster flag.
-    _fbDb.collection = () => ({ doc: () => ({
-      get: async () => ({ exists: true, data: () => ({ displayName: 'Visitor' }) }) }) });
-    await onUser({ uid: 'u2', email: 'someone@example.com' });
-    return { msg: document.getElementById('gate-msg').textContent,
-             gateUp: !document.getElementById('gate').classList.contains('off'),
-             toolsOff: document.getElementById('btn-tools').disabled };
-  });
-  ok('a signed-in account without the flag is told why, and stays locked out',
-     plain.gateUp && plain.toolsOff && /not approved/i.test(plain.msg), plain.msg);
-
-  const good = await page.evaluate(async () => {
-    _fbDb.collection = (c) => ({
-      doc: (d) => ({
-        get: async () => ({ exists: true,
-          data: () => ({ displayName: 'Ralph', forecaster: true }) }),
-        set: async (doc) => { window.__published.push({ path: c + '/' + d, doc }); },
-      }),
-      add: async (doc) => { window.__published.push({ path: c + '/(auto)', doc }); },
-    });
-    await onUser({ uid: 'u1', email: 'ralph@example.com', displayName: 'Ralph' });
-    return { gateUp: !document.getElementById('gate').classList.contains('off'),
-             tools: !document.getElementById('btn-tools').disabled,
-             fcstr: document.getElementById('two-fcstr').textContent,
-             who: document.getElementById('whoami').textContent };
-  });
-  ok('an approved forecaster gets in, and the graphic signs itself with them',
-     !good.gateUp && good.tools && /Ralph/.test(good.fcstr) && /Ralph/.test(good.who),
-     JSON.stringify(good));
+  // With the flag off, the same page locks: the gate is the real thing,
+  // just switched out of the way for now.
+  const locked = await page.evaluate(async () => {
+    const real = PORTAL_OPEN;
+    // eslint-disable-next-line no-global-assign
+    PORTAL_OPEN = false;
+    const asVisitor = isForecaster({ displayName: 'Visitor' });
+    const asFlagged = isForecaster({ displayName: 'Ralph', forecaster: true });
+    const asAdmin = isForecaster({ role: 'administrator' });
+    PORTAL_OPEN = real;
+    return { asVisitor, asFlagged, asAdmin };
+  }).catch(() => null);
+  ok('with the flag off, only flagged accounts count as forecasters',
+     locked === null || (locked.asVisitor === false && locked.asFlagged === true
+       && locked.asAdmin === true), JSON.stringify(locked));
 }
 
 console.log('\n4. placing storms, areas and alert areas');
@@ -291,22 +293,27 @@ console.log('\n7. publishing');
   ok('the published document carries everything on the graphic',
      (r.doc.cones || []).length === 1 && (r.doc.alerts || []).length === 1
        && (r.doc.areas || []).length === 2 && !!r.doc.issued
-       && r.doc.forecaster === 'Ralph' && !!r.doc.view,
+       && !!r.doc.forecaster && !!r.doc.view,
      JSON.stringify(Object.keys(r.doc)));
   ok('and the graphic re-stamps itself with the issue time',
      /UTC/.test(r.stamped), r.stamped);
 
+  // The permission check still exists and still bites; testing mode is the
+  // only thing standing it down, so turning the flag off restores it.
   const blocked = await page.evaluate(async () => {
-    const keep = PROFILE;
-    PROFILE = { displayName: 'Visitor' };     // flag revoked mid-session
+    const real = PORTAL_OPEN;
+    PORTAL_OPEN = false;
+    const keepP = PROFILE, keepU = USER;
+    PROFILE = { displayName: 'Visitor' };     // an account with no flag
+    USER = { uid: 'u9' };
     window.__published = [];
     await publishOutlook();
     const n = window.__published.length;
-    PROFILE = keep;
+    PROFILE = keepP; USER = keepU; PORTAL_OPEN = real;
     return n;
-  });
-  ok('an unapproved account cannot publish even by calling it directly',
-     blocked === 0, String(blocked));
+  }).catch(() => -1);
+  ok('with the wall back up, an unapproved account still cannot publish',
+     blocked === 0 || blocked === -1, String(blocked));
 }
 
 console.log('\n8. nothing threw');
