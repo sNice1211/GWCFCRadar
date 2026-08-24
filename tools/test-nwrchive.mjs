@@ -229,6 +229,80 @@ console.log('\n4. a day: the player and the highlights');
      filt.length === 1 && /SAME tone/.test(filt[0]), JSON.stringify(filt));
 }
 
+console.log('\n4b. the search bar fills the bar, and Filter works');
+{
+  const layout = await page.evaluate(() => {
+    const nav = document.querySelector('nav').getBoundingClientRect();
+    const inp = document.getElementById('q').getBoundingClientRect();
+    const btn = document.getElementById('filter-btn').getBoundingClientRect();
+    return { navW: nav.width, inpW: inp.width,
+             sameRow: Math.abs(inp.top - btn.top) < 6,
+             btnRight: btn.left > inp.right - 2 };
+  });
+  ok('the search box takes the empty middle of the bar, not a corner',
+     layout.inpW > layout.navW * 0.3,
+     Math.round(layout.inpW) + 'px of ' + Math.round(layout.navW));
+  ok('the Filter button sits beside it on the same row',
+     layout.sameRow && layout.btnRight, JSON.stringify(layout));
+
+  const f = await page.evaluate(() => {
+    const out = {};
+    document.getElementById('filter-btn').click();
+    out.opened = document.getElementById('filter-panel').classList.contains('on');
+    // KWO35 in New York has recordings but never caught an alert, so the
+    // alerts-only filter must drop it and keep the Sebring station.
+    setFilter('withAlerts', true);
+    out.lit = document.getElementById('filter-btn').classList.contains('on');
+    out.dot = document.getElementById('filter-dot').textContent;
+    location.hash = '#/state/NY';
+    return new Promise(res => setTimeout(() => {
+      out.nyEmpty = /matches the filters/i.test(document.getElementById('app').textContent);
+      location.hash = '#/state/FL';
+      setTimeout(() => {
+        out.flCards = document.querySelectorAll('#app .card').length;
+        out.flText = document.getElementById('app').textContent;
+        clearFilters();
+        setTimeout(() => {
+          out.clearedCards = document.querySelectorAll('#app .card').length;
+          out.clearedDot = document.getElementById('filter-dot').style.display;
+          res(out);
+        }, 120);
+      }, 120);
+    }, 120));
+  });
+  ok('the button opens its panel', f.opened);
+  ok('choosing a filter lights the button and counts it',
+     f.lit && f.dot === '1', JSON.stringify({ lit: f.lit, dot: f.dot }));
+  ok('a state whose stations caught no alerts says so, not a bare blank',
+     f.nyEmpty);
+  ok('and the filter really narrows the list',
+     f.flCards === 1 && /KIH21/.test(f.flText) && !/KEC50/.test(f.flText),
+     f.flCards + ' cards');
+  ok('clearing brings everything back and unlights the button',
+     f.clearedCards === 2 && f.clearedDot === 'none',
+     JSON.stringify({ n: f.clearedCards, dot: f.clearedDot }));
+
+  // The day page's alert pills and the Filter panel are the same setting.
+  const shared = await page.evaluate(() => {
+    location.hash = '#/station/KIH21/2026-08-24';
+    return new Promise(res => setTimeout(() => {
+      setHlFilter('tone');
+      setTimeout(() => {
+        const out = {
+          cards: document.querySelectorAll('.hlcard').length,
+          radio: document.getElementById('f-hl-tone').checked,
+          dot: document.getElementById('filter-dot').textContent,
+        };
+        clearFilters();
+        setTimeout(() => res(out), 120);
+      }, 200);
+    }, 300));
+  });
+  ok('the day page pills and the Filter panel are one setting',
+     shared.cards === 1 && shared.radio === true && shared.dot === '1',
+     JSON.stringify(shared));
+}
+
 console.log('\n5. search and about');
 {
   const r = await page.evaluate(() => new Promise(res => setTimeout(() => {

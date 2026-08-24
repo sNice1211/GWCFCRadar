@@ -84,8 +84,10 @@
       background-image: linear-gradient(180deg, rgba(92,216,247,0.3) 0%, rgba(0,90,130,0.24) 100%);
       color: var(--blue2);
     }
-    .nav-spacer { flex: 1; }
-    .nav-search { position: relative; }
+    /* The search takes the empty middle of the bar rather than hiding in a
+       corner: finding a station is the main thing anyone does here. */
+    .nav-tools { flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .nav-search { position: relative; flex: 1; min-width: 0; }
     .nav-search input {
       background: rgba(0,0,0,0.35);
       border: 1px solid rgba(255,255,255,0.25);
@@ -93,13 +95,67 @@
       color: #fff;
       font-family: var(--font);
       font-size: 14px;
-      padding: 8px 14px;
-      width: 200px;
+      padding: 9px 16px;
+      width: 100%;
       outline: none;
     }
     .nav-search input:focus { border-color: var(--gold); }
+    .filter-wrap { position: relative; flex: none; }
+    .filter-btn {
+      display: flex; align-items: center; gap: 7px;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 18px;
+      color: #fff;
+      font-family: var(--font); font-size: 14px; font-weight: 600;
+      padding: 9px 16px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .filter-btn:hover { border-color: var(--gold); }
+    .filter-btn.on {
+      border-color: var(--gold); color: var(--gold);
+      background: rgba(232,184,0,0.12);
+    }
+    .filter-btn .dot {
+      background: var(--gold); color: #2a1a00;
+      border-radius: 9px; font-size: 11px; font-weight: 700;
+      padding: 0 6px; line-height: 16px;
+    }
+    .filter-panel {
+      position: absolute; top: 120%; right: 0;
+      width: 260px;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--lift);
+      padding: 12px 14px;
+      display: none;
+      z-index: 220;
+    }
+    .filter-panel.on { display: block; }
+    .filter-panel h4 {
+      font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+      color: var(--muted); font-weight: 700; margin: 10px 0 7px;
+    }
+    .filter-panel h4:first-child { margin-top: 0; }
+    .filter-panel label {
+      display: flex; align-items: center; gap: 9px;
+      font-size: 14px; padding: 5px 0; cursor: pointer;
+    }
+    .filter-panel input[type=checkbox], .filter-panel input[type=radio] {
+      accent-color: var(--accent2); width: 15px; height: 15px; cursor: pointer;
+    }
+    .filter-clear {
+      width: 100%; margin-top: 12px;
+      background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 8px; color: var(--text);
+      font-family: var(--font); font-size: 13px;
+      padding: 7px; cursor: pointer;
+    }
+    .filter-clear:hover { border-color: var(--accent2); color: var(--accent2); }
     .nav-search .results {
-      position: absolute; top: 110%; right: 0;
+      position: absolute; top: 110%; left: 0; right: 0;
       min-width: 280px; max-height: 320px; overflow: auto;
       background: var(--bg2);
       border: 1px solid var(--border);
@@ -259,8 +315,13 @@
 
     @media (max-width: 720px) {
       nav { flex-wrap: wrap; height: auto; padding: 10px 12px; row-gap: 8px; }
-      .nav-search input { width: 140px; }
-      .nav-search .results { right: auto; left: 0; }
+      /* On a phone the tools drop to their own full-width row rather than
+         squeezing into what is left beside the brand. */
+      .nav-tools { order: 3; flex-basis: 100%; }
+      .nav-search input { font-size: 15px; }
+      .nav-search input::placeholder { font-size: 14px; }
+      .filter-btn span:not(.dot) { display: none; }
+      .filter-btn { padding: 9px 13px; }
       main { padding: 18px 12px 40px; }
     }
   </style>
@@ -276,11 +337,33 @@
     <li><a id="nav-home" href="index.html"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg> Home</a></li>
     <li><a id="nav-about" onclick="location.hash='#/about'"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.4 2.4 0 1 1 3.5 2.1c-.7.4-1.1 1-1.1 1.7v.6"/><circle cx="12" cy="16.8" r="0.4" fill="currentColor" stroke="none"/></svg> About</a></li>
   </ul>
-  <div class="nav-spacer"></div>
-  <div class="nav-search">
-    <input id="q" type="search" placeholder="Find a station&hellip;" autocomplete="off"
-           oninput="doSearch()" onfocus="doSearch()">
-    <div class="results" id="q-results"></div>
+  <div class="nav-tools">
+    <div class="nav-search">
+      <input id="q" type="search" placeholder="Find a station by callsign, city, state or frequency&hellip;"
+             autocomplete="off" oninput="doSearch()" onfocus="doSearch()">
+      <div class="results" id="q-results"></div>
+    </div>
+    <div class="filter-wrap">
+      <button class="filter-btn" id="filter-btn" type="button" onclick="toggleFilter(event)">
+        <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3 5h18l-7 8v6l-4 2v-8L3 5z"/></svg>
+        <span>Filter</span><span class="dot" id="filter-dot" style="display:none">0</span>
+      </button>
+      <div class="filter-panel" id="filter-panel">
+        <h4>Stations</h4>
+        <label><input type="checkbox" id="f-audio" onchange="setFilter('withAudio', this.checked)">
+          Only ones with recordings</label>
+        <label><input type="checkbox" id="f-alerts" onchange="setFilter('withAlerts', this.checked)">
+          Only ones that caught an alert</label>
+        <h4>Alerts</h4>
+        <label><input type="radio" name="f-hl" id="f-hl-all" onchange="setFilter('hl', 'all')" checked>
+          Every alert</label>
+        <label><input type="radio" name="f-hl" id="f-hl-tone" onchange="setFilter('hl', 'tone')">
+          SAME tone only</label>
+        <label><input type="radio" name="f-hl" id="f-hl-kw" onchange="setFilter('hl', 'keyword')">
+          Keyword only</label>
+        <button class="filter-clear" onclick="clearFilters()">Clear filters</button>
+      </div>
+    </div>
   </div>
   <!-- The stream providers. The recordings only exist because these three
        relay the transmitters onto the internet, so they get the header. -->
@@ -401,7 +484,20 @@ const REGION_ICONS = { Northeast: icArrow(45), Mideast: icArrow(90),
 let INDEX = null;       // the fetched (or demo) index
 let DEMO = false;
 let dayCache = {};      // 'id/date' -> day json
-let hlFilter = 'all';   // all | tone | keyword
+
+// What the Filter button holds. The alert setting is the same one the day
+// page's pills use, so the two can never disagree: change it in either place
+// and both show it.
+const FILTER_KEY = 'nwrchive_filters';
+let FILTERS = { withAudio: false, withAlerts: false, hl: 'all' };
+try {
+  const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || 'null');
+  if (saved && typeof saved === 'object') FILTERS = Object.assign(FILTERS, saved);
+} catch (e) {}
+function filterCount() {
+  return (FILTERS.withAudio ? 1 : 0) + (FILTERS.withAlerts ? 1 : 0)
+       + (FILTERS.hl !== 'all' ? 1 : 0);
+}
 
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -410,8 +506,17 @@ const esc = (s) => String(s == null ? '' : s)
 function stationById(id) {
   return (INDEX.stations || []).find(s => s.id === id) || null;
 }
+// Station filters are applied here, in the one place every listing and every
+// count already goes through, so a filtered region card and the state page
+// under it can never show different numbers.
 function stationsInState(st) {
-  return (INDEX.stations || []).filter(s => s.state === st);
+  return (INDEX.stations || []).filter(s => {
+    if (s.state !== st) return false;
+    const days = Object.values(s.dates || {});
+    if (FILTERS.withAudio && !days.some(d => (d.chunks || 0) > 0)) return false;
+    if (FILTERS.withAlerts && !days.some(d => (d.highlights || 0) > 0)) return false;
+    return true;
+  });
 }
 function regionOfState(st) {
   for (const r in REGIONS) if (REGIONS[r].includes(st)) return r;
@@ -551,7 +656,9 @@ function viewState(st) {
             + '<div class="m"><span class="cnt">' + nd + '</span> day' + (nd === 1 ? '' : 's')
             + ' on file' + (s.freq ? ' · ' + esc(s.freq) + ' MHz' : '') + '</div></div>';
         }).join('') + '</div>'
-      : '<div class="empty">No archived stations here yet.</div>');
+      : '<div class="empty">' + (filterCount()
+          ? 'No station here matches the filters.'
+          : 'No archived stations here yet.') + '</div>');
 }
 
 function viewStation(id) {
@@ -599,8 +706,8 @@ async function viewDay(id, date) {
   if (!location.hash.includes(id + '/' + date)) return;
   const hlTimes = new Set((day.highlights || []).map(h => h.t));
   const hls = (day.highlights || []).filter(h =>
-    hlFilter === 'all' ? true
-    : hlFilter === 'tone' ? h.reason === 'same_tone'
+    FILTERS.hl === 'all' ? true
+    : FILTERS.hl === 'tone' ? h.reason === 'same_tone'
     : h.reason !== 'same_tone');
   el.innerHTML = demoBanner()
     + crumbs([['Stations', '#/'], [s.id, '#/station/' + esc(s.id)], [fmtDate(date)]])
@@ -626,7 +733,7 @@ async function viewDay(id, date) {
     + '<h2>' + IC.warn + ' Alert highlights</h2>'
     + '<div class="pillrow">'
     +   ['all', 'tone', 'keyword'].map(f =>
-        '<button class="pill' + (hlFilter === f ? ' on' : '') + '" onclick="setHlFilter(\'' + f + '\')">'
+        '<button class="pill' + (FILTERS.hl === f ? ' on' : '') + '" onclick="setHlFilter(\'' + f + '\')">'
         + (f === 'all' ? 'All' : f === 'tone' ? 'SAME tone' : 'Keyword') + '</button>').join('')
     + '</div>'
     + (hls.length ? hls.map(h =>
@@ -690,8 +797,49 @@ function playHighlight(t) {
   au.play().catch(() => {});
 }
 function setHlFilter(f) {
-  hlFilter = f;
+  setFilter('hl', f);   // setFilter redraws, so the day page follows along
+}
+
+// ── FILTER ─────────────────────────────────────────────────────────────────
+function toggleFilter(ev) {
+  if (ev) ev.stopPropagation();
+  const p = document.getElementById('filter-panel');
+  if (!p) return;
+  p.classList.toggle('on');
+  hideSearch();
+}
+function hideFilter() {
+  const p = document.getElementById('filter-panel');
+  if (p) p.classList.remove('on');
+}
+function setFilter(key, val) {
+  FILTERS[key] = val;
+  try { localStorage.setItem(FILTER_KEY, JSON.stringify(FILTERS)); } catch (e) {}
+  syncFilterUi();
   route();
+}
+function clearFilters() {
+  FILTERS = { withAudio: false, withAlerts: false, hl: 'all' };
+  try { localStorage.setItem(FILTER_KEY, JSON.stringify(FILTERS)); } catch (e) {}
+  syncFilterUi();
+  hideFilter();
+  route();
+}
+// The button says how many filters are on, because a filtered page that looks
+// empty and a genuinely empty one are otherwise the same picture.
+function syncFilterUi() {
+  const n = filterCount();
+  const btn = document.getElementById('filter-btn');
+  const dot = document.getElementById('filter-dot');
+  if (btn) btn.classList.toggle('on', n > 0);
+  if (dot) { dot.textContent = n; dot.style.display = n ? '' : 'none'; }
+  const a = document.getElementById('f-audio');
+  const b = document.getElementById('f-alerts');
+  if (a) a.checked = !!FILTERS.withAudio;
+  if (b) b.checked = !!FILTERS.withAlerts;
+  const r = document.getElementById(
+    FILTERS.hl === 'tone' ? 'f-hl-tone' : FILTERS.hl === 'keyword' ? 'f-hl-kw' : 'f-hl-all');
+  if (r) r.checked = true;
 }
 
 // ── SEARCH ─────────────────────────────────────────────────────────────────
@@ -717,6 +865,9 @@ function hideSearch() {
 }
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.nav-search')) hideSearch();
+  // The panel stays open while its own boxes are being ticked, and closes
+  // on the first click anywhere else.
+  if (!e.target.closest('.filter-wrap')) hideFilter();
 });
 
 // ── ABOUT ──────────────────────────────────────────────────────────────────
@@ -766,6 +917,7 @@ function homeHref() {
 
 // ── BOOT ───────────────────────────────────────────────────────────────────
 (async function boot() {
+  syncFilterUi();
   const href = homeHref();
   const hb = document.getElementById('nav-home');
   if (hb) hb.setAttribute('href', href);
