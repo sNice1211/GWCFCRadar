@@ -8342,6 +8342,7 @@ footer {
 }
 .nav-headbtn:hover, #nav-close:hover { color: #fff; }
 #nav-voice.muted { opacity: 0.45; }
+#nav-pip.open { color: #1aff8f; }
 #nav-fab {
   position: fixed;
   bottom: 170px;
@@ -9439,6 +9440,10 @@ body.clean-mode #clean-hint { opacity: 1; }
                   onclick="event.stopPropagation();_popOutPanel('alerts')">
             <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-external></use></svg>
           </button>
+          <button class="panel-pop" id="alerts-pip" type="button"
+                  title="Float this panel over other apps (picture in picture)"
+                  aria-label="Float the warnings panel over other apps"
+                  onclick="event.stopPropagation();_pipToggle('alerts')">&#x29C9;</button>
         </div>
       </div>
       <div id="alerts-panel-body"></div>
@@ -9462,6 +9467,10 @@ body.clean-mode #clean-hint { opacity: 1; }
                   onclick="event.stopPropagation();_popOutPanel('eas')">
             <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-external></use></svg>
           </button>
+          <button class="panel-pop" id="eas-pip" type="button"
+                  title="Float this panel over other apps (picture in picture)"
+                  aria-label="Float the EAS panel over other apps"
+                  onclick="event.stopPropagation();_pipToggle('eas')">&#x29C9;</button>
         </div>
       </div>
       <div id="eas-panel-body"><div class="eas-loading">Loading…</div></div>
@@ -9544,6 +9553,7 @@ body.clean-mode #clean-hint { opacity: 1; }
   <div id="nav-head">
     <span><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> Navigation</span>
     <span style="display:flex;align-items:center;gap:2px;">
+      <button id="nav-pip" class="nav-headbtn" onclick="_pipToggle('nav')" title="Float directions over other apps (picture in picture)">&#x29C9;</button>
       <button id="nav-voice" class="nav-headbtn" onclick="_navVoiceToggle()" title="Voice guidance on/off">&#x1F50A;</button>
       <button id="nav-min" class="nav-headbtn" onclick="_navMin()" title="Hide the panel">&#x2212;</button>
       <span id="nav-grab" class="dtb-drag" title="Drag to move">⠿</span>
@@ -11069,6 +11079,264 @@ function _popApplyLaunchParam() {
     try { toggleEASPanel(); } catch (e) {}
   }
 }
+
+// ── PANEL PICTURE-IN-PICTURE: a floating live view for phones ─────────────
+//
+// The pop-out above needs window.open, which a phone turns into a plain tab.
+// What a phone CAN float over other apps is a video, so this paints the
+// panel's content onto a canvas a few times a second, turns the canvas into
+// a live video stream, and hands that to the browser's picture-in-picture.
+// The little window then rides on top of the home screen, other apps, all
+// of it, updating as the panel updates. It is a view, not a control: taps
+// on a PiP video do not reach the page, so it shows and never asks.
+const _PIP_SPEC = {
+  alerts: { title: 'WX ALERTS', accent: '#ff5555', btn: 'alerts-pip',
+            count: 'alerts-panel-count', empty: 'No active warnings.' },
+  eas:    { title: 'EAS ALERTS', accent: '#ff8c00', btn: 'eas-pip',
+            count: 'eas-panel-count', empty: 'No EAS activity.' },
+  nav:    { title: 'NAVIGATION', accent: '#1a8fff', btn: 'nav-pip',
+            count: null, empty: 'Add a stop and start navigation.' },
+};
+let _pip = null;   // { which, canvas, ctx, video, stream, timer }
+
+function _pipSupported() {
+  try {
+    if (typeof HTMLCanvasElement === 'undefined'
+        || !HTMLCanvasElement.prototype.captureStream) return false;
+    if (document.pictureInPictureEnabled) return true;
+    const v = document.createElement('video');
+    return typeof v.webkitSupportsPresentationMode === 'function'
+        && v.webkitSupportsPresentationMode('picture-in-picture');
+  } catch (e) { return false; }
+}
+
+// What each panel wants said in the little window, as plain rows:
+// a coloured title, an optional right-hand tag, and a body line.
+function _pipRows(which) {
+  const out = [];
+  const txt = (el) => el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  try {
+    if (which === 'alerts') {
+      document.querySelectorAll('#alerts-panel-body .alert-card').forEach(c => {
+        const ev = txt(c.querySelector('.alert-event span'));
+        let color = '#ff5555';
+        try { if (typeof _alertColorFor === 'function') color = _alertColorFor(ev) || color; } catch (e) {}
+        out.push({ title: ev, tag: txt(c.querySelector('.alert-event-time')),
+                   color, body: txt(c.querySelector('.alert-area')) });
+      });
+    } else if (which === 'eas') {
+      document.querySelectorAll('#eas-panel-body .eas-card').forEach(c => {
+        out.push({ title: txt(c.querySelector('.eas-type span')),
+                   tag: '',
+                   color: (c.style && c.style.borderLeftColor) || '#ff8c00',
+                   body: [txt(c.querySelector('.eas-translation')),
+                          txt(c.querySelector('.eas-meta'))].filter(Boolean).join('  ') });
+      });
+    } else if (which === 'nav') {
+      const turn = document.getElementById('nav-turn');
+      if (turn && turn.style.display !== 'none') {
+        out.push({ title: txt(document.getElementById('nav-turn-arrow')) + ' '
+                        + txt(document.getElementById('nav-turn-main')),
+                   tag: '', color: '#1aff8f',
+                   body: txt(document.getElementById('nav-turn-sub')), big: true });
+      }
+      const rt = (typeof _navRoutes !== 'undefined') && _navRoutes[_navSel];
+      if (rt && rt.steps && rt.steps.length) {
+        const from = (typeof _navStepIdx !== 'undefined' && _navStepIdx > 0) ? _navStepIdx : 0;
+        rt.steps.slice(from, from + 8).forEach((st, i) => {
+          out.push({ title: st.arrow + ' ' + st.text, tag: '',
+                     color: i === 0 ? '#1a8fff' : '#8aa0b8',
+                     body: st.dist > 40 ? _navFmtShort(st.dist) : '' });
+        });
+      } else if (typeof _navStops !== 'undefined' && _navStops.length) {
+        _navStops.forEach((s, i) => out.push({
+          title: (i + 1) + '. ' + s.name, tag: '', color: '#1a8fff', body: '' }));
+      }
+    }
+  } catch (e) {}
+  return out;
+}
+
+function _pipWrap(ctx, text, maxW, maxLines) {
+  const words = String(text || '').split(' ');
+  const lines = [];
+  let line = '';
+  for (const wd of words) {
+    const trial = line ? line + ' ' + wd : wd;
+    if (ctx.measureText(trial).width <= maxW || !line) line = trial;
+    else {
+      lines.push(line); line = wd;
+      if (lines.length === maxLines) break;
+    }
+  }
+  if (lines.length < maxLines && line) lines.push(line);
+  else if (lines.length === maxLines && line) {
+    let last = lines[maxLines - 1];
+    while (last && ctx.measureText(last + '…').width > maxW) last = last.slice(0, -1);
+    lines[maxLines - 1] = last + '…';
+  }
+  return lines;
+}
+
+function _pipDraw() {
+  if (!_pip) return;
+  const spec = _PIP_SPEC[_pip.which];
+  const ctx = _pip.ctx;
+  // Everything below is laid out in logical pixels; the canvas is twice
+  // that size so the floating window stays crisp on a phone screen.
+  const w = _pip.canvas.width / 2, h = _pip.canvas.height / 2;
+  ctx.setTransform(2, 0, 0, 2, 0, 0);
+  const bg = ctx.createLinearGradient(0, 0, 0, h);
+  bg.addColorStop(0, '#12171d'); bg.addColorStop(1, '#05070a');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h);
+
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = spec.accent;
+  ctx.font = 'bold 15px system-ui, sans-serif';
+  ctx.fillText(spec.title, 12, 24);
+  const now = new Date();
+  const hh = now.getHours(), mm = String(now.getMinutes()).padStart(2, '0');
+  const clock = ((hh % 12) || 12) + ':' + mm + (hh < 12 ? ' AM' : ' PM');
+  const cEl = spec.count && document.getElementById(spec.count);
+  const cTxt = cEl ? (cEl.textContent || '').trim() : '';
+  ctx.textAlign = 'right';
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText((cTxt && cTxt !== '-' ? cTxt + '   ' : '') + clock, w - 12, 24);
+  ctx.textAlign = 'left';
+  ctx.strokeStyle = spec.accent; ctx.globalAlpha = 0.45;
+  ctx.beginPath(); ctx.moveTo(0, 33.5); ctx.lineTo(w, 33.5); ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  const rows = _pipRows(_pip.which);
+  let y = 44;
+  if (!rows.length) {
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.font = 'italic 13px system-ui, sans-serif';
+    ctx.fillText(spec.empty, 12, y + 14);
+  }
+  for (const r of rows) {
+    if (y > h - 30) break;
+    const titleFont = r.big ? 'bold 16px system-ui, sans-serif'
+                            : 'bold 13px system-ui, sans-serif';
+    ctx.font = '11px system-ui, sans-serif';
+    const bodyLines = r.body ? _pipWrap(ctx, r.body, w - 44, 2) : [];
+    const cardH = (r.big ? 26 : 22) + bodyLines.length * 14 + 8;
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(10, y, w - 20, cardH);
+    ctx.fillStyle = r.color;
+    ctx.fillRect(10, y, 3, cardH);
+    ctx.font = titleFont;
+    const titleMax = w - 44 - (r.tag ? ctx.measureText(r.tag).width : 0);
+    let title = r.title;
+    while (title && ctx.measureText(title).width > titleMax) title = title.slice(0, -1);
+    ctx.fillText(title, 20, y + (r.big ? 19 : 16));
+    if (r.tag) {
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.font = '10px system-ui, sans-serif';
+      ctx.fillText(r.tag, w - 16, y + 16);
+      ctx.textAlign = 'left';
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.66)';
+    ctx.font = '11px system-ui, sans-serif';
+    bodyLines.forEach((ln, i) => ctx.fillText(ln, 20, y + (r.big ? 26 : 22) + 12 + i * 14));
+    y += cardH + 6;
+  }
+}
+
+async function _pipToggle(which) {
+  const wasSame = _pip && _pip.which === which;
+  if (_pip) { _pipStop(); if (wasSame) return; }
+  const spec = _PIP_SPEC[which];
+  if (!spec) return;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 720; canvas.height = 1080;
+  const ctx = canvas.getContext('2d');
+  let stream = null;
+  try { stream = canvas.captureStream(4); }
+  catch (e) { try { stream = canvas.captureStream(); } catch (e2) {} }
+  if (!ctx || !stream) {
+    if (typeof showToast === 'function') showToast('This browser cannot float a panel.', 4000);
+    return;
+  }
+  const video = document.createElement('video');
+  video.muted = true;
+  video.setAttribute('muted', '');
+  video.setAttribute('playsinline', '');
+  video.playsInline = true;
+  video.style.cssText = 'position:fixed;left:0;bottom:0;width:2px;height:2px;'
+                      + 'opacity:0.01;pointer-events:none;z-index:-1;';
+  _pip = { which, canvas, ctx, video, stream, timer: null };
+  _pipDraw();
+  video.srcObject = stream;
+  document.body.appendChild(video);
+  try {
+    // play() resolves when the first frame arrives; if the stream ever
+    // fails to produce one, give up after a beat instead of hanging the
+    // button forever.
+    await Promise.race([video.play(),
+                        new Promise(res => setTimeout(res, 1500))]);
+    if (video.requestPictureInPicture) {
+      await video.requestPictureInPicture();
+    } else if (video.webkitSetPresentationMode) {
+      video.webkitSetPresentationMode('picture-in-picture');
+    } else {
+      throw new Error('picture-in-picture unavailable');
+    }
+  } catch (e) {
+    _pipStop();
+    if (typeof showToast === 'function') {
+      showToast('Could not open the floating window. On iPhone, allow '
+              + 'Auto-PiP for your browser in Settings, or try again.', 5000);
+    }
+    return;
+  }
+  // The browser closes the window from its own X button; both engines
+  // report that differently, and either way the stream stops with it.
+  video.addEventListener('leavepictureinpicture', () => _pipStop());
+  video.addEventListener('webkitpresentationmodechanged', () => {
+    if (video.webkitPresentationMode === 'inline') _pipStop();
+  });
+  _pip.timer = setInterval(_pipDraw, 1000);
+  _pipBtnsSync();
+}
+
+function _pipStop() {
+  if (!_pip) return;
+  const p = _pip;
+  _pip = null;
+  try { clearInterval(p.timer); } catch (e) {}
+  try {
+    if (document.pictureInPictureElement === p.video
+        && document.exitPictureInPicture) document.exitPictureInPicture();
+  } catch (e) {}
+  try {
+    if (p.video.webkitPresentationMode === 'picture-in-picture') {
+      p.video.webkitSetPresentationMode('inline');
+    }
+  } catch (e) {}
+  try { p.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  try { p.video.srcObject = null; p.video.remove(); } catch (e) {}
+  _pipBtnsSync();
+}
+
+function _pipBtnsSync() {
+  Object.keys(_PIP_SPEC).forEach(k => {
+    const b = document.getElementById(_PIP_SPEC[k].btn);
+    if (b) b.classList.toggle('open', !!(_pip && _pip.which === k));
+  });
+}
+
+// No support, no button: a control that can only apologise is clutter.
+(function _pipBtnsInit() {
+  if (_pipSupported()) return;
+  Object.keys(_PIP_SPEC).forEach(k => {
+    const b = document.getElementById(_PIP_SPEC[k].btn);
+    if (b) b.style.display = 'none';
+  });
+})();
 
 // ── EAS ALERTS (globaleas.org) ──
 let _easAudio = null;
@@ -45194,7 +45462,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Navigation fix: no more false "you left the route" alarms. Your position is now measured against the road line itself, and shaky GPS fixes no longer count against you.';
+const APP_LATEST_UPDATE = 'New: float a panel over other apps. The WX Alerts, EAS Alerts and Navigation panels each have a new button that opens them in a little picture-in-picture window, phones included.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
