@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NWRchive - NOAA Weather Radio Archive</title>
+  <meta name="description" content="NWRchive: a browsable archive of NOAA Weather Radio broadcasts. Full-day recordings and alert highlights, organized by region, state, station and date.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --bg: #0a0a0c;
+      --bg2: #111115;
+      --bg3: #18181e;
+      --accent: #c81616;
+      --accent2: #ff5555;
+      --blue: #008CBA;
+      --blue2: #5cd8f7;
+      --gold: #e8b800;
+      --text: #f0f0f0;
+      --muted: #888;
+      --border: rgba(200,22,22,0.3);
+      --font: "Comfortaa", "Segoe UI", Arial, sans-serif;
+      --edge-3d: inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.5);
+      --lift: 0 10px 26px -10px rgba(0,0,0,0.8);
+    }
+    body {
+      background: var(--bg);
+      background-image: linear-gradient(180deg, #101014 0%, #0a0a0c 45%, #060608 100%);
+      background-attachment: fixed;
+      color: var(--text);
+      font-family: var(--font);
+      min-height: 100vh;
+    }
+    a { color: var(--blue2); }
+
+    /* ── NAV (same family as the GWCFC.net home page) ── */
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 20px;
+      height: 66px;
+      background: #8a0c0c;
+      background-image: linear-gradient(180deg, #a81818 0%, #6d0404 100%);
+      border-bottom: 3px solid var(--blue);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      text-decoration: none; color: #fff;
+      font-weight: 700; font-size: 20px; letter-spacing: 0.5px;
+    }
+    .brand .badge {
+      width: 44px; height: 44px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+      background: rgba(0,0,0,0.25);
+      border: 3px solid var(--gold);
+      filter: drop-shadow(0 0 8px rgba(232,184,0,0.45));
+    }
+    .brand b { color: #fff; }
+    .brand span.gold { color: var(--gold); }
+    .nav-links { display: flex; gap: 2px; list-style: none; }
+    .nav-links a {
+      display: flex; align-items: center; gap: 7px;
+      color: rgba(255,255,255,0.85);
+      text-decoration: none;
+      padding: 9px 14px;
+      border-radius: 8px;
+      font-size: 15px; font-weight: 600;
+      transition: background 0.2s, color 0.2s;
+      cursor: pointer;
+    }
+    .nav-links a:hover, .nav-links a.active {
+      background: rgba(0,140,186,0.28);
+      background-image: linear-gradient(180deg, rgba(92,216,247,0.3) 0%, rgba(0,90,130,0.24) 100%);
+      color: var(--blue2);
+    }
+    .nav-spacer { flex: 1; }
+    .nav-search { position: relative; }
+    .nav-search input {
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 18px;
+      color: #fff;
+      font-family: var(--font);
+      font-size: 14px;
+      padding: 8px 14px;
+      width: 200px;
+      outline: none;
+    }
+    .nav-search input:focus { border-color: var(--gold); }
+    .nav-search .results {
+      position: absolute; top: 110%; right: 0;
+      min-width: 280px; max-height: 320px; overflow: auto;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: var(--lift);
+      display: none;
+      z-index: 200;
+    }
+    .nav-search .results.on { display: block; }
+    .nav-search .results div {
+      padding: 10px 14px; cursor: pointer; font-size: 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .nav-search .results div:hover { background: rgba(0,140,186,0.18); }
+    .nav-search .results .st { color: var(--muted); font-size: 12px; }
+    .socials { display: flex; gap: 8px; }
+    .socials a {
+      width: 34px; height: 34px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.28);
+      border: 2px solid rgba(232,184,0,0.7);
+      color: #fff; text-decoration: none; font-size: 15px;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+    .socials a:hover { transform: scale(1.1); border-color: var(--gold); }
+
+    /* ── LAYOUT ── */
+    main { max-width: 1080px; margin: 0 auto; padding: 26px 18px 60px; }
+    .crumbs {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      font-size: 14px; color: var(--muted); margin-bottom: 18px;
+    }
+    .crumbs a { color: var(--blue2); text-decoration: none; cursor: pointer; }
+    .crumbs a:hover { text-decoration: underline; }
+    h1 { font-size: 26px; margin-bottom: 6px; }
+    h1 .gold { color: var(--gold); }
+    .sub { color: var(--muted); font-size: 14px; margin-bottom: 22px; }
+
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+    .card {
+      background: var(--bg2);
+      background-image: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(0,0,0,0.25) 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--edge-3d);
+      padding: 16px 18px;
+      cursor: pointer;
+      transition: transform 0.15s, border-color 0.15s;
+      overflow: hidden;
+    }
+    .card:hover { transform: translateY(-2px); border-color: rgba(0,140,186,0.6); }
+    .card .t { font-weight: 700; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+    .card .m { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    .card .cnt { color: var(--gold); font-weight: 600; }
+    .card.dim { opacity: 0.5; cursor: default; }
+    .card.dim:hover { transform: none; border-color: var(--border); }
+
+    .pillrow { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 18px; }
+    .pill {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 7px 14px;
+      font-size: 14px; font-family: var(--font);
+      color: var(--text);
+      cursor: pointer;
+    }
+    .pill:hover { border-color: var(--blue); color: var(--blue2); }
+    .pill.on {
+      background: linear-gradient(180deg, rgba(200,22,22,0.55) 0%, rgba(109,4,4,0.6) 100%);
+      border-color: var(--accent2); color: #fff;
+    }
+
+    /* ── DAY VIEW ── */
+    .player {
+      position: sticky; top: 72px; z-index: 50;
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: var(--lift);
+      padding: 12px 14px;
+      margin-bottom: 18px;
+    }
+    .player .now { font-size: 14px; margin-bottom: 8px; }
+    .player .now b { color: var(--gold); }
+    .player audio { width: 100%; }
+    .player .warn { color: var(--accent2); font-size: 12px; margin-top: 6px; display: none; }
+    .hourgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; margin-bottom: 20px; }
+    .chunkbtn {
+      background: var(--bg3);
+      border: 1px solid rgba(0,140,186,0.35);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: var(--font); font-size: 12px;
+      padding: 8px 4px;
+      cursor: pointer;
+    }
+    .chunkbtn:hover { border-color: var(--blue2); color: var(--blue2); }
+    .chunkbtn.playing { background: linear-gradient(180deg, rgba(0,140,186,0.5), rgba(0,60,90,0.5)); border-color: var(--blue2); color: #fff; }
+    .chunkbtn.hl { border-color: var(--gold); box-shadow: 0 0 6px rgba(232,184,0,0.35); }
+    h2 { font-size: 19px; margin: 22px 0 10px; }
+    .hlcard {
+      background: var(--bg2);
+      border: 1px solid rgba(232,184,0,0.4);
+      border-left: 4px solid var(--gold);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+    }
+    .hlcard .top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 6px; }
+    .hlcard .when { font-weight: 700; color: var(--gold); }
+    .hlcard .why {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+      background: rgba(200,22,22,0.4); border: 1px solid var(--accent2);
+      border-radius: 10px; padding: 2px 9px;
+    }
+    .hlcard .why.tone { background: rgba(0,140,186,0.3); border-color: var(--blue2); }
+    .hlcard .playhl {
+      margin-left: auto;
+      background: none; border: 1px solid var(--blue); border-radius: 14px;
+      color: var(--blue2); font-family: var(--font); font-size: 12px;
+      padding: 4px 12px; cursor: pointer;
+    }
+    .hlcard .playhl:hover { border-color: var(--blue2); }
+    .hlcard .tr { font-size: 13px; color: rgba(240,240,240,0.85); line-height: 1.5; }
+    .empty { color: var(--muted); font-style: italic; padding: 20px 4px; }
+
+    .notice {
+      background: rgba(0,140,186,0.12);
+      border: 1px solid rgba(0,140,186,0.4);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 13px;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+    .notice.demo { border-color: rgba(232,184,0,0.5); background: rgba(232,184,0,0.08); }
+
+    /* ── ABOUT ── */
+    .about p { margin-bottom: 12px; line-height: 1.7; font-size: 15px; }
+
+    footer {
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      text-align: center;
+      font-size: 13px;
+      padding: 22px 16px;
+    }
+    footer a { color: var(--blue2); }
+
+    @media (max-width: 720px) {
+      nav { flex-wrap: wrap; height: auto; padding: 10px 12px; row-gap: 8px; }
+      .nav-search input { width: 140px; }
+      .nav-search .results { right: auto; left: 0; }
+      main { padding: 18px 12px 40px; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <a class="brand" href="#/">
+    <span class="badge">&#x1F4FB;</span>
+    <span><b>NWR</b><span class="gold">chive</span></span>
+  </a>
+  <ul class="nav-links">
+    <li><a href="index.html">&#x1F3E0; Home</a></li>
+    <li><a id="nav-about" onclick="location.hash='#/about'">&#x2753; About</a></li>
+  </ul>
+  <div class="nav-spacer"></div>
+  <div class="nav-search">
+    <input id="q" type="search" placeholder="Find a station&hellip;" autocomplete="off"
+           oninput="doSearch()" onfocus="doSearch()">
+    <div class="results" id="q-results"></div>
+  </div>
+  <div class="socials">
+    <a href="https://discord.gg/EXsA6n6KRF" target="_blank" rel="noopener" title="Discord">&#x1F4AC;</a>
+    <a href="https://www.youtube.com/@GWCFCenter" target="_blank" rel="noopener" title="YouTube">&#x25B6;</a>
+    <a href="https://x.com/GWCFCenter" target="_blank" rel="noopener" title="X">&#x1D54F;</a>
+  </div>
+</nav>
+
+<main id="app"><div class="empty">Loading the archive&hellip;</div></main>
+
+<footer>
+  Part of the <a href="index.html">Gulf West Central Florida Center</a> network ·
+  Recordings of NOAA Weather Radio broadcasts. NWRchive is not affiliated with the National Weather Service.
+</footer>
+
+<script>
+'use strict';
+
+// ── WHERE THE ARCHIVE LIVES ────────────────────────────────────────────────
+// The recordings sit on the GWCFC homelab, produced by nwr_archiver.py, and
+// pi/nwr_index.py writes the JSON tables of contents this page reads:
+//   <BASE>/index.json                the station list with per-day counts
+//   <BASE>/meta/<ID>/<DATE>.json     one day of one station: chunks + highlights
+//   <BASE>/rolling/<ID>/<DATE>/<HHMMSS>.opus      the audio itself
+//   <BASE>/highlights/<ID>/<DATE>/<HHMMSS>.opus   alert-quality copies
+// The base can be set three ways so the page works before DNS is settled:
+// ?base=https://... in the URL (remembered), a stored value, or the default.
+const NWR_DEFAULT_BASE = '';   // set to the public archive URL when it exists
+function nwrBase() {
+  try {
+    const u = new URLSearchParams(location.search).get('base');
+    if (u) { localStorage.setItem('nwrchive_base', u); return u.replace(/\/$/, ''); }
+    const s = localStorage.getItem('nwrchive_base');
+    if (s) return s.replace(/\/$/, '');
+  } catch (e) {}
+  return NWR_DEFAULT_BASE;
+}
+
+// ── DEMO DATA ──────────────────────────────────────────────────────────────
+// With no archive URL configured the site still has to be browsable, so it
+// falls back to a small built-in sample and says so plainly at the top.
+const DEMO_INDEX = { generated: '2026-08-24T00:00:00Z', stations: [
+  { id: 'KIH21', name: 'KIH21 Sebring FL 162.475', state: 'FL', freq: '162.475',
+    dates: { '2026-08-23': { chunks: 720, highlights: 2 },
+             '2026-08-24': { chunks: 312, highlights: 1 } } },
+  { id: 'KEC50', name: 'KEC50 Miami FL 162.550', state: 'FL', freq: '162.550',
+    dates: { '2026-08-24': { chunks: 288, highlights: 0 } } },
+] };
+const DEMO_DAY = { chunks: ['120000', '120200', '120400', '130000', '131400'],
+  highlights: [
+    { t: '131400', reason: 'same_tone', keywords: ['tornado', 'warning'],
+      transcript: 'The National Weather Service in Tampa Bay has issued a tornado warning for Highlands County in south central Florida until 145 PM Eastern Daylight Time.' },
+  ] };
+
+// ── STATE / REGION TABLES ──────────────────────────────────────────────────
+const REGIONS = {
+  'Northeast': ['ME','NH','VT','MA','RI','CT','NY','NJ','PA'],
+  'Mideast':   ['DE','MD','DC','VA','WV','KY','TN','NC'],
+  'Southeast': ['SC','GA','FL','AL','MS','LA','AR','PR','VI'],
+  'Midwest':   ['OH','MI','IN','IL','WI','MN','IA','MO','ND','SD','NE','KS'],
+  'Southwest': ['TX','OK','NM','AZ','CO','UT','NV','CA','HI','GU','AS','MP'],
+  'Northwest': ['WA','OR','ID','MT','WY','AK'],
+};
+const STATE_NAMES = { AL:'Alabama', AK:'Alaska', AZ:'Arizona', AR:'Arkansas',
+  CA:'California', CO:'Colorado', CT:'Connecticut', DE:'Delaware',
+  DC:'District of Columbia', FL:'Florida', GA:'Georgia', HI:'Hawaii',
+  ID:'Idaho', IL:'Illinois', IN:'Indiana', IA:'Iowa', KS:'Kansas',
+  KY:'Kentucky', LA:'Louisiana', ME:'Maine', MD:'Maryland',
+  MA:'Massachusetts', MI:'Michigan', MN:'Minnesota', MS:'Mississippi',
+  MO:'Missouri', MT:'Montana', NE:'Nebraska', NV:'Nevada',
+  NH:'New Hampshire', NJ:'New Jersey', NM:'New Mexico', NY:'New York',
+  NC:'North Carolina', ND:'North Dakota', OH:'Ohio', OK:'Oklahoma',
+  OR:'Oregon', PA:'Pennsylvania', RI:'Rhode Island', SC:'South Carolina',
+  SD:'South Dakota', TN:'Tennessee', TX:'Texas', UT:'Utah', VT:'Vermont',
+  VA:'Virginia', WA:'Washington', WV:'West Virginia', WI:'Wisconsin',
+  WY:'Wyoming', PR:'Puerto Rico', VI:'US Virgin Islands', GU:'Guam',
+  AS:'American Samoa', MP:'Northern Mariana Islands' };
+const REGION_ICONS = { Northeast:'\u{1F9ED}', Mideast:'\u{26F0}',
+  Southeast:'\u{1F334}', Midwest:'\u{1F33D}', Southwest:'\u{1F335}',
+  Northwest:'\u{1F332}' };
+
+// ── STATE ──────────────────────────────────────────────────────────────────
+let INDEX = null;       // the fetched (or demo) index
+let DEMO = false;
+let dayCache = {};      // 'id/date' -> day json
+let hlFilter = 'all';   // all | tone | keyword
+
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+function stationById(id) {
+  return (INDEX.stations || []).find(s => s.id === id) || null;
+}
+function stationsInState(st) {
+  return (INDEX.stations || []).filter(s => s.state === st);
+}
+function regionOfState(st) {
+  for (const r in REGIONS) if (REGIONS[r].includes(st)) return r;
+  return null;
+}
+function fmtDate(d) {
+  const [y, m, dd] = d.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, dd)).toLocaleDateString('en-US',
+    { weekday: 'short', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
+}
+function fmtT(t) {
+  const hh = +t.slice(0, 2), mm = t.slice(2, 4);
+  return ((hh % 12) || 12) + ':' + mm + ' ' + (hh < 12 ? 'AM' : 'PM') + ' UTC';
+}
+
+// ── DATA LOADING ───────────────────────────────────────────────────────────
+async function loadIndex() {
+  const base = nwrBase();
+  if (!base) { DEMO = true; INDEX = DEMO_INDEX; return; }
+  try {
+    const r = await fetch(base + '/index.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    INDEX = await r.json();
+    DEMO = false;
+  } catch (e) {
+    DEMO = true;
+    INDEX = DEMO_INDEX;
+    INDEX.loadError = String(e && e.message || e);
+  }
+}
+async function loadDay(id, date) {
+  const key = id + '/' + date;
+  if (dayCache[key]) return dayCache[key];
+  if (DEMO) { dayCache[key] = DEMO_DAY; return DEMO_DAY; }
+  try {
+    const r = await fetch(nwrBase() + '/meta/' + id + '/' + date + '.json',
+                          { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    dayCache[key] = d;
+    return d;
+  } catch (e) {
+    return { chunks: [], highlights: [], error: String(e && e.message || e) };
+  }
+}
+
+// ── ROUTER ─────────────────────────────────────────────────────────────────
+function route() {
+  const h = decodeURIComponent(location.hash || '#/').replace(/^#/, '');
+  const p = h.split('/').filter(Boolean);
+  hideSearch();
+  window.scrollTo(0, 0);
+  if (p[0] === 'about') return viewAbout();
+  if (p[0] === 'region' && p[1]) return viewRegion(p[1]);
+  if (p[0] === 'state' && p[1]) return viewState(p[1].toUpperCase());
+  if (p[0] === 'station' && p[1] && p[2]) return viewDay(p[1], p[2]);
+  if (p[0] === 'station' && p[1]) return viewStation(p[1]);
+  return viewHome();
+}
+window.addEventListener('hashchange', route);
+
+function crumbs(items) {
+  return '<div class="crumbs">' + items.map((it, i) =>
+    i === items.length - 1 ? '<span>' + esc(it[0]) + '</span>'
+      : '<a onclick="location.hash=\'' + it[1] + '\'">' + esc(it[0]) + '</a><span>&rsaquo;</span>'
+  ).join(' ') + '</div>';
+}
+function demoBanner() {
+  if (!DEMO) return '';
+  return '<div class="notice demo"><b>Demo data.</b> The page is not connected '
+    + 'to the recording archive yet' + (INDEX.loadError
+      ? ' (' + esc(INDEX.loadError) + ')' : '') + '. Everything shown is a '
+    + 'sample. Point it at the real archive with '
+    + '<code>?base=https://your-archive-url</code> once, and it remembers.</div>';
+}
+
+// ── VIEWS ──────────────────────────────────────────────────────────────────
+function viewHome() {
+  const el = document.getElementById('app');
+  const total = (INDEX.stations || []).length;
+  let days = 0, hls = 0;
+  (INDEX.stations || []).forEach(s => {
+    const d = s.dates || {};
+    days += Object.keys(d).length;
+    Object.values(d).forEach(v => hls += (v.highlights || 0));
+  });
+  el.innerHTML = demoBanner()
+    + '<h1>The <span class="gold">Weather Radio</span> Archive</h1>'
+    + '<div class="sub">' + total + ' station' + (total === 1 ? '' : 's')
+    + ' archived · ' + days + ' station-days on file · ' + hls
+    + ' alert highlights preserved forever. Pick a region.</div>'
+    + '<div class="cards">'
+    + Object.keys(REGIONS).map(r => {
+        const n = REGIONS[r].reduce((a, st) => a + stationsInState(st).length, 0);
+        return '<div class="card" onclick="location.hash=\'#/region/' + r + '\'">'
+          + '<div class="t">' + REGION_ICONS[r] + ' ' + r + '</div>'
+          + '<div class="m"><span class="cnt">' + n + '</span> archived station'
+          + (n === 1 ? '' : 's') + '</div></div>';
+      }).join('')
+    + '</div>';
+}
+
+function viewRegion(region) {
+  const el = document.getElementById('app');
+  if (!REGIONS[region]) { location.hash = '#/'; return; }
+  el.innerHTML = demoBanner()
+    + crumbs([['Stations', '#/'], [region]])
+    + '<h1>' + REGION_ICONS[region] + ' ' + esc(region) + '</h1>'
+    + '<div class="sub">States in the region. Grayed states have no archived stations yet.</div>'
+    + '<div class="cards">'
+    + REGIONS[region].map(st => {
+        const n = stationsInState(st).length;
+        return n
+          ? '<div class="card" onclick="location.hash=\'#/state/' + st + '\'">'
+            + '<div class="t">' + esc(STATE_NAMES[st] || st) + '</div>'
+            + '<div class="m"><span class="cnt">' + n + '</span> station' + (n === 1 ? '' : 's') + '</div></div>'
+          : '<div class="card dim"><div class="t">' + esc(STATE_NAMES[st] || st) + '</div>'
+            + '<div class="m">no archive yet</div></div>';
+      }).join('')
+    + '</div>';
+}
+
+function viewState(st) {
+  const el = document.getElementById('app');
+  const region = regionOfState(st) || 'Stations';
+  const list = stationsInState(st);
+  el.innerHTML = demoBanner()
+    + crumbs([['Stations', '#/'], [region, '#/region/' + region], [STATE_NAMES[st] || st]])
+    + '<h1>' + esc(STATE_NAMES[st] || st) + '</h1>'
+    + '<div class="sub">Archived NOAA Weather Radio stations in the state.</div>'
+    + (list.length ? '<div class="cards">'
+      + list.map(s => {
+          const nd = Object.keys(s.dates || {}).length;
+          return '<div class="card" onclick="location.hash=\'#/station/' + esc(s.id) + '\'">'
+            + '<div class="t">&#x1F4E1; ' + esc(s.id) + '</div>'
+            + '<div class="m">' + esc(s.name) + '</div>'
+            + '<div class="m"><span class="cnt">' + nd + '</span> day' + (nd === 1 ? '' : 's')
+            + ' on file' + (s.freq ? ' · ' + esc(s.freq) + ' MHz' : '') + '</div></div>';
+        }).join('') + '</div>'
+      : '<div class="empty">No archived stations here yet.</div>');
+}
+
+function viewStation(id) {
+  const el = document.getElementById('app');
+  const s = stationById(id);
+  if (!s) { location.hash = '#/'; return; }
+  const region = regionOfState(s.state) || 'Stations';
+  const dates = Object.keys(s.dates || {}).sort().reverse();
+  // year > month > day, exactly the drill the sketch drew.
+  const tree = {};
+  dates.forEach(d => {
+    const [y, m] = d.split('-');
+    (tree[y] = tree[y] || {});
+    (tree[y][m] = tree[y][m] || []).push(d);
+  });
+  el.innerHTML = demoBanner()
+    + crumbs([['Stations', '#/'], [region, '#/region/' + region],
+              [STATE_NAMES[s.state] || s.state || '??', '#/state/' + s.state], [s.id]])
+    + '<h1>&#x1F4E1; ' + esc(s.id) + '</h1>'
+    + '<div class="sub">' + esc(s.name) + (s.freq ? ' · ' + esc(s.freq) + ' MHz' : '') + '</div>'
+    + (dates.length ? Object.keys(tree).sort().reverse().map(y =>
+        '<h2>' + y + '</h2>' + Object.keys(tree[y]).sort().reverse().map(m => {
+          const mName = new Date(Date.UTC(+y, +m - 1, 1)).toLocaleDateString('en-US',
+            { month: 'long', timeZone: 'UTC' });
+          return '<h2 style="font-size:15px;color:var(--muted);margin-top:12px;">' + mName + '</h2>'
+            + '<div class="cards">' + tree[y][m].map(d => {
+                const v = s.dates[d] || {};
+                return '<div class="card" onclick="location.hash=\'#/station/' + esc(s.id) + '/' + d + '\'">'
+                  + '<div class="t">' + esc(fmtDate(d)) + '</div>'
+                  + '<div class="m"><span class="cnt">' + (v.chunks || 0) + '</span> recordings'
+                  + ((v.highlights || 0) ? ' · <span class="cnt">&#x26A0; ' + v.highlights
+                    + ' alert' + (v.highlights === 1 ? '' : 's') + '</span>' : '') + '</div></div>';
+              }).join('') + '</div>';
+        }).join('')).join('')
+      : '<div class="empty">Nothing recorded for this station yet.</div>');
+}
+
+async function viewDay(id, date) {
+  const el = document.getElementById('app');
+  const s = stationById(id);
+  if (!s) { location.hash = '#/'; return; }
+  el.innerHTML = '<div class="empty">Loading ' + esc(fmtDate(date)) + '&hellip;</div>';
+  const day = await loadDay(id, date);
+  // The user may have clicked away while the fetch ran.
+  if (!location.hash.includes(id + '/' + date)) return;
+  const hlTimes = new Set((day.highlights || []).map(h => h.t));
+  const hls = (day.highlights || []).filter(h =>
+    hlFilter === 'all' ? true
+    : hlFilter === 'tone' ? h.reason === 'same_tone'
+    : h.reason !== 'same_tone');
+  el.innerHTML = demoBanner()
+    + crumbs([['Stations', '#/'], [s.id, '#/station/' + esc(s.id)], [fmtDate(date)]])
+    + '<h1>' + esc(s.id) + ' <span class="gold">' + esc(fmtDate(date)) + '</span></h1>'
+    + '<div class="sub">' + (day.chunks || []).length + ' two-minute recordings'
+    + ' · ' + (day.highlights || []).length + ' alert highlight'
+    + ((day.highlights || []).length === 1 ? '' : 's')
+    + (day.error ? ' · <span style="color:var(--accent2)">could not load: ' + esc(day.error) + '</span>' : '')
+    + '</div>'
+    + '<div class="player" id="player">'
+    +   '<div class="now">Pick a time below. <b id="now-label">Nothing playing</b></div>'
+    +   '<audio id="au" controls preload="none"></audio>'
+    +   '<div class="warn" id="au-warn">This device could not play the file. '
+    +   'Opus audio needs Chrome, Firefox, Edge, or a recent Safari.</div>'
+    + '</div>'
+    + '<h2>&#x1F550; The day, two minutes at a time (UTC)</h2>'
+    + '<div class="hourgrid">'
+    + (day.chunks || []).map((t, i) =>
+        '<button class="chunkbtn' + (hlTimes.has(t) ? ' hl' : '') + '" id="ck-' + t + '"'
+        + ' onclick="playChunk(' + i + ')" title="' + (hlTimes.has(t) ? 'Alert aired in this chunk. ' : '') + 'Play from here">'
+        + t.slice(0, 2) + ':' + t.slice(2, 4) + '</button>').join('')
+    + '</div>'
+    + '<h2>&#x26A0; Alert highlights</h2>'
+    + '<div class="pillrow">'
+    +   ['all', 'tone', 'keyword'].map(f =>
+        '<button class="pill' + (hlFilter === f ? ' on' : '') + '" onclick="setHlFilter(\'' + f + '\')">'
+        + (f === 'all' ? 'All' : f === 'tone' ? 'SAME tone' : 'Keyword') + '</button>').join('')
+    + '</div>'
+    + (hls.length ? hls.map(h =>
+        '<div class="hlcard">'
+        + '<div class="top"><span class="when">' + esc(fmtT(h.t)) + '</span>'
+        + '<span class="why' + (h.reason === 'same_tone' ? ' tone' : '') + '">'
+        + (h.reason === 'same_tone' ? 'SAME tone' : 'keyword: ' + esc((h.keywords || []).join(', '))) + '</span>'
+        + '<button class="playhl" onclick="playHighlight(\'' + esc(h.t) + '\')">&#x25B6; Play</button></div>'
+        + (h.transcript ? '<div class="tr">' + esc(h.transcript) + '</div>' : '')
+        + '</div>').join('')
+      : '<div class="empty">' + ((day.highlights || []).length
+          ? 'No highlights match this filter.' : 'A quiet day. No alerts aired.') + '</div>');
+  _dayCtx = { id, date, chunks: day.chunks || [], playingIdx: -1 };
+  wireAudio();
+}
+
+// ── PLAYBACK ───────────────────────────────────────────────────────────────
+// The archive is two-minute opus files; "playing the day" means playing them
+// in order. When one ends the next starts, so a listener can put a whole
+// afternoon on like a podcast.
+let _dayCtx = null;
+function audioEl() { return document.getElementById('au'); }
+function wireAudio() {
+  const au = audioEl();
+  if (!au) return;
+  au.onended = () => {
+    if (_dayCtx && _dayCtx.playingIdx >= 0
+        && _dayCtx.playingIdx < _dayCtx.chunks.length - 1) {
+      playChunk(_dayCtx.playingIdx + 1);
+    }
+  };
+  au.onerror = () => {
+    const w = document.getElementById('au-warn');
+    if (w && au.src) w.style.display = 'block';
+  };
+}
+function markPlaying(t) {
+  document.querySelectorAll('.chunkbtn.playing').forEach(b => b.classList.remove('playing'));
+  const b = document.getElementById('ck-' + t);
+  if (b) b.classList.add('playing');
+  const lbl = document.getElementById('now-label');
+  if (lbl) lbl.textContent = 'Playing ' + fmtT(t);
+}
+function playChunk(i) {
+  if (!_dayCtx || !_dayCtx.chunks[i]) return;
+  const t = _dayCtx.chunks[i];
+  _dayCtx.playingIdx = i;
+  const au = audioEl();
+  au.src = nwrBase() + '/rolling/' + _dayCtx.id + '/' + _dayCtx.date + '/' + t + '.opus';
+  markPlaying(t);
+  au.play().catch(() => {});
+}
+function playHighlight(t) {
+  if (!_dayCtx) return;
+  // Highlights have their own better-quality copy that never expires, so an
+  // alert still plays even after the rolling day around it has been pruned.
+  _dayCtx.playingIdx = _dayCtx.chunks.indexOf(t);
+  const au = audioEl();
+  au.src = nwrBase() + '/highlights/' + _dayCtx.id + '/' + _dayCtx.date + '/' + t + '.opus';
+  markPlaying(t);
+  au.play().catch(() => {});
+}
+function setHlFilter(f) {
+  hlFilter = f;
+  route();
+}
+
+// ── SEARCH ─────────────────────────────────────────────────────────────────
+function doSearch() {
+  const q = (document.getElementById('q').value || '').trim().toLowerCase();
+  const box = document.getElementById('q-results');
+  if (!q || !INDEX) { box.classList.remove('on'); box.innerHTML = ''; return; }
+  const hits = (INDEX.stations || []).filter(s =>
+    s.id.toLowerCase().includes(q) || (s.name || '').toLowerCase().includes(q)
+    || (s.freq || '').includes(q) || (STATE_NAMES[s.state] || '').toLowerCase().includes(q)
+  ).slice(0, 12);
+  box.innerHTML = hits.length ? hits.map(s =>
+      '<div onclick="location.hash=\'#/station/' + esc(s.id) + '\'">'
+      + '<b>' + esc(s.id) + '</b> <span class="st">' + esc(s.name) + '</span></div>').join('')
+    : '<div class="st">No station matches.</div>';
+  box.classList.add('on');
+}
+function hideSearch() {
+  const box = document.getElementById('q-results');
+  if (box) box.classList.remove('on');
+  const q = document.getElementById('q');
+  if (q) q.value = '';
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.nav-search')) hideSearch();
+});
+
+// ── ABOUT ──────────────────────────────────────────────────────────────────
+function viewAbout() {
+  document.getElementById('app').innerHTML =
+    crumbs([['Stations', '#/'], ['About']])
+    + '<h1>About <span class="gold">NWRchive</span></h1>'
+    + '<div class="about">'
+    + '<p>NWRchive is a listening archive of NOAA Weather Radio, the network of '
+    + 'transmitters that broadcasts forecasts, observations and warnings around '
+    + 'the clock across the United States.</p>'
+    + '<p>A recorder runs continuously against live station streams. Every '
+    + 'broadcast is kept as two-minute recordings for 90 days, and any moment '
+    + 'an alert airs, detected by the SAME data burst that precedes warnings, '
+    + 'or by warning words in a machine transcript, is preserved permanently '
+    + 'with its transcript.</p>'
+    + '<p>Browse by region, state and station, pick a day, and listen to what '
+    + 'the radio actually said, or jump straight to the alerts.</p>'
+    + '<p>NWRchive is part of the Gulf West Central Florida Center network and '
+    + 'is not affiliated with the National Weather Service or NOAA.</p>'
+    + '</div>';
+}
+
+// ── BOOT ───────────────────────────────────────────────────────────────────
+(async function boot() {
+  await loadIndex();
+  route();
+})();
+</script>
+</body>
+</html>
