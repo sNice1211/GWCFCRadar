@@ -35,7 +35,7 @@ const ok = (name, cond, extra) => {
 
 console.log('\n1. the source');
 const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
-ok('no em dash anywhere in the page', !html.includes('—'));
+ok('no em dash anywhere in the page', !html.includes('\u2014'));
 // The whole point of the rewrite: no longer waiting on an event a touch
 // screen may never send.
 ok('the touch path does not depend on the browser firing dblclick',

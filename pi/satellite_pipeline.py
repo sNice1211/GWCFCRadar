@@ -643,6 +643,181 @@ def build_sector(sat_key, sector, only=None, now=None):
     return built
 
 
+# ── The global mosaic: GMGSI ────────────────────────────────────────────────
+# NOAA's Global Mosaic of Geostationary Satellite Imagery: every operational
+# geostationary satellite - GOES East and West, Himawari over the Pacific,
+# Meteosat over Africa and the Indian Ocean - blended into one worldwide
+# picture, published hourly as a plain netCDF on an equirectangular grid.
+#
+# This is what makes Himawari and Meteosat views possible here at all. Their
+# raw feeds are a different format entirely (Himawari publishes HSD, which
+# needs a decoder this pipeline does not carry), but the mosaic has already
+# done that work, so a "Himawari sector" is a crop of a grid we can read with
+# the netCDF reader we already have.
+#
+# The grid is regular in latitude and longitude, which is exactly the shape a
+# Leaflet image overlay assumes, so no regridding happens: crop, downsample,
+# paint. The values arrive already scaled 0-255.
+
+GLOBAL_BUCKET = "noaa-gmgsi-pds"
+
+GLOBAL_PRODUCTS = {
+    # No channel is inverted. The mosaic's values are already display-scaled
+    # (the variable is typed VISR): cold cloud tops arrive bright and warm
+    # surface dark, which is the picture people expect. This was checked
+    # against a real file - inverting it painted two Pacific typhoons as dark
+    # swirls on a white ocean, which is how the mistake announces itself.
+    "ir":   {"path": "GMGSI_LW",  "label": "Global Infrared",     "invert": False},
+    "vis":  {"path": "GMGSI_VIS", "label": "Global Visible",      "invert": False},
+    "wv":   {"path": "GMGSI_WV",  "label": "Global Water Vapor",  "invert": False},
+    "swir": {"path": "GMGSI_SW",  "label": "Global Shortwave IR", "invert": False},
+}
+
+# Crops of the one global grid, named for the satellite whose view they
+# frame. Nothing extra is downloaded per sector: one file, four windows.
+GLOBAL_SECTORS = {
+    "global":   {"label": "Global",              "lat": (-72, 72), "lon": (-180, 180)},
+    "pacific":  {"label": "Himawari W Pacific",  "lat": (-55, 55), "lon": (80, 180)},
+    "meteosat": {"label": "Meteosat Africa",     "lat": (-55, 65), "lon": (-45, 60)},
+    "indian":   {"label": "Indian Ocean",        "lat": (-50, 45), "lon": (30, 120)},
+}
+
+
+def _gmgsi_latest_key(product_path, now=None):
+    """The newest object for one GMGSI product, and its timestamp."""
+    now = now or datetime.now(timezone.utc)
+    for back in (0, 1):
+        day = now - timedelta(days=back)
+        prefix = f"{product_path}/{day:%Y/%m/%d}/"
+        try:
+            keys = _s3_list(GLOBAL_BUCKET, prefix)
+        except Exception as e:
+            log(f"  sat global: listing {prefix}: {e}")
+            keys = []
+        keys = [k for k in keys if k.endswith(".nc")]
+        if keys:
+            key = sorted(keys)[-1]
+            m = re.search(r"_s(\d{14})", key)
+            if not m:
+                continue
+            t = m.group(1)
+            stamp = f"{t[0:8]}_{t[8:14]}"
+            return key, stamp
+    return None, None
+
+
+def _gmgsi_read(key):
+    """One GMGSI file as (uint8 values, mask, lat axis, lon axis).
+
+    The grid is stored starting at the dateline, so the columns are rolled
+    until longitude ascends from -180: an image overlay is a rectangle in
+    lat/lon and cannot cross the antimeridian.
+    """
+    import netCDF4
+    tmp = os.path.join(OUT_DIR, f".gmgsi_{os.getpid()}.nc")
+    r = HTTP.get(f"https://{GLOBAL_BUCKET}.s3.amazonaws.com/{key}", timeout=120)
+    r.raise_for_status()
+    with open(tmp, "wb") as fh:
+        fh.write(r.content)
+    try:
+        with netCDF4.Dataset(tmp) as d:
+            vals = np.ma.filled(d.variables["data"][0].astype(np.float32), np.nan)
+            la = np.ma.filled(d.variables["lat"][:, 0].astype(np.float64), np.nan)
+            lo = np.ma.filled(d.variables["lon"][d.variables["lon"].shape[0] // 2, :]
+                              .astype(np.float64), np.nan)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    # Find the wrap column and roll so longitude is monotonic from -180.
+    d_lo = np.diff(lo)
+    wraps = np.where(d_lo < -180)[0]
+    if wraps.size:
+        shift = -(int(wraps[0]) + 1)
+        lo = np.roll(lo, shift)
+        vals = np.roll(vals, shift, axis=1)
+    # North must be row zero for the PNG. The feed already is, but reading the
+    # axis makes it true rather than assumed.
+    if la[0] < la[-1]:
+        la = la[::-1]
+        vals = vals[::-1, :]
+    mask = ~np.isfinite(vals)
+    vals = np.clip(np.nan_to_num(vals), 0, 255).astype(np.uint8)
+    return vals, mask, la, lo
+
+
+def build_global(only=None, now=None):
+    """Every GMGSI product, cropped into every global sector, onto disk."""
+    total = 0
+    for pkey, spec in GLOBAL_PRODUCTS.items():
+        if only and pkey not in only:
+            continue
+        key, stamp = _gmgsi_latest_key(spec["path"], now)
+        if not key:
+            log(f"  sat global/{pkey}: nothing listed in {GLOBAL_BUCKET}")
+            continue
+        fdir = stamp
+        # One download serves four sectors, so it is skipped only when every
+        # sector already holds this scan.
+        missing = [sk for sk in GLOBAL_SECTORS
+                   if not os.path.exists(os.path.join(
+                       OUT_DIR, "global", sk, fdir, f"{pkey}.json"))]
+        if not missing:
+            continue
+        try:
+            vals, mask, la, lo = _gmgsi_read(key)
+        except Exception as e:
+            log(f"  sat global/{pkey}: {e}")
+            continue
+        if spec["invert"]:
+            vals = (255 - vals.astype(np.int16)).astype(np.uint8)
+        for sk in missing:
+            sc = GLOBAL_SECTORS[sk]
+            yi = np.where((la >= sc["lat"][0]) & (la <= sc["lat"][1]))[0]
+            xi = np.where((lo >= sc["lon"][0]) & (lo <= sc["lon"][1]))[0]
+            if yi.size < 8 or xi.size < 8:
+                continue
+            v = vals[yi[0]:yi[-1] + 1, xi[0]:xi[-1] + 1]
+            m = mask[yi[0]:yi[-1] + 1, xi[0]:xi[-1] + 1]
+            alpha = np.where(m, 0, 255).astype(np.uint8)
+            out = os.path.join(OUT_DIR, "global", sk, fdir)
+            os.makedirs(out, exist_ok=True)
+            bounds = [[float(la[yi[-1]]), float(lo[xi[0]])],
+                      [float(la[yi[0]]), float(lo[xi[-1]])]]
+            Image.fromarray(np.dstack([v, v, v, alpha]), mode="RGBA").save(
+                os.path.join(out, f"{pkey}.png"), optimize=True)
+            write_json(os.path.join(out, f"{pkey}.json"),
+                       {"stamp": stamp, "bounds": bounds})
+            total += 1
+        log(f"  sat global/{pkey}: built {stamp} for {len(missing)} sector(s)")
+
+    # The same prune-then-relist the GOES sectors get, so the manifests only
+    # ever advertise frames that are really on disk.
+    for sk in GLOBAL_SECTORS:
+        sector_dir = os.path.join(OUT_DIR, "global", sk)
+        if not os.path.isdir(sector_dir):
+            continue
+        prune(sector_dir)
+        products = {}
+        for pkey, spec in GLOBAL_PRODUCTS.items():
+            frames = _relist_frames(sector_dir, pkey)
+            if not frames:
+                continue
+            newest = frames[-1]
+            products[pkey] = {
+                "label": spec["label"], "frames": frames,
+                "latest": newest["t"], "file": newest["file"],
+                "bounds": newest.get("bounds"),
+            }
+        if products:
+            write_json(os.path.join(sector_dir, "manifest.json"),
+                       {"updated": datetime.now(timezone.utc).isoformat(),
+                        "sector": sk, "sat": "global",
+                        "keep_hours": KEEP_HOURS, "products": products})
+    return total
+
+
 def check(now=None):
     """Say what would be fetched and whether the addresses answer.
 
@@ -740,6 +915,8 @@ def main(argv=None):
     total = 0
     t0 = time.time()
     for sat_key in sats:
+        if sat_key == "global":
+            continue                     # handled below, it is not an ABI bird
         if sat_key not in SATS:
             log(f"unknown satellite {sat_key}")
             continue
@@ -748,6 +925,13 @@ def main(argv=None):
                 log(f"unknown sector {sector}")
                 continue
             total += build_sector(sat_key, sector, a.only)
+    # The global mosaic rides the same pass. It publishes hourly, and the
+    # already-built check makes the passes in between cost one listing each.
+    if not a.sat or "global" in a.sat:
+        try:
+            total += build_global(a.only)
+        except Exception as e:
+            log(f"satellite: global mosaic failed: {e}")
     log(f"satellite: {total} composite(s) in {time.time() - t0:.0f}s")
     # Nothing built is not automatically a fault: at night the daytime
     # recipes are skipped on purpose and a scan already on disk is not

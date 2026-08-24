@@ -39,7 +39,7 @@ const ok = (name, cond, extra) => {
 
 console.log('\n1. the source');
 const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
-ok('no em dash anywhere in the page', !html.includes('—'));
+ok('no em dash anywhere in the page', !html.includes('\u2014'));
 // The old implementation, gone rather than merely bypassed.
 // The old code built the selector as 'border-' + borderType and hid whatever
 // it found. Matching the bare words would also hit the comments that explain
@@ -295,8 +295,9 @@ console.log('\n7. a source that will not load says so');
 {
   const r = await page.evaluate(async () => {
     // Drop the cached copy and make the next fetch fail the way an outage
-    // does, so the failure path is the one being measured.
-    delete _mbCache[MB_SRC.places];
+    // does, so the failure path is the one being measured. Each source is
+    // now a failover list and the cache is keyed by its first address.
+    delete _mbCache[MB_SRC.places[0]];
     _mbCityFeats = null;
     const realFetch = window.fetch;
     let said = '';
@@ -309,7 +310,7 @@ console.log('\n7. a source that will not load says so');
 
     // And it is a retry, not a permanent no: the failed attempt must not be
     // cached as the answer.
-    const cachedFailure = !!_mbCache[MB_SRC.places];
+    const cachedFailure = !!_mbCache[MB_SRC.places[0]];
     await _mbSet('cities', true);
     await __settle(); await __settle();
     const recovered = document.querySelectorAll('.mb-city').length;

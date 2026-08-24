@@ -39,7 +39,7 @@ const ok = (name, cond, extra) => {
 const html = readFileSync(join(ROOT, 'index.html'), 'utf8');
 
 console.log('\n1. the source');
-ok('no em dash anywhere in the page', !html.includes('—'));
+ok('no em dash anywhere in the page', !html.includes('\u2014'));
 ok('there is a single place the surfaces are defined',
    /THE SURFACE SYSTEM/.test(html));
 ok('and it is built from named tokens, not colours typed at each panel',

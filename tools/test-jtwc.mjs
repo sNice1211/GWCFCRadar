@@ -276,12 +276,25 @@ console.log("\n8. the URL it actually asks for, which is what broke");
   const r = await page.evaluate(async () => {
     const asked = [];
     const realFetch = window.fetch;
+    // The server's own copy is tried before any relay now, so for this
+    // section - which is about the relay URL's spelling - the server is
+    // made absent and its cache dropped, the way it is for someone whose
+    // Pi is off. The relay chain is then the first thing asked. Bare
+    // assignments, not window.*: these globals are let-bound, so the
+    // window property would be a decoy the code never reads.
+    const realResolve = _hdResolveBase;
+    const realBase = _hdBase;
+    _hdResolveBase = async () => null;
+    _hdBase = null;
+    _jtwcPiCache = null;
     window.fetch = async (url, opts) => {
       asked.push(String(url));
       return new Response('<rss><channel></channel></rss>', { status: 200 });
     };
     await _jtwcFetchBasin({ id: 'wp', label: 'Western Pacific' });
     window.fetch = realFetch;
+    _hdResolveBase = realResolve;
+    _hdBase = realBase;
     const proxied = asked[0] || '';
     return {
       proxied,
@@ -307,6 +320,75 @@ console.log("\n8. the URL it actually asks for, which is what broke");
   const textish = formats.filter(f => /text/.test(f) && !/txt/.test(f));
   ok('and no caller anywhere still says "text" where it means "txt"',
      textish.length === 0, formats.join(' | '));
+}
+
+console.log("\n8b. the server's own copy of the feed is what gets asked first");
+{
+  // feeds_pipeline.py fetches JTWC on the server, where there is no CORS to
+  // fight, and serve.py exposes it at /feeds/jtwc.json. When that answers,
+  // the whole relay chain - every one of them someone else's free machine -
+  // must be left out of the conversation entirely.
+  const piItem = '<rss><channel><item><title>TROPICAL CYCLONE 30W (PIFEED) '
+    + 'WARNING</title><description>12.3N 130.5E, winds 85 kt</description>'
+    + '<link>https://example.test/30w</link></item></channel></rss>';
+  const r = await page.evaluate(async (piItem) => {
+    const asked = [];
+    const realFetch = window.fetch;
+    const realBase = _hdBase;
+    _hdBase = 'https://pi.example.test';
+    _jtwcPiCache = null;
+    window.fetch = async (url) => {
+      asked.push(String(url));
+      if (/\/feeds\/jtwc\.json/.test(String(url))) {
+        return new Response(JSON.stringify({
+          fetched: new Date().toISOString(),
+          basins: { wp: piItem, io: '<rss><channel></channel></rss>' },
+          errors: {},
+        }), { status: 200 });
+      }
+      return new Response('should never be asked', { status: 500 });
+    };
+    const systems = await _jtwcFetchBasin({ id: 'wp', label: 'Western Pacific' });
+    // A quiet basin in the same file: an answer, not a fall-through.
+    const quiet = await _jtwcFetchBasin({ id: 'io', label: 'Indian Ocean' });
+
+    // A copy hours old means the fetcher is down; the relays get their turn.
+    _jtwcPiCache = null;
+    const askedStale = [];
+    window.fetch = async (url) => {
+      askedStale.push(String(url));
+      if (/\/feeds\/jtwc\.json/.test(String(url))) {
+        return new Response(JSON.stringify({
+          fetched: new Date(Date.now() - 4 * 3600000).toISOString(),
+          basins: { wp: piItem },
+        }), { status: 200 });
+      }
+      return new Response(piItem, { status: 200 });
+    };
+    const fromRelay = await _jtwcFetchBasin({ id: 'wp', label: 'Western Pacific' });
+
+    window.fetch = realFetch;
+    _hdBase = realBase;
+    _jtwcPiCache = null;
+    return {
+      asked, systems, quietN: quiet.length, quietErr: quiet.error || '',
+      staleUsedRelay: askedStale.some(u => !/\/feeds\/jtwc\.json/.test(u)),
+      fromRelayN: fromRelay.length,
+    };
+  }, piItem);
+  ok('the feed came from the server copy',
+     r.systems.length === 1 && r.systems[0].name === 'PIFEED',
+     JSON.stringify(r.systems).slice(0, 120));
+  ok('and no relay was ever asked',
+     r.asked.length && r.asked.every(u => /\/feeds\/jtwc\.json/.test(u)),
+     r.asked.join(' | ').slice(0, 200));
+  ok('one request served every basin, not one request per basin',
+     r.asked.length === 1, String(r.asked.length));
+  ok('a quiet basin in the server copy reads as quiet, not as an error',
+     r.quietN === 0 && !r.quietErr, r.quietErr);
+  ok('a stale server copy hands the job back to the relays',
+     r.staleUsedRelay && r.fromRelayN === 1,
+     `relay asked: ${r.staleUsedRelay}, systems: ${r.fromRelayN}`);
 }
 
 console.log("\n9. an unreadable feed is not allowed to look like calm weather");

@@ -167,7 +167,10 @@ console.log('\n6. the region row only offers sectors the server actually adverti
     const before = [...document.querySelectorAll('.sat-region-btn')].map(b => b.dataset.regionId);
     await new Promise(res => setTimeout(res, 1200));
     const after = [...document.querySelectorAll('.sat-region-btn')].map(b => b.dataset.regionId);
-    return { before, after, declared: GOES_REGIONS.length };
+    // The Global Mosaic's own sectors (marked g) belong to its products
+    // alone and are rightly absent while an ABI band is chosen, so the
+    // fails-open promise covers every region that is NOT one of those.
+    return { before, after, declared: GOES_REGIONS.filter(rg => !rg.g).length };
   });
   ok('the mesoscale sectors are declared as regions',
      r.declared === 12 && r.before.includes('emeso1') && r.before.includes('wmeso2'),

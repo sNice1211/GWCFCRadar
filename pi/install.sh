@@ -414,6 +414,35 @@ Persistent=false
 WantedBy=timers.target
 EOF
 
+# The feeds the browser cannot fetch itself: JTWC and the SPC mesoscale
+# discussions send no CORS headers, so the page had to reach them through
+# public relay services that come and go. The server has no CORS, so it
+# fetches them plainly and the page reads its own backend first.
+cat > "$UNITS/gwcfc-feeds.service" <<EOF
+[Unit]
+Description=Fetch JTWC and SPC MCD feeds for the page
+
+[Service]
+Type=oneshot
+ExecStart=-$VENV/bin/python $REPO/pi/feeds_pipeline.py
+TimeoutStartSec=300
+Nice=15
+EOF
+
+cat > "$UNITS/gwcfc-feeds.timer" <<'EOF'
+[Unit]
+Description=JTWC and MCD feeds every ten minutes
+
+[Timer]
+# Offset from both the radar and satellite timers; these are tiny text
+# fetches but there is no reason to share their moment.
+OnCalendar=*:6/10
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # The sounding images: SounderPy fetches the full RAP profile for each
 # upper-air site, SHARPpy computes the parameter suite, matplotlib draws the
 # skew-T, and the page just shows the PNG. A leading dash because a pass in
@@ -533,6 +562,7 @@ systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-sat.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-snd.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
+systemctl --user enable --now gwcfc-feeds.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
 systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1
 systemctl --user restart gwcfc-publish.service     >/dev/null 2>&1

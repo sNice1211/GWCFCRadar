@@ -2326,10 +2326,20 @@ body {
    Stated on the tile container so it covers every tile the layer owns. */
 .wx-photo,
 .wx-photo img,
-.wx-photo canvas {
+.wx-photo canvas,
+.leaflet-satPhoto-pane img,
+.leaflet-satPhotoPane-pane img {
   image-rendering: auto;
   image-rendering: smooth;
   image-rendering: high-quality;
+}
+/* Satellite Colors in Settings drives this one variable, and because every
+   satellite element reads it, current and future layers alike are covered
+   without a list of them existing anywhere. */
+.wx-photo,
+.leaflet-satPhoto-pane,
+.leaflet-satPhotoPane-pane {
+  filter: var(--sat-filter, none);
 }
 
 /* Radar overlays are DATA, not photographs, so they are not smoothed.
@@ -9806,6 +9816,14 @@ function initMap() {
   // moment alerts loaded, which is by default. Every other overlay still
   // uses ordinary SVG, so this is the one pane that has to stay below the
   // marker floor (see _ovMarkerPane/_ovApplyMapOrder) no matter what.
+  // Satellite composites are photographs, and they were being drawn in the
+  // radar pane, whose CSS forces pixelated rendering on every image in it -
+  // the right call for banded radar data and the whole reason RGB satellite
+  // looked like Lego. Their own pane sits just under the radar and smooths.
+  const _satPaneEl = map.createPane('satPhotoPane');
+  _satPaneEl.style.zIndex = 399;
+  _satPaneEl.style.pointerEvents = 'none';
+
   map.createPane('alertsPane');
   map.getPane('alertsPane').style.zIndex = 403;
   map.getPane('alertsPane').style.pointerEvents = 'auto';
@@ -11892,13 +11910,35 @@ async function loadMesoDisc() {
   // differently in the status line once the loop below only accepts a
   // source that actually has something in it.
   let sawEmptyOk = false;
+  // The server fetches this feed itself every ten minutes (feeds_pipeline.py)
+  // and validates it before writing, so its copy is tried before anything
+  // else: no CORS, no relay, one request. Trusted only while fresh - a copy
+  // hours old means the fetcher has been down, and the live sources below
+  // then deserve their turn. An empty-but-valid fresh answer is accepted as
+  // the real state of the sky: "no MCDs right now" is a common answer.
+  try {
+    const base = (typeof _hdBase !== 'undefined' && _hdBase)
+      || (typeof _hdResolveBase === 'function' ? await _hdResolveBase() : null);
+    if (base) {
+      const r = await fetchWithTimeout(`${base}/feeds/mcd.json?t=${Date.now()}`, 6000);
+      if (r.ok) {
+        const d = await r.json();
+        const ageMs = Date.now() - Date.parse(d && d.fetched || 0);
+        const g = d && d.geojson;
+        if (ageMs < 2 * 3600000 && g && Array.isArray(g.features)) {
+          if (g.features.length) data = g;
+          else sawEmptyOk = true;
+        }
+      }
+    }
+  } catch (e) { console.debug('[meso] pi feed:', e.message); }
   const wrappers = [
     u => u,
     u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
     u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   ];
-  outer: for (const url of urls) {
+  if (!data && !sawEmptyOk) outer: for (const url of urls) {
     for (const wrap of wrappers) {
       try {
         const r = await fetchWithTimeout(wrap(url), 8000);
@@ -21871,6 +21911,12 @@ const GOES_KINDS = [
     icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-layers></use></svg>' },
   { id: 'abi', label: 'ABI Bands',
     icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-antenna></use></svg>' },
+  // The third kind is a different satellite altogether: NOAA's hourly
+  // GMGSI mosaic, which stitches GOES, Himawari and Meteosat into one
+  // worldwide image. It is how this app shows Himawari's Pacific and
+  // Meteosat's Africa without speaking either satellite's native format.
+  { id: 'global', label: 'Global Mosaic',
+    icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-globe></use></svg>' },
 ];
 
 const GOES_CATS = [
@@ -21879,6 +21925,7 @@ const GOES_CATS = [
   { id: 'visible',    kind: 'abi', label: 'Visible' },
   { id: 'wv',         kind: 'abi', label: 'Water Vapor' },
   { id: 'ir',         kind: 'abi', label: 'Infrared' },
+  { id: 'global-mosaic', kind: 'global', label: 'Worldwide' },
 ];
 
 // Kept as the old name because the group id on each product is still what
@@ -21914,6 +21961,16 @@ const GOES_PRODUCTS = [
   { id: 'rgb-dust',       group: 'rgb-hazard', src: 'pi', recipe: 'dust',       label: 'Dust',               icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-dot></use></svg>' },
   { id: 'rgb-ash',        group: 'rgb-hazard', src: 'pi', recipe: 'ash',        label: 'Volcanic Ash',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud></use></svg>' },
   { id: 'rgb-firetemp',   group: 'rgb-hazard', src: 'pi', recipe: 'firetemp',   label: 'Fire Temperature',   icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-fire></use></svg>' },
+  // ── The global mosaic, also via the Pi ───────────────────────────────────
+  // NOAA's GMGSI: every geostationary satellite's picture stitched into one
+  // worldwide image each hour. The Pi crops it into sectors and serves them
+  // the same way it serves the composites, so `src: 'pi'` again - but
+  // `gsat: 'global'` marks that the frames live under a satellite named
+  // "global" with its own sector names, not under east/west.
+  { id: 'glb-ir',   group: 'global-mosaic', src: 'pi', gsat: 'global', recipe: 'ir',   label: 'Infrared',      icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg>' },
+  { id: 'glb-vis',  group: 'global-mosaic', src: 'pi', gsat: 'global', recipe: 'vis',  label: 'Visible',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sun></use></svg>', note: 'Daytime side only' },
+  { id: 'glb-wv',   group: 'global-mosaic', src: 'pi', gsat: 'global', recipe: 'wv',   label: 'Water Vapor',   icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-drop></use></svg>' },
+  { id: 'glb-swir', group: 'global-mosaic', src: 'pi', gsat: 'global', recipe: 'swir', label: 'Shortwave IR',  icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-moon></use></svg>' },
 ];
 
 // Which Pi satellite and sector each region on the row corresponds to. The
@@ -21947,6 +22004,14 @@ function _goesIsPi() {
 // Auto resolves to whichever satellite the map is nearer, which for a
 // composite is the only sensible reading of "Auto".
 function _goesPiTarget() {
+  // The global mosaic is served as a satellite named "global" whose sectors
+  // are the region ids themselves. Any region that is not one of its own
+  // (Auto included) means the whole world, which is the only honest default
+  // for a worldwide image.
+  if (_goesProduct().gsat === 'global') {
+    const r = GOES_REGIONS.find(x => x.id === _goesRegionId);
+    return { sat: 'global', sector: (r && r.g) ? r.id : 'global' };
+  }
   if (_goesRegionId !== 'auto') return GOES_PI_SECTOR[_goesRegionId] || null;
   let west = false;
   try {
@@ -22081,6 +22146,13 @@ const GOES_REGIONS = [
   { id: 'emeso2',    label: 'E. Meso 2',     url: _GOES_E, prefix: 'meso2'      },
   { id: 'wmeso1',    label: 'W. Meso 1',     url: _GOES_W, prefix: 'meso1'      },
   { id: 'wmeso2',    label: 'W. Meso 2',     url: _GOES_W, prefix: 'meso2'      },
+  // The global mosaic's own sectors, marked with `g` so the row can show
+  // exactly these while a global product is chosen and none of them
+  // otherwise. Their ids are the sector names the Pi writes.
+  { id: 'global',    label: 'Whole World',        url: null, prefix: null, g: true },
+  { id: 'pacific',   label: 'Himawari W Pacific', url: null, prefix: null, g: true },
+  { id: 'meteosat',  label: 'Meteosat Africa',    url: null, prefix: null, g: true },
+  { id: 'indian',    label: 'Indian Ocean',       url: null, prefix: null, g: true },
 ];
 
 // ── Which sectors the server will actually serve ───────────────────────────
@@ -22113,7 +22185,14 @@ async function _goesLoadCaps(host) {
 }
 
 function _goesRegionAvailable(region, ch) {
-  if (!region || !region.url) return true;        // Auto is always offered
+  if (!region) return true;
+  // The mosaic's sectors and everyone else's are two worlds that never mix:
+  // a worldwide image has no East CONUS, and Clean IR has no Himawari crop.
+  // While a global product is chosen, only the g-flagged sectors are offered
+  // (Auto would just be Whole World twice); otherwise they are all hidden.
+  const globalOn = _goesProduct().gsat === 'global';
+  if (region.g || globalOn) return !!region.g && globalOn;
+  if (!region.url) return true;                   // Auto is always offered
   // A Pi composite is not a WMS layer, so the capabilities document has
   // nothing to say about it. What limits it instead is which sectors the Pi
   // builds: it does the CONUS, mesoscale and Full Disk sectors that ABI
@@ -22141,7 +22220,9 @@ function _detectGoesConfig() {
   // then hand back whichever shape the chosen product needs.
   let base = _GOES_E, prefix = 'conus';
 
-  const override = GOES_REGIONS.find(r => r.id === _goesRegionId && r.id !== 'auto');
+  // The g-flagged mosaic sectors have no WMS behind them, so they can never
+  // be the override here even if one is somehow still selected.
+  const override = GOES_REGIONS.find(r => r.id === _goesRegionId && r.id !== 'auto' && !r.g);
   if (override) {
     base = override.url; prefix = override.prefix;
   } else if (map) {
@@ -22200,7 +22281,7 @@ function _goesEnsureLayer(i) {
   // they are handled identically.
   const l = f.url
     ? L.imageOverlay(f.url, f.bounds,
-                     { opacity: 0, interactive: false, pane: 'radarPane',
+                     { opacity: 0, interactive: false, pane: 'satPhotoPane',
                        crossOrigin: 'anonymous', zIndex: 11 }).addTo(map)
     : _makeGoesLayer(f.timeStr, 0);
   l.on('load', () => { _goesPoolLoaded[i] = true; });
@@ -22496,11 +22577,18 @@ function _reloadGoesIfActive() {
 
 function _setGoesProduct(id) {
   _goesProductId = id;
-  // Composites cover a different set of sectors from the WMS bands. Landing
-  // on one while sitting on Alaska would show nothing and give no reason, so
-  // the region falls back to Auto rather than to an empty picture.
-  if (_goesIsPi() && _goesRegionId !== 'auto' && !GOES_PI_SECTOR[_goesRegionId])
-    _goesRegionId = 'auto';
+  // Composites cover a different set of sectors from the WMS bands, and the
+  // global mosaic a different set again. Landing on a product while sitting
+  // on a sector it cannot show would give an empty picture and no reason, so
+  // the region falls back to something the new product does cover.
+  const _curRegion = GOES_REGIONS.find(r => r.id === _goesRegionId);
+  if (_goesProduct().gsat === 'global') {
+    if (!_curRegion || !_curRegion.g) _goesRegionId = 'global';
+  } else {
+    if (_curRegion && _curRegion.g) _goesRegionId = 'auto';
+    if (_goesIsPi() && _goesRegionId !== 'auto' && !GOES_PI_SECTOR[_goesRegionId])
+      _goesRegionId = 'auto';
+  }
   _reloadGoesIfActive();
   // The products live directly in the bubble column now rather than in a grid
   // of their own, and only the category currently open is on screen, so this
@@ -22687,6 +22775,12 @@ const LAYER_DESCRIPTIONS = {
   'sat-cat-visible':    'Reflected sunlight. The sharpest views the satellite has, and completely dark at night, which is why every one of them is marked daytime only.',
   'sat-cat-wv':         'Water vapour, at three heights. These see moisture rather than cloud, so they show the flow of the atmosphere itself: the troughs, ridges and dry slots that steer weather. They work at night, because they are measuring heat rather than light.',
   'sat-cat-ir':         'Infrared, which is heat. Cold means high, so the coldest tops are the tallest storms. Works around the clock, which is why it is the channel a forecaster falls back to.',
+  'sat-kind-global':    'The whole planet in one picture: NOAA stitches GOES, Japan\'s Himawari and Europe\'s Meteosat into a single mosaic every hour. This is the branch for typhoons in the Pacific, cyclones in the Indian Ocean, and anything else outside the GOES view. Hourly rather than every ten minutes, because that is the cadence the mosaic is published at.',
+  'sat-cat-global-mosaic': 'Four views of the worldwide mosaic: infrared for around-the-clock cloud tops, visible for the sunlit half, water vapour for the upper-air flow, and shortwave infrared for fires and low cloud at night.',
+  'glb-ir':   'Longwave infrared across the whole planet. Bright means cold, and cold means tall: the brightest blobs are the deepest storms, typhoons included. Works day and night.',
+  'glb-vis':  'Reflected sunlight across the whole planet. The sharpest global view, but only the half of the Earth facing the sun has anything to show - the night side is simply dark.',
+  'glb-wv':   'Water vapour across the whole planet: the rivers of moisture and dry slots that steer weather systems, visible even where there is no cloud. Day and night.',
+  'glb-swir': 'Shortwave infrared across the whole planet. Sensitive to warm sources, so active fires stand out, and at night it separates low cloud and fog from clear ground better than longwave infrared can.',
   'mrms-group-severe':  'The MRMS products built for severe storms: rotation tracks, hail size estimates, and the probability that a storm is producing severe hail. These are the ones a warning gets written from.',
   'mrms-group-refl':    'Reflectivity across the whole mosaic: the composite, the lowest usable altitude, hybrid scan, echo tops and vertically integrated liquid.',
   'mrms-group-precip':  'How hard it is raining, what kind of precipitation it is, and how much has fallen. Blended from every radar plus gauges and models.',
@@ -26541,6 +26635,30 @@ const JTWC_PROXIES = [
 // rather than walking the dead one again.
 let _jtwcGoodProxy = null;
 
+// The server's own copy of the whole feed, fetched by feeds_pipeline.py
+// on a timer. The Navy site sends no CORS headers, which is why the relay
+// chain above exists at all; the server has no such rule, so its copy is
+// the first choice and the relays become the spare. Cached for two
+// minutes so painting three basins costs one request, not three, and
+// trusted only while fresh - an old copy means the fetcher is down and
+// the live relays deserve their turn.
+let _jtwcPiCache = null;
+async function _jtwcPiFeed() {
+  if (_jtwcPiCache && Date.now() - _jtwcPiCache.at < 120000) return _jtwcPiCache.d;
+  try {
+    const base = (typeof _hdBase !== 'undefined' && _hdBase)
+      || (typeof _hdResolveBase === 'function' ? await _hdResolveBase() : null);
+    if (!base) return null;
+    const r = await fetchWithTimeout(`${base}/feeds/jtwc.json?t=${Date.now()}`, 6000);
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (!d || !d.basins) return null;
+    if (Date.now() - Date.parse(d.fetched || 0) > 3 * 3600000) return null;
+    _jtwcPiCache = { at: Date.now(), d };
+    return d;
+  } catch (e) { return null; }
+}
+
 // Fetch one URL through whichever relay answers. Returns
 // { text, via } or { error } naming every relay tried and what each said,
 // because "JTWC is not loading" is unactionable and "all three relays
@@ -26627,7 +26745,16 @@ function _jtwcParseKt(text) {
 async function _jtwcFetchBasin(basin) {
   const url = `https://www.metoc.navy.mil/jtwc/rss/jtwc.rss?${basin.id}`;
   const fail = (why) => { const a = []; a.error = why; return a; };
-  const got = await _jtwcFetchVia(url);
+  // Server copy first. The pipeline only stores a basin's text after
+  // checking it really is the feed, so a string here - even one with no
+  // items, which is an ordinary quiet basin - is trustworthy as it stands.
+  let got = null;
+  const pi = await _jtwcPiFeed();
+  if (pi && typeof pi.basins[basin.id] === 'string') {
+    got = { text: pi.basins[basin.id], via: 'pi' };
+  } else {
+    got = await _jtwcFetchVia(url);
+  }
   if (got.error) return fail(got.error);
   const text = got.text;
 
@@ -38413,6 +38540,88 @@ function selectProduct(p) {
     </div>
   </div>
 
+  <!-- ─── SATELLITE COLORS: one CSS filter over every satellite picture ─── -->
+  <div class="lqm-settings-group" data-cat="satcolors">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-palette></use></svg> Satellite Colors</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Preset</span>
+      <select id="lqm-satc-preset" class="lqm-settings-select" onchange="_satcPreset(this.value)">
+        <option value="">Preset&hellip;</option>
+        <option value="normal">Normal</option>
+        <option value="vivid">Vivid</option>
+        <option value="crisp">Crisp IR</option>
+        <option value="inverted">Inverted IR</option>
+        <option value="mono">Grayscale</option>
+        <option value="amber">Amber Tint</option>
+        <option value="green">Green Night Vision</option>
+        <option value="cool">Cool Blue</option>
+      </select>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Brightness</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-satc-bright" min="40" max="180" value="100" step="5"
+          class="lqm-slider" oninput="_satcSet('bright', this.value)">
+        <span id="lqm-satc-bright-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:34px;">100%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Contrast</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-satc-contrast" min="40" max="200" value="100" step="5"
+          class="lqm-slider" oninput="_satcSet('contrast', this.value)">
+        <span id="lqm-satc-contrast-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:34px;">100%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Saturation</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-satc-sat" min="0" max="250" value="100" step="5"
+          class="lqm-slider" oninput="_satcSet('sat', this.value)">
+        <span id="lqm-satc-sat-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:34px;">100%</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Hue Shift</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <input type="range" id="lqm-satc-hue" min="0" max="360" value="0" step="5"
+          class="lqm-slider" oninput="_satcSet('hue', this.value)">
+        <span id="lqm-satc-hue-val" style="font-family:var(--mono);font-size:9px;color:var(--accent2);min-width:34px;">0&deg;</span>
+      </div>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Invert</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-satc-invert" onchange="_satcSet('invert', this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Colorize</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-satc-colorize" onchange="_satcSet('colorize', this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Back to Normal</span>
+      <button class="lqm-settings-btn" onclick="_satcReset()">Reset</button>
+    </div>
+    <div style="font-size:9px;opacity:.65;line-height:1.45;padding:2px 4px 0;">
+      These change how every satellite picture is painted: the RGB
+      composites, the ABI bands and the Global Mosaic alike. Brightness and
+      contrast do what a TV's do. Saturation and Hue Shift only bite on
+      pictures that have color in them; the infrared and water vapor
+      channels are black and white, so for those switch Colorize on, which
+      tints the grays with one color, and then Hue Shift picks which color.
+      Invert flips black and white, the classic look for infrared where
+      cold cloud tops print dark. Nothing here changes the data, only the
+      paint, and Reset always brings the original picture back.
+    </div>
+  </div>
+
   <!-- ─── LAYER OPACITY ─── -->
   <div class="lqm-settings-group" data-cat="layers">
     <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-sliders></use></svg> Layer Opacity</div>
@@ -40455,6 +40664,7 @@ function lqmOpenSettings() {
   try { want = localStorage.getItem(LQM_SET_CAT_KEY) || want; } catch (e) {}
   lqmSettingsCat(want);   // a null or unknown id falls back to the first card
   // Sync toggles with current app state
+  if (typeof _satcSyncUi === 'function') { try { _satcSyncUi(); } catch (e) {} }
   const mtSel = document.getElementById('lqm-set-maptype');
   if (mtSel) mtSel.value = currentMapType;
   const tzSel = document.getElementById('lqm-set-tz');
@@ -43451,7 +43661,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Three things. The panels that overlays open, SPC, WPC, fire weather, CPC, mesoscale discussions, storm reports and tornado tracks, are black now instead of red, since they sit on top of the weather while you read what is under them. The Overlays list itself stays red, because that is a menu you drive the app from. The search was offering things the radar does not have. Twenty two of its thirty seven entries switched to a Regular, Tropical, Severe or Ice tab, and none of those tabs exist any more, so picking one did nothing you could see. It is built from the app itself now: every overlay in your Overlays list, every radar product, every Settings tab, and each one runs the same thing its button runs, so picking Velocity actually shows velocity. Add an overlay and it becomes searchable on its own. And the tutorial and credits pointed at a METAR Stations overlay that was removed, and named a Settings tab by a name it no longer has. Both corrected.";
+const APP_LATEST_UPDATE = "Satellite got a big day. The pictures are smooth now instead of pixelated, and a new Global Mosaic branch in the satellite menu shows the whole planet, including Himawari's western Pacific and Meteosat's Africa, updated hourly. Settings has a new Satellite Colors tab that recolors every satellite picture live, with presets like Inverted IR and Green Night Vision. Map borders and city labels load reliably now, and mesoscale discussions and JTWC outlooks are fetched by the server first, so they work instead of depending on flaky public relays.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -43905,6 +44115,93 @@ function lqmSetLoopSpeed(val) {
   // Map slider 1-5 → animSpeed 0.5-3.0 (RAF loop reads animSpeed live)
   animSpeed = 0.5 + (val - 1) * 0.625;
 }
+
+// ── SATELLITE COLORS ────────────────────────────────────────────────────────
+// One CSS filter, written to the --sat-filter custom property, which the
+// stylesheet already points at every satellite surface: the Pi composite
+// pane, the Global Mosaic pane and the wx-photo class the WMS band layers
+// carry. Changing a property repaints them all at once, live, with no
+// layer rebuilt and no pixel refetched - the data is untouched, only the
+// paint. That is also why this works on a PS5: a CSS filter runs in the
+// compositor, no WebGL involved.
+const SATC_KEY = 'gwcfc_satcolors';
+const SATC_DEFAULTS = { bright: 100, contrast: 100, sat: 100, hue: 0,
+                        invert: false, colorize: false };
+let _satc = Object.assign({}, SATC_DEFAULTS);
+try {
+  const saved = JSON.parse(localStorage.getItem(SATC_KEY) || 'null');
+  if (saved && typeof saved === 'object') _satc = Object.assign({}, SATC_DEFAULTS, saved);
+} catch (e) {}
+
+// The presets are just named slider positions, so picking one and then
+// nudging a slider works: there is no separate "preset mode" to fall out of.
+const SATC_PRESETS = {
+  normal:   {},
+  vivid:    { contrast: 115, sat: 160 },
+  crisp:    { bright: 105, contrast: 145 },
+  inverted: { invert: true, contrast: 110 },
+  mono:     { sat: 0 },
+  // The tints ride on Colorize. sepia() paints the grays amber by itself,
+  // and hue-rotate then walks that amber around the color wheel, which is
+  // how one slider can tint a black and white picture any color.
+  amber:    { colorize: true, hue: 0,   sat: 140 },
+  green:    { colorize: true, hue: 60,  sat: 160, bright: 105 },
+  cool:     { colorize: true, hue: 160, sat: 150 },
+};
+
+function _satcApply() {
+  const c = _satc;
+  const parts = [];
+  // Order matters: invert first so a negative gets tinted, not the
+  // original; then the tint; then the tone controls over the result.
+  if (c.invert)          parts.push('invert(1)');
+  if (c.colorize)        parts.push('sepia(1)');
+  if (c.hue)             parts.push(`hue-rotate(${c.hue}deg)`);
+  if (c.sat !== 100)     parts.push(`saturate(${c.sat / 100})`);
+  if (c.bright !== 100)  parts.push(`brightness(${c.bright / 100})`);
+  if (c.contrast !== 100) parts.push(`contrast(${c.contrast / 100})`);
+  const style = document.documentElement.style;
+  if (parts.length) style.setProperty('--sat-filter', parts.join(' '));
+  else style.removeProperty('--sat-filter');
+  try { localStorage.setItem(SATC_KEY, JSON.stringify(c)); } catch (e) {}
+}
+
+function _satcSet(key, val) {
+  if (key === 'invert' || key === 'colorize') _satc[key] = !!val;
+  else _satc[key] = parseInt(val, 10) || 0;
+  _satcApply();
+  _satcSyncUi();
+}
+
+function _satcPreset(name) {
+  if (!name) return;
+  _satc = Object.assign({}, SATC_DEFAULTS, SATC_PRESETS[name] || {});
+  _satcApply();
+  _satcSyncUi();
+}
+
+function _satcReset() { _satcPreset('normal'); }
+
+// The card's controls read from state rather than the other way round, so
+// opening Settings always shows what the map is actually doing.
+function _satcSyncUi() {
+  const c = _satc;
+  const put = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  const lbl = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+  put('lqm-satc-bright', c.bright);     lbl('lqm-satc-bright-val', c.bright + '%');
+  put('lqm-satc-contrast', c.contrast); lbl('lqm-satc-contrast-val', c.contrast + '%');
+  put('lqm-satc-sat', c.sat);           lbl('lqm-satc-sat-val', c.sat + '%');
+  put('lqm-satc-hue', c.hue);           lbl('lqm-satc-hue-val', c.hue + '°');
+  const inv = document.getElementById('lqm-satc-invert');
+  if (inv) inv.checked = !!c.invert;
+  const col = document.getElementById('lqm-satc-colorize');
+  if (col) col.checked = !!c.colorize;
+  const pre = document.getElementById('lqm-satc-preset');
+  if (pre) pre.value = '';
+}
+
+// Saved colors take effect at load, not at first visit to Settings.
+_satcApply();
 
 // How far back the mosaic loop reaches. Changing it rebuilds the frame set
 // and reloads the tiles; a longer loop is more history to scrub but more
@@ -50207,13 +50504,27 @@ const MB_SRC = {
   // Mexican states in one file, at 10m detail. Lines rather than polygons
   // because a border is a line, and polygons would mean drawing every shared
   // edge twice.
-  admin1: 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_admin_1_states_provinces_lines.geojson',
+  // Each entry is a list of places the same file lives, tried in order.
+  // GitHub's own raw host comes first: jsDelivr refuses to serve from
+  // repositories over its size cap, and natural-earth-vector is one of
+  // them, which is exactly why these layers never drew. The CDN stays as
+  // the spare for the day raw.githubusercontent is what is unreachable.
+  admin1: [
+    'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_admin_1_states_provinces_lines.geojson',
+    'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_admin_1_states_provinces_lines.geojson',
+  ],
   // Every US county, keyed by FIPS. The file the whole mapping world uses for
   // this, so it is stable and it is cached at the edge.
-  counties: 'https://cdn.jsdelivr.net/gh/plotly/datasets@master/geojson-counties-fips.json',
+  counties: [
+    'https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json',
+    'https://cdn.jsdelivr.net/gh/plotly/datasets@master/geojson-counties-fips.json',
+  ],
   // Populated places with a population figure, which is what makes thinning
   // by importance possible instead of thinning at random.
-  places: 'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_populated_places_simple.geojson',
+  places: [
+    'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_populated_places_simple.geojson',
+    'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_10m_populated_places_simple.geojson',
+  ],
 };
 
 // Natural Earth renames and re-cases its property keys between releases, so
@@ -50226,20 +50537,29 @@ function _mbProp(f, names) {
   return null;
 }
 
-const _mbCache = {};      // url -> Promise of parsed GeoJSON
-function _mbFetch(url) {
-  if (_mbCache[url]) return _mbCache[url];
-  _mbCache[url] = (async () => {
-    const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
+const _mbCache = {};      // cache key -> Promise of parsed GeoJSON
+function _mbFetch(urls) {
+  // One source or a failover list, the caller does not care which.
+  const list = Array.isArray(urls) ? urls : [urls];
+  const key = list[0];
+  if (_mbCache[key]) return _mbCache[key];
+  _mbCache[key] = (async () => {
+    let lastErr = null;
+    for (const url of list) {
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return await r.json();
+      } catch (err) { lastErr = err; }
+    }
+    throw lastErr || new Error('no source answered');
   })().catch(err => {
     // Forget a failure, so turning the switch off and on again is a retry
     // rather than a permanent no.
-    delete _mbCache[url];
+    delete _mbCache[key];
     throw err;
   });
-  return _mbCache[url];
+  return _mbCache[key];
 }
 
 function _mbSay(msg) {
