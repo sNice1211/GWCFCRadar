@@ -493,6 +493,91 @@ console.log('\n5e. the panel moves by its handle');
   ok('and dragging it moves the panel', r.moved, r.at);
 }
 
+console.log('\n5f. the voice speaks, and the mute button silences it');
+{
+  const r = await page.evaluate(() => {
+    const out = {};
+    // Listen at the engine seam: the mute gate lives above it, so a muted
+    // voice reaching this spy would be the exact bug being tested for.
+    window.__spoken = [];
+    window.__realSpeak = _navSpeak;
+    _navSpeak = (t) => window.__spoken.push(t);
+    window.__realSLT2 = _startLocationTracking;
+    _startLocationTracking = () => {};
+    _navGo();
+    out.saidStart = window.__spoken.some(t => /starting navigation/i.test(t));
+    _navOnPosition(28.0, -80.98);
+    out.saidTurn = window.__spoken.some(t =>
+      /^In .+ (feet|miles|meters|kilometers), turn right onto Ocean Blvd$/.test(t));
+    const n = window.__spoken.length;
+    _navVoiceToggle();
+    out.mutedGlyph = document.getElementById('nav-voice').classList.contains('muted');
+    out.stored = localStorage.getItem('gwcfc_navvoice');
+    _navOnPosition(28.0, -80.4);      // past the turn: would normally speak
+    out.mutedSilent = window.__spoken.length === n;
+    _navVoiceToggle();
+    out.unmutedSaid = window.__spoken.some(t => /voice guidance on/i.test(t));
+    out.stored2 = localStorage.getItem('gwcfc_navvoice');
+    return out;
+  });
+  ok('starting guidance is announced', r.saidStart);
+  ok('and so is the next turn, in spoken units', r.saidTurn);
+  ok('mute flips the button and stores the choice',
+     r.mutedGlyph && r.stored === '0', `${r.mutedGlyph}, ${r.stored}`);
+  ok('a muted voice says nothing, even past a turn', r.mutedSilent);
+  ok('unmuting says so and stores that too',
+     r.unmutedSaid && r.stored2 === '1', `${r.unmutedSaid}, ${r.stored2}`);
+}
+
+console.log('\n5g. the panel folds to a button and comes back');
+{
+  const r = await page.evaluate(() => {
+    const out = {};
+    _navMin();
+    out.panelHidden = document.getElementById('nav-panel').style.display === 'none';
+    const fab = document.getElementById('nav-fab');
+    out.fabShown = fab.style.display !== 'none';
+    out.stillOn = _navNavOn;
+    // Mid-drive, the button wears the next turn's arrow, not the compass.
+    out.glyph = document.getElementById('nav-fab-ico').textContent;
+    // A drag moves the button and must NOT reopen the panel.
+    const r0 = fab.getBoundingClientRect();
+    fab.dispatchEvent(new PointerEvent('pointerdown',
+      { clientX: r0.left + 24, clientY: r0.top + 24, bubbles: true, pointerId: 2 }));
+    document.dispatchEvent(new PointerEvent('pointermove',
+      { clientX: r0.left - 90, clientY: r0.top - 70, bubbles: true, pointerId: 2 }));
+    document.dispatchEvent(new PointerEvent('pointerup',
+      { clientX: r0.left - 90, clientY: r0.top - 70, bubbles: true, pointerId: 2 }));
+    const r1 = fab.getBoundingClientRect();
+    out.dragMoved = Math.abs(r1.left - r0.left) > 30;
+    out.stillHidden = document.getElementById('nav-panel').style.display === 'none';
+    out.posSaved = !!localStorage.getItem('gwcfc_navfab_pos');
+    // A plain tap brings the panel back and takes the button away.
+    fab.dispatchEvent(new PointerEvent('pointerdown',
+      { clientX: r1.left + 24, clientY: r1.top + 24, bubbles: true, pointerId: 3 }));
+    document.dispatchEvent(new PointerEvent('pointerup',
+      { clientX: r1.left + 24, clientY: r1.top + 24, bubbles: true, pointerId: 3 }));
+    out.reopened = document.getElementById('nav-panel').style.display !== 'none';
+    out.fabGone = fab.style.display === 'none';
+    // Put the world back for the sections after this one.
+    _navEndNav();
+    _navSpeak = window.__realSpeak;
+    _startLocationTracking = window.__realSLT2;
+    fab.style.left = ''; fab.style.top = ''; fab.style.right = ''; fab.style.bottom = '';
+    localStorage.removeItem('gwcfc_navfab_pos');
+    return out;
+  });
+  ok('minimising hides the panel and shows the button',
+     r.panelHidden && r.fabShown);
+  ok('guidance keeps running underneath', r.stillOn);
+  ok('and the button wears the next turn\'s arrow',
+     r.glyph !== '\u{1F9ED}' && r.glyph.length > 0, r.glyph);
+  ok('dragging moves the button, remembers where, and does not reopen',
+     r.dragMoved && r.stillHidden && r.posSaved);
+  ok('a plain tap reopens the panel and hides the button',
+     r.reopened && r.fabGone);
+}
+
 console.log('\n6. choosing, rearranging, removing');
 {
   const asked0 = osrmAsked.length;

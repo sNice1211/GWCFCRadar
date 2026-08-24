@@ -8331,6 +8331,35 @@ footer {
   cursor: pointer;
   padding: 0 2px;
 }
+.nav-headbtn {
+  background: none;
+  border: none;
+  color: #ffb3ab;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.nav-headbtn:hover, #nav-close:hover { color: #fff; }
+#nav-voice.muted { opacity: 0.45; }
+#nav-fab {
+  position: fixed;
+  bottom: 170px;
+  right: 12px;
+  z-index: 1102;
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  background: #6d0404;
+  background-image: var(--grad-raise, linear-gradient(180deg, #a81818 0%, #6d0404 100%));
+  border: 2px solid #e8b800;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.55);
+}
+#nav-fab:hover { background-image: var(--grad-raise-h, linear-gradient(180deg, #c62020 0%, #8a0808 100%)); }
 #nav-addrow { display: flex; gap: 6px; margin: 8px 0; }
 #nav-search {
   flex: 1;
@@ -9513,6 +9542,8 @@ body.clean-mode #clean-hint { opacity: 1; }
   <div id="nav-head">
     <span><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-pin></use></svg> Navigation</span>
     <span style="display:flex;align-items:center;gap:2px;">
+      <button id="nav-voice" class="nav-headbtn" onclick="_navVoiceToggle()" title="Voice guidance on/off">&#x1F50A;</button>
+      <button id="nav-min" class="nav-headbtn" onclick="_navMin()" title="Hide the panel">&#x2212;</button>
       <span id="nav-grab" class="dtb-drag" title="Drag to move">⠿</span>
       <button id="nav-close" onclick="_navClose()" title="Close">&times;</button>
     </span>
@@ -9554,6 +9585,12 @@ body.clean-mode #clean-hint { opacity: 1; }
     <span><i style="background:#ff2a2a;"></i>high</span>
     <span><i style="background:#e034ff;"></i>extreme</span>
   </div>
+</div>
+
+<!-- The navigation panel, folded to a button. Draggable anywhere; a tap
+     brings the panel back. Guidance keeps running underneath. -->
+<div id="nav-fab" style="display:none;" title="Open Navigation">
+  <span id="nav-fab-ico">&#x1F9ED;</span>
 </div>
 
 <!-- POLY TOOLBAR -->
@@ -26312,6 +26349,10 @@ let _navNavOn = false;          // live turn-by-turn guidance running
 let _navStepIdx = 0;            // which maneuver is next
 let _navOffCount = 0;           // consecutive fixes seen off the route
 let _navArrived = false;
+let _navSpokeNear = false;      // the close-to-the-turn call, once per step
+let _navLastArrow = '';         // what the folded button shows mid-drive
+let _navVoiceOn = true;         // spoken directions, remembered across visits
+try { _navVoiceOn = localStorage.getItem('gwcfc_navvoice') !== '0'; } catch (e) {}
 
 function _navOpen() {
   if (typeof lqmCloseSettings === 'function') { try { lqmCloseSettings(); } catch (e) {} }
@@ -26333,6 +26374,9 @@ function _navOpen() {
     });
     _navWired = true;
   }
+  const fab = document.getElementById('nav-fab');
+  if (fab) fab.style.display = 'none';
+  _navVoiceSync();
   _navDrawReports();
   _navRenderStops();
   _navRenderRoutes();
@@ -26341,6 +26385,8 @@ function _navOpen() {
 function _navClose() {
   const el = document.getElementById('nav-panel');
   if (el) el.style.display = 'none';
+  const fab = document.getElementById('nav-fab');
+  if (fab) fab.style.display = 'none';
   _navGen++;
   if (_navNavOn) _navEndNav();
   _navDisarmReport();
@@ -26861,6 +26907,9 @@ function _navStartNav() {
   if (go) { go.textContent = 'End Navigation'; go.classList.add('live'); }
   _navSetTurn('\u{1F6F0}', 'Waiting for GPS…',
     'Guidance follows your position from here.');
+  _navSpokeNear = false;
+  _navVoiceSync();
+  _navSay('Starting navigation.');
   const turn = document.getElementById('nav-turn');
   if (turn) turn.style.display = 'flex';
   const steps = document.getElementById('nav-steps');
@@ -26881,6 +26930,9 @@ function _navStartNav() {
 function _navEndNav() {
   _navNavOn = false;
   _navArrived = false;
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
+  _navLastArrow = '';
+  _navFabGlyph();
   const go = document.getElementById('nav-go');
   if (go) { go.textContent = 'Start Navigation'; go.classList.remove('live'); }
   const turn = document.getElementById('nav-turn');
@@ -26890,6 +26942,8 @@ function _navEndNav() {
 }
 
 function _navSetTurn(arrow, main, sub) {
+  _navLastArrow = arrow;
+  _navFabGlyph();
   const a = document.getElementById('nav-turn-arrow');
   const m = document.getElementById('nav-turn-main');
   const s = document.getElementById('nav-turn-sub');
@@ -26942,6 +26996,7 @@ function _navOnPosition(lat, lon) {
     if (_navOffCount >= 3 && _navStops.length >= 2) {
       _navOffCount = 0;
       _navSetTurn('↻', 'Rerouting…', 'You left the route; finding a new one.');
+      _navSay('You left the route. Rerouting.');
       _navStops[0] = { name: 'My Location', lat, lon };
       _navRenderStops();
       _navRoute();
@@ -26956,6 +27011,7 @@ function _navOnPosition(lat, lon) {
   if (_navMeters(lat, lon, last[1], last[0]) < 50) {
     _navArrived = true;
     _navSetTurn('\u{1F3C1}', 'You have arrived', 'Navigation will end by itself.');
+    _navSay('You have arrived at your destination.');
     _navStepIdx = Math.max(0, (rt.steps || []).length - 1);
     _navRenderSteps();
     setTimeout(() => { if (_navArrived) _navEndNav(); }, 8000);
@@ -26968,13 +27024,27 @@ function _navOnPosition(lat, lon) {
   for (let i = 0; i < steps.length; i++) {
     if (steps[i].idx > posIdx) { next = i; break; }
   }
-  if (next !== _navStepIdx) { _navStepIdx = next; _navRenderSteps(); }
+  const changed = next !== _navStepIdx;
+  if (changed) { _navStepIdx = next; _navRenderSteps(); _navSpokeNear = false; }
   const st = steps[next];
   if (!st) return;
 
   // Distance to the turn along the road, not as the crow flies; and what
   // is left of the whole trip, scaled from the router's own timing.
   const along = Math.max(0, (rt.cum[st.idx] || 0) - (rt.cum[posIdx] || 0));
+
+  // Say each maneuver twice, the way a navigator does: once when it
+  // becomes the next thing, once again close to the turn itself. Not on
+  // every fix - a voice that narrates every second is a voice that gets
+  // muted.
+  const phrase = () => 'In ' + _navSpeakDist(along) + ', '
+    + st.text.charAt(0).toLowerCase() + st.text.slice(1);
+  if (changed) {
+    _navSay(phrase());
+  } else if (!_navSpokeNear && along < 400 && along > 25) {
+    _navSpokeNear = true;
+    _navSay(phrase());
+  }
   const remain = Math.max(0, (rt.cum[rt.cum.length - 1] || 0) - (rt.cum[posIdx] || 0));
   const total = rt.cum[rt.cum.length - 1] || 1;
   const secsLeft = rt.secs * (remain / total);
@@ -26984,6 +27054,115 @@ function _navOnPosition(lat, lon) {
   _navSetTurn(st.arrow, 'In ' + _navFmtShort(along) + ', ' + st.text.charAt(0).toLowerCase() + st.text.slice(1),
     _navFmtTime(secsLeft) + ' · ' + _navFmtDist(remain) + ' · arrive ' + clock);
 }
+
+// ── Spoken directions ─────────────────────────────────────────────────────
+// The browser's own voice (speechSynthesis), so nothing is downloaded and
+// nothing leaves the device. The engine call is separated from the mute
+// gate so the gate is testable and the engine is swappable.
+function _navSpeak(text) {
+  try {
+    const ss = window.speechSynthesis;
+    if (!ss || typeof SpeechSynthesisUtterance === 'undefined') return;
+    // One instruction at a time: a queue of stale directions read aloud in
+    // order would narrate where you were, not where you are.
+    ss.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.0;
+    ss.speak(u);
+  } catch (e) {}
+}
+function _navSay(text) { if (_navVoiceOn) _navSpeak(text); }
+
+// Distances the way a voice says them, not the way a label prints them.
+function _navSpeakDist(m) {
+  return _navFmtShort(m)
+    .replace(/ ft$/, ' feet').replace(/ mi$/, ' miles')
+    .replace(/ m$/, ' meters').replace(/ km$/, ' kilometers');
+}
+
+function _navVoiceToggle() {
+  _navVoiceOn = !_navVoiceOn;
+  try { localStorage.setItem('gwcfc_navvoice', _navVoiceOn ? '1' : '0'); } catch (e) {}
+  if (!_navVoiceOn) {
+    // Mute means now, mid-sentence included.
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
+  } else if (_navNavOn) {
+    _navSay('Voice guidance on.');
+  }
+  _navVoiceSync();
+}
+function _navVoiceSync() {
+  const b = document.getElementById('nav-voice');
+  if (!b) return;
+  // A device with no voice at all gets no dead button to wonder about.
+  if (!window.speechSynthesis) { b.style.display = 'none'; return; }
+  b.innerHTML = _navVoiceOn ? '&#x1F50A;' : '&#x1F507;';
+  b.classList.toggle('muted', !_navVoiceOn);
+  b.title = _navVoiceOn ? 'Voice guidance is on - tap to mute'
+                        : 'Voice guidance is muted - tap to turn on';
+}
+
+// ── Fold the panel to a button, and back ──────────────────────────────────
+// Guidance keeps running underneath: hiding the panel is for seeing the
+// map, not for stopping the trip.
+function _navMin() {
+  const panel = document.getElementById('nav-panel');
+  if (panel) panel.style.display = 'none';
+  const fab = document.getElementById('nav-fab');
+  if (!fab) return;
+  fab.style.display = 'flex';
+  try {
+    const p = JSON.parse(localStorage.getItem('gwcfc_navfab_pos') || 'null');
+    if (p && isFinite(p.x) && isFinite(p.y)) {
+      fab.style.left = Math.min(Math.max(p.x, 4), window.innerWidth - 52) + 'px';
+      fab.style.top = Math.min(Math.max(p.y, 4), window.innerHeight - 52) + 'px';
+      fab.style.right = 'auto'; fab.style.bottom = 'auto';
+    }
+  } catch (e) {}
+  _navFabGlyph();
+}
+function _navRestore() {
+  const fab = document.getElementById('nav-fab');
+  if (fab) fab.style.display = 'none';
+  const panel = document.getElementById('nav-panel');
+  if (panel) panel.style.display = 'block';
+}
+// The button wears the next turn's arrow while guidance runs, so the
+// folded panel still says the one thing that matters.
+function _navFabGlyph() {
+  const ico = document.getElementById('nav-fab-ico');
+  if (ico) ico.textContent = (_navNavOn && _navLastArrow) ? _navLastArrow : '\u{1F9ED}';
+}
+
+// Draggable AND tappable: a press that travels is a move, a press that
+// stays put is a click. Six pixels tells them apart.
+(function _navFabInit() {
+  document.addEventListener('pointerdown', (e) => {
+    const fab = e.target.closest('#nav-fab');
+    if (!fab) return;
+    e.preventDefault();
+    const r = fab.getBoundingClientRect();
+    const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    const x0 = e.clientX, y0 = e.clientY;
+    let moved = false;
+    const move = (ev) => {
+      if (Math.abs(ev.clientX - x0) + Math.abs(ev.clientY - y0) > 6) moved = true;
+      if (!moved) return;
+      const x = Math.min(Math.max(ev.clientX - dx, 4), window.innerWidth - 52);
+      const y = Math.min(Math.max(ev.clientY - dy, 4), window.innerHeight - 52);
+      fab.style.left = x + 'px'; fab.style.top = y + 'px';
+      fab.style.right = 'auto'; fab.style.bottom = 'auto';
+      try { localStorage.setItem('gwcfc_navfab_pos', JSON.stringify({ x, y })); } catch (er) {}
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      if (!moved) _navRestore();
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up, { once: true });
+    document.addEventListener('pointercancel', up, { once: true });
+  });
+})();
 
 // ── The panel is a window: grab the handle, put it where you want it ──────
 (function _navDragInit() {
@@ -44841,7 +45020,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Navigation drives with you now. Press Start Navigation on a route and it follows your GPS like the maps app: a big banner tells you the next turn and how far away it is by road, the full step list scrolls along with you, the camera stays on your position, it reroutes by itself if you leave the route, and it tells you when you have arrived. The panel also grew a drag handle, so you can put it anywhere on the screen.";
+const APP_LATEST_UPDATE = "Navigation talks and tucks away now. Directions are spoken out loud, each turn announced when it becomes next and again close to the turn, with a speaker button in the panel to mute and unmute. And a new minimize button folds the whole panel into a small round button you can drag anywhere on the screen; guidance keeps running, the button shows your next turn arrow, and one tap brings the panel back.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
