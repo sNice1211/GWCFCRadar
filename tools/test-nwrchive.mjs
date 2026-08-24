@@ -28,6 +28,11 @@ ok('all six sketch regions exist',
 ok('audio comes from rolling and highlights paths like the archiver writes',
    html.includes("'/rolling/'") && html.includes("'/highlights/'")
    && html.includes("/meta/"));
+ok('the header thanks the three stream providers, not our socials',
+   !/discord\.gg|youtube\.com|x\.com\/GWCFCenter/.test(html)
+   && /Thanks/.test(html) && /weatherusa\.net/.test(html)
+   && /noaaweatherradio\.org/.test(html) && /globaleas\.org/.test(html)
+   && /weatherradio\.org/.test(html));
 
 const BASE = 'https://archive.test/nwr';
 const FAKE_INDEX = { generated: '2026-08-24T00:00:00Z', stations: [
@@ -205,6 +210,9 @@ console.log('\n5. search and about');
      r.byCall.length === 1 && /KWO35/.test(r.byCall[0]), JSON.stringify(r.byCall));
   ok('the About page tells the story',
      /SAME/.test(r.about) && /90 days/.test(r.about), r.about.slice(0, 120));
+  ok('and credits all three providers by name',
+     /WeatherUSA/.test(r.about) && /NOAAWeatherRadio\.org/.test(r.about)
+       && /Global Weather/.test(r.about), r.about.slice(-300));
 }
 
 console.log('\n6. nothing threw');
