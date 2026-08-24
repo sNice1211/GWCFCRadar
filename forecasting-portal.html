@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GWCFC Forecasting Portal - Tropical Weather Outlook</title>
+<meta name="description" content="The GWCFC forecasting portal: signed-in forecasters compose and publish the Tropical Weather Outlook.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0a0a0c;
+  --bg2: #111115;
+  --bg3: #18181e;
+  --accent: #c81616;
+  --accent2: #ff5555;
+  --blue: #008CBA;
+  --blue2: #5cd8f7;
+  --gold: #e8b800;
+  --text: #f0f0f0;
+  --muted: #8a8a92;
+  --border: rgba(200,22,22,0.35);
+  --font: "Comfortaa", "Segoe UI", Arial, sans-serif;
+  --lift: 0 10px 28px -10px rgba(0,0,0,0.85);
+  /* The two washes the mockup runs under every bar: red into blue one way,
+     blue into red the other, so stacked panels never look like one slab. */
+  --wash-rb: linear-gradient(90deg, #c81616 0%, #7a2a5a 50%, #008CBA 100%);
+  --wash-br: linear-gradient(90deg, #008CBA 0%, #7a2a5a 50%, #c81616 100%);
+}
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  background-image: linear-gradient(180deg, #101014 0%, #0a0a0c 45%, #060608 100%);
+  color: var(--text);
+  font-family: var(--font);
+  overflow: hidden;
+}
+button, input, select, textarea { font-family: var(--font); }
+.ic { width: 1em; height: 1em; vertical-align: -0.12em; display: inline-block; }
+
+/* Every gold-ringed pill in the mockup is this one shape. */
+.goldpill {
+  border: 3px solid var(--gold);
+  border-radius: 999px;
+  box-shadow: 0 0 10px rgba(232,184,0,0.28), inset 0 1px 0 rgba(255,255,255,0.18);
+}
+/* Red letters with a gold edge, the mockup's whole typographic idea. */
+.stroketext {
+  color: var(--accent);
+  -webkit-text-stroke: 2px var(--gold);
+  paint-order: stroke fill;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+/* ── THE OUTLOOK FORMAT ─────────────────────────────────────────────────── */
+#format {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column;
+  padding: 12px;
+  gap: 10px;
+}
+#two-head { display: flex; align-items: center; gap: 14px; flex: none; }
+#logo { width: 84px; height: 84px; flex: none; }
+.head-stack { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+#two-title {
+  background-image: var(--wash-rb);
+  padding: 8px 22px;
+  font-size: clamp(15px, 3.1vw, 34px);
+  text-transform: uppercase;
+  text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.head-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.head-pill {
+  padding: 5px 18px;
+  font-size: clamp(11px, 1.5vw, 18px);
+  background-image: var(--wash-br);
+}
+.head-pill.blue { background-image: var(--wash-rb); }
+
+/* The map is the middle of the format. */
+#mapwrap {
+  flex: 1; min-height: 0; position: relative;
+  border: 3px solid var(--gold);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 0 14px rgba(232,184,0,0.22);
+}
+#map { position: absolute; inset: 0; background: #0b1a26; }
+.leaflet-container { font-family: var(--font); background: #0b1a26; }
+
+/* ── LEGENDS ────────────────────────────────────────────────────────────── */
+#legends { flex: none; display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.legend { display: flex; flex-direction: column; gap: 5px; }
+.legend-title {
+  align-self: flex-start;
+  padding: 3px 16px;
+  font-size: clamp(10px, 1.2vw, 15px);
+  background-image: var(--wash-br);
+}
+.legend-body {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  background-image: var(--wash-rb);
+  border-radius: 16px;
+  border: 3px solid var(--gold);
+}
+.legend-body.wrap { flex-wrap: wrap; max-width: 320px; }
+.sym { width: 46px; height: 46px; flex: none; }
+.chip {
+  padding: 3px 14px; border-radius: 999px;
+  font-size: clamp(10px, 1.2vw, 15px); font-weight: 700;
+  color: #111; border: 2px solid rgba(0,0,0,0.55);
+  text-shadow: 0 1px 0 rgba(255,255,255,0.35);
+  white-space: nowrap;
+}
+
+/* ── TOP-RIGHT CONTROLS ─────────────────────────────────────────────────── */
+#topright {
+  position: absolute; top: 14px; right: 16px; z-index: 500;
+  display: flex; gap: 8px; align-items: center;
+}
+.tbtn {
+  display: flex; align-items: center; gap: 7px;
+  background: rgba(10,10,12,0.82);
+  border: 2px solid var(--gold);
+  border-radius: 999px;
+  color: var(--gold);
+  font-size: 13px; font-weight: 700;
+  padding: 8px 15px; cursor: pointer;
+  white-space: nowrap;
+}
+.tbtn:hover { background: rgba(232,184,0,0.16); }
+.tbtn.on { background: var(--gold); color: #241a00; }
+.tbtn.pub { border-color: var(--accent2); color: var(--accent2); }
+.tbtn.pub:hover { background: rgba(255,85,85,0.16); }
+.tbtn[disabled] { opacity: 0.4; cursor: not-allowed; }
+#whoami { font-size: 12px; color: var(--muted); }
+#whoami b { color: var(--gold); }
+
+/* ── FLOATING MENUS (the palette that pops over the format) ─────────────── */
+.panel {
+  position: absolute; z-index: 600;
+  width: 300px;
+  background: rgba(14,14,18,0.96);
+  border: 3px solid var(--gold);
+  border-radius: 16px;
+  box-shadow: var(--lift);
+  display: none;
+  overflow: hidden;
+}
+.panel.on { display: block; }
+.panel-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px;
+  background-image: var(--wash-rb);
+  cursor: grab;
+  font-weight: 700; font-size: 14px;
+  color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+}
+.panel-head:active { cursor: grabbing; }
+.panel-head .x {
+  margin-left: auto; background: none; border: none; color: #fff;
+  font-size: 18px; cursor: pointer; line-height: 1; padding: 0 2px;
+}
+.panel-body { padding: 12px; max-height: 62vh; overflow: auto; }
+.panel-body h5 {
+  font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase;
+  color: var(--muted); margin: 12px 0 7px;
+}
+.panel-body h5:first-child { margin-top: 0; }
+.hint { font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 8px; }
+
+/* The armed-tool strip: storm symbols stacked as in the mockup. */
+.symrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.symbtn {
+  background: rgba(0,0,0,0.35);
+  border: 2px solid transparent;
+  border-radius: 12px;
+  padding: 4px; cursor: pointer; line-height: 0;
+}
+.symbtn:hover { border-color: rgba(232,184,0,0.5); }
+.symbtn.arm { border-color: var(--gold); background: rgba(232,184,0,0.16); }
+.symbtn .sym { width: 40px; height: 40px; }
+.chiprow { display: flex; flex-wrap: wrap; gap: 7px; }
+.chipbtn { cursor: pointer; border: 2px solid rgba(0,0,0,0.55); }
+.chipbtn.arm { outline: 3px solid var(--gold); outline-offset: 1px; }
+.fld { width: 100%; margin-bottom: 8px; }
+.fld label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+.fld input, .fld select, .fld textarea {
+  width: 100%; background: var(--bg3); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 13px; outline: none;
+}
+.fld input:focus, .fld select:focus, .fld textarea:focus { border-color: var(--gold); }
+.fld textarea { min-height: 76px; resize: vertical; }
+.btn {
+  width: 100%; padding: 9px; cursor: pointer;
+  background-image: var(--wash-rb);
+  border: 2px solid var(--gold); border-radius: 10px;
+  color: #fff; font-weight: 700; font-size: 13px;
+}
+.btn:hover { filter: brightness(1.15); }
+.btn.ghost { background-image: none; background: var(--bg3); border-color: var(--border); }
+.btn.ghost:hover { border-color: var(--accent2); color: var(--accent2); }
+.tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.tab {
+  flex: 1; padding: 7px; cursor: pointer; font-size: 12px; font-weight: 700;
+  background: var(--bg3); color: var(--muted);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.tab.on { background-image: var(--wash-rb); color: #fff; border-color: var(--gold); }
+.item {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-left: 4px solid var(--accent2);
+  border-radius: 8px; padding: 8px 10px; margin-bottom: 7px; font-size: 12px;
+}
+.item .t { font-weight: 700; }
+.item .m { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.item .del {
+  float: right; background: none; border: none; color: var(--muted);
+  cursor: pointer; font-size: 14px; line-height: 1;
+}
+.item .del:hover { color: var(--accent2); }
+.empty { color: var(--muted); font-style: italic; font-size: 12px; padding: 8px 2px; }
+
+/* ── SIGN IN ────────────────────────────────────────────────────────────── */
+#gate {
+  position: absolute; inset: 0; z-index: 900;
+  background: rgba(6,6,10,0.93);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+}
+#gate.off { display: none; }
+.gatecard {
+  width: 100%; max-width: 380px;
+  background: var(--bg2);
+  border: 3px solid var(--gold); border-radius: 18px;
+  box-shadow: var(--lift);
+  padding: 22px;
+  text-align: center;
+}
+.gatecard h2 { font-size: 20px; margin-bottom: 4px; }
+.gatecard h2 .gold { color: var(--gold); }
+.gatecard p { color: var(--muted); font-size: 13px; line-height: 1.6; margin-bottom: 16px; }
+.gate-err { color: var(--accent2); font-size: 12px; min-height: 16px; margin-top: 8px; }
+.gate-alt { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.gate-alt a { color: var(--blue2); cursor: pointer; text-decoration: none; }
+
+/* ── STATUS + TOAST ─────────────────────────────────────────────────────── */
+#armnote {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: 190px; z-index: 550;
+  background: rgba(10,10,12,0.9);
+  border: 2px solid var(--gold); border-radius: 999px;
+  color: var(--gold); font-size: 13px; font-weight: 700;
+  padding: 8px 18px; display: none; pointer-events: none;
+}
+#toast {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  top: 76px; z-index: 950;
+  background: rgba(10,10,12,0.95);
+  border: 2px solid var(--gold); border-radius: 12px;
+  padding: 10px 18px; font-size: 13px; display: none; max-width: 80vw;
+}
+.leaflet-container .storm-icon, .leaflet-container .area-icon { background: none; border: none; }
+.area-label {
+  font-size: 11px; font-weight: 700; color: #111;
+  padding: 2px 9px; border-radius: 999px; border: 2px solid rgba(0,0,0,0.5);
+  white-space: nowrap;
+}
+
+@media (max-width: 820px) {
+  #logo { width: 54px; height: 54px; }
+  #legends { gap: 8px; }
+  .sym { width: 34px; height: 34px; }
+  .legend-body { padding: 6px 10px; gap: 6px; }
+  #topright { top: auto; bottom: 12px; right: 12px; flex-wrap: wrap; justify-content: flex-end; }
+  #whoami { display: none; }
+  .panel { width: min(300px, calc(100vw - 24px)); }
+}
+</style>
+</head>
+<body>
+
+<!-- ══ THE FORMAT: exactly the layout of the outlook graphic ══════════════ -->
+<div id="format">
+  <div id="two-head">
+    <svg id="logo" viewBox="0 0 100 100" aria-label="GWCFC">
+      <defs>
+        <radialGradient id="lg" cx="50%" cy="50%">
+          <stop offset="0%" stop-color="#ff6a6a"/><stop offset="55%" stop-color="#e01010"/>
+          <stop offset="100%" stop-color="#8b0000"/>
+        </radialGradient>
+      </defs>
+      <!-- The mark from the mockup: a red cyclone swirl around a gold ring. -->
+      <path d="M50 6c22 0 40 16 40 34 0 10-7 17-16 17-7 0-12-4-12-10 0-4 2-7 6-8-9-6-24-4-30 6C33 33 39 20 50 6z" fill="url(#lg)"/>
+      <path d="M50 94C28 94 10 78 10 60c0-10 7-17 16-17 7 0 12 4 12 10 0 4-2 7-6 8 9 6 24 4 30-6 5 12-1 25-12 39z" fill="url(#lg)"/>
+      <circle cx="50" cy="50" r="24" fill="#c81616" stroke="#e8b800" stroke-width="4"/>
+      <circle cx="50" cy="50" r="14" fill="#fff8e6"/>
+      <text x="50" y="55" text-anchor="middle" font-family="Comfortaa, sans-serif"
+            font-size="13" font-weight="700" fill="#c81616">GWCFC</text>
+    </svg>
+    <div class="head-stack">
+      <div id="two-title" class="goldpill stroketext">Guta Weather/Climate Forecasting Center</div>
+      <div class="head-row">
+        <div class="head-pill goldpill stroketext">Date/Time Issued:
+          <span id="two-time">?/?/? ??:?? UTC</span></div>
+        <div class="head-pill goldpill blue stroketext">Forecaster
+          [<span id="two-fcstr">??????</span>]</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="mapwrap"><div id="map"></div></div>
+
+  <div id="legends">
+    <div class="legend">
+      <div class="legend-title goldpill stroketext">Storm Symbols</div>
+      <div class="legend-body" id="legend-syms"></div>
+    </div>
+    <div class="legend">
+      <div class="legend-title goldpill stroketext">Disturbance Chances</div>
+      <div class="legend-body wrap" id="legend-chances"></div>
+    </div>
+    <div class="legend">
+      <div class="legend-title goldpill stroketext">Alert Level</div>
+      <div class="legend-body wrap" id="legend-alerts"></div>
+    </div>
+  </div>
+</div>
+
+<div id="armnote"></div>
+<div id="toast"></div>
+
+<!-- ══ CONTROLS ══════════════════════════════════════════════════════════ -->
+<div id="topright">
+  <span id="whoami"></span>
+  <button class="tbtn" id="btn-tools" onclick="togglePanel('p-tools')" title="Storm symbols, chances and alert levels">
+    <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a4 4 0 1 1 4-4 4 4 0 0 1-4 4z"/></svg>
+    Symbols</button>
+  <button class="tbtn" id="btn-cone" onclick="togglePanel('p-cone')" title="Draw a forecast cone">
+    <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M4 21 12 3l8 18-8-4z"/></svg>
+    Cone</button>
+  <button class="tbtn" id="btn-desk" onclick="togglePanel('p-desk')" title="Alert desk">
+    <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2 23 21H1L12 2zm-1 12h2V9h-2v5zm0 4h2v-2h-2v2z"/></svg>
+    Alert Desk</button>
+  <button class="tbtn pub" id="btn-publish" onclick="publishOutlook()">
+    <svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M5 20h14v-2H5v2zM12 4 5.5 12h4v4h5v-4h4L12 4z"/></svg>
+    Publish</button>
+  <button class="tbtn" id="btn-out" onclick="portalSignOut()" title="Sign out">Sign out</button>
+</div>
+
+<!-- ══ TOOL PALETTE (the menu that pops up over the format) ══════════════ -->
+<div class="panel" id="p-tools" style="top:96px; right:16px;">
+  <div class="panel-head">Outlook Tools
+    <button class="x" onclick="togglePanel('p-tools')">&times;</button></div>
+  <div class="panel-body">
+    <h5>Storm Symbols</h5>
+    <div class="symrow" id="tool-syms"></div>
+    <h5>Disturbance Chances</h5>
+    <div class="chiprow" id="tool-chances"></div>
+    <h5>Alert Levels</h5>
+    <div class="chiprow" id="tool-alerts"></div>
+    <div class="hint" id="tool-hint">Pick a symbol, then click the map to place it.
+      Click a placed item to remove it.</div>
+    <h5>On the outlook</h5>
+    <div id="tool-list"></div>
+  </div>
+</div>
+
+<!-- ══ STORM CONE MENU ═══════════════════════════════════════════════════ -->
+<div class="panel" id="p-cone" style="top:96px; right:16px;">
+  <div class="panel-head">Storm Cone
+    <button class="x" onclick="togglePanel('p-cone')">&times;</button></div>
+  <div class="panel-body">
+    <div class="fld"><label>Storm name</label>
+      <input id="cone-name" type="text" placeholder="e.g. Invest 94L, or Hurricane Ana"></div>
+    <div class="fld"><label>Category at landfall of track (colours the cone)</label>
+      <select id="cone-cat">
+        <option value="0">Disturbance / Depression</option>
+        <option value="1">Category 1</option><option value="2">Category 2</option>
+        <option value="3">Category 3</option><option value="4">Category 4</option>
+        <option value="5">Category 5</option>
+      </select></div>
+    <div class="fld"><label>Cone spread: how wide it gets by the last point (km)</label>
+      <input id="cone-wide" type="number" min="30" max="900" step="10" value="350"></div>
+    <button class="btn" id="cone-draw" onclick="coneArm()">Click points along the track</button>
+    <button class="btn ghost" style="margin-top:7px" onclick="coneFinish()">Finish this cone</button>
+    <button class="btn ghost" style="margin-top:7px" onclick="coneUndo()">Undo last point</button>
+    <div class="hint">The cone widens from the first point to the last, the way a
+      forecast gets less certain with time. Finish it to lock it onto the outlook.</div>
+    <h5>Cones on the outlook</h5>
+    <div id="cone-list"></div>
+  </div>
+</div>
+
+<!-- ══ ALERT DESK MENU ═══════════════════════════════════════════════════ -->
+<div class="panel" id="p-desk" style="top:96px; right:16px;">
+  <div class="panel-head">Alert Desk
+    <button class="x" onclick="togglePanel('p-desk')">&times;</button></div>
+  <div class="panel-body">
+    <div class="tabs">
+      <button class="tab on" id="tab-live" onclick="deskTab('live')">Live official</button>
+      <button class="tab" id="tab-issue" onclick="deskTab('issue')">Issue GWCFC</button>
+    </div>
+    <div id="desk-live">
+      <button class="btn ghost" onclick="deskLoadLive()">Refresh</button>
+      <div id="desk-live-list" style="margin-top:10px"><div class="empty">Not loaded yet.</div></div>
+    </div>
+    <div id="desk-issue" style="display:none">
+      <div class="fld"><label>Level</label>
+        <select id="al-level">
+          <option value="watch">Watch</option>
+          <option value="warning">Warning</option>
+          <option value="emergency">Emergency</option>
+        </select></div>
+      <div class="fld"><label>Headline</label>
+        <input id="al-head" type="text" placeholder="e.g. Tropical Storm Watch, Gulf coast"></div>
+      <div class="fld"><label>Area described in words</label>
+        <input id="al-area" type="text" placeholder="e.g. Pinellas to Collier counties"></div>
+      <div class="fld"><label>Details</label>
+        <textarea id="al-text" placeholder="What people should expect and do."></textarea></div>
+      <button class="btn" onclick="deskIssue()">Add to this outlook</button>
+      <div class="hint">GWCFC alerts ride along with the outlook when it is
+        published. They are yours, not the National Weather Service's.</div>
+      <h5>Issued in this outlook</h5>
+      <div id="desk-issued"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ SIGN IN GATE ══════════════════════════════════════════════════════ -->
+<div id="gate">
+  <div class="gatecard">
+    <h2>GWCFC <span class="gold">Forecasting Portal</span></h2>
+    <p id="gate-msg">Sign in with your GWCFC Radar account to compose the
+      Tropical Weather Outlook.</p>
+    <div id="gate-form">
+      <div class="fld"><input id="gate-email" type="email" placeholder="Email" autocomplete="username"></div>
+      <div class="fld"><input id="gate-pass" type="password" placeholder="Password" autocomplete="current-password"></div>
+      <button class="btn" onclick="gateSignIn()">Sign in</button>
+      <button class="btn ghost" style="margin-top:8px" onclick="gateGoogle()">Continue with Google</button>
+      <div class="gate-err" id="gate-err"></div>
+      <div class="gate-alt">No account? Make one in the
+        <a href="index.html">radar app</a>, then come back.</div>
+    </div>
+    <div id="gate-signedout" style="display:none">
+      <button class="btn ghost" onclick="location.reload()">Sign in as someone else</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ══ WHAT THE OUTLOOK IS MADE OF ═════════════════════════════════════════
+// Three vocabularies, straight off the design: storm strength 1 to 5, how
+// likely a disturbance is to develop, and how serious the alert is. Every
+// colour here is read by both the legend and the tools, so the key under the
+// map can never disagree with what was placed on it.
+const CATS = [
+  { n: 5, color: '#ff00ff', ring: '#ffb3ff', label: 'Category 5' },
+  { n: 4, color: '#ff1111', ring: '#ff9a9a', label: 'Category 4' },
+  { n: 3, color: '#ff5a00', ring: '#ffc199', label: 'Category 3' },
+  { n: 2, color: '#ffa000', ring: '#ffdda6', label: 'Category 2' },
+  { n: 1, color: '#ffe600', ring: '#fff6a6', label: 'Category 1' },
+];
+const CHANCES = [
+  { id: 'extreme', label: 'Extreme', color: '#ff44ff' },
+  { id: 'high',    label: 'High',    color: '#ee1111' },
+  { id: 'medium',  label: 'Medium',  color: '#ff8c00' },
+  { id: 'low',     label: 'Low',     color: '#ffe066' },
+];
+const ALERTS = [
+  { id: 'emergency', label: 'Emer.',   color: '#8b0000', text: '#ffdede' },
+  { id: 'warning',   label: 'Warning', color: '#d81616', text: '#fff0f0' },
+  { id: 'watch',     label: 'Watch',   color: '#e97c7c', text: '#2a0000' },
+];
+const catOf = (n) => CATS.find(c => c.n === Number(n)) || CATS[4];
+const chanceOf = (id) => CHANCES.find(c => c.id === id) || CHANCES[3];
+const alertOf = (id) => ALERTS.find(a => a.id === id) || ALERTS[2];
+
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;');
+
+// The storm mark, drawn rather than typed, so it prints the same everywhere
+// and can be tinted per category from one shape.
+function stormSVG(cat, size) {
+  const c = catOf(cat);
+  const label = cat ? String(cat) : '';
+  return '<svg class="sym" viewBox="0 0 100 100"'
+    + (size ? ' style="width:' + size + 'px;height:' + size + 'px"' : '') + '>'
+    + '<g fill="' + c.color + '">'
+    + '<path d="M50 4c23 0 42 17 42 36 0 11-8 18-17 18-8 0-13-5-13-11 0-5 3-8 7-9-10-7-26-4-32 7C31 32 38 18 50 4z"/>'
+    + '<path d="M50 96C27 96 8 79 8 60c0-11 8-18 17-18 8 0 13 5 13 11 0 5-3 8-7 9 10 7 26 4 32-7 6 13-1 27-13 41z"/>'
+    + '</g>'
+    + '<circle cx="50" cy="50" r="25" fill="#ffffff" stroke="' + c.color + '" stroke-width="5"/>'
+    + '<circle cx="50" cy="50" r="17" fill="' + c.ring + '" opacity="0.55"/>'
+    + '<text x="50" y="59" text-anchor="middle" font-family="Comfortaa, sans-serif"'
+    + ' font-size="30" font-weight="700" fill="#111">' + label + '</text>'
+    + '</svg>';
+}
+
+// ══ THE OUTLOOK BEING EDITED ════════════════════════════════════════════
+// One plain object. It is what gets drawn, and it is exactly what gets
+// published, so what a forecaster sees is what readers get.
+let OUTLOOK = { storms: [], areas: [], cones: [], alerts: [],
+                issued: null, forecaster: '' };
+let ARMED = null;          // {kind:'storm',cat} | {kind:'area',type,id} | null
+let map = null;
+let layers = { storms: null, areas: null, cones: null };
+let CONE = null;           // the cone being clicked out
+let USER = null, PROFILE = null;
+let _fbAuth = null, _fbDb = null;
+
+function toast(msg, ms) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.style.display = 'none'; }, ms || 3200);
+}
+
+// ══ LEGENDS ═════════════════════════════════════════════════════════════
+function buildLegends() {
+  document.getElementById('legend-syms').innerHTML =
+    CATS.map(c => stormSVG(c.n)).join('');
+  document.getElementById('legend-chances').innerHTML =
+    CHANCES.map(c => '<span class="chip" style="background:' + c.color + '">'
+      + c.label + '</span>').join('');
+  document.getElementById('legend-alerts').innerHTML =
+    ALERTS.map(a => '<span class="chip" style="background:' + a.color
+      + ';color:' + a.text + ';text-shadow:none">' + a.label + '</span>').join('');
+}
+
+// ══ TOOLS ═══════════════════════════════════════════════════════════════
+function buildTools() {
+  document.getElementById('tool-syms').innerHTML = CATS.map(c =>
+    '<button class="symbtn" data-cat="' + c.n + '" onclick="armStorm(' + c.n + ')"'
+    + ' title="' + c.label + '">' + stormSVG(c.n, 40) + '</button>').join('');
+  document.getElementById('tool-chances').innerHTML = CHANCES.map(c =>
+    '<span class="chip chipbtn" data-chance="' + c.id + '" style="background:' + c.color
+    + '" onclick="armArea(\'chance\',\'' + c.id + '\')">' + c.label + '</span>').join('');
+  document.getElementById('tool-alerts').innerHTML = ALERTS.map(a =>
+    '<span class="chip chipbtn" data-alert="' + a.id + '" style="background:' + a.color
+    + ';color:' + a.text + ';text-shadow:none" onclick="armArea(\'alert\',\'' + a.id + '\')">'
+    + a.label + '</span>').join('');
+}
+function clearArm() {
+  ARMED = null;
+  document.querySelectorAll('.symbtn.arm, .chipbtn.arm').forEach(e => e.classList.remove('arm'));
+  document.getElementById('armnote').style.display = 'none';
+  const el = document.getElementById('map');
+  if (el) el.style.cursor = '';
+}
+function showArm(text, sel) {
+  document.querySelectorAll('.symbtn.arm, .chipbtn.arm').forEach(e => e.classList.remove('arm'));
+  const b = sel && document.querySelector(sel);
+  if (b) b.classList.add('arm');
+  const n = document.getElementById('armnote');
+  n.textContent = text;
+  n.style.display = 'block';
+  document.getElementById('map').style.cursor = 'crosshair';
+}
+function armStorm(cat) {
+  if (ARMED && ARMED.kind === 'storm' && ARMED.cat === cat) return clearArm();
+  coneCancel();
+  ARMED = { kind: 'storm', cat };
+  showArm('Click the map to place a Category ' + cat + ' storm',
+          '.symbtn[data-cat="' + cat + '"]');
+}
+function armArea(type, id) {
+  if (ARMED && ARMED.kind === 'area' && ARMED.id === id) return clearArm();
+  coneCancel();
+  ARMED = { kind: 'area', type, id };
+  const label = type === 'chance' ? chanceOf(id).label : alertOf(id).label;
+  showArm('Click the map to mark a ' + label + ' area',
+          type === 'chance' ? '.chipbtn[data-chance="' + id + '"]'
+                            : '.chipbtn[data-alert="' + id + '"]');
+}
+
+// ══ MAP ═════════════════════════════════════════════════════════════════
+function initMap() {
+  map = L.map('map', { zoomControl: true, worldCopyJump: true })
+         .setView([22, -62], 4);           // the Atlantic basin, as the NHC frames it
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap, &copy; CARTO', maxZoom: 10,
+  }).addTo(map);
+  layers.cones  = L.layerGroup().addTo(map);   // under the symbols on purpose
+  layers.areas  = L.layerGroup().addTo(map);
+  layers.storms = L.layerGroup().addTo(map);
+  map.on('click', onMapClick);
+}
+function onMapClick(e) {
+  const { lat, lng } = e.latlng;
+  if (CONE) {
+    CONE.pts.push([lat, lng]);
+    drawAll();
+    return;
+  }
+  if (!ARMED) return;
+  if (ARMED.kind === 'storm') {
+    const name = prompt('Name for this storm (optional):', '') || '';
+    OUTLOOK.storms.push({ id: rid(), cat: ARMED.cat, lat, lon: lng, name: name.slice(0, 40) });
+  } else {
+    OUTLOOK.areas.push({ id: rid(), type: ARMED.type, level: ARMED.id, lat, lon: lng });
+  }
+  clearArm();
+  drawAll();
+}
+const rid = () => Math.random().toString(36).slice(2, 9);
+
+function drawAll() {
+  if (!map) return;
+  layers.storms.clearLayers();
+  layers.areas.clearLayers();
+  layers.cones.clearLayers();
+
+  OUTLOOK.cones.forEach(c => {
+    const poly = conePolygon(c);
+    if (poly.length > 2) {
+      L.polygon(poly, { color: catOf(c.cat).color, weight: 2,
+                        fillColor: catOf(c.cat).color, fillOpacity: 0.22 })
+       .addTo(layers.cones);
+    }
+    if (c.pts.length > 1) {
+      L.polyline(c.pts, { color: '#ffffff', weight: 2, dashArray: '6 5' })
+       .addTo(layers.cones);
+    }
+  });
+
+  OUTLOOK.areas.forEach(a => {
+    const spec = a.type === 'chance' ? chanceOf(a.level) : alertOf(a.level);
+    const color = spec.color;
+    L.circle([a.lat, a.lon], { radius: 180000, color, weight: 2,
+                               fillColor: color, fillOpacity: 0.3 })
+     .addTo(layers.areas);
+    L.marker([a.lat, a.lon], { icon: L.divIcon({ className: 'area-icon',
+        html: '<span class="area-label" style="background:' + color
+            + (a.type === 'alert' ? ';color:' + spec.text : '') + '">'
+            + esc(spec.label) + '</span>', iconSize: [0, 0] }) })
+     .on('click', () => removeItem('areas', a.id))
+     .addTo(layers.areas);
+  });
+
+  OUTLOOK.storms.forEach(s => {
+    const html = '<div style="transform:translate(-23px,-23px)">' + stormSVG(s.cat, 46)
+      + (s.name ? '<div class="area-label" style="background:' + catOf(s.cat).color
+        + ';margin-top:2px">' + esc(s.name) + '</div>' : '') + '</div>';
+    L.marker([s.lat, s.lon], { icon: L.divIcon({ className: 'storm-icon', html, iconSize: [0, 0] }) })
+     .on('click', () => removeItem('storms', s.id))
+     .addTo(layers.storms);
+  });
+
+  renderLists();
+}
+function removeItem(kind, id) {
+  OUTLOOK[kind] = OUTLOOK[kind].filter(x => x.id !== id);
+  drawAll();
+}
+
+// A cone is the track fattened with distance: narrow where the forecaster is
+// sure (now) and wide where nobody is (day five). Drawn by walking one side
+// of the track out and the other side back.
+function conePolygon(c) {
+  const pts = c.pts || [];
+  if (pts.length < 2) return [];
+  const left = [], right = [];
+  for (let i = 0; i < pts.length; i++) {
+    const f = pts.length === 1 ? 1 : i / (pts.length - 1);
+    const wKm = 30 + (Number(c.wide) || 350) * f;     // starts tight, opens out
+    const [lat, lon] = pts[i];
+    const nxt = pts[Math.min(i + 1, pts.length - 1)];
+    const prv = pts[Math.max(i - 1, 0)];
+    const dy = nxt[0] - prv[0];
+    const dx = (nxt[1] - prv[1]) * Math.cos(lat * Math.PI / 180);
+    const len = Math.hypot(dx, dy) || 1;
+    // Perpendicular to the direction of travel, in degrees.
+    const ndeg = wKm / 111;
+    const ox = -(dy / len) * ndeg / Math.max(0.2, Math.cos(lat * Math.PI / 180));
+    const oy = (dx / len) * ndeg;
+    left.push([lat + oy, lon + ox]);
+    right.unshift([lat - oy, lon - ox]);
+  }
+  return left.concat(right);
+}
+
+// ══ CONE MENU ═══════════════════════════════════════════════════════════
+function coneArm() {
+  clearArm();
+  CONE = { id: rid(), name: document.getElementById('cone-name').value.trim(),
+           cat: Number(document.getElementById('cone-cat').value),
+           wide: Number(document.getElementById('cone-wide').value) || 350,
+           pts: [] };
+  OUTLOOK.cones.push(CONE);
+  const n = document.getElementById('armnote');
+  n.textContent = 'Click along the track. Press Finish when the cone is done.';
+  n.style.display = 'block';
+  document.getElementById('map').style.cursor = 'crosshair';
+}
+function coneUndo() {
+  if (!CONE || !CONE.pts.length) return;
+  CONE.pts.pop();
+  drawAll();
+}
+function coneFinish() {
+  if (!CONE) return;
+  if (CONE.pts.length < 2) {
+    OUTLOOK.cones = OUTLOOK.cones.filter(c => c.id !== CONE.id);
+    toast('A cone needs at least two track points.');
+  }
+  CONE = null;
+  document.getElementById('armnote').style.display = 'none';
+  document.getElementById('map').style.cursor = '';
+  drawAll();
+}
+function coneCancel() {
+  if (!CONE) return;
+  if (CONE.pts.length < 2) OUTLOOK.cones = OUTLOOK.cones.filter(c => c.id !== CONE.id);
+  CONE = null;
+}
+
+function renderLists() {
+  const tl = document.getElementById('tool-list');
+  const items = OUTLOOK.storms.map(s =>
+      '<div class="item"><button class="del" onclick="removeItem(\'storms\',\'' + s.id + '\')">&times;</button>'
+      + '<div class="t">' + catOf(s.cat).label + (s.name ? ' - ' + esc(s.name) : '') + '</div>'
+      + '<div class="m">' + s.lat.toFixed(1) + ', ' + s.lon.toFixed(1) + '</div></div>')
+    .concat(OUTLOOK.areas.map(a => {
+      const spec = a.type === 'chance' ? chanceOf(a.level) : alertOf(a.level);
+      return '<div class="item"><button class="del" onclick="removeItem(\'areas\',\'' + a.id + '\')">&times;</button>'
+        + '<div class="t">' + esc(spec.label) + ' '
+        + (a.type === 'chance' ? 'chance' : 'alert area') + '</div>'
+        + '<div class="m">' + a.lat.toFixed(1) + ', ' + a.lon.toFixed(1) + '</div></div>';
+    }));
+  if (tl) tl.innerHTML = items.length ? items.join('')
+    : '<div class="empty">Nothing placed yet.</div>';
+
+  const cl = document.getElementById('cone-list');
+  if (cl) cl.innerHTML = OUTLOOK.cones.length ? OUTLOOK.cones.map(c =>
+      '<div class="item"><button class="del" onclick="removeItem(\'cones\',\'' + c.id + '\')">&times;</button>'
+      + '<div class="t">' + (esc(c.name) || 'Unnamed cone') + '</div>'
+      + '<div class="m">' + c.pts.length + ' track points · '
+      + catOf(c.cat).label + '</div></div>').join('')
+    : '<div class="empty">No cones drawn.</div>';
+
+  const dl = document.getElementById('desk-issued');
+  if (dl) dl.innerHTML = OUTLOOK.alerts.length ? OUTLOOK.alerts.map(a =>
+      '<div class="item" style="border-left-color:' + alertOf(a.level).color + '">'
+      + '<button class="del" onclick="removeItem(\'alerts\',\'' + a.id + '\')">&times;</button>'
+      + '<div class="t">' + esc(a.headline) + '</div>'
+      + '<div class="m">' + esc(alertOf(a.level).label) + ' · ' + esc(a.area) + '</div></div>').join('')
+    : '<div class="empty">No GWCFC alerts issued yet.</div>';
+}
+
+// ══ ALERT DESK ══════════════════════════════════════════════════════════
+function deskTab(which) {
+  const live = which === 'live';
+  document.getElementById('tab-live').classList.toggle('on', live);
+  document.getElementById('tab-issue').classList.toggle('on', !live);
+  document.getElementById('desk-live').style.display = live ? '' : 'none';
+  document.getElementById('desk-issue').style.display = live ? 'none' : '';
+}
+// The official picture, read-only: what the National Weather Service has out
+// right now, so an outlook is written knowing what is already in force.
+async function deskLoadLive() {
+  const box = document.getElementById('desk-live-list');
+  box.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try {
+    const r = await fetch('https://api.weather.gov/alerts/active?event=Tropical%20Storm%20Warning'
+      + ',Tropical%20Storm%20Watch,Hurricane%20Warning,Hurricane%20Watch'
+      + ',Storm%20Surge%20Warning,Storm%20Surge%20Watch,Tropical%20Depression',
+      { headers: { Accept: 'application/geo+json' } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const f = (j.features || []).slice(0, 40);
+    box.innerHTML = f.length ? f.map(x => {
+      const p = x.properties || {};
+      return '<div class="item"><div class="t">' + esc(p.event || 'Alert') + '</div>'
+        + '<div class="m">' + esc((p.areaDesc || '').slice(0, 120)) + '</div></div>';
+    }).join('') : '<div class="empty">No tropical alerts are in force right now.</div>';
+  } catch (e) {
+    box.innerHTML = '<div class="empty">Could not reach the alert service ('
+      + esc(e.message) + ').</div>';
+  }
+}
+function deskIssue() {
+  const head = document.getElementById('al-head').value.trim();
+  if (!head) { toast('Give the alert a headline.'); return; }
+  OUTLOOK.alerts.push({
+    id: rid(),
+    level: document.getElementById('al-level').value,
+    headline: head.slice(0, 120),
+    area: document.getElementById('al-area').value.trim().slice(0, 160),
+    text: document.getElementById('al-text').value.trim().slice(0, 2000),
+  });
+  document.getElementById('al-head').value = '';
+  document.getElementById('al-area').value = '';
+  document.getElementById('al-text').value = '';
+  renderLists();
+  toast('Alert added to this outlook.');
+}
+
+// ══ PANELS: open, close, and drag by the header ═════════════════════════
+function togglePanel(id) {
+  const p = document.getElementById(id);
+  if (!p) return;
+  const opening = !p.classList.contains('on');
+  p.classList.toggle('on', opening);
+  const map = { 'p-tools': 'btn-tools', 'p-cone': 'btn-cone', 'p-desk': 'btn-desk' };
+  const b = document.getElementById(map[id]);
+  if (b) b.classList.toggle('on', opening);
+  if (!opening && id === 'p-cone') coneFinish();
+}
+(function panelDrag() {
+  document.addEventListener('pointerdown', (e) => {
+    const head = e.target.closest && e.target.closest('.panel-head');
+    if (!head || e.target.closest('.x')) return;
+    const panel = head.parentElement;
+    const r = panel.getBoundingClientRect();
+    const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    panel.style.right = 'auto';
+    const move = (ev) => {
+      panel.style.left = Math.max(4, Math.min(window.innerWidth - 60, ev.clientX - dx)) + 'px';
+      panel.style.top = Math.max(4, Math.min(window.innerHeight - 40, ev.clientY - dy)) + 'px';
+    };
+    const up = () => {
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', up);
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', up);
+  });
+})();
+
+// ══ THE HEADER STAMP ════════════════════════════════════════════════════
+function stampHeader() {
+  const d = OUTLOOK.issued ? new Date(OUTLOOK.issued) : new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  document.getElementById('two-time').textContent =
+    d.getUTCMonth() + 1 + '/' + d.getUTCDate() + '/' + d.getUTCFullYear()
+    + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ' UTC';
+  document.getElementById('two-fcstr').textContent =
+    OUTLOOK.forecaster || 'not signed in';
+}
+
+// ══ ACCOUNTS ════════════════════════════════════════════════════════════
+// The same Firebase project the radar app uses, so a GWCFC Radar account is
+// the account here. Signing in is not enough to publish: the profile has to
+// carry the forecaster flag, which is set by an administrator rather than
+// claimed by whoever turns up.
+const GWCFC_FB_CONFIG = {
+  apiKey:            "AIzaSyAAPuBJFlhBFPhqPGlrNnn_c0NZFRgZTI8",
+  authDomain:        "gwcfc-radar.firebaseapp.com",
+  projectId:         "gwcfc-radar",
+  storageBucket:     "gwcfc-radar.firebasestorage.app",
+  messagingSenderId: "771831294871",
+  appId:             "1:771831294871:web:370f3a4d7617f460cdb2d2",
+};
+function isForecaster(profile) {
+  if (!profile) return false;
+  const role = String(profile.role || '').toLowerCase();
+  return profile.forecaster === true || role === 'forecaster'
+      || role === 'administrator' || role === 'admin';
+}
+function gateShow(msg, signedOut) {
+  document.getElementById('gate').classList.remove('off');
+  document.getElementById('gate-msg').textContent = msg;
+  document.getElementById('gate-form').style.display = signedOut ? 'none' : '';
+  document.getElementById('gate-signedout').style.display = signedOut ? '' : 'none';
+}
+function gateHide() { document.getElementById('gate').classList.add('off'); }
+function gateErr(m) { document.getElementById('gate-err').textContent = m || ''; }
+
+async function gateSignIn() {
+  gateErr('');
+  const email = document.getElementById('gate-email').value.trim();
+  const pass = document.getElementById('gate-pass').value;
+  if (!email || !pass) { gateErr('Email and password, please.'); return; }
+  try { await _fbAuth.signInWithEmailAndPassword(email, pass); }
+  catch (e) { gateErr(friendlyAuthError(e)); }
+}
+async function gateGoogle() {
+  gateErr('');
+  try {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    await _fbAuth.signInWithPopup(provider);
+  } catch (e) { gateErr(friendlyAuthError(e)); }
+}
+function friendlyAuthError(e) {
+  const c = (e && e.code) || '';
+  if (/user-not-found|invalid-credential|wrong-password/.test(c))
+    return 'That email and password do not match an account.';
+  if (/too-many-requests/.test(c)) return 'Too many tries. Wait a minute.';
+  if (/popup-closed/.test(c)) return 'The Google window was closed.';
+  return (e && e.message) || 'Sign in failed.';
+}
+async function portalSignOut() {
+  try { await _fbAuth.signOut(); } catch (e) {}
+  location.reload();
+}
+
+async function onUser(u) {
+  USER = u;
+  if (!u) {
+    PROFILE = null;
+    OUTLOOK.forecaster = '';
+    stampHeader();
+    setEditable(false);
+    gateShow('Sign in with your GWCFC Radar account to compose the '
+           + 'Tropical Weather Outlook.', false);
+    return;
+  }
+  try {
+    const snap = await _fbDb.collection('users').doc(u.uid).get();
+    PROFILE = snap.exists ? snap.data() : {};
+  } catch (e) { PROFILE = {}; }
+  const name = (PROFILE && PROFILE.displayName) || u.displayName
+             || (u.email || '').split('@')[0] || 'forecaster';
+  document.getElementById('whoami').innerHTML = 'Signed in as <b>'
+    + esc(name) + '</b>';
+  if (!isForecaster(PROFILE)) {
+    setEditable(false);
+    gateShow('This account is signed in but is not approved to issue outlooks. '
+           + 'An administrator has to add you as a forecaster.', true);
+    return;
+  }
+  OUTLOOK.forecaster = name;
+  stampHeader();
+  setEditable(true);
+  gateHide();
+}
+// A viewer who is not a forecaster still sees the published outlook; they
+// just cannot arm a tool or publish over it.
+function setEditable(on) {
+  ['btn-tools', 'btn-cone', 'btn-publish'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.disabled = !on;
+  });
+  if (!on) { clearArm(); coneCancel(); }
+}
+
+// ══ PUBLISH ═════════════════════════════════════════════════════════════
+// Published outlooks are written to Firestore, one document per issuance plus
+// a "latest" pointer, so the site (and anything else that reads the project)
+// can show the current outlook without knowing how it was made.
+async function publishOutlook() {
+  if (!USER || !isForecaster(PROFILE)) { toast('Only approved forecasters can publish.'); return; }
+  if (!OUTLOOK.storms.length && !OUTLOOK.areas.length
+      && !OUTLOOK.cones.length && !OUTLOOK.alerts.length) {
+    toast('Nothing on the outlook to publish yet.');
+    return;
+  }
+  coneFinish();
+  const now = new Date();
+  const doc = {
+    issued: now.toISOString(),
+    forecaster: OUTLOOK.forecaster,
+    uid: USER.uid,
+    view: map ? { lat: map.getCenter().lat, lon: map.getCenter().lng, zoom: map.getZoom() } : null,
+    storms: OUTLOOK.storms, areas: OUTLOOK.areas,
+    cones: OUTLOOK.cones, alerts: OUTLOOK.alerts,
+  };
+  const btn = document.getElementById('btn-publish');
+  btn.disabled = true;
+  try {
+    await _fbDb.collection('outlooks').doc('latest').set(doc);
+    await _fbDb.collection('outlooks').add(doc);   // the archive of issuances
+    OUTLOOK.issued = doc.issued;
+    stampHeader();
+    toast('Outlook published at ' + document.getElementById('two-time').textContent);
+  } catch (e) {
+    toast('Could not publish: ' + (e && e.message ? e.message : e), 6000);
+  }
+  btn.disabled = false;
+}
+
+// Whatever is current is what the portal opens on, so an update starts from
+// the last outlook rather than from an empty map.
+async function loadLatest() {
+  try {
+    const snap = await _fbDb.collection('outlooks').doc('latest').get();
+    if (!snap.exists) return;
+    const d = snap.data() || {};
+    OUTLOOK.storms = d.storms || [];
+    OUTLOOK.areas = d.areas || [];
+    OUTLOOK.cones = d.cones || [];
+    OUTLOOK.alerts = d.alerts || [];
+    OUTLOOK.issued = d.issued || null;
+    if (d.view && map) map.setView([d.view.lat, d.view.lon], d.view.zoom);
+    stampHeader();
+    drawAll();
+  } catch (e) {}
+}
+
+// ══ BOOT ════════════════════════════════════════════════════════════════
+function loadFirebase() {
+  return new Promise((resolve) => {
+    const libs = ['firebase-app-compat.js', 'firebase-auth-compat.js',
+                  'firebase-firestore-compat.js'];
+    let i = 0;
+    const next = () => {
+      if (i >= libs.length) return resolve(true);
+      const s = document.createElement('script');
+      s.src = 'https://www.gstatic.com/firebasejs/9.22.2/' + libs[i++];
+      s.onload = next;
+      s.onerror = () => resolve(false);
+      document.head.appendChild(s);
+    };
+    next();
+  });
+}
+async function boot() {
+  buildLegends();
+  buildTools();
+  stampHeader();
+  initMap();
+  drawAll();
+  const ok = await loadFirebase();
+  if (!ok || typeof firebase === 'undefined') {
+    gateShow('Accounts could not load. Check the connection and reload.', true);
+    return;
+  }
+  try {
+    firebase.initializeApp(GWCFC_FB_CONFIG);
+    _fbAuth = firebase.auth();
+    _fbDb = firebase.firestore();
+    _fbAuth.onAuthStateChanged(onUser);
+    loadLatest();
+  } catch (e) {
+    gateShow('Accounts failed to start: ' + (e && e.message ? e.message : e), true);
+  }
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else { boot(); }
+</script>
+</body>
+</html>
