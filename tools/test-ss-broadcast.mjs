@@ -182,8 +182,8 @@ console.log('\n4. the gold edge and the pointed shapes are really there');
 {
   const r = await page.evaluate(() => {
     const cs = id => getComputedStyle(document.getElementById(id));
-    const gold = (c) => /rgb\(2[0-9]{2},\s*20[0-9],\s*1[0-9]/.test(c)
-                     || /245,\s*207,\s*18/.test(c);
+    // Gold, since the yellow-to-gold pass: #e8b800 is rgb(232, 184, 0).
+    const gold = (c) => /232,\s*184,\s*0/.test(c);
     return {
       nowEdge: cs('ss-now-tab').borderTopColor,
       alertsEdge: cs('ss-alerts-head').borderTopColor,

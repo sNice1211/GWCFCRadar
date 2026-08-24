@@ -94,11 +94,13 @@ console.log('\n1. settings categories are merged, not duplicated');
      r.subs.length === 2, r.subs.join(', '));
   ok('Radar covers the radar settings and the radar colours',
      r.radar.length === 2, r.radar.join(' + '));
-  ok('Units covers units and location', r.units === 2, String(r.units));
+  // Location moved to the GPS tab, so Units is one card of units now.
+  ok('Units is just units; location lives in GPS now', r.units === 1, String(r.units));
   ok('exactly one tab is lit at a time', r.lit === 1, String(r.lit));
   ok('the merged tabs are named for the subject, not the first card',
      r.tabs.some(t => t.label === 'Particles')
-     && r.tabs.some(t => t.label === 'Units & Location'),
+     && r.tabs.some(t => t.label === 'Units')
+     && r.tabs.some(t => t.label === 'GPS'),
      r.tabs.map(t => t.label).join(' | '));
 }
 
@@ -213,8 +215,15 @@ console.log('\n6. JTWC falls over to another relay instead of giving up');
   const r = await page.evaluate(async (FEED) => {
     const realFetch = window.fetch;
     const attempts = [];
+    // The server's own copy is tried before any relay now; these sections
+    // are about the relay chain, so the server is made absent for them.
+    const realResolve = _hdResolveBase;
+    const realBase = _hdBase;
+    _hdResolveBase = async () => null;
+    _hdBase = null;
     const run = async (behave, keepMemory) => {
       attempts.length = 0;
+      _jtwcPiCache = null;
       if (!keepMemory) _jtwcGoodProxy = null;
       window.fetch = async (u) => {
         attempts.push(String(u));
@@ -238,6 +247,8 @@ console.log('\n6. JTWC falls over to another relay instead of giving up');
     const d = await run(u => okResp(FEED), true);
 
     window.fetch = realFetch;
+    _hdResolveBase = realResolve;
+    _hdBase = realBase;
     return {
       aFound: a.out.length, aTried: a.attempts.length, aErr: a.out.error || null,
       bFound: b.out.length, bTried: b.attempts.length,
