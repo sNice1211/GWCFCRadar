@@ -28,6 +28,13 @@ ok('all six sketch regions exist',
 ok('audio comes from rolling and highlights paths like the archiver writes',
    html.includes("'/rolling/'") && html.includes("'/highlights/'")
    && html.includes("/meta/"));
+ok('no emoji anywhere: every icon is a real inline SVG',
+   !/&#x1F|&#x26A0|&#x25B6|&#x2753/.test(html)
+   && ![...html].some(c => {
+     const p = c.codePointAt(0);
+     return (p >= 0x1F000 && p <= 0x1FAFF) || (p >= 0x2600 && p <= 0x27BF);
+   })
+   && (html.match(/class="ic"/g) || []).length >= 8);
 ok('the header thanks the three stream providers, not our socials',
    !/discord\.gg|youtube\.com|x\.com\/GWCFCenter/.test(html)
    && /Thanks/.test(html) && /weatherusa\.net/.test(html)

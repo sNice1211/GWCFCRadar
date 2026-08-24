@@ -34,6 +34,9 @@
       font-family: var(--font);
       min-height: 100vh;
     }
+    /* Icons are inline SVGs sized to the text around them, so they inherit
+       color and never depend on the device's emoji font. */
+    .ic { width: 1em; height: 1em; vertical-align: -0.12em; display: inline-block; }
     a { color: var(--blue2); }
 
     /* ── NAV (same family as the GWCFC.net home page) ── */
@@ -266,12 +269,12 @@
 
 <nav>
   <a class="brand" href="#/">
-    <span class="badge">&#x1F4FB;</span>
+    <span class="badge"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 6.8 16.2 2l.7 1.9L9.5 6.5H20a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8.5a2 2 0 0 1 1.4-1.7zM4 8.5V19h16V8.5H4zM6 11h5v2H6v-2zm0 4h5v2H6v-2zm10.5 3a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7zm0-2a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg></span>
     <span><b>NWR</b><span class="gold">chive</span></span>
   </a>
   <ul class="nav-links">
-    <li><a href="index.html">&#x1F3E0; Home</a></li>
-    <li><a id="nav-about" onclick="location.hash='#/about'">&#x2753; About</a></li>
+    <li><a href="index.html"><svg class="ic" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg> Home</a></li>
+    <li><a id="nav-about" onclick="location.hash='#/about'"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.4 2.4 0 1 1 3.5 2.1c-.7.4-1.1 1-1.1 1.7v.6"/><circle cx="12" cy="16.8" r="0.4" fill="currentColor" stroke="none"/></svg> About</a></li>
   </ul>
   <div class="nav-spacer"></div>
   <div class="nav-search">
@@ -367,9 +370,32 @@ const STATE_NAMES = { AL:'Alabama', AK:'Alaska', AZ:'Arizona', AR:'Arkansas',
   VA:'Virginia', WA:'Washington', WV:'West Virginia', WI:'Wisconsin',
   WY:'Wyoming', PR:'Puerto Rico', VI:'US Virgin Islands', GU:'Guam',
   AS:'American Samoa', MP:'Northern Mariana Islands' };
-const REGION_ICONS = { Northeast:'\u{1F9ED}', Mideast:'\u{26F0}',
-  Southeast:'\u{1F334}', Midwest:'\u{1F33D}', Southwest:'\u{1F335}',
-  Northwest:'\u{1F332}' };
+// The little pictures, drawn rather than typed: inline SVG inherits the text
+// color and looks identical on every device, where emoji render differently
+// everywhere and not at all on some TVs.
+const IC = {
+  tower: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+    + ' stroke-width="2" stroke-linecap="round"><circle cx="12" cy="10" r="1.6"'
+    + ' fill="currentColor" stroke="none"/><path d="M7.2 5.6a6.5 6.5 0 0 1 9.6 0'
+    + 'M9.1 7.8a3.6 3.6 0 0 1 5.8 0M12 12v9M8 21l4-7 4 7"/></svg>',
+  clock: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+    + ' stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/>'
+    + '<path d="M12 7v5l3.2 2"/></svg>',
+  warn: '<svg class="ic" viewBox="0 0 24 24" fill="currentColor">'
+    + '<path d="M12 2 23 21H1L12 2zm-1 12h2V9h-2v5zm0 4h2v-2h-2v2z"/></svg>',
+  play: '<svg class="ic" viewBox="0 0 24 24" fill="currentColor">'
+    + '<path d="M8 5v14l11-7z"/></svg>',
+};
+// A region's icon is a compass needle aimed at it: Northeast points
+// northeast, Midwest points west, and the six read as one family.
+function icArrow(deg) {
+  return '<svg class="ic" viewBox="0 0 24 24" fill="currentColor"'
+    + ' style="transform:rotate(' + deg + 'deg)">'
+    + '<path d="M12 2.5 18.5 21 12 17l-6.5 4z"/></svg>';
+}
+const REGION_ICONS = { Northeast: icArrow(45), Mideast: icArrow(90),
+  Southeast: icArrow(135), Midwest: icArrow(270), Southwest: icArrow(225),
+  Northwest: icArrow(315) };
 
 // ── STATE ──────────────────────────────────────────────────────────────────
 let INDEX = null;       // the fetched (or demo) index
@@ -520,7 +546,7 @@ function viewState(st) {
       + list.map(s => {
           const nd = Object.keys(s.dates || {}).length;
           return '<div class="card" onclick="location.hash=\'#/station/' + esc(s.id) + '\'">'
-            + '<div class="t">&#x1F4E1; ' + esc(s.id) + '</div>'
+            + '<div class="t">' + IC.tower + ' ' + esc(s.id) + '</div>'
             + '<div class="m">' + esc(s.name) + '</div>'
             + '<div class="m"><span class="cnt">' + nd + '</span> day' + (nd === 1 ? '' : 's')
             + ' on file' + (s.freq ? ' · ' + esc(s.freq) + ' MHz' : '') + '</div></div>';
@@ -544,7 +570,7 @@ function viewStation(id) {
   el.innerHTML = demoBanner()
     + crumbs([['Stations', '#/'], [region, '#/region/' + region],
               [STATE_NAMES[s.state] || s.state || '??', '#/state/' + s.state], [s.id]])
-    + '<h1>&#x1F4E1; ' + esc(s.id) + '</h1>'
+    + '<h1>' + IC.tower + ' ' + esc(s.id) + '</h1>'
     + '<div class="sub">' + esc(s.name) + (s.freq ? ' · ' + esc(s.freq) + ' MHz' : '') + '</div>'
     + (dates.length ? Object.keys(tree).sort().reverse().map(y =>
         '<h2>' + y + '</h2>' + Object.keys(tree[y]).sort().reverse().map(m => {
@@ -556,7 +582,7 @@ function viewStation(id) {
                 return '<div class="card" onclick="location.hash=\'#/station/' + esc(s.id) + '/' + d + '\'">'
                   + '<div class="t">' + esc(fmtDate(d)) + '</div>'
                   + '<div class="m"><span class="cnt">' + (v.chunks || 0) + '</span> recordings'
-                  + ((v.highlights || 0) ? ' · <span class="cnt">&#x26A0; ' + v.highlights
+                  + ((v.highlights || 0) ? ' · <span class="cnt">' + IC.warn + ' ' + v.highlights
                     + ' alert' + (v.highlights === 1 ? '' : 's') + '</span>' : '') + '</div></div>';
               }).join('') + '</div>';
         }).join('')).join('')
@@ -590,14 +616,14 @@ async function viewDay(id, date) {
     +   '<div class="warn" id="au-warn">This device could not play the file. '
     +   'Opus audio needs Chrome, Firefox, Edge, or a recent Safari.</div>'
     + '</div>'
-    + '<h2>&#x1F550; The day, two minutes at a time (UTC)</h2>'
+    + '<h2>' + IC.clock + ' The day, two minutes at a time (UTC)</h2>'
     + '<div class="hourgrid">'
     + (day.chunks || []).map((t, i) =>
         '<button class="chunkbtn' + (hlTimes.has(t) ? ' hl' : '') + '" id="ck-' + t + '"'
         + ' onclick="playChunk(' + i + ')" title="' + (hlTimes.has(t) ? 'Alert aired in this chunk. ' : '') + 'Play from here">'
         + t.slice(0, 2) + ':' + t.slice(2, 4) + '</button>').join('')
     + '</div>'
-    + '<h2>&#x26A0; Alert highlights</h2>'
+    + '<h2>' + IC.warn + ' Alert highlights</h2>'
     + '<div class="pillrow">'
     +   ['all', 'tone', 'keyword'].map(f =>
         '<button class="pill' + (hlFilter === f ? ' on' : '') + '" onclick="setHlFilter(\'' + f + '\')">'
@@ -608,7 +634,7 @@ async function viewDay(id, date) {
         + '<div class="top"><span class="when">' + esc(fmtT(h.t)) + '</span>'
         + '<span class="why' + (h.reason === 'same_tone' ? ' tone' : '') + '">'
         + (h.reason === 'same_tone' ? 'SAME tone' : 'keyword: ' + esc((h.keywords || []).join(', '))) + '</span>'
-        + '<button class="playhl" onclick="playHighlight(\'' + esc(h.t) + '\')">&#x25B6; Play</button></div>'
+        + '<button class="playhl" onclick="playHighlight(\'' + esc(h.t) + '\')">' + IC.play + ' Play</button></div>'
         + (h.transcript ? '<div class="tr">' + esc(h.transcript) + '</div>' : '')
         + '</div>').join('')
       : '<div class="empty">' + ((day.highlights || []).length
