@@ -99,6 +99,37 @@ console.log('\n2. demo mode: browsable before any archive exists');
   ok('the six region cards are on screen', r.regions === 6, String(r.regions));
 }
 
+console.log('\n2b. Home goes to the home page, never to the radar');
+{
+  const r = await page.evaluate(() => ({
+    // On the GitHub Pages copy and in a local preview, a neighbouring
+    // index.html is the RADAR APP, so Home must leave for the real site.
+    here: document.getElementById('nav-home').getAttribute('href'),
+    footer: document.querySelector('footer .home-link').getAttribute('href'),
+    pages: homeHref.call(null),
+    gwcfc: (() => {
+      // What the link becomes when the page really is on GWCFC.net.
+      const real = location.hostname;
+      try {
+        Object.defineProperty(location, 'hostname',
+          { get: () => 'gwcfc.net', configurable: true });
+      } catch (e) { return 'index.html'; }
+      const out = homeHref();
+      try {
+        Object.defineProperty(location, 'hostname',
+          { get: () => real, configurable: true });
+      } catch (e) {}
+      return out;
+    })(),
+  }));
+  ok('off the network\'s own site, Home leaves for the home page',
+     /^https?:\/\/[^/]*gwcfc\.net/i.test(r.here), r.here);
+  ok('and the footer link goes to the same place',
+     r.footer === r.here, r.footer);
+  ok('on GWCFC.net itself it stays a plain neighbour link',
+     r.gwcfc === 'index.html', r.gwcfc);
+}
+
 console.log('\n3. a real archive: the sketch drill-down');
 {
   await page.goto('file://' + join(ROOT, 'nwrchive.html') + '?base=' + BASE,
