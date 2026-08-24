@@ -55,7 +55,9 @@ import numpy as np
 # Configuration
 # ----------------------------------------------------------------------------
 
-ARCHIVE_ROOT = "/mnt/nwr_archive"          # change to your storage mount
+# Overridable so the installer can point this at the home directory without
+# editing the file; the default keeps working for a dedicated mount.
+ARCHIVE_ROOT = os.environ.get("NWR_ARCHIVE_ROOT", "/mnt/nwr_archive")
 ROLLING_DIR = os.path.join(ARCHIVE_ROOT, "rolling")
 HIGHLIGHTS_DIR = os.path.join(ARCHIVE_ROOT, "highlights")
 ROLLING_RETENTION_DAYS = 90

@@ -14,6 +14,8 @@
 #   gwcfc-tunnel    gives them a public HTTPS address
 #   gwcfc-publish   tells the site that address, so nobody has to paste it
 #   gwcfc-update    pulls new code, so the Pi does not run last week's
+#   gwcfc-nwr       records NOAA Weather Radio for the NWRchive site
+#   gwcfc-nwr-index writes the NWRchive site's JSON tables of contents
 #
 # Safe to run again. Everything it does is idempotent, so if a step failed the
 # first time, fix the cause and run it again rather than unpicking anything.
@@ -65,7 +67,7 @@ fi
 # ── 1. system packages ──────────────────────────────────────────────────────
 say "System packages"
 NEED=()
-for p in python3-venv python3-numpy python3-pillow python3-requests libeccodes-tools; do
+for p in python3-venv python3-numpy python3-pillow python3-requests libeccodes-tools ffmpeg; do
   dpkg -s "$p" >/dev/null 2>&1 || NEED+=("$p")
 done
 if [ ${#NEED[@]} -gt 0 ]; then
@@ -503,6 +505,73 @@ EOF
 # Keeping itself current. Without this the Pi runs whatever was cloned until
 # somebody remembers to pull, which is how it ends up an hour of debugging away
 # from a bug that was fixed days ago.
+# ── NWRchive: the weather radio recorder ────────────────────────────────────
+# Records NOAA Weather Radio streams around the clock, files alert moments
+# permanently, and writes the JSON indexes the nwrchive.html site reads.
+# Storage lives in the home directory and is published through serve.py by a
+# symlink, so no new ports, tunnels, or root are needed.
+say "NWRchive recorder"
+NWR_ROOT="$HOME/nwr_archive"
+NWR_CONF="$HOME/stations.json"
+mkdir -p "$NWR_ROOT"
+ln -sfn "$NWR_ROOT" "$DATA/nwr"
+
+# Transcription is optional: it makes highlights searchable, but the recorder
+# catches every SAME-toned alert without it. If the wheel will not install on
+# this board, run tone-only rather than not at all.
+NWR_FLAG=""
+if ! "$VENV/bin/python" -c "import faster_whisper" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet faster-whisper >/dev/null 2>&1 || true
+fi
+if ! "$VENV/bin/python" -c "import faster_whisper" >/dev/null 2>&1; then
+  NWR_FLAG="--no-transcribe"
+  warn "faster-whisper not available; recording tone-only (still catches every alert)"
+fi
+
+# First run only: ask the relays what is on air and keep the two home
+# stations. Add callsigns by editing ~/stations.json (or delete it and set
+# NWR_STATIONS before re-running this script).
+if [ ! -s "$NWR_CONF" ]; then
+  if "$VENV/bin/python" "$REPO/pi/nwr_archiver.py" --discover \
+       --config "$NWR_CONF" --only "${NWR_STATIONS:-KIH21,KEC50}"; then
+    ok "wrote $NWR_CONF"
+  else
+    warn "station discovery failed (offline?); the recorder will wait for the next install run"
+  fi
+fi
+
+cat > "$UNITS/gwcfc-nwr.service" <<EOF
+[Unit]
+Description=NWR audio archiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=NWR_ARCHIVE_ROOT=$NWR_ROOT
+ExecStart=$VENV/bin/python $REPO/pi/nwr_archiver.py --config $NWR_CONF $NWR_FLAG
+Restart=always
+RestartSec=10
+Nice=10
+
+[Install]
+WantedBy=default.target
+EOF
+
+cat > "$UNITS/gwcfc-nwr-index.service" <<EOF
+[Unit]
+Description=NWR archive index writer
+After=network-online.target
+
+[Service]
+ExecStart=$VENV/bin/python $REPO/pi/nwr_index.py --root $NWR_ROOT --stations $NWR_CONF --loop 300
+Restart=always
+RestartSec=15
+Nice=15
+
+[Install]
+WantedBy=default.target
+EOF
+
 cat > "$UNITS/gwcfc-update.service" <<EOF
 [Unit]
 Description=Pull the newest GWCFCRadar code
@@ -566,6 +635,14 @@ systemctl --user enable --now gwcfc-feeds.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
 systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1
 systemctl --user restart gwcfc-publish.service     >/dev/null 2>&1
+# The recorder only makes sense once a station list exists; without one it
+# would crash-loop on a config error every ten seconds until discovery works.
+if [ -s "$NWR_CONF" ]; then
+  systemctl --user enable  gwcfc-nwr.service       >/dev/null 2>&1
+  systemctl --user restart gwcfc-nwr.service       >/dev/null 2>&1
+  systemctl --user enable  gwcfc-nwr-index.service >/dev/null 2>&1
+  systemctl --user restart gwcfc-nwr-index.service >/dev/null 2>&1
+fi
 # The obs (METAR) service was removed from the app; clean it off any Pi that
 # still has it, so a dead timer does not keep firing a script that is gone.
 systemctl --user disable --now gwcfc-obs.timer gwcfc-obs.service >/dev/null 2>&1 || true
