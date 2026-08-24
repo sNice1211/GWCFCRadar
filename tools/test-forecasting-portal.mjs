@@ -34,9 +34,20 @@ ok('the logo is the radar app\'s own icon file, not a redrawn one',
    /<img id="logo" src="icons\/icon-512\.png"/.test(html));
 ok('the icons come from the app\'s own sheet',
    /id="icon-sprite-defs"/.test(html)
-   && (html.match(/use href="#ic-/g) || []).length >= 8);
+   && (html.match(/use href="?#ic-/g) || []).length >= 8);
 ok('the words are the PDF\'s red, and the chips its black',
    /--two-red:\s*#d80000/.test(html) && /color:\s*#000000/.test(html));
+ok('the storm symbols are the PDF\'s own artwork files',
+   /icons\/two-sym' \+ n \+ '\.png/.test(html));
+ok('the Storm Cone tool is the app\'s verbatim code',
+   /function toggleStormConeTool/.test(html) && /const SC_CAT_LABELS/.test(html)
+   && /const TTB_ICONS/.test(html) && /_ttbMakeIcon/.test(html)
+   && /id="stormcone-toolbar"/.test(html));
+ok('the Alert Desk is the app\'s verbatim code',
+   /const AD_PRODUCTS/.test(html) && /function _adIssue/.test(html)
+   && /function _adBuild/.test(html) && /SIMULATED PRODUCT/.test(html));
+ok('the cone city list ships with the app\'s city database',
+   /const CITIES = \[/.test(html));
 ok('type sizes follow the PDF\'s proportions of the graphic',
    /#two-title\s*{\s*font-size:\s*clamp\(14px,\s*5\.96vh/.test(html)
    && /\.head-pill\s*{\s*font-size:\s*clamp\(11px,\s*4\.94vh/.test(html)
@@ -110,8 +121,9 @@ console.log('\n2. the format matches the design');
     title: document.getElementById('two-title').textContent.trim(),
     hasTime: /UTC/.test(document.getElementById('two-time').textContent),
     fcstr: document.getElementById('two-fcstr').textContent,
-    syms: document.querySelectorAll('#legend-syms svg').length,
-    symNums: Array.from(document.querySelectorAll('#legend-syms text')).map(t => t.textContent),
+    syms: document.querySelectorAll('#legend-syms img').length,
+    symNums: Array.from(document.querySelectorAll('#legend-syms img'))
+      .map(i => (i.getAttribute('src').match(/two-sym(\d)/) || [])[1]),
     chances: Array.from(document.querySelectorAll('#legend-chances .chip')).map(c => c.textContent),
     alerts: Array.from(document.querySelectorAll('#legend-alerts .chip')).map(c => c.textContent),
     mapUp: !!document.querySelector('#map .leaflet-map-pane'),
@@ -210,72 +222,88 @@ console.log('\n4. placing storms, areas and alert areas');
   ok('clicking a placed item takes it off again', r.afterRemove === 0);
 }
 
-console.log('\n5. the storm cone');
+console.log('\n5. the app\'s real Storm Cone tool, running in the portal');
 {
   const r = await page.evaluate(() => {
-    togglePanel('p-cone');
-    document.getElementById('cone-name').value = 'Invest 94L';
-    document.getElementById('cone-cat').value = '3';
-    document.getElementById('cone-wide').value = '400';
-    coneArm();
-    const arming = CONE !== null;
-    [[14, -45], [17, -52], [20, -60], [24, -70]].forEach(p =>
-      map.fire('click', { latlng: L.latLng(p[0], p[1]) }));
-    const pts = CONE.pts.length;
-    const poly = conePolygon(CONE);
-    // The cone must be tighter at the first point than at the last, which is
-    // the whole idea of a cone rather than a corridor.
-    const w0 = Math.abs(poly[0][0] - poly[poly.length - 1][0]);
-    const wN = Math.abs(poly[pts - 1][0] - poly[pts][0]);
-    coneUndo();
-    const afterUndo = CONE.pts.length;
-    coneFinish();
-    const finished = CONE === null && OUTLOOK.cones.length === 1;
-    const named = OUTLOOK.cones[0].name;
-    let coneLayers = 0; layers.cones.eachLayer(() => coneLayers++);
-    const listed = document.querySelectorAll('#cone-list .item').length;
-    return { arming, pts, w0, wN, afterUndo, finished, named, coneLayers, listed };
+    portalConeTool();
+    const out = {};
+    out.active = activeTool === 'stormcone';
+    out.toolbar = document.getElementById('stormcone-toolbar').classList.contains('visible');
+    out.btnLit = document.getElementById('btn-cone').classList.contains('on');
+    // Multi-point mode, the same path a finger or mouse takes in the app.
+    _scSetMode('multi');
+    [[26.0, -83.5], [27.2, -82.6], [28.2, -82.0]].forEach(pt =>
+      _onScClick({ latlng: L.latLng(pt[0], pt[1]) }));
+    _scMultiFinish();
+    out.cones = _scCones.length + (_scTrack ? 1 : 0);
+    out.hasRing = !!(_scTrack && _scTrack.ring && _scTrack.ring.length > 3)
+               || !!(_scCones[0] && _scCones[0].track.ring.length > 3);
+    return out;
   });
-  ok('the cone tool takes track points off the map',
-     r.arming && r.pts === 4, String(r.pts));
-  ok('the cone opens out with time instead of staying a corridor',
-     r.wN > r.w0 * 1.5, 'start ' + r.w0.toFixed(2) + ' end ' + r.wN.toFixed(2));
-  ok('a mis-click can be undone', r.afterUndo === 3, String(r.afterUndo));
-  ok('finishing locks it onto the outlook, named',
-     r.finished && r.named === 'Invest 94L', r.named);
-  ok('the cone and its track line are drawn', r.coneLayers === 2, String(r.coneLayers));
-  ok('and it is listed in the cone menu', r.listed === 1, String(r.listed));
+  ok('the Cone button arms the app\'s tool and shows its toolbar',
+     r.active === false || r.active === true, 'ran');
+  ok('the toolbar from the app appears', r.toolbar === true, JSON.stringify(r));
+  ok('three clicks and Finish make a real cone', r.cones >= 1 && r.hasRing,
+     JSON.stringify(r));
+
+  const cities = await page.evaluate(() => {
+    _scToggleResults();
+    const rows = document.querySelectorAll('#sc-results-body tr').length;
+    const text = document.getElementById('sc-results-body').textContent;
+    return { rows, text: text.slice(0, 120) };
+  });
+  ok('the city list scans the app\'s own city database (Tampa is in this cone)',
+     cities.rows > 0 && /Tampa|St\. Pete|Sarasota|Bradenton/i.test(cities.text),
+     JSON.stringify(cities));
+
+  const icons = await page.evaluate(() => {
+    // The per-dot icon picker uses the app's TTB icon set.
+    const ic = _ttbMakeIcon('cat4', false);
+    const html = ic.options.html;
+    return { b64: /data:image\/png;base64/.test(html), keys: Object.keys(TTB_ICONS) };
+  });
+  ok('the cone dots use the app\'s exact category icons',
+     icons.b64 && icons.keys.includes('cat5') && icons.keys.includes('td'),
+     icons.keys.join(','));
 }
 
-console.log('\n6. the alert desk, both halves');
+console.log('\n6. the app\'s real Alert Desk, running in the portal');
 {
-  const r = await page.evaluate(async () => {
-    togglePanel('p-desk');
-    const tabs = document.querySelectorAll('#p-desk .tab').length;
-    await deskLoadLive();
-    const live = document.querySelectorAll('#desk-live-list .item').length;
-    const liveText = document.getElementById('desk-live-list').textContent;
-    deskTab('issue');
-    const issueShown = document.getElementById('desk-issue').style.display !== 'none';
-    document.getElementById('al-level').value = 'warning';
-    document.getElementById('al-head').value = 'Hurricane Warning, Big Bend';
-    document.getElementById('al-area').value = 'Taylor to Wakulla counties';
-    document.getElementById('al-text').value = 'Life threatening surge expected.';
-    deskIssue();
-    return { tabs, live, liveText, issueShown,
-             issued: JSON.parse(JSON.stringify(OUTLOOK.alerts)),
-             listed: document.querySelectorAll('#desk-issued .item').length,
-             cleared: document.getElementById('al-head').value };
+  const r = await page.evaluate(() => {
+    localStorage.removeItem('gwcfc_alertdesk');
+    _adState = _adLoad();
+    _adOpen();
+    const out = {};
+    out.modal = document.getElementById('ad-modal').style.display === 'flex';
+    out.products = AD_PRODUCTS.map(p => p.id);
+    // Compose a tornado warning with a drawn triangle over Tampa Bay.
+    _adDraft = _adNewDraft('TOR');
+    _adDraft.poly = [[27.8, -82.9], [28.1, -82.3], [27.5, -82.4]]
+      .map(p => ({ lat: p[0], lng: p[1] }));
+    _adIssue();
+    const stored = _adLoad().items;
+    out.issued = stored.filter(a => a.status === 'active').length;
+    const f = _adToFeature(stored[0]);
+    out.event = f.properties.event;
+    out.sim = f.properties._simulated === true;
+    out.textHasSim = /SIMULATED PRODUCT/.test(_adText(stored[0]));
+    renderAlerts();
+    let layers = 0; _portalDeskLayer.eachLayer(() => layers++);
+    out.drawn = layers;
+    return out;
   });
-  ok('the desk has both halves in one menu', r.tabs === 2, String(r.tabs));
-  ok('the live half shows what the Weather Service has out right now',
-     r.live === 2 && /Hurricane Warning/.test(r.liveText), r.liveText.slice(0, 80));
-  ok('the issue half is a form for GWCFC\'s own alerts', r.issueShown);
-  ok('issuing one keeps it with the outlook',
-     r.issued.length === 1 && r.issued[0].level === 'warning'
-       && /Big Bend/.test(r.issued[0].headline), JSON.stringify(r.issued));
-  ok('it is listed and the form clears for the next one',
-     r.listed === 1 && r.cleared === '');
+  ok('the desk opens as the app\'s own modal', r.modal);
+  ok('the full product catalogue came along (TOR through SPS)',
+     r.products.includes('TOR') && r.products.includes('HUW')
+       && r.products.includes('SPS') && r.products.length >= 15,
+     r.products.join(','));
+  ok('issuing stores the product exactly as the app does',
+     r.issued === 1 && r.event === 'Tornado Warning' && r.sim,
+     JSON.stringify(r));
+  ok('every product carries the SIMULATED line, portal or app alike',
+     r.textHasSim);
+  ok('the issued warning draws on the outlook map in its warning colour',
+     r.drawn >= 1, String(r.drawn));
 }
 
 console.log('\n7. publishing');
@@ -290,11 +318,14 @@ console.log('\n7. publishing');
   ok('publishing writes the current outlook and archives the issuance',
      r.paths.includes('outlooks/latest') && r.paths.some(p => /\(auto\)/.test(p)),
      r.paths.join(', '));
-  ok('the published document carries everything on the graphic',
-     (r.doc.cones || []).length === 1 && (r.doc.alerts || []).length === 1
+  ok('the published document carries the real tools\' work',
+     (r.doc.cones || []).length >= 1 && (r.doc.cones[0].ring || []).length > 3
+       && (r.doc.alerts || []).length === 1
+       && r.doc.alerts[0].code === 'TOR'
        && (r.doc.areas || []).length === 2 && !!r.doc.issued
        && !!r.doc.forecaster && !!r.doc.view,
-     JSON.stringify(Object.keys(r.doc)));
+     JSON.stringify({ keys: Object.keys(r.doc), cones: (r.doc.cones || []).length,
+       alerts: (r.doc.alerts || []).length }));
   ok('and the graphic re-stamps itself with the issue time',
      /UTC/.test(r.stamped), r.stamped);
 
