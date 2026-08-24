@@ -104,6 +104,34 @@ await page.route('**://**', route => {
       body: readFileSync(join(LEAFLET, 'leaflet.css'), 'utf8') });
   if (url.includes('firebasejs'))
     return route.fulfill({ contentType: 'application/javascript', body: '' });
+  // The Weather Service's point lookup and zone records, as the desk and the
+  // portal's county picker really call them.
+  if (url.includes('api.weather.gov/points/')) {
+    const m = url.match(/points\/([\d.-]+),([\d.-]+)/) || [];
+    const county = Number(m[1]) > 27.8 ? 'FLC105' : 'FLC055';
+    return route.fulfill({ contentType: 'application/geo+json', body: JSON.stringify({
+      properties: { county: 'https://api.weather.gov/zones/county/' + county } }) });
+  }
+  if (url.includes('api.weather.gov/zones/county/')) {
+    const id = url.split('/').pop();
+    const name = id === 'FLC105' ? 'Polk' : 'Highlands';
+    const c = id === 'FLC105' ? [-81.9, 28.0] : [-81.5, 27.5];
+    return route.fulfill({ contentType: 'application/geo+json', body: JSON.stringify({
+      properties: { name: name, state: 'FL' },
+      geometry: { type: 'Polygon', coordinates: [[
+        [c[0] - 0.4, c[1] - 0.4], [c[0] + 0.4, c[1] - 0.4],
+        [c[0] + 0.4, c[1] + 0.4], [c[0] - 0.4, c[1] + 0.4],
+        [c[0] - 0.4, c[1] - 0.4]]] } }) });
+  }
+  // Natural Earth's admin-1 polygons, trimmed to the one province the test
+  // clicks, in the real file's shape.
+  if (url.includes('admin_1_states_provinces'))
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      type: 'FeatureCollection', features: [{
+        type: 'Feature',
+        properties: { name: 'Alberta', admin: 'Canada', adm0_a3: 'CAN', postal: 'AB' },
+        geometry: { type: 'Polygon', coordinates: [[
+          [-120, 49], [-110, 49], [-110, 60], [-120, 60], [-120, 49]]] } }] }) });
   if (url.includes('api.weather.gov/alerts'))
     return route.fulfill({ contentType: 'application/geo+json', body: JSON.stringify({
       features: [
@@ -179,7 +207,7 @@ console.log('\n3. testing mode is open, and the flag is the only reason');
        && locked.asAdmin === true), JSON.stringify(locked));
 }
 
-console.log('\n4. placing storms, areas and alert areas');
+console.log('\n4. placing storms, and drawing hatched zones');
 {
   const r = await page.evaluate(() => {
     togglePanel('p-tools');
@@ -188,24 +216,12 @@ console.log('\n4. placing storms, areas and alert areas');
     const armed = { kind: ARMED && ARMED.kind, cat: ARMED && ARMED.cat,
                     lit: document.querySelector('.symbtn[data-cat="4"]').classList.contains('arm'),
                     note: document.getElementById('armnote').textContent };
-    window.prompt = () => 'Ana';        // the name prompt on placing
+    window.prompt = () => 'Ana';
     map.fire('click', { latlng: L.latLng(24, -70) });
     const placed = JSON.parse(JSON.stringify(OUTLOOK.storms));
     const disarmed = ARMED === null;
     let markers = 0; layers.storms.eachLayer(() => markers++);
-
-    armArea('chance', 'high');
-    map.fire('click', { latlng: L.latLng(18, -55) });
-    armArea('alert', 'warning');
-    map.fire('click', { latlng: L.latLng(27, -82) });
-    const areas = JSON.parse(JSON.stringify(OUTLOOK.areas));
-    let areaLayers = 0; layers.areas.eachLayer(() => areaLayers++);
-
-    const listed = document.querySelectorAll('#tool-list .item').length;
-    removeItem('storms', placed[0].id);
-    const afterRemove = OUTLOOK.storms.length;
-    return { opened, armed, placed, disarmed, markers, areas, areaLayers,
-             listed, afterRemove };
+    return { opened, armed, placed, disarmed, markers };
   });
   ok('the tool palette opens over the format', r.opened);
   ok('arming a storm lights it and says what to do next',
@@ -216,13 +232,108 @@ console.log('\n4. placing storms, areas and alert areas');
        && Math.abs(r.placed[0].lat - 24) < 0.01, JSON.stringify(r.placed));
   ok('and placing disarms, so the next click is just a click', r.disarmed);
   ok('the storm is drawn on the map', r.markers === 1, String(r.markers));
-  ok('a chance area and an alert area both land as areas',
-     r.areas.length === 2 && r.areas[0].level === 'high'
-       && r.areas[1].type === 'alert' && r.areas[1].level === 'warning',
-     JSON.stringify(r.areas));
-  ok('each area draws a circle and a label', r.areaLayers === 4, String(r.areaLayers));
-  ok('everything placed is listed in the palette', r.listed === 3, String(r.listed));
-  ok('clicking a placed item takes it off again', r.afterRemove === 0);
+
+  // A chance is an AREA now: clicked out, closed, hatched.
+  const z = await page.evaluate(() => {
+    armArea('chance', 'high');
+    const started = { drawing: ZONE !== null, level: ZONE && ZONE.level,
+                      bar: document.getElementById('zone-bar').style.display };
+    [[18, -58], [22, -56], [21, -50], [16, -52]].forEach(pt =>
+      map.fire('click', { latlng: L.latLng(pt[0], pt[1]) }));
+    const pts = ZONE.pts.length;
+    zoneBarUndo();
+    const afterUndo = ZONE.pts.length;
+    map.fire('click', { latlng: L.latLng(16, -52) });
+    zoneBarFinish();
+    const area = OUTLOOK.areas[0];
+    let polys = 0, labels = 0;
+    layers.areas.eachLayer(l => { if (l.getLatLngs) polys++; else labels++; });
+    // The hatch is a real SVG pattern painted onto the path.
+    const path = document.querySelector('#map path[fill^="url(#hatch"]');
+    const patId = path ? path.getAttribute('fill').replace(/url\(#|\)/g, '') : '';
+    const pat = patId ? document.getElementById(patId) : null;
+    return { started, pts, afterUndo, area: JSON.parse(JSON.stringify(area)),
+             polys, labels, hatched: !!path,
+             patternLine: pat ? pat.querySelector('line').getAttribute('stroke') : '',
+             rotated: pat ? pat.getAttribute('patternTransform') : '',
+             barHidden: document.getElementById('zone-bar').style.display };
+  });
+  ok('a chance chip starts an area instead of dropping a dot',
+     z.started.drawing && z.started.level === 'high' && z.started.bar === 'flex',
+     JSON.stringify(z.started));
+  ok('clicks build its corners, and Undo takes one back',
+     z.pts === 4 && z.afterUndo === 3, z.pts + ' then ' + z.afterUndo);
+  ok('Finish closes it into a real polygon area',
+     z.area.type === 'chance' && z.area.level === 'high'
+       && z.area.poly.length === 4 && z.barHidden === 'none',
+     JSON.stringify(z.area).slice(0, 120));
+  ok('the zone is drawn with a label over it', z.polys >= 1 && z.labels >= 1,
+     z.polys + ' shapes, ' + z.labels + ' labels');
+  ok('and it is hatched the way the Hurricane Center hatches, in its own colour',
+     z.hatched && z.patternLine.toLowerCase() === '#ee1111'
+       && /rotate\(45\)/.test(z.rotated),
+     JSON.stringify({ line: z.patternLine, rot: z.rotated }));
+
+  const round = await page.evaluate(() => {
+    const a = OUTLOOK.areas[0];
+    const before = a.poly.length;
+    zoneToggleRound(a.id);
+    const smoothed = zoneRound(a.poly, 3).length;
+    // Rounding must keep the area in roughly the same place, not shrink it away.
+    const bb = (pts) => {
+      const la = pts.map(p => p[0]), lo = pts.map(p => p[1]);
+      return [Math.min(...la), Math.max(...la), Math.min(...lo), Math.max(...lo)];
+    };
+    const b1 = bb(a.poly), b2 = bb(zoneRound(a.poly, 3));
+    const near = b1.every((v, i) => Math.abs(v - b2[i]) < 1.2);
+    const listed = document.getElementById('tool-list').textContent;
+    return { on: a.round, before, smoothed, near, listed };
+  });
+  ok('a zone can be rounded out, or left with its corners',
+     round.on === true && round.smoothed > round.before * 4,
+     round.before + ' corners becomes ' + round.smoothed + ' points');
+  ok('rounding keeps the area where it was drawn', round.near);
+  ok('the list says which it is and offers the other',
+     /rounded/.test(round.listed) && /Square the corners/.test(round.listed),
+     round.listed.slice(0, 160));
+}
+
+console.log('\n4b. areas from real county and province boundaries');
+{
+  const r = await page.evaluate(async () => {
+    // A Warning over two Florida counties, picked off the map.
+    pickStart('alert', 'warning', 'county');
+    const armed = { picking: PICK !== null, mode: PICK && PICK.mode,
+                    bar: document.getElementById('zone-bar').style.display };
+    await pickClick({ latlng: L.latLng(27.5, -81.5) });
+    await pickClick({ latlng: L.latLng(28.0, -81.9) });
+    const got = PICK.zones.map(z => z.name);
+    pickFinish();
+    const area = OUTLOOK.areas[OUTLOOK.areas.length - 1];
+    return { armed, got, area: { type: area.type, level: area.level,
+             zones: (area.zones || []).map(z => z.name),
+             hasGeom: (area.zones || []).every(z => !!z.geometry) } };
+  });
+  ok('an alert can be built from counties', r.armed.picking
+     && r.armed.mode === 'county' && r.armed.bar === 'flex', JSON.stringify(r.armed));
+  ok('clicking the map adds the county the Weather Service names there',
+     r.got.length === 2 && r.got.every(n => /county|parish|highlands|polk/i.test(n)),
+     r.got.join(', '));
+  ok('Finish stores them with their real boundaries',
+     r.area.type === 'alert' && r.area.level === 'warning'
+       && r.area.zones.length === 2 && r.area.hasGeom, JSON.stringify(r.area));
+
+  const prov = await page.evaluate(async () => {
+    pickStart('alert', 'watch', 'admin1');
+    await pickClick({ latlng: L.latLng(51.0, -114.0) });   // Alberta
+    const got = PICK.zones.map(z => z.name + '|' + z.state);
+    pickFinish();
+    const area = OUTLOOK.areas[OUTLOOK.areas.length - 1];
+    return { got, level: area.level, n: (area.zones || []).length };
+  });
+  ok('and a province can be picked the same way',
+     prov.got.length === 1 && /Alberta\|Canada/.test(prov.got[0])
+       && prov.level === 'watch' && prov.n === 1, JSON.stringify(prov));
 }
 
 console.log('\n5. the app\'s real Storm Cone tool, running in the portal');
@@ -325,7 +436,7 @@ console.log('\n7. publishing');
      (r.doc.cones || []).length >= 1 && (r.doc.cones[0].ring || []).length > 3
        && (r.doc.alerts || []).length === 1
        && r.doc.alerts[0].code === 'TOR'
-       && (r.doc.areas || []).length === 2 && !!r.doc.issued
+       && (r.doc.areas || []).length === 3 && !!r.doc.issued
        && !!r.doc.forecaster && !!r.doc.view,
      JSON.stringify({ keys: Object.keys(r.doc), cones: (r.doc.cones || []).length,
        alerts: (r.doc.alerts || []).length }));

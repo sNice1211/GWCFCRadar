@@ -272,6 +272,15 @@ button, input, select, textarea { font-family: var(--font); }
   padding: 4px 14px; border-radius: 999px;
   pointer-events: none; white-space: nowrap; max-width: 92vw; overflow: hidden;
 }
+#zone-bar {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: calc(21.5% + 60px); z-index: 620;
+  display: none; gap: 8px;
+  background: rgba(10,10,12,0.9);
+  border: 2px solid var(--gold); border-radius: 999px;
+  padding: 6px 8px;
+}
+#zone-bar .tbtn { border: none; padding: 6px 12px; }
 #armnote {
   position: absolute; left: 50%; transform: translateX(-50%);
   bottom: 190px; z-index: 550;
@@ -904,6 +913,12 @@ button, input, select, textarea { font-family: var(--font); }
   <div id="sc-points-list"><div class="sc-point-empty">Draw a cone with DOTS &gt; 0 to edit curve at each dot.</div></div>
 </div>
 
+<div id="zone-bar" style="display:none">
+  <button class="tbtn" onclick="zoneBarFinish()"><svg class="ic"><use href="#ic-check"></use></svg> Finish area</button>
+  <button class="tbtn" onclick="zoneBarUndo()"><svg class="ic"><use href="#ic-refresh-ccw"></use></svg> Undo</button>
+  <button class="tbtn" onclick="zoneBarCancel()"><svg class="ic"><use href="#ic-close"></use></svg> Cancel</button>
+</div>
+
 <div id="testbar" style="display:none">Testing mode: sign-in is off. Set PORTAL_OPEN to false to require a forecaster account.</div>
 <div id="armnote"></div>
 <div id="toast"></div>
@@ -921,8 +936,12 @@ button, input, select, textarea { font-family: var(--font); }
     <div class="chiprow" id="tool-chances"></div>
     <h5>Alert Levels</h5>
     <div class="chiprow" id="tool-alerts"></div>
-    <div class="hint" id="tool-hint">Pick a symbol, then click the map to place it.
-      Click a placed item to remove it.</div>
+    <h5>Areas by boundary</h5>
+    <div class="chiprow" id="tool-pick"></div>
+    <div class="hint" id="tool-hint">A symbol places on the next map click. A
+      chance or alert chip starts an area: click its corners, then Finish. Or
+      take whole counties and provinces with the buttons above. Click anything
+      placed to remove it.</div>
     <h5>On the outlook</h5>
     <div id="tool-list"></div>
   </div>
@@ -1025,6 +1044,17 @@ function buildTools() {
   document.getElementById('tool-chances').innerHTML = CHANCES.map(c =>
     '<span class="chip chipbtn" data-chance="' + c.id + '" style="background:' + c.color
     + '" onclick="armArea(\'chance\',\'' + c.id + '\')">' + c.label + '</span>').join('');
+  document.getElementById('tool-pick').innerHTML =
+    '<select id="pick-level" style="padding:5px 8px;background:var(--bg3);'
+    + 'color:var(--text);border:1px solid var(--border);border-radius:8px;'
+    + 'font-size:12px;font-family:var(--font)">'
+    + CHANCES.map(c => '<option value="chance:' + c.id + '">' + c.label + ' chance</option>').join('')
+    + ALERTS.map(a => '<option value="alert:' + a.id + '">' + a.label + ' alert</option>').join('')
+    + '</select>'
+    + '<button class="btn" style="width:auto;padding:6px 12px;font-size:12px"'
+    + ' onclick="pickFromMenu(\'county\')">Counties</button>'
+    + '<button class="btn" style="width:auto;padding:6px 12px;font-size:12px"'
+    + ' onclick="pickFromMenu(\'admin1\')">States / Provinces</button>';
   document.getElementById('tool-alerts').innerHTML = ALERTS.map(a =>
     '<span class="chip chipbtn" data-alert="' + a.id + '" style="background:' + a.color
     + ';color:' + a.text + ';text-shadow:none" onclick="armArea(\'alert\',\'' + a.id + '\')">'
@@ -1054,14 +1084,294 @@ function armStorm(cat) {
           '.symbtn[data-cat="' + cat + '"]');
 }
 function armArea(type, id) {
-  if (ARMED && ARMED.kind === 'area' && ARMED.id === id) return clearArm();
+  if (ZONE && ZONE.type === type && ZONE.level === id) return zoneCancel();
   if (typeof deactivateTool === 'function') deactivateTool();
-  ARMED = { kind: 'area', type, id };
-  const label = type === 'chance' ? chanceOf(id).label : alertOf(id).label;
-  showArm('Click the map to mark a ' + label + ' area',
-          type === 'chance' ? '.chipbtn[data-chance="' + id + '"]'
-                            : '.chipbtn[data-alert="' + id + '"]');
+  clearArm();
+  zoneStart(type, id);
 }
+
+
+// ══ ZONES: the areas an outlook actually talks about ════════════════════
+// A chance or an alert covers ground, not a point, so both are drawn as a
+// polygon the forecaster clicks out. The National Hurricane Center fills its
+// areas with diagonal hatching rather than flat colour, so the map underneath
+// stays readable through them; this does the same with an SVG pattern per
+// level. A finished zone can be left with its corners, or rounded out into
+// the softer blob shape a forecast area usually takes.
+let ZONE = null;          // the zone being clicked out
+let _zoneTmp = null;      // its live preview layer group
+
+function zoneStart(type, level) {
+  ZONE = { id: rid(), type, level, pts: [], round: false };
+  _zoneTmp = L.layerGroup().addTo(map);
+  const spec = type === 'chance' ? chanceOf(level) : alertOf(level);
+  showArm('Click out the ' + spec.label + ' area. Double-click, or press Finish, to close it.',
+          type === 'chance' ? '.chipbtn[data-chance="' + level + '"]'
+                            : '.chipbtn[data-alert="' + level + '"]');
+  zoneBar(true);
+}
+function zoneAddPoint(lat, lng) {
+  if (!ZONE) return;
+  ZONE.pts.push([lat, lng]);
+  zonePreview();
+}
+function zonePreview() {
+  if (!ZONE || !_zoneTmp) return;
+  _zoneTmp.clearLayers();
+  const spec = ZONE.type === 'chance' ? chanceOf(ZONE.level) : alertOf(ZONE.level);
+  if (ZONE.pts.length > 1) {
+    L.polyline(ZONE.pts, { color: spec.color, weight: 3, dashArray: '6 5' })
+     .addTo(_zoneTmp);
+  }
+  ZONE.pts.forEach(pt => L.circleMarker(pt, { radius: 4, color: '#fff',
+    fillColor: spec.color, fillOpacity: 1, weight: 2 }).addTo(_zoneTmp));
+}
+function zoneUndo() {
+  if (!ZONE || !ZONE.pts.length) return;
+  ZONE.pts.pop();
+  zonePreview();
+}
+function zoneFinish() {
+  if (!ZONE) return;
+  if (ZONE.pts.length < 3) {
+    toast('An area needs at least three points.');
+    return zoneCancel();
+  }
+  OUTLOOK.areas.push({ id: ZONE.id, type: ZONE.type, level: ZONE.level,
+                       poly: ZONE.pts.slice(), round: false });
+  zoneCancel();
+  drawAll();
+}
+function zoneCancel() {
+  ZONE = null;
+  if (_zoneTmp) { try { map.removeLayer(_zoneTmp); } catch (e) {} _zoneTmp = null; }
+  clearArm();
+  zoneBar(false);
+}
+function zoneBar(on) {
+  const b = document.getElementById('zone-bar');
+  if (b) b.style.display = on ? 'flex' : 'none';
+}
+
+// Rounding: Chaikin's corner cutting, run three times. Each pass replaces
+// every corner with two points a quarter and three quarters along its edges,
+// so the outline keeps its shape and loses its angles. Three passes is where
+// it stops looking polygonal and before it starts costing points.
+function zoneRound(pts, passes) {
+  let out = pts.map(p => p.slice());
+  for (let n = 0; n < (passes || 3); n++) {
+    const next = [];
+    for (let i = 0; i < out.length; i++) {
+      const a = out[i], b = out[(i + 1) % out.length];
+      next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    out = next;
+  }
+  return out;
+}
+function zoneToggleRound(id) {
+  const a = OUTLOOK.areas.find(x => x.id === id);
+  if (!a || !a.poly) return;
+  a.round = !a.round;
+  drawAll();
+}
+
+// The hatch itself. One pattern per colour, defined once in the pane's own
+// SVG, because a pattern has to live in the same document as the shape that
+// fills with it.
+const _hatchMade = new Set();
+function zoneHatch(color) {
+  const key = 'hatch' + color.replace(/[^a-z0-9]/gi, '');
+  const svg = map && map.getPane('overlayPane')
+    ? map.getPane('overlayPane').querySelector('svg') : null;
+  if (!svg) return null;
+  if (!svg.querySelector('#' + key)) {
+    const NS = 'http://www.w3.org/2000/svg';
+    let defs = svg.querySelector('defs');
+    if (!defs) { defs = document.createElementNS(NS, 'defs'); svg.insertBefore(defs, svg.firstChild); }
+    const pat = document.createElementNS(NS, 'pattern');
+    pat.setAttribute('id', key);
+    pat.setAttribute('patternUnits', 'userSpaceOnUse');
+    pat.setAttribute('width', '9'); pat.setAttribute('height', '9');
+    pat.setAttribute('patternTransform', 'rotate(45)');
+    const line = document.createElementNS(NS, 'line');
+    line.setAttribute('x1', '0'); line.setAttribute('y1', '0');
+    line.setAttribute('x2', '0'); line.setAttribute('y2', '9');
+    line.setAttribute('stroke', color);
+    line.setAttribute('stroke-width', '4');
+    pat.appendChild(line);
+    defs.appendChild(pat);
+    _hatchMade.add(key);
+  }
+  return 'url(#' + key + ')';
+}
+
+function zoneDraw(a) {
+  const spec = a.type === 'chance' ? chanceOf(a.level) : alertOf(a.level);
+  const color = spec.color;
+  // A zone is either clicked-out points or borrowed county/province shapes.
+  const shapes = [];
+  if (a.poly && a.poly.length > 2) {
+    shapes.push(a.round ? zoneRound(a.poly, 3) : a.poly);
+  }
+  (a.zones || []).forEach(z => {
+    const g = z.geometry;
+    if (!g) return;
+    const rings = g.type === 'MultiPolygon' ? g.coordinates.flat() : g.coordinates;
+    rings.forEach(ring => shapes.push(ring.map(c => [c[1], c[0]])));
+  });
+  if (!shapes.length) return;
+
+  let centre = null;
+  shapes.forEach(pts => {
+    const poly = L.polygon(pts, { color, weight: 3, opacity: 1,
+                                  fillColor: color, fillOpacity: 0.25 })
+      .on('click', () => removeItem('areas', a.id))
+      .addTo(layers.areas);
+    // The hatch is painted straight onto the path, because Leaflet has no
+    // idea what a pattern is.
+    try {
+      const fill = zoneHatch(color);
+      const el = poly.getElement();
+      if (fill && el) { el.setAttribute('fill', fill); el.setAttribute('fill-opacity', '0.85'); }
+    } catch (e) {}
+    if (!centre) { try { centre = poly.getBounds().getCenter(); } catch (e) {} }
+  });
+  if (centre) {
+    L.marker(centre, { icon: L.divIcon({ className: 'area-icon',
+      html: '<span class="area-label" style="background:' + color
+          + (a.type === 'alert' ? ';color:' + spec.text : '') + '">'
+          + esc(spec.label) + (a.zones && a.zones.length ? ' (' + a.zones.length + ')' : '')
+          + '</span>', iconSize: [0, 0] }) })
+     .on('click', () => removeItem('areas', a.id))
+     .addTo(layers.areas);
+  }
+}
+
+// ══ COUNTIES AND PROVINCES ══════════════════════════════════════════════
+// Two sources, because the two questions have two answers. A US county comes
+// from the Weather Service, which is the authority on the boundaries warnings
+// are actually issued for. A province or state comes from Natural Earth's
+// admin-1 polygons, one 2 MB file covering the world, fetched only when
+// somebody asks for one.
+let PICK = null;                  // { type, level, mode:'county'|'admin1', zones:[] }
+let _admin1 = null, _admin1Pr = null;
+const ADMIN1_SRC = [
+  'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_1_states_provinces.geojson',
+  'https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@master/geojson/ne_50m_admin_1_states_provinces.geojson',
+];
+function admin1Load() {
+  if (_admin1) return Promise.resolve(_admin1);
+  if (_admin1Pr) return _admin1Pr;
+  _admin1Pr = (async () => {
+    for (const url of ADMIN1_SRC) {
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(25000) });
+        if (!r.ok) continue;
+        const d = await r.json();
+        _admin1 = (d.features || []).filter(f => f.geometry);
+        return _admin1;
+      } catch (e) {}
+    }
+    throw new Error('could not load province boundaries');
+  })();
+  return _admin1Pr;
+}
+function admin1At(lat, lng) {
+  if (!_admin1) return null;
+  for (const f of _admin1) {
+    const g = f.geometry;
+    const polys = g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates];
+    for (const rings of polys) {
+      if (!rings.length) continue;
+      const outer = rings[0].map(c => ({ lat: c[1], lng: c[0] }));
+      if (_ptInPoly(lat, lng, outer)) {
+        const p = f.properties || {};
+        return { id: p.adm0_a3 + '-' + (p.postal || p.name), name: p.name,
+                 state: p.admin || '', geometry: g };
+      }
+    }
+  }
+  return null;
+}
+function pickFromMenu(mode) {
+  const sel = document.getElementById('pick-level');
+  const [type, level] = (sel ? sel.value : 'chance:high').split(':');
+  pickStart(type, level, mode);
+}
+function pickStart(type, level, mode) {
+  if (typeof deactivateTool === 'function') deactivateTool();
+  zoneCancel();
+  clearArm();
+  PICK = { type, level, mode, zones: [] };
+  const spec = type === 'chance' ? chanceOf(level) : alertOf(level);
+  const what = mode === 'county' ? 'counties' : 'states or provinces';
+  showArm('Click ' + what + ' for the ' + spec.label + ' area. Press Finish when done.', null);
+  zoneBar(true);
+  map.on('click', pickClick);
+  if (mode === 'admin1') {
+    admin1Load().then(() => toast('Province boundaries ready.'))
+                .catch(e => toast(e.message, 5000));
+  }
+}
+async function pickClick(e) {
+  if (!PICK) return;
+  const { lat, lng } = e.latlng;
+  try {
+    let z = null;
+    if (PICK.mode === 'county') {
+      z = await _adZoneAtPoint(lat, lng, 'county');
+    } else {
+      await admin1Load();
+      z = admin1At(lat, lng);
+    }
+    if (!z) { toast('Nothing found there.'); return; }
+    if (!z.geometry) { toast('No boundary published for ' + z.name + '.'); return; }
+    if (PICK.zones.some(x => x.id === z.id)) { toast(z.name + ' is already in.'); return; }
+    PICK.zones.push(z);
+    toast('Added ' + z.name + (z.state ? ', ' + z.state : '') + '.');
+    // Show it right away rather than at the end, so a wrong click is obvious.
+    zoneDrawTemp(z, PICK.type === 'chance' ? chanceOf(PICK.level).color : alertOf(PICK.level).color);
+  } catch (err) {
+    toast('Could not add that one: ' + (err && err.message ? err.message : 'lookup failed'), 5000);
+  }
+}
+function zoneDrawTemp(z, color) {
+  if (!_zoneTmp) _zoneTmp = L.layerGroup().addTo(map);
+  L.geoJSON(z.geometry, { style: { color, weight: 3, fillColor: color,
+                                   fillOpacity: 0.2, dashArray: '5 5' } }).addTo(_zoneTmp);
+}
+function pickFinish() {
+  if (!PICK) return;
+  if (PICK.zones.length) {
+    OUTLOOK.areas.push({ id: rid(), type: PICK.type, level: PICK.level,
+                         zones: PICK.zones.map(z => ({ id: z.id, name: z.name,
+                           state: z.state, geometry: z.geometry })) });
+  }
+  pickCancel();
+  drawAll();
+}
+function pickCancel() {
+  if (PICK) map.off('click', pickClick);
+  PICK = null;
+  if (_zoneTmp) { try { map.removeLayer(_zoneTmp); } catch (e) {} _zoneTmp = null; }
+  clearArm();
+  zoneBar(false);
+}
+// One bar drives whichever is running.
+function zoneBarFinish() { if (PICK) pickFinish(); else zoneFinish(); }
+function zoneBarUndo() {
+  if (PICK) {
+    PICK.zones.pop();
+    if (_zoneTmp) _zoneTmp.clearLayers();
+    PICK.zones.forEach(z => zoneDrawTemp(z, PICK.type === 'chance'
+      ? chanceOf(PICK.level).color : alertOf(PICK.level).color));
+    return;
+  }
+  zoneUndo();
+}
+function zoneBarCancel() { if (PICK) pickCancel(); else zoneCancel(); }
 
 // ══ MAP ═════════════════════════════════════════════════════════════════
 function initMap() {
@@ -1074,15 +1384,16 @@ function initMap() {
   layers.areas  = L.layerGroup().addTo(map);
   layers.storms = L.layerGroup().addTo(map);
   map.on('click', onMapClick);
+  // Double-click closes an area, the way every drawing tool does.
+  map.on('dblclick', () => { if (ZONE) zoneFinish(); });
 }
 function onMapClick(e) {
   const { lat, lng } = e.latlng;
+  if (ZONE) { zoneAddPoint(lat, lng); return; }
   if (!ARMED) return;
   if (ARMED.kind === 'storm') {
     const name = prompt('Name for this storm (optional):', '') || '';
     OUTLOOK.storms.push({ id: rid(), cat: ARMED.cat, lat, lon: lng, name: name.slice(0, 40) });
-  } else {
-    OUTLOOK.areas.push({ id: rid(), type: ARMED.type, level: ARMED.id, lat, lon: lng });
   }
   clearArm();
   drawAll();
@@ -1095,19 +1406,7 @@ function drawAll() {
   layers.areas.clearLayers();
   layers.cones.clearLayers();
 
-  OUTLOOK.areas.forEach(a => {
-    const spec = a.type === 'chance' ? chanceOf(a.level) : alertOf(a.level);
-    const color = spec.color;
-    L.circle([a.lat, a.lon], { radius: 180000, color, weight: 2,
-                               fillColor: color, fillOpacity: 0.3 })
-     .addTo(layers.areas);
-    L.marker([a.lat, a.lon], { icon: L.divIcon({ className: 'area-icon',
-        html: '<span class="area-label" style="background:' + color
-            + (a.type === 'alert' ? ';color:' + spec.text : '') + '">'
-            + esc(spec.label) + '</span>', iconSize: [0, 0] }) })
-     .on('click', () => removeItem('areas', a.id))
-     .addTo(layers.areas);
-  });
+  OUTLOOK.areas.forEach(a => zoneDraw(a));
 
   OUTLOOK.storms.forEach(s => {
     const html = '<div class="storm-stack">' + stormSVG(s.cat, 64)
@@ -1137,7 +1436,16 @@ function renderLists() {
       return '<div class="item"><button class="del" onclick="removeItem(\'areas\',\'' + a.id + '\')"><svg class=\"ic\"><use href=\"#ic-trash\"></use></svg></button>'
         + '<div class="t">' + esc(spec.label) + ' '
         + (a.type === 'chance' ? 'chance' : 'alert area') + '</div>'
-        + '<div class="m">' + a.lat.toFixed(1) + ', ' + a.lon.toFixed(1) + '</div></div>';
+        + '<div class="m">' + (a.zones && a.zones.length
+            ? a.zones.length + ' ' + (a.zones.length === 1 ? 'boundary' : 'boundaries')
+              + ': ' + a.zones.slice(0, 3).map(z => esc(z.name)).join(', ')
+              + (a.zones.length > 3 ? '...' : '')
+            : (a.poly || []).length + ' point area' + (a.round ? ', rounded' : ''))
+        + '</div>'
+        + (a.poly ? '<button class="btn ghost" style="margin-top:6px;padding:4px;font-size:11px"'
+            + ' onclick="zoneToggleRound(\'' + a.id + '\')">'
+            + (a.round ? 'Square the corners' : 'Round it out') + '</button>' : '')
+        + '</div>';
     }));
   if (tl) tl.innerHTML = items.length ? items.join('')
     : '<div class="empty">Nothing placed yet.</div>';
