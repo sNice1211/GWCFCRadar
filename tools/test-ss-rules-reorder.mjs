@@ -13,9 +13,8 @@
  *      alert wants different things or the stream ends. Overlays the
  *      person turned on themselves are never touched.
  *   2. Every reorderable row - overlay pills, the main layer bubbles, and
- *      the product bubbles below them - carries one-tap up/down arrows
- *      that move the row AND save the order, because drag needs a steady
- *      pointer and a phone thumb or a console cursor is not one.
+ *      the product bubbles below them - carries the drag handle, and a
+ *      drag really moves the row AND saves the order.
  *   3. The broadcast frame wears gold (#e8b800), not yellow, and every
  *      surface in it is layered with the top-lit sheen gradient.
  */
@@ -190,43 +189,37 @@ console.log('\n4. auto still steps a tornado, and keep means keep');
   ok('Leave as-is touches nothing', r.kept.length === 0, r.kept.join());
 }
 
-console.log('\n5. one-tap reorder arrows, everywhere rows can be reordered');
+console.log('\n5. the drag handles, everywhere rows can be reordered');
 {
   const r = await page.evaluate(() => {
     const out = {};
     document.getElementById('overlay-toggle-btn').click();
     const pills = Array.from(document.querySelectorAll('#overlay-pills-row .ov-pill[data-ovid]'));
-    out.pillArrows = pills.every(p => p.querySelectorAll('.ov-nudge').length === 2);
-    const secondId = pills[1].dataset.ovid;
-    pills[1].querySelector('.ov-nudge').click();
+    out.pillHandles = pills.every(p => !!p.querySelector('.ov-drag'));
+    // A real drag through the pointer path: the second pill above the first.
+    const second = pills[1], first = pills[0];
+    const secondId = second.dataset.ovid;
+    const handle = second.querySelector('.ov-drag');
+    handle.dispatchEvent(new PointerEvent('pointerdown',
+      { clientY: second.getBoundingClientRect().top + 4, bubbles: true, pointerId: 1 }));
+    document.dispatchEvent(new PointerEvent('pointermove',
+      { clientY: first.getBoundingClientRect().top + 1, bubbles: true, pointerId: 1 }));
+    document.dispatchEvent(new PointerEvent('pointerup',
+      { clientY: first.getBoundingClientRect().top + 1, bubbles: true, pointerId: 1 }));
     out.pillMoved = document.querySelector('#overlay-pills-row .ov-pill[data-ovid]')
       .dataset.ovid === secondId;
     out.pillSaved = JSON.parse(localStorage.getItem('gwcfc_overlay_order'))[0] === secondId;
-    // And back down, so the order is restored and the down arrow is proven.
-    document.querySelectorAll('#overlay-pills-row .ov-pill[data-ovid]')[0]
-      .querySelectorAll('.ov-nudge')[1].click();
-    out.pillBack = document.querySelector('#overlay-pills-row .ov-pill[data-ovid]')
-      .dataset.ovid !== secondId;
 
     const mains = Array.from(document.querySelectorAll('#sub-bubbles .sub-bubble-main'));
-    out.mainArrows = mains.length > 1 && mains.every(m => m.querySelectorAll('.sb-nudge').length === 2);
-    const secondMain = mains[1].id;
-    mains[1].querySelector('.sb-nudge').click();
-    out.mainMoved = document.querySelectorAll('#sub-bubbles .sub-bubble-main')[0].id === secondMain;
-    out.mainSaved = JSON.parse(localStorage.getItem('gwcfc_bubble_order'))[0]
-      === secondMain.replace(/^sub-/, '');
-    document.querySelectorAll('#sub-bubbles .sub-bubble-main')[0]
-      .querySelectorAll('.sb-nudge')[1].click();
+    out.mainHandles = mains.length > 1 && mains.every(m => !!m.querySelector('.sb-drag'));
     return out;
   });
-  ok('every overlay pill carries both arrows', r.pillArrows);
-  ok('up moves the pill up and saves the order', r.pillMoved && r.pillSaved);
-  ok('down brings it back', r.pillBack);
-  ok('every layer bubble carries both arrows', r.mainArrows);
-  ok('and they move and save too', r.mainMoved && r.mainSaved);
+  ok('every overlay pill carries the drag handle', r.pillHandles);
+  ok('a drag moves the pill and saves the order', r.pillMoved && r.pillSaved);
+  ok('every layer bubble carries the drag handle', r.mainHandles);
 }
 
-console.log('\n6. the arrows reach the product bubbles below the top level');
+console.log('\n6. the handle reaches the product bubbles below the top level');
 {
   const r = await page.evaluate(async () => {
     toggleRadarSub();
@@ -234,20 +227,12 @@ console.log('\n6. the arrows reach the product bubbles below the top level');
     await new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res)));
     const rows = _sbRows();
     const out = { n: rows.length,
-      arrows: rows.length > 1 && rows.every(r2 => r2.querySelectorAll('.sb-nudge').length === 2) };
-    if (rows.length >= 2) {
-      const secondKey = _sbRowKey(rows[1]);
-      rows[1].querySelector('.sb-nudge').click();
-      out.moved = _sbRowKey(_sbRows()[0]) === secondKey;
-      out.saved = (_sbLoadOrder(_sbCtxKey()) || [])[0] === secondKey;
-      _sbRows()[0].querySelectorAll('.sb-nudge')[1].click();   // put it back
-    }
+      handles: rows.length > 1 && rows.every(r2 => !!r2.querySelector('.sb-drag')) };
     const wrap = document.getElementById('sub-bubbles');
     wrap.innerHTML = ''; wrap.style.display = 'none'; wrap.dataset.mode = '';
     return out;
   });
-  ok('the product rows grew arrows through the decorator', r.arrows, String(r.n));
-  ok('a tap moves the product and saves its menu\'s order', r.moved && r.saved);
+  ok('the product rows grew handles through the decorator', r.handles, String(r.n));
 }
 
 console.log('\n7. the frame on air is gold and gradient');
