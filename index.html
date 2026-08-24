@@ -26409,24 +26409,78 @@ async function _navSearch() {
   if (!q) return;
   const sug = document.getElementById('nav-suggest');
   if (sug) { sug.style.display = 'block'; sug.textContent = 'Searching…'; }
+
+  // Where "near me" is measured from: you if the blue dot is on, the
+  // middle of the map otherwise. This is what makes "chick fil a" mean
+  // the one down the road and not one three states away.
+  let ref = null;
+  try {
+    if (_locMarker) { const ll = _locMarker.getLatLng(); ref = { lat: ll.lat, lon: ll.lng }; }
+    else { const c = map.getCenter(); ref = { lat: c.lat, lon: c.lng }; }
+  } catch (e) {}
+
+  // Photon first: an OpenStreetMap geocoder built for finding NAMED places,
+  // businesses and chains included, typo-tolerant, and it takes a bias
+  // point so nearby matches outrank famous ones.
   let rows = [];
   try {
-    const r = await fetchWithTimeout('https://nominatim.openstreetmap.org/search?format=json&limit=5&q='
-      + encodeURIComponent(q), 10000);
-    if (r.ok) rows = await r.json();
+    let u = 'https://photon.komoot.io/api/?limit=8&lang=en&q=' + encodeURIComponent(q);
+    if (ref) u += '&lat=' + ref.lat.toFixed(4) + '&lon=' + ref.lon.toFixed(4);
+    const r = await fetchWithTimeout(u, 8000);
+    if (r.ok) {
+      const d = await r.json();
+      rows = ((d && d.features) || []).map(f => {
+        const p = f.properties || {};
+        const g = (f.geometry && f.geometry.coordinates) || [];
+        const bits = [
+          p.name,
+          p.street ? (p.housenumber ? p.housenumber + ' ' + p.street : p.street) : null,
+          p.city || p.town || p.village || p.county,
+          p.state,
+        ].filter(Boolean);
+        return { name: [...new Set(bits)].join(', '), lat: g[1], lon: g[0] };
+      }).filter(p => p.name && isFinite(p.lat) && isFinite(p.lon));
+    }
   } catch (e) {}
-  _navSuggest = (Array.isArray(rows) ? rows : []).map(p => ({
-    name: p.display_name || q,
-    lat: parseFloat(p.lat), lon: parseFloat(p.lon),
-  })).filter(p => isFinite(p.lat) && isFinite(p.lon));
+
+  // Nominatim stays as the spare, nudged toward what the map is showing.
+  if (!rows.length) {
+    try {
+      let u = 'https://nominatim.openstreetmap.org/search?format=json&limit=8&q='
+        + encodeURIComponent(q);
+      try {
+        const b = map.getBounds();
+        u += '&viewbox=' + [b.getWest(), b.getNorth(), b.getEast(), b.getSouth()]
+          .map(v => v.toFixed(3)).join(',') + '&bounded=0';
+      } catch (e) {}
+      const r = await fetchWithTimeout(u, 10000);
+      if (r.ok) {
+        const d = await r.json();
+        rows = (Array.isArray(d) ? d : []).map(p => ({
+          name: p.display_name || q,
+          lat: parseFloat(p.lat), lon: parseFloat(p.lon),
+        })).filter(p => isFinite(p.lat) && isFinite(p.lon));
+      }
+    } catch (e) {}
+  }
+
+  // Nearest first, with the distance written on every row, the way a maps
+  // app answers: the question was never "where is any Chick-fil-A".
+  if (ref) {
+    rows.forEach(p => { p.away = _navMeters(ref.lat, ref.lon, p.lat, p.lon); });
+    rows.sort((a, b) => a.away - b.away);
+  }
+  _navSuggest = rows.slice(0, 8);
+
   if (!sug) return;
   if (!_navSuggest.length) {
-    sug.textContent = 'Nothing found for that. Try adding a state or country.';
+    sug.textContent = 'Nothing found for that. Try adding a city or state.';
     return;
   }
   sug.innerHTML = _navSuggest.map((p, i) =>
     `<div class="nav-sug" onclick="_navPick(${i})">`
     + `<span class="nav-sug-name" title="${_navEsc(p.name)}">${_navEsc(p.name)}</span>`
+    + (isFinite(p.away) ? `<span class="nav-sug-dist">${_navFmtDist(p.away)}</span>` : '')
     + `</div>`).join('');
 }
 
@@ -40180,7 +40234,8 @@ function selectProduct(p) {
       every few minutes while routes are showing. You can also report
       things on the road, like police, a crash, a hazard, bad weather, a
       jam, or good news; reports stay on this device and fade after four
-      hours. Routing by OSRM, place search by OpenStreetMap, conditions by
+      hours. Routing by OSRM, place and business search by Photon and
+      OpenStreetMap, conditions by
       Open-Meteo.
     </div>
   </div>
@@ -45020,7 +45075,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = "Navigation talks and tucks away now. Directions are spoken out loud, each turn announced when it becomes next and again close to the turn, with a speaker button in the panel to mute and unmute. And a new minimize button folds the whole panel into a small round button you can drag anywhere on the screen; guidance keeps running, the button shows your next turn arrow, and one tap brings the panel back.";
+const APP_LATEST_UPDATE = "Navigation search knows places now, like the maps app: type chick fil a, a gas station, a store, any business, and it finds the real ones, nearest first, with the distance shown on every suggestion. Searches are biased to where you are (or where the map is looking), so the answer is the one down the road, not one three states away.";
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

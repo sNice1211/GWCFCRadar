@@ -89,6 +89,8 @@ const errors = [];
 page.on('pageerror', e => errors.push(e.message));
 
 const osrmAsked = [];
+const photonAsked = [];
+let photonMode = 'off';
 // The fake sky for the conditions service: 'clear' answers dry everywhere,
 // 'storm' puts a violent downpour over the eastern half of whatever list of
 // spots the page asks about.
@@ -106,6 +108,21 @@ await page.route('**://**', route => {
     osrmAsked.push(decodeURIComponent(url));
     return route.fulfill({ contentType: 'application/json',
       body: JSON.stringify(OSRM) });
+  }
+  if (url.includes('photon.komoot.io')) {
+    photonAsked.push(decodeURIComponent(url));
+    if (photonMode !== 'on') return route.abort();
+    const store = (lon, lat, city) => ({
+      properties: { name: 'Chick-fil-A', street: 'Main St', housenumber: '12',
+                    city, state: 'Florida' },
+      geometry: { coordinates: [lon, lat] },
+    });
+    return route.fulfill({ contentType: 'application/json',
+      body: JSON.stringify({ features: [
+        store(-81.66, 30.33, 'Jacksonville'),
+        store(-81.05, 28.02, 'Orlando'),
+        store(-80.60, 28.30, 'Cocoa'),
+      ] }) });
   }
   if (url.includes('nominatim.openstreetmap.org/search'))
     return route.fulfill({ contentType: 'application/json',
@@ -236,6 +253,39 @@ console.log('\n4. destinations and routes');
      r.routeRows[0]);
   ok('the note explains the chosen route\'s weather', /high/i.test(r.note), r.note);
   ok('something is actually drawn on the map', r.selPainted);
+}
+
+console.log('\n4b. it knows businesses, and answers with the one near you');
+{
+  photonMode = 'on';
+  const r = await page.evaluate(async () => {
+    map.setView([28.0, -81.0], 10, { animate: false });
+    await new Promise(res => setTimeout(res, 120));
+    document.getElementById('nav-search').value = 'chick fil a';
+    await _navSearch();
+    const rows = Array.from(document.querySelectorAll('#nav-suggest .nav-sug'))
+      .map(el => el.textContent.trim());
+    return {
+      names: _navSuggest.map(p => p.name),
+      aways: _navSuggest.map(p => Math.round(p.away || 0)),
+      rows,
+    };
+  });
+  photonMode = 'off';
+  ok('the chain is found by its everyday name',
+     r.names.length === 3 && r.names.every(n => /^Chick-fil-A, 12 Main St/.test(n)),
+     r.names.join(' | '));
+  ok('nearest first, not famous first: Orlando, Cocoa, then Jacksonville',
+     /Orlando/.test(r.names[0]) && /Cocoa/.test(r.names[1])
+       && /Jacksonville/.test(r.names[2])
+       && r.aways.every((a, i) => i === 0 || a >= r.aways[i - 1]),
+     r.names.join(' | ') + ' :: ' + r.aways.join(','));
+  ok('each suggestion says how far away it is',
+     r.rows.length === 3 && r.rows.every(t => /(mi|km)/.test(t)),
+     r.rows.join(' | ').slice(0, 140));
+  ok('and the ask carried a near-me bias point',
+     photonAsked.some(u => /lat=28\.0000&lon=-81\.0000/.test(u)),
+     (photonAsked[photonAsked.length - 1] || '').slice(0, 120));
 }
 
 console.log('\n5. the paint on the map');
