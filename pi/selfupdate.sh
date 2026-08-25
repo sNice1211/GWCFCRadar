@@ -137,10 +137,25 @@ fi
 # that one may only have announced the change. So do not rely on having seen
 # the commit go by: if the installer defines a unit this machine does not
 # have, an install is wanted, whenever and however that came to be.
-if [ ! -f "$HOME/.config/systemd/user/gwcfc-snd.timer" ] \
-   && grep -q 'gwcfc-snd\.timer' "$REPO/pi/install.sh" 2>/dev/null; then
-  touch "$WANT_INSTALL"
-fi
+#
+# Every unit the installer writes, not one named one. This used to name
+# gwcfc-snd.timer alone, which caught that unit and nothing added after it:
+# each new service needed this line edited too, and forgetting was silent,
+# because a machine that never installs a timer never reports a failure from
+# it. Reading the names out of the installer means the list cannot go stale.
+#
+# Matched on the line that WRITES a unit, not on any mention of one. The
+# installer also names units it deletes: gwcfc-obs was removed with the
+# feature, and a looser pattern picks it up, finds it correctly absent, and
+# asks for a reinstall on every single run, forever.
+for u in $(grep -o 'cat > "\$UNITS/gwcfc-[a-z-]*\.\(service\|timer\)"' \
+             "$REPO/pi/install.sh" 2>/dev/null \
+           | sed 's|.*/||; s|"$||' | sort -u); do
+  if [ ! -f "$HOME/.config/systemd/user/$u" ]; then
+    echo "  $u is defined but not installed on this box"
+    touch "$WANT_INSTALL"
+  fi
+done
 if [ -f "$WANT_INSTALL" ]; then
   echo "install.sh changed: running it to register anything new"
   if command -v systemd-run >/dev/null 2>&1 && \

@@ -2845,6 +2845,33 @@ body.wx-smooth-radar .leaflet-radarPane-pane canvas {
   font-family: var(--display); font-size: 11px; font-weight: 700;
   letter-spacing: 0.5px; color: #ffd166; margin: 4px 0 2px;
 }
+#cyc-ens-head {
+  font-family: var(--display); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.5px; color: #8fe3a8; margin: 4px 0 2px;
+}
+#cyc-ens-intro {
+  font-family: var(--mono); font-size: 10px; color: rgba(212,232,255,0.55);
+  line-height: 1.5; margin: 2px 0 4px;
+}
+#cyc-ens-centres-btn {
+  margin: 4px 0; padding: 4px 12px; font-family: 'Comfortaa', sans-serif;
+  font-size: 10px; font-weight: 700; cursor: pointer; border-radius: 12px;
+  background: rgba(143,227,168,0.12); border: 1px solid rgba(143,227,168,0.5);
+  color: #8fe3a8;
+}
+#cyc-ens-centres-btn.on { background: #8fe3a8; color: #04200f; }
+#cyc-ens-status {
+  font-family: var(--mono); font-size: 9px; color: rgba(212,232,255,0.75);
+  margin: 2px 0; line-height: 1.5;
+}
+/* Whose work this is, and what the data may and may not be used for. Small,
+   but never behind a control: an attribution nobody can find is not one. */
+#cyc-credits {
+  font-family: var(--mono); font-size: 8.5px; line-height: 1.55;
+  color: rgba(212,232,255,0.45); margin: 8px 0 2px;
+  border-top: 1px dashed rgba(255,255,255,0.12); padding-top: 5px;
+}
+#cyc-credits b { color: rgba(212,232,255,0.75); font-weight: 700; }
 #cyc-lab-btn, #cyc-ens-btn, #cyc-mean-btn {
   margin: 4px 0; padding: 4px 12px; font-family: 'Comfortaa', sans-serif;
   font-size: 10px; font-weight: 700; cursor: pointer; border-radius: 12px;
@@ -9465,6 +9492,19 @@ body.clean-mode #clean-hint { opacity: 1; }
       <button id="cyc-mean-btn" onclick="_spagCycMeanTrack()" title="Draw the ensemble-mean track, coloured by how strong the mean is">Mean track</button>
       <div id="cyc-lab-status">Looking for the Pi's newest run…</div>
       <div id="cyc-focus-info" style="display:none"></div>
+      <div style="border-top:1px solid rgba(255,255,255,0.08);margin:6px 0 2px;"></div>
+      <div id="cyc-ens-head"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg> Ensemble Centres · GEFS</div>
+      <p id="cyc-ens-intro">Not a cyclone product. The Pi reads raw GEFS pressure and thickness and finds the storms itself: closed lows with a warm column above them, in all 31 members. Lines are coloured by the strength each one reaches.</p>
+      <button id="cyc-ens-centres-btn" onclick="_ensToggle()" title="Cyclone centres detected in the raw GEFS ensemble, coloured by peak intensity">GEFS centres</button>
+      <div id="cyc-ens-status">Not loaded.</div>
+      <p id="cyc-credits">
+        Ensemble centre detection adapted with permission from
+        <b>Triple-A Tropics</b> by Andrew Austin-Adler.
+        AI cyclone tracks and genesis fields are Google DeepMind Weather Lab
+        data, used under their terms: experimental research output, shown here
+        for interest and not a substitute for the National Hurricane Center or
+        your local forecast office.
+      </p>
     </div>
 
     <!-- Alerts Panel -->
@@ -18421,6 +18461,7 @@ _sevSetSection = async function (value) {
     // model they read as that model's own output, which is the confusion this
     // whole list is meant to remove.
     if (typeof _cycDisable === 'function' && _cycOn) _cycDisable();
+    if (typeof _ensDisable === 'function' && _ensOn) _ensDisable();
     _hdFromPicker = true;
     _sevSection = value;              // so the picker keeps showing this choice
     // Also when there is no address yet, not just when this is off. Enabling
@@ -18819,8 +18860,20 @@ async function _cycFresh() {
 function _cycClear() {
   _cycLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
   _cycLayers = [];
-  _cycGroups = {};
-  _cycFocusKey = null;
+  // Only this feature's groups. The GEFS ensemble centres register here too,
+  // under keys beginning "ens|", and wiping the whole registry used to leave
+  // their lines drawn on the map with nothing left that knew how to dim or
+  // name them: the tags went dead and the focus readout went blank while the
+  // lines were still there.
+  _cycDropGroups(k => !String(k).startsWith('ens|'));
+}
+
+// Forget the groups matching a test, and put the focus readout back if the
+// line it was describing was one of them.
+function _cycDropGroups(match) {
+  Object.keys(_cycGroups).forEach(k => { if (match(k)) delete _cycGroups[k]; });
+  if (_cycFocusKey && !_cycGroups[_cycFocusKey]) _cycFocusKey = null;
+  if (_cycFocusKey) return;
   const info = document.getElementById('cyc-focus-info');
   if (info) { info.textContent = ''; info.style.display = 'none'; }
 }
@@ -18870,7 +18923,12 @@ function _cycFocus(key) {
 // polyline and nothing more. The dateline is the one thing that needs care:
 // a storm crossing it has longitudes that jump from 179 to -179, and a
 // straight line between those two goes the wrong way round the world.
-function _cycDrawTrack(points, style, key, label) {
+// `sink` is which layer list the drawn pieces go on. It defaults to the
+// DeepMind one, so every existing caller is unchanged, but the GEFS ensemble
+// centres below pass their own: two features share this drawing code and must
+// still be able to be turned off independently of each other.
+function _cycDrawTrack(points, style, key, label, sink) {
+  sink = sink || _cycLayers;
   const legs = [[]];
   for (let i = 0; i < points.length; i++) {
     const p = points[i];
@@ -18882,7 +18940,7 @@ function _cycDrawTrack(points, style, key, label) {
     const line = L.polyline(l, { ...style, interactive: false,
                                  pane: 'radarPane' });
     line.addTo(map);
-    _cycLayers.push(line);
+    sink.push(line);
     drawn.push(line);
   });
   if (!drawn.length || !label) return;
@@ -18913,7 +18971,7 @@ function _cycDrawTrack(points, style, key, label) {
     zIndexOffset: 250,
   }).addTo(map);
   tag.on('click', () => _cycFocus(key));
-  _cycLayers.push(tag);
+  sink.push(tag);
   group.tags.push(tag);
 }
 
@@ -19031,6 +19089,154 @@ function _cycDisable() {
   _cycClearMeanTrack();
   const btn = document.getElementById('cyc-mean-btn');
   if (btn) btn.classList.remove('on');
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── GEFS ENSEMBLE CENTRES, FOUND RATHER THAN PUBLISHED ────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// The DeepMind models above are the only ones on this map that hand us
+// tropical cyclones directly: the model states "here is a storm and here is
+// where it goes", and we draw what it said.
+//
+// Every ordinary ensemble carries the same information without ever saying
+// it. A tropical cyclone in GEFS is a closed low in the pressure field with a
+// warm column above it, and that is true in all thirty one members of every
+// run, four times a day. The Pi reads the raw pressure and thickness fields
+// and finds them: closed lows first, then a warm core test to throw out the
+// mid latitude storms, then stitched into tracks. See pi/enscenters_pipeline.py.
+//
+// So this is thirty one more opinions on where a storm goes, from a model
+// nobody has to ask for a cyclone product, and it stays up when DeepMind have
+// not published a run at all.
+//
+// The detection method is adapted, with permission, from Andrew Austin-Adler's
+// Triple-A Tropics (github.com/WeathermanAAA/Triple-A-Tropics).
+
+let _ensOn = false;
+let _ensIndex = null;
+let _ensLayers = [];
+let _ensAt = 0;
+const ENS_TTL = 10 * 60 * 1000;
+
+// Coloured by how strong the track gets, because that is the question a
+// bundle of member lines is otherwise very bad at answering. All fifty look
+// alike at one colour, and the three that spin something up matter far more
+// than the forty seven that do not.
+//
+// The thresholds are the Saffir-Simpson ones people already read: tropical
+// storm at 34 kt, hurricane at 64, major at 96.
+const ENS_BANDS = [
+  { min: 96, color: '#ff5d5d', label: 'major' },
+  { min: 64, color: '#ffb03a', label: 'hurricane' },
+  { min: 34, color: '#ffe86b', label: 'tropical storm' },
+  { min: 0,  color: '#7fd4ff', label: 'depression' },
+];
+const _ensBand = kt => ENS_BANDS.find(b => kt >= b.min) || ENS_BANDS[ENS_BANDS.length - 1];
+
+async function _ensFresh() {
+  if (_ensIndex && Date.now() - _ensAt < ENS_TTL) return _ensIndex;
+  const base = _hdBase || await _hdResolveBase();
+  if (!base) return null;
+  _hdBase = base;
+  const idx = await fetch(`${base}/enscenters/latest.json?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!idx || !idx.path) return _ensIndex;
+  const data = await fetch(`${base}/enscenters/${idx.path}?t=${Date.now()}`,
+                           { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!data) return _ensIndex;
+  _ensIndex = { run: idx.run, data };
+  _ensAt = Date.now();
+  return _ensIndex;
+}
+
+function _ensClear() {
+  _ensLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
+  _ensLayers = [];
+  _cycDropGroups(k => String(k).startsWith('ens|'));
+}
+
+function _ensDisable() {
+  _ensOn = false;
+  _ensClear();
+  _ensSync();
+}
+
+async function _ensToggle() {
+  if (_ensOn) _ensDisable(); else await _ensEnable();
+}
+
+function _ensSync(note) {
+  const btn = document.getElementById('cyc-ens-centres-btn');
+  if (btn) {
+    btn.textContent = _ensOn ? 'Hide GEFS centres' : 'GEFS centres';
+    btn.classList.toggle('on', _ensOn);
+  }
+  const status = document.getElementById('cyc-ens-status');
+  if (status && note !== undefined) status.textContent = note;
+}
+
+async function _ensEnable() {
+  // Same rule as the DeepMind layer: not "on" until there is something drawn,
+  // so a run the Pi has not built yet cannot leave the button reading "Hide"
+  // over an empty map.
+  const idx = await _ensFresh();
+  if (!idx) {
+    _ensOn = false;
+    _ensSync('No ensemble run from the Pi yet. It reads GEFS four times a '
+           + 'day, a few hours after each run publishes.');
+    if (typeof showToast === 'function')
+      showToast('No GEFS ensemble centres from the Pi yet.', 3500);
+    return;
+  }
+  _ensClear();
+  const d = idx.data;
+  const tracks = (d.tracks || []).filter(t => (t.points || []).length >= 2);
+  if (!tracks.length) {
+    _ensOn = false;
+    _ensSync(`Run ${d.run || idx.run}: ${d.members || 0} members, and not one `
+           + 'closed warm core low in any of them. That is what a quiet '
+           + 'tropics looks like, not a failure.');
+    if (typeof showToast === 'function')
+      showToast('The ensemble ran and found no tropical cyclones in it. The '
+              + 'tropics are quiet.', 4000);
+    return;
+  }
+  _ensOn = true;
+
+  // Strongest last, so the majors are drawn over the depressions rather than
+  // buried under forty lines that never became anything.
+  const ranked = tracks.map(t => {
+    const peak = Math.max(...t.points.map(p => p.vmax_kt || 0));
+    return { t, peak };
+  }).sort((a, b) => a.peak - b.peak);
+
+  ranked.forEach(({ t, peak }, i) => {
+    const band = _ensBand(peak);
+    // The point names differ from DeepMind's, so they are mapped once here
+    // rather than teaching the shared drawing and readout code two vocabularies.
+    const pts = t.points.map(p => ({
+      lat: p.lat, lon: p.lon,
+      wind: p.vmax_kt, mslp: p.mslp_hpa, lead: p.step_h,
+    }));
+    const who = String(t.member || '').replace(/^ge[cp]/, '') || String(i);
+    const label = `${who === '00' ? 'CTL' : 'M' + who.replace(/^0+(?=\d)/, '')}`
+                + ` ${Math.round(peak)}kt`;
+    const key = `ens|${t.member || i}|${i}`;
+    _cycDrawTrack(pts, { color: band.color, weight: peak >= 64 ? 2 : 1.2,
+                         opacity: peak >= 64 ? 0.85 : 0.45 },
+                  key, label, _ensLayers);
+    const g = _cycGroups[key];
+    if (g) { g.pts = pts; g.label = label; }
+  });
+
+  const strong = ranked.filter(r => r.peak >= 64).length;
+  _ensSync(`Run ${d.run || idx.run} · ${d.members || 0} members · `
+         + `${tracks.length} track${tracks.length === 1 ? '' : 's'}`
+         + (strong ? ` · ${strong} reaching hurricane strength` : '')
+         + ' · closed warm core lows found in the raw fields');
 }
 
 
@@ -28764,9 +28970,10 @@ function closeSpaghettiModelsPanel() {
   if (btn) btn.classList.remove('active');
   _clearTropTrackLayers();
   _clearSpagModelTracks();
-  // Closing the panel clears its map layers, and the AI cyclone tracks are
-  // its layers now too.
+  // Closing the panel clears its map layers, and the AI cyclone tracks and
+  // the GEFS ensemble centres are its layers now too.
   if (typeof _cycDisable === 'function' && _cycOn) _cycDisable();
+  if (typeof _ensDisable === 'function' && _ensOn) _ensDisable();
 }
 
 function _spaghettiModelsPanelIsOpen() {
@@ -45994,7 +46201,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'NWRchive has a real logo now: an archive folder crossed with a radio, in the header and as the tab icon, with a white cut of it in the GWCFC.net nav.';
+const APP_LATEST_UPDATE = 'New in Spaghetti Models: GEFS Ensemble Centres. The Pi now finds tropical cyclones in the raw GEFS ensemble itself, closed lows with a warm core, all 31 members, coloured by the strength each one reaches. Detection adapted with permission from Triple-A Tropics.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

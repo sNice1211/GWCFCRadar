@@ -127,7 +127,7 @@ for unit in gwcfc-serve.service gwcfc-tunnel.service; do
     fix "systemctl --user restart $unit"
   fi
 done
-for t in gwcfc-models gwcfc-radar gwcfc-sat gwcfc-snd gwcfc-cyclones gwcfc-update; do
+for t in gwcfc-models gwcfc-radar gwcfc-sat gwcfc-snd gwcfc-cyclones gwcfc-ens gwcfc-update; do
   if [ ! -f "$HOME/.config/systemd/user/$t.timer" ]; then
     bad "$t.timer is not installed at all"
     fix "bash $REPO/pi/install.sh"

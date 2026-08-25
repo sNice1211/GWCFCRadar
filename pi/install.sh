@@ -10,6 +10,7 @@
 #   gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
 #   gwcfc-sat       builds the GOES RGB composites, every ten minutes
 #   gwcfc-cyclones  fetches the DeepMind cyclone runs
+#   gwcfc-ens       finds cyclone centres in the raw GEFS ensemble itself
 #   gwcfc-serve     serves them with the header that makes them readable
 #   gwcfc-tunnel    gives them a public HTTPS address
 #   gwcfc-publish   tells the site that address, so nobody has to paste it
@@ -67,7 +68,7 @@ fi
 # ── 1. system packages ──────────────────────────────────────────────────────
 say "System packages"
 NEED=()
-for p in python3-venv python3-numpy python3-pillow python3-requests libeccodes-tools ffmpeg; do
+for p in python3-venv python3-numpy python3-scipy python3-pillow python3-requests libeccodes-tools ffmpeg; do
   dpkg -s "$p" >/dev/null 2>&1 || NEED+=("$p")
 done
 if [ ${#NEED[@]} -gt 0 ]; then
@@ -502,6 +503,39 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# The ensemble centre finder is a separate service from the DeepMind one even
+# though both end up in the same panel, because they fail for different reasons
+# and on different clocks. DeepMind either published a run or did not. This one
+# downloads a few hundred byte ranges out of thirty one GEFS members and takes
+# the best part of an hour, so a stall here must not take the cyclone tracks
+# down with it.
+cat > "$UNITS/gwcfc-ens.service" <<EOF
+[Unit]
+Description=Find cyclone centres in the raw GEFS ensemble
+
+[Service]
+Type=oneshot
+ExecStart=$VENV/bin/python $REPO/pi/enscenters_pipeline.py
+TimeoutStartSec=5400
+Nice=15
+EOF
+
+cat > "$UNITS/gwcfc-ens.timer" <<'EOF'
+[Unit]
+Description=Ensemble cyclone centres, once per GEFS run
+
+[Timer]
+# GEFS runs four times a day and its half degree files land about four hours
+# later. Starting at 04, 10, 16 and 22 picks each run up shortly after it is
+# complete, and nothing is gained by asking sooner: the members simply are not
+# there yet and every request is a 404.
+OnCalendar=*-*-* 04,10,16,22:35
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # Keeping itself current. Without this the Pi runs whatever was cloned until
 # somebody remembers to pull, which is how it ends up an hour of debugging away
 # from a bug that was fixed days ago.
@@ -631,6 +665,7 @@ systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-sat.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-snd.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
+systemctl --user enable --now gwcfc-ens.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-feeds.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
 systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1
@@ -647,7 +682,7 @@ fi
 # still has it, so a dead timer does not keep firing a script that is gone.
 systemctl --user disable --now gwcfc-obs.timer gwcfc-obs.service >/dev/null 2>&1 || true
 rm -f "$UNITS/gwcfc-obs.service" "$UNITS/gwcfc-obs.timer"
-ok "serve, tunnel, publish, models, radar, cyclones and self-update are running"
+ok "serve, tunnel, publish, models, radar, cyclones, ensemble centres and self-update are running"
 
 # ── 5. the address ──────────────────────────────────────────────────────────
 say "Public address"
