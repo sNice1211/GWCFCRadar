@@ -1495,6 +1495,26 @@ body {
   border-radius: 10px;
   padding: 6px 7px;
 }
+/* The card that just came in, marked for a few seconds after its panel is
+   raised. A panel appearing on its own answers "something happened"; this is
+   what answers "which one", which during severe weather is a list of twenty
+   rows where the new one is rarely at the top.
+   Ring only, no movement: a row that slides or bounces is harder to read,
+   and this arrives at exactly the moment reading it matters. */
+@keyframes alert-just-in {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,213,79,0); }
+  50%      { box-shadow: 0 0 0 2px rgba(255,213,79,0.85),
+                         0 0 14px 2px rgba(255,213,79,0.35); }
+}
+.alert-just-in {
+  animation: alert-just-in 1.2s ease-in-out 4;
+  border-radius: 8px;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Still marked, just not pulsing. */
+  .alert-just-in { animation: none;
+                   box-shadow: 0 0 0 2px rgba(255,213,79,0.85); }
+}
 #alerts-panel::-webkit-scrollbar { width: 3px; }
 #alerts-panel::-webkit-scrollbar-thumb { background: var(--border2); }
 #alerts-drag {
@@ -10919,8 +10939,13 @@ function _popCss(accent) {
   };
   const s = SKIN[accent] || SKIN['#ff5555'];
   return `
+    @import url('https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;500;600;700&display=swap');
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
+    /* Buttons and inputs reset themselves to the system face, and a mirrored
+       row can contain either, so they are pinned back the same way the page
+       pins them. */
+    button, input, select, textarea { font-family: 'Comfortaa', sans-serif; }
     /* A pop-out is a separate document, so the page's own stylesheet does not
        reach it. The surface system is restated here in miniature rather than
        linked, because a pinned window that looks like a different app from
@@ -10930,7 +10955,13 @@ function _popCss(accent) {
       background: ${s.body[1]};
       background-image: linear-gradient(180deg, ${s.body[0]} 0%, ${s.body[1]} 100%);
       background-attachment: fixed;
-      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      /* Comfortaa, the same as the panel it mirrors. A pop-out is a separate
+         document and gets none of the page's cascade, so the family has to be
+         stated here or the pinned window comes up in the system face and
+         reads as a different app from the panel it came out of. The @import
+         at the top of this sheet is what actually fetches it. */
+      font-family: 'Comfortaa', system-ui, -apple-system, sans-serif;
+      font-weight: 700;
       font-size: 13px; line-height: 1.45;
       -webkit-font-smoothing: antialiased;
     }
@@ -10944,12 +10975,14 @@ function _popCss(accent) {
       border-bottom: 1px solid ${accent}55;
     }
     header .t {
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      /* The page's own "mono" is Comfortaa too, so these two runs were the
+         only monospace left anywhere in the app. */
+      font-family: 'Comfortaa', sans-serif;
       font-size: 10px; letter-spacing: 2px; text-transform: uppercase;
       color: ${accent};
     }
     header .c {
-      font-family: ui-monospace, monospace; font-size: 10px;
+      font-family: 'Comfortaa', sans-serif; font-size: 10px;
       color: ${s.dim}; margin-right: auto;
     }
     header .s { font-size: 10px; color: ${s.dim}; }
@@ -11008,6 +11041,14 @@ function _popOutPanel(which) {
     + `<title>${spec.title} - GWCFC Radar</title>`
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
     + '<link rel="icon" type="image/png" href="./icons/icon-192.png">'
+    // A real link as well as the @import inside the sheet: a link starts
+    // fetching while the document is still parsing, where an @import cannot
+    // begin until the sheet holding it has arrived. Without this the window
+    // paints once in the system face and then reflows into Comfortaa, which
+    // is a visible jump on a window that is often opened mid-warning.
+    + '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    + '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
+    + 'family=Comfortaa:wght@400;500;600;700&display=swap">'
     + `<style>${_popCss(spec.accent)}</style></head><body>`
     + `<header><span class="t">${spec.icon} ${spec.title}</span>`
     + '<span class="c" id="pc">-</span>'
@@ -11119,6 +11160,29 @@ const _PIP_SPEC = {
 };
 let _pip = null;   // { which, canvas, ctx, video, stream, timer }
 
+// Canvas takes a CSS font string and silently falls back to the system face
+// when the family is not available, which is how the floating window ended up
+// in a different typeface from the panel it was showing. Named once here so
+// the half dozen font strings below cannot drift apart.
+const _PIP_FONT = "'Comfortaa', system-ui, sans-serif";
+let _pipFontReady = false;
+
+// A web font is not usable on a canvas until it has actually downloaded, and
+// canvas gives no signal either way: it just draws in the fallback. So the
+// weights are asked for up front, and the first frames after the window opens
+// are redrawn once they land.
+function _pipLoadFont() {
+  if (_pipFontReady || !document.fonts || !document.fonts.load) {
+    _pipFontReady = true;
+    return Promise.resolve();
+  }
+  return Promise.all([
+    document.fonts.load("bold 15px 'Comfortaa'"),
+    document.fonts.load("13px 'Comfortaa'"),
+    document.fonts.load("italic 13px 'Comfortaa'"),
+  ]).then(() => { _pipFontReady = true; }).catch(() => { _pipFontReady = true; });
+}
+
 function _pipSupported() {
   try {
     if (typeof HTMLCanvasElement === 'undefined'
@@ -11212,7 +11276,7 @@ function _pipDraw() {
 
   ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = spec.accent;
-  ctx.font = 'bold 15px system-ui, sans-serif';
+  ctx.font = 'bold 15px ' + _PIP_FONT;
   ctx.fillText(spec.title, 12, 24);
   const now = new Date();
   const hh = now.getHours(), mm = String(now.getMinutes()).padStart(2, '0');
@@ -11221,7 +11285,7 @@ function _pipDraw() {
   const cTxt = cEl ? (cEl.textContent || '').trim() : '';
   ctx.textAlign = 'right';
   ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  ctx.font = '12px system-ui, sans-serif';
+  ctx.font = '12px ' + _PIP_FONT;
   ctx.fillText((cTxt && cTxt !== '-' ? cTxt + '   ' : '') + clock, w - 12, 24);
   ctx.textAlign = 'left';
   ctx.strokeStyle = spec.accent; ctx.globalAlpha = 0.45;
@@ -11232,14 +11296,14 @@ function _pipDraw() {
   let y = 44;
   if (!rows.length) {
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.font = 'italic 13px system-ui, sans-serif';
+    ctx.font = 'italic 13px ' + _PIP_FONT;
     ctx.fillText(spec.empty, 12, y + 14);
   }
   for (const r of rows) {
     if (y > h - 30) break;
-    const titleFont = r.big ? 'bold 16px system-ui, sans-serif'
-                            : 'bold 13px system-ui, sans-serif';
-    ctx.font = '11px system-ui, sans-serif';
+    const titleFont = r.big ? 'bold 16px ' + _PIP_FONT
+                            : 'bold 13px ' + _PIP_FONT;
+    ctx.font = '11px ' + _PIP_FONT;
     const bodyLines = r.body ? _pipWrap(ctx, r.body, w - 44, 2) : [];
     const cardH = (r.big ? 26 : 22) + bodyLines.length * 14 + 8;
     ctx.fillStyle = 'rgba(255,255,255,0.06)';
@@ -11254,12 +11318,12 @@ function _pipDraw() {
     if (r.tag) {
       ctx.textAlign = 'right';
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
-      ctx.font = '10px system-ui, sans-serif';
+      ctx.font = '10px ' + _PIP_FONT;
       ctx.fillText(r.tag, w - 16, y + 16);
       ctx.textAlign = 'left';
     }
     ctx.fillStyle = 'rgba(255,255,255,0.66)';
-    ctx.font = '11px system-ui, sans-serif';
+    ctx.font = '11px ' + _PIP_FONT;
     bodyLines.forEach((ln, i) => ctx.fillText(ln, 20, y + (r.big ? 26 : 22) + 12 + i * 14));
     y += cardH + 6;
   }
@@ -11289,7 +11353,12 @@ async function _pipToggle(which) {
   video.style.cssText = 'position:fixed;left:0;bottom:0;width:2px;height:2px;'
                       + 'opacity:0.01;pointer-events:none;z-index:-1;';
   _pip = { which, canvas, ctx, video, stream, timer: null };
+  // Draw immediately so the stream has a frame to hand to the browser, then
+  // draw again once Comfortaa has arrived. Waiting for the font first would
+  // mean the video has no frame yet when picture-in-picture is requested,
+  // which is the one thing that makes the request fail outright.
   _pipDraw();
+  _pipLoadFont().then(() => { if (_pip) _pipDraw(); });
   video.srcObject = stream;
   document.body.appendChild(video);
   try {
@@ -11371,6 +11440,151 @@ function toggleEASPanel() {
     panel.style.display = 'flex';
     loadEASAlerts();
   }
+}
+
+// ── AUTO-RAISE: an alert brings its panel to the top of the screen ────────
+//
+// A warning is worth nothing sitting behind the map in a panel that happens
+// to be closed. When one is issued, its panel opens itself, comes to the
+// front, and puts the new card where the eye already is.
+//
+// "Unless a specific area is selected" is the whole of the subtlety. Someone
+// watching one county does not want the panel jumping at them every time a
+// warning fires two states away, so when an area IS set the raise only fires
+// for alerts inside it. The area is not an off switch; it is a filter on
+// which alerts count as worth interrupting for.
+//
+// The two panels learn about their area differently:
+//
+//   WX alerts  carry geometry, so the drawn polygon filter already narrows
+//              the list this reads from. Only the home location has to be
+//              checked here, against the alert's own area description.
+//   EAS        carries no coordinates at all, which is why the panel already
+//              prints a note saying the polygon filter cannot touch it. So
+//              for EAS the home location is the only area there is.
+
+// Panels share a z-index, so the one being raised needs to end up above the
+// other. A counter rather than a fixed pair of numbers, because whichever
+// fired most recently is the one that should be on top.
+let _panelFrontZ = 900;
+
+function _alertHomeTerms() {
+  if (typeof _homeLocation === 'undefined' || !_homeLocation) return [];
+  return [_homeLocation.county, _homeLocation.city, _homeLocation.state]
+    .filter(Boolean).map(t => String(t).toLowerCase().trim()).filter(Boolean);
+}
+
+// Whether the person has told the app which patch of ground they care about,
+// by either route: a polygon drawn on the map, or a home location typed into
+// notification settings.
+function _alertsAreaSelected() {
+  if (_alertHomeTerms().length) return true;
+  try {
+    return !!(typeof _polyFilter !== 'undefined'
+              && _polyFilter.active && _polyFilter.polygons.length);
+  } catch (e) { return false; }
+}
+
+// Does this alert fall in the area the person picked? Called only when an
+// area IS picked; with none set every alert qualifies and this is not asked.
+function _alertInHomeArea(text) {
+  const terms = _alertHomeTerms();
+  if (!terms.length) return true;          // area is a polygon, already applied
+  const hay = String(text || '').toLowerCase();
+  return terms.some(t => hay.includes(t));
+}
+
+// Bring a panel to the front and put it where it can be read.
+//
+// Deliberately not a full reset of the panel's position. Someone who has
+// dragged the panel somewhere on purpose should keep it there, so the move
+// only happens when the panel is not actually visible where it sits, which
+// is the case that "come to the top of the screen" is really about.
+function _raiseAlertPanel(which, card) {
+  const id = which === 'eas' ? 'eas-panel' : 'alerts-panel';
+  const panel = document.getElementById(id);
+  if (!panel) return;
+
+  const wasClosed = panel.style.display !== 'flex';
+  if (wasClosed) {
+    // Shown directly rather than through the panel's own toggle. The toggle
+    // exists for a click on a panel that may hold nothing, so opening the EAS
+    // one re-fetches the feed and repaints the body from scratch. Here the
+    // body was just painted, by the render that called this, and the card
+    // about to be marked is one of the elements that repaint would destroy.
+    // So the marking landed on a node that no longer existed and the ring
+    // never appeared, while the panel opened perfectly and looked fine.
+    panel.style.display = 'flex';
+  }
+
+  panel.style.setProperty('z-index', String(++_panelFrontZ), 'important');
+
+  // Only reposition when it cannot be read where it is: dragged off the
+  // screen edge, or scrolled down past the fold on a phone.
+  try {
+    const r = panel.getBoundingClientRect();
+    const offscreen = r.bottom < 40 || r.top > window.innerHeight - 40
+                   || r.right < 40 || r.left > window.innerWidth - 40;
+    if (wasClosed || offscreen) {
+      panel.style.setProperty('position', 'fixed', 'important');
+      panel.style.setProperty('top', '80px', 'important');
+      panel.style.setProperty('bottom', 'auto', 'important');
+      panel.style.setProperty('right', 'auto', 'important');
+      panel.style.setProperty('left', '50%', 'important');
+      panel.style.setProperty('transform', 'translateX(-50%)', 'important');
+    }
+  } catch (e) {}
+
+  // If this panel has been popped out into its own window, that window is
+  // where the person is actually looking, so bring it forward as well. Best
+  // effort on purpose: browsers refuse to focus a window without a user
+  // gesture behind it, and there is no way to ask whether this one will. When
+  // it is refused nothing breaks, and the panel on the page has already been
+  // raised either way.
+  try {
+    if (typeof _popIsOpen === 'function' && _popIsOpen(which)) {
+      _popWins[which].win.focus();
+    }
+  } catch (e) {}
+
+  // The new card, not the top of the list: during severe weather the list is
+  // long and the newest row is rarely the first one.
+  if (card) {
+    try { card.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+    catch (e) { try { card.scrollIntoView(); } catch (e2) {} }
+    card.classList.add('alert-just-in');
+    setTimeout(() => card.classList.remove('alert-just-in'), 6000);
+  }
+}
+
+// Ids already seen, so "new" means new rather than "rendered again". Seeded
+// on the first pass without raising anything: everything is new on the first
+// load of the day, and a panel that flings itself open on page load for a
+// warning issued an hour ago is noise, not an alert.
+const _alertSeen = { alerts: null, eas: null };
+
+// `items` is [{ id, area, card }]. Returns the card to scroll to, or null.
+function _alertNoteNew(which, items) {
+  const ids = new Set(items.map(i => i.id).filter(Boolean));
+  const first = _alertSeen[which] === null;
+  const seen = first ? new Set() : _alertSeen[which];
+  _alertSeen[which] = ids;
+  if (first) return null;
+
+  const gated = _alertsAreaSelected();
+  for (const it of items) {
+    if (!it.id || seen.has(it.id)) continue;
+    if (gated && !_alertInHomeArea(it.area)) continue;
+    return it.card || null;
+  }
+  return null;
+}
+
+// Called by both renderers once they have built their cards.
+function _alertMaybeRaise(which, items) {
+  let card = null;
+  try { card = _alertNoteNew(which, items); } catch (e) { return; }
+  if (card) _raiseAlertPanel(which, card);
 }
 
 // ── EAS API , powered by https://alerts.globaleas.org/swagger/v1/swagger.json (OAS 3.0) ──
@@ -11538,6 +11752,11 @@ function renderEASAlerts(alerts, isRecent) {
 
   countEl.textContent = isRecent ? `pg ${_easRecentPage} · ${alerts.length}` : alerts.length + ' active';
 
+  // Same collection as the warnings panel, so a new EAS activation brings
+  // its panel forward. EAS carries no coordinates, so a drawn polygon cannot
+  // narrow it (the note above says exactly that); the home location is the
+  // only area this can be gated on.
+  const _raiseItems = [];
   alerts.forEach(a => {
     const card = document.createElement('div');
     const hasAudio = !!a.audioUrl;
@@ -11579,7 +11798,19 @@ function renderEASAlerts(alerts, isRecent) {
       btn.onclick = (e) => { e.stopPropagation(); playEASAudio(a.audioUrl, card, alertId); };
     }
     body.appendChild(card);
+    _raiseItems.push({
+      id: String(a.id || a.hash || ''),
+      area: [a.translation, (a.fipsCodes || []).join(' '), a.originator,
+             a.callsign].filter(Boolean).join(' '),
+      card,
+    });
   });
+  // Not while the Recent tab is open: that is someone reading back through
+  // history, and yanking the panel around under them would be the opposite
+  // of helpful. The seen list is still updated, so switching back to Active
+  // does not then treat every current alert as brand new.
+  if (isRecent) { _alertSeen.eas = new Set(_raiseItems.map(i => i.id)); }
+  else _alertMaybeRaise('eas', _raiseItems);
 
   // ── Pagination footer (Recent mode only, 10 per page) ──
   if (isRecent) {
@@ -12124,6 +12355,10 @@ function renderAlerts(features) {
   if (!filtered.length) {
     body.innerHTML = '<div class="alerts-empty">No active alerts</div>';
   }
+  // Collected as the cards are built so a newly issued alert can bring the
+  // panel to the front. `filtered` is the list the polygon filter has already
+  // narrowed, so a drawn area gates this for free.
+  const _raiseItems = [];
   filtered.slice(0, 20).forEach(f => {
     const p = f.properties;
     const ev = p.event || '';
@@ -12165,7 +12400,10 @@ div.onclick = () => {
 };
 
     body.appendChild(div);
+    _raiseItems.push({ id: div.dataset.alertId,
+                       area: (p.areaDesc || '') + ' ' + ev, card: div });
   });
+  _alertMaybeRaise('alerts', _raiseItems);
 }
 
 function _fmtAlertTime(iso) {
@@ -45756,7 +45994,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Models: 13 more of them (59 total) and 97 products instead of 29, grouped and properly named. Severe weather, aviation, simulated satellite, upper air at every level, waves and smoke.';
+const APP_LATEST_UPDATE = 'The WX and EAS alert panels now open themselves and come to the front when a warning is issued, with the new one ringed. If you have picked an area, only alerts inside it do that. Both pop-outs are Comfortaa now.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
