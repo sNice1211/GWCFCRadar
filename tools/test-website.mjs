@@ -152,7 +152,55 @@ console.log('\n3. the rule that fixes it, and that the font really arrived');
   }
 }
 
-console.log('\n4. house rules');
+console.log('\n4. the NWRchive mark in the nav');
+{
+  const html = readFileSync(SITE, 'utf8');
+  ok('the nav no longer uses the stock archive box glyph',
+     !html.includes('M20.54 5.23L19.15 3.55C18.88'));
+  // Read out of the DOM rather than matched in the source. A window-limited
+  // regex between the href and the geometry is a guess at how long the markup
+  // is, and this markup is longer than the guess: the check failed while the
+  // icon was perfectly correct.
+  ok('it uses the NWRchive mark instead',
+     await page.evaluate(() => {
+       const a = [...document.querySelectorAll('.nav-links a')]
+         .find(x => (x.getAttribute('href') || '').includes('nwrchive'));
+       const svg = a && a.querySelector('svg');
+       return !!svg && svg.querySelectorAll('rect').length === 4
+              && !!svg.querySelector('[fill-rule="evenodd"]')
+              && !!svg.querySelector('circle');
+     }));
+  // One colour, so the radio face has to be a hole punched through the folder
+  // rather than a second fill. Without the even-odd rule the face fills solid
+  // and the mark becomes a blank folder.
+  ok('the face is punched through with the even-odd rule, not filled over',
+     /fill-rule="evenodd"/.test(html));
+  const r = await page.evaluate(() => {
+    const a = [...document.querySelectorAll('.nav-links a')]
+      .find(x => (x.getAttribute('href') || '').includes('nwrchive'));
+    if (!a) return null;
+    const svg = a.querySelector('svg');
+    const cs = getComputedStyle(svg);
+    // The arcs are strokes and the folder is a fill. Both say currentColor,
+    // so both have to resolve to the link's own colour: a consumer that sets
+    // only fill would leave the strokes behind, which is exactly how an
+    // earlier draft lost its antenna on a light background.
+    const arc = svg.querySelector('g[stroke]');
+    return { fill: cs.fill, color: cs.color,
+             stroke: arc ? getComputedStyle(arc).stroke : null,
+             w: cs.width };
+  });
+  ok('the nav link has the mark', !!r);
+  if (r) {
+    ok('it is drawn at the nav icon size', r.w === '22px', r.w);
+    ok('its fill follows the link colour', r.fill === r.color,
+       `${r.fill} vs ${r.color}`);
+    ok('and so does its stroke, so the aerial does not vanish',
+       r.stroke === r.color, `${r.stroke} vs ${r.color}`);
+  }
+}
+
+console.log('\n5. house rules');
 {
   const html = readFileSync(SITE, 'utf8');
   ok('no em dash anywhere in the page', !html.includes(String.fromCharCode(0x2014)));

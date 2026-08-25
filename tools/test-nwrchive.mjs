@@ -19,7 +19,11 @@ const ok = (name, cond, extra) => {
 
 console.log('\n1. the source');
 const html = readFileSync(join(ROOT, 'nwrchive.html'), 'utf8');
-ok('no em dash anywhere in the page', !html.includes('—'));
+// Built from its code point rather than written out, so this file can
+// check for the character without containing one and breaking the rule
+// it is checking.
+const EM_DASH = String.fromCharCode(0x2014);
+ok('no em dash anywhere in the page', !html.includes(EM_DASH));
 ok('the home page nav already points at this exact filename',
    /href="nwrchive\.html"/.test(readFileSync(join(ROOT, 'index (3).html'), 'utf8')));
 ok('all six sketch regions exist',
@@ -345,5 +349,30 @@ console.log('\n6. nothing threw');
 ok('no uncaught page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();
+console.log('\nthe logo in the header');
+{
+  // The mark is a folder crossed with a radio, drawn with three gradients.
+  // Checked by name rather than by shape: the geometry is allowed to be
+  // tweaked, the identity is not.
+  ok('the header carries the new mark, not the old generic radio glyph',
+     html.includes('nwr-folder') && html.includes('nwr-face')
+     && !html.includes('M3.4 6.8 16.2 2l.7 1.9L9.5 6.5H20a2 2 0'));
+  ok('all three gradients are defined',
+     ['nwr-folder', 'nwr-face', 'nwr-trim'].every(g => html.includes(`id="${g}"`)));
+  ok('every gradient it paints with is one it defined',
+     [...html.matchAll(/url\(#(nwr-[a-z]+)\)/g)]
+       .every(m => html.includes(`id="${m[1]}"`)),
+     [...html.matchAll(/url\(#(nwr-[a-z]+)\)/g)].map(m => m[1]).join(','));
+  // The header is red and so is the radio face, so the mark needs something
+  // to sit against or the face melts into the bar.
+  ok('the mark sits on a dark plate, since red on red has no edge',
+     /\.brand \.badge \{[^}]*background: rgba\(0,0,0,0\.34\)/.test(html));
+  ok('and the old gold ring is gone, because the folder is gold too',
+     !/\.brand \.badge \{[^}]*border: 3px solid var\(--gold\)/.test(html));
+  ok('the page finally has a favicon', /rel="icon"/.test(html));
+  ok('and it is the mark rather than a stock glyph',
+     /rel="icon"[^>]*nwr-folder/.test(html));
+}
+
 console.log(fail ? `\n${fail} FAILED, ${pass} passed` : `\nall ${pass} passed`);
 process.exit(fail ? 1 : 0);
