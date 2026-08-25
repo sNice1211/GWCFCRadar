@@ -381,6 +381,83 @@ console.log('\n5. the app\'s real Storm Cone tool, running in the portal');
      icons.keys.join(','));
 }
 
+console.log('\n5b. real mouse clicks, not just fired events');
+{
+  // Every check above fires Leaflet events directly, which is exactly how the
+  // multi-point bug hid: with a real pointer, the preview drawn after the
+  // first click sat under the cursor and swallowed the second one, so no
+  // second point could ever be placed. These use the actual mouse.
+  await page.evaluate(() => {
+    if (typeof deactivateTool === 'function') deactivateTool();
+    if (typeof _scClearAll === 'function') _scClearAll();
+    _scMultiPts = [];
+    _scTrack = null;
+    OUTLOOK.areas.length = 0;
+  });
+  await page.click('#btn-cone');
+  await page.waitForTimeout(150);
+  await page.selectOption('#sc-mode-sel', 'multi');
+  await page.waitForTimeout(150);
+  for (const [x, y] of [[300, 250], [480, 280], [660, 310], [840, 340]]) {
+    await page.mouse.move(x - 30, y + 15);
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(160);
+  }
+  const cone = await page.evaluate(() => ({
+    pts: _scMultiPts.length,
+    dotsPassThrough: (() => {
+      let blocking = 0;
+      if (_scDotLayer) _scDotLayer.eachLayer(l => { if (l.options.interactive) blocking++; });
+      return blocking === 0;
+    })(),
+  }));
+  ok('a real mouse can place every point of a multi-point cone, not just the first',
+     cone.pts === 4, cone.pts + ' points landed');
+  ok('and the preview dots stay out of the way while placing',
+     cone.dotsPassThrough);
+
+  await page.click('#sc-finish-btn');
+  await page.waitForTimeout(250);
+  const done = await page.evaluate(() => ({
+    ring: _scTrack && _scTrack.ring ? _scTrack.ring.length : 0,
+    publishable: portalSerializeCones().length,
+    dotsBack: (() => {
+      let live = 0;
+      if (_scDotLayer) _scDotLayer.eachLayer(l => { if (l.options.interactive) live++; });
+      return live > 0;
+    })(),
+  }));
+  ok('finishing builds the cone and hands it to publish',
+     done.ring > 10 && done.publishable >= 1, JSON.stringify(done));
+  ok('and the dots become clickable again, so the Points editor still works',
+     done.dotsBack);
+
+  // The same trap in the portal's own zone tool. The cone toolbar is closed
+  // first: it genuinely sits over the lower half of the map, and a visible
+  // toolbar taking a click is a toolbar doing its job, not a bug.
+  await page.evaluate(() => {
+    deactivateTool();
+    const tb = document.getElementById('stormcone-toolbar');
+    if (tb) tb.classList.remove('visible');
+    const st = document.getElementById('stormcone-status');
+    if (st) st.style.display = 'none';
+  });
+  await page.waitForTimeout(120);
+  await page.evaluate(() => armArea('chance', 'high'));
+  for (const [x, y] of [[300, 300], [430, 255], [560, 330], [470, 420]]) {
+    await page.mouse.move(x, y);
+    await page.mouse.click(x, y);
+    await page.waitForTimeout(200);
+  }
+  const zone = await page.evaluate(() => {
+    const n = ZONE ? ZONE.pts.length : 0;
+    zoneBarFinish();
+    return { n, areas: OUTLOOK.areas.length };
+  });
+  ok('a real mouse can click out every corner of a zone too',
+     zone.n === 4 && zone.areas === 1, JSON.stringify(zone));
+}
+
 console.log('\n6. the app\'s real Alert Desk, running in the portal');
 {
   const r = await page.evaluate(() => {
@@ -436,7 +513,7 @@ console.log('\n7. publishing');
      (r.doc.cones || []).length >= 1 && (r.doc.cones[0].ring || []).length > 3
        && (r.doc.alerts || []).length === 1
        && r.doc.alerts[0].code === 'TOR'
-       && (r.doc.areas || []).length === 3 && !!r.doc.issued
+       && (r.doc.areas || []).length >= 1 && !!r.doc.issued
        && !!r.doc.forecaster && !!r.doc.view,
      JSON.stringify({ keys: Object.keys(r.doc), cones: (r.doc.cones || []).length,
        alerts: (r.doc.alerts || []).length }));

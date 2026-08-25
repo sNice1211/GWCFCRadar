@@ -272,6 +272,21 @@ button, input, select, textarea { font-family: var(--font); }
   padding: 4px 14px; border-radius: 999px;
   pointer-events: none; white-space: nowrap; max-width: 92vw; overflow: hidden;
 }
+/* While a point is being placed, nothing already on the map may take the
+   click: a finished area, a storm marker or a cone dot sitting under the
+   cursor would swallow it, and the click would never reach the map. This is
+   only on during placement, so clicking a shape to remove or edit it still
+   works the rest of the time. */
+/* Leaflet puts pointer-events back on every interactive marker and path, and
+   a child saying "auto" beats an ancestor saying "none", so the shapes have
+   to be silenced one by one rather than by their pane. */
+#map.placing .leaflet-marker-icon,
+#map.placing .leaflet-marker-shadow,
+#map.placing .leaflet-interactive,
+#map.placing .leaflet-overlay-pane path,
+#map.placing .leaflet-tooltip,
+#map.placing .leaflet-popup { pointer-events: none !important; }
+
 #zone-bar {
   position: absolute; left: 50%; transform: translateX(-50%);
   bottom: calc(21.5% + 60px); z-index: 620;
@@ -1060,12 +1075,32 @@ function buildTools() {
     + ';color:' + a.text + ';text-shadow:none" onclick="armArea(\'alert\',\'' + a.id + '\')">'
     + a.label + '</span>').join('');
 }
+// Placement is on when a symbol is armed, an area is being clicked out, a
+// boundary is being picked, or a multi-point cone is part way through.
+function portalPlacing() {
+  if (typeof ARMED !== 'undefined' && ARMED) return true;
+  if (typeof ZONE !== 'undefined' && ZONE) return true;
+  if (typeof PICK !== 'undefined' && PICK) return true;
+  try {
+    if (activeTool === 'stormcone') {
+      if (_scMode === 'multi') return _scMultiPts.length > 0;
+      return _scDrawing || !!_scFirstPoint;
+    }
+  } catch (e) {}
+  return false;
+}
+function portalSyncPlacing() {
+  const el = document.getElementById('map');
+  if (el) el.classList.toggle('placing', portalPlacing());
+}
+
 function clearArm() {
   ARMED = null;
   document.querySelectorAll('.symbtn.arm, .chipbtn.arm').forEach(e => e.classList.remove('arm'));
   document.getElementById('armnote').style.display = 'none';
   const el = document.getElementById('map');
   if (el) el.style.cursor = '';
+  portalSyncPlacing();
 }
 function showArm(text, sel) {
   document.querySelectorAll('.symbtn.arm, .chipbtn.arm').forEach(e => e.classList.remove('arm'));
@@ -1075,6 +1110,7 @@ function showArm(text, sel) {
   n.textContent = text;
   n.style.display = 'block';
   document.getElementById('map').style.cursor = 'crosshair';
+  portalSyncPlacing();
 }
 function armStorm(cat) {
   if (ARMED && ARMED.kind === 'storm' && ARMED.cat === cat) return clearArm();
@@ -1119,12 +1155,16 @@ function zonePreview() {
   if (!ZONE || !_zoneTmp) return;
   _zoneTmp.clearLayers();
   const spec = ZONE.type === 'chance' ? chanceOf(ZONE.level) : alertOf(ZONE.level);
+  // Everything in the preview is non-interactive on purpose: the next corner
+  // is often clicked straight onto the line or a dot already drawn, and an
+  // interactive shape would eat that click instead of the map taking it.
   if (ZONE.pts.length > 1) {
-    L.polyline(ZONE.pts, { color: spec.color, weight: 3, dashArray: '6 5' })
-     .addTo(_zoneTmp);
+    L.polyline(ZONE.pts, { color: spec.color, weight: 3, dashArray: '6 5',
+                           interactive: false }).addTo(_zoneTmp);
   }
   ZONE.pts.forEach(pt => L.circleMarker(pt, { radius: 4, color: '#fff',
-    fillColor: spec.color, fillOpacity: 1, weight: 2 }).addTo(_zoneTmp));
+    fillColor: spec.color, fillOpacity: 1, weight: 2,
+    interactive: false }).addTo(_zoneTmp));
 }
 function zoneUndo() {
   if (!ZONE || !ZONE.pts.length) return;
@@ -1339,8 +1379,9 @@ async function pickClick(e) {
 }
 function zoneDrawTemp(z, color) {
   if (!_zoneTmp) _zoneTmp = L.layerGroup().addTo(map);
-  L.geoJSON(z.geometry, { style: { color, weight: 3, fillColor: color,
-                                   fillOpacity: 0.2, dashArray: '5 5' } }).addTo(_zoneTmp);
+  L.geoJSON(z.geometry, { interactive: false,
+    style: { color, weight: 3, fillColor: color,
+             fillOpacity: 0.2, dashArray: '5 5' } }).addTo(_zoneTmp);
 }
 function pickFinish() {
   if (!PICK) return;
@@ -4605,6 +4646,7 @@ function _scMultiUndo() {
 }
 
 function _scMultiFinish() {
+  setTimeout(() => { try { portalSyncPlacing(); } catch (e) {} }, 0);
   if (_scMode !== 'multi' || _scMultiPts.length < 2) return;
   _scTrack = _scBuildMultiTrack(_scMultiPts,
     _scTrack && _scTrack.mode === 'multi' ? _scTrack : null);
@@ -4702,6 +4744,7 @@ function _scClosePanel() {
 })();
 
 function _scRenderCone() {
+  try { portalSyncPlacing(); } catch (e) {}
   // Clear previous cone + decorations
   if (_scPolygon) { map.removeLayer(_scPolygon); _scPolygon = null; }
   if (_scCenterLine) { map.removeLayer(_scCenterLine); _scCenterLine = null; }
@@ -4751,14 +4794,23 @@ function _scRenderCone() {
       if (!pt) continue;
       const selected = _scEditingPointIdx === i;
       const cat = _scTrack.pointCats && _scTrack.pointCats[i];
+      // While a multi-point cone is still being clicked out, the preview's
+      // dots must not take the clicks meant for the map. They sit right where
+      // the cursor is about to land, and an interactive dot swallows the
+      // event before Leaflet ever tells the map about it, which is exactly
+      // why the second point could never be placed. Once the cone is
+      // finished they go back to being clickable, so the Points editor still
+      // works.
+      const placing = _scMode === 'multi' && _scMultiPts.length > 0;
       const marker = cat
-        ? L.marker(pt, { icon: _ttbMakeIcon(cat, selected), interactive: true })
+        ? L.marker(pt, { icon: _ttbMakeIcon(cat, selected), interactive: !placing })
         : L.circleMarker(pt, {
             radius: selected ? 7 : 4, color: selected ? '#4a9eff' : _scStyle.dotStroke, weight: selected ? 2.5 : 1.5,
-            fillColor: _scStyle.dotFill, fillOpacity: 0.95, interactive: true, bubblingMouseEvents: false,
+            fillColor: _scStyle.dotFill, fillOpacity: 0.95,
+            interactive: !placing, bubblingMouseEvents: !placing,
           });
       marker.on('click', () => _scOnDotClick(i));
-      marker.bindTooltip(_scFormatOffset(times[i]), { permanent: true, direction: 'top', offset: [0, cat ? -14 : -6], className: 'sc-dot-time' });
+      marker.bindTooltip(_scFormatOffset(times[i]), { permanent: true, direction: 'top', offset: [0, cat ? -14 : -6], className: 'sc-dot-time', interactive: false });
       markers.push(marker);
       _scDotIndices.push(i);
     }
@@ -5292,6 +5344,7 @@ function _scNew() {
 
 // Remove every cone (active + committed) - used by "Clear all drawings"
 function _scClearAll() {
+  setTimeout(() => { try { portalSyncPlacing(); } catch (e) {} }, 0);
   _scCones.forEach(c => [c.polygon, c.centerLine, c.dotLayer].forEach(l => { if (l) { try { map.removeLayer(l); } catch(e){} } }));
   _scCones = [];
   _scTrack = null;
