@@ -50,6 +50,18 @@ BOUNDS_LATLON = [[20.0, -130.0], [55.0, -60.0]]   # what Leaflet wants
 # This one reaches from the equator to 45 north and from the central Pacific to
 # west Africa, so it holds both basins the Hurricane Center forecasts, the Gulf
 # and the Caribbean, and the wave that is going to become next week's storm.
+# The wave model's regional grids, as published: the Atlantic basin, the
+# eastern Pacific, and everything above 50 north.
+ATLANTIC_BOX = {"toplat": 55.0, "bottomlat": 0.0,
+                "leftlon": 260.0, "rightlon": 360.0}
+ATLANTIC_BOUNDS = [[0.0, -100.0], [55.0, 0.0]]
+EPACIFIC_BOX = {"toplat": 60.0, "bottomlat": 0.0,
+                "leftlon": 190.0, "rightlon": 250.0}
+EPACIFIC_BOUNDS = [[0.0, -170.0], [60.0, -110.0]]
+ARCTIC_BOX = {"toplat": 90.0, "bottomlat": 50.0,
+              "leftlon": 0.0, "rightlon": 360.0}
+ARCTIC_BOUNDS = [[50.0, -180.0], [90.0, 180.0]]
+
 TROPICS_BOX = {"toplat": 45.0, "bottomlat": 0.0,
                "leftlon": 195.0, "rightlon": 350.0}
 TROPICS_BOUNDS = [[0.0, -165.0], [45.0, -10.0]]
@@ -95,6 +107,15 @@ REGIONS = {
     # existing purely to say "resolution".
     "conus32": {"label": "CONUS 32 km", "box": BOX,
                 "bounds": BOUNDS_LATLON},
+    # The wave model's three regional grids. Each is a real published grid
+    # rather than a crop invented here, so the box matches what the file
+    # actually covers.
+    "atlantic": {"label": "Atlantic", "box": ATLANTIC_BOX,
+                 "bounds": ATLANTIC_BOUNDS},
+    "epacific": {"label": "E Pacific", "box": EPACIFIC_BOX,
+                 "bounds": EPACIFIC_BOUNDS},
+    "arctic":   {"label": "Arctic", "box": ARCTIC_BOX,
+                 "bounds": ARCTIC_BOUNDS},
 }
 
 
@@ -134,12 +155,36 @@ def region_spec(m, key):
 #   lag    hours after the cycle before the run is on the server
 #   step   spacing of forecast hours to fetch
 #   out    how far out to go
-# What a high resolution model carries. These are the ones people open for a
-# storm in the next few hours, and at 3 km over a large box every extra field
-# is real money: the fine models are most of the bandwidth bill between them.
-# Dewpoint, pressure and column moisture are left to the coarse models, which
-# cost almost nothing and are just as good at a field that varies smoothly.
-FINE_FIELDS = {"refc", "t2m", "wind", "gust", "apcp", "cape"}
+# What a high resolution model is asked for.
+#
+# At 3 km over a large box every extra field is real money, and the fine
+# models are most of the bandwidth bill between them, so this used to be six
+# fields. Six is not a model, though: HRRR's own file carries the whole storm
+# scale picture, and asking it for reflectivity and temperature and nothing
+# else threw away the fields it is uniquely good at. Updraft helicity, echo
+# tops, hail size and lightning do not exist in a global model at all.
+#
+# So the full set is the default now. It is roughly three times the download,
+# which on a home connection is worth knowing about, and GWCFC_FINE_LEAN=1
+# puts any of these models back to the original six.
+#
+# Still deliberately absent: the pressure levels. A coarse global model is
+# just as good at a field that varies smoothly across a continent, and costs
+# almost nothing to fetch.
+FINE_CORE = {"refc", "t2m", "wind", "gust", "apcp", "cape"}
+FINE_FULL = FINE_CORE | {
+    # The storm scale fields, which are the reason to open one of these.
+    "refd1km", "refd4km", "echotop", "vil", "tcoli", "hail", "ltng",
+    "uphl", "hlcy", "shear06", "cin",
+    # What a satellite would see, and where the cloud actually sits.
+    "satir", "cldbase", "cldtop",
+    # The rain and snow line, and the sleet counted apart from the snow.
+    "cpofp", "frozr",
+    # The everyday ones, at a resolution that actually resolves a valley.
+    "d2m", "rh2m", "apt", "mslp", "prate", "snowacc", "vis", "ceil",
+    "hpbl", "tcc", "wind80",
+}
+FINE_FIELDS = FINE_CORE if os.environ.get("GWCFC_FINE_LEAN") else FINE_FULL
 
 
 MODELS = {
@@ -385,6 +430,17 @@ MODELS = {
         "file": "rap.t{cyc}z.awp130pgrbf{fhr:02d}.grib2",
         "raw": "rap/prod/rap.{date}/rap.t{cyc}z.awp130pgrbf{fhr:02d}.grib2.idx",
         "step": 1, "out": 21,
+        # Alaska is its own file on its own grid, the same as HRRR's, so the
+        # region replaces the address rather than only the box.
+        "regions": {
+            "conus": {},
+            "alaska": {
+                "res": "13 km",
+                "file": "rap.t{cyc}z.awp242f{fhr:02d}.grib2",
+                "raw": "rap/prod/rap.{date}/"
+                       "rap.t{cyc}z.awp242f{fhr:02d}.grib2.idx",
+            },
+        },
     },
     "namnest": {
         "fields": FINE_FIELDS,
@@ -521,7 +577,32 @@ MODELS = {
         "raw": "gfs/prod/gfs.{date}/{cyc}/wave/gridded/"
                "gfswave.t{cyc}z.global.0p16.f{fhr:03d}.grib2.idx",
         "step": 6, "out": 120,
-        "regions": {"tropics": {}},
+        # The three regional grids are the same model run finer
+        # over a smaller box, which is a region rather than
+        # another model. Read off the live bucket listing:
+        # arctic at 9 km, Atlantic and east Pacific at a sixth
+        # of a degree.
+        "regions": {
+            "tropics": {},
+            "atlantic": {
+                "res": "0.16 deg",
+                "file": "gfswave.t{cyc}z.atlocn.0p16.f{fhr:03d}.grib2",
+                "raw": "gfs/prod/gfs.{date}/{cyc}/wave/gridded/"
+                       "gfswave.t{cyc}z.atlocn.0p16.f{fhr:03d}.grib2.idx",
+            },
+            "epacific": {
+                "res": "0.16 deg",
+                "file": "gfswave.t{cyc}z.epacif.0p16.f{fhr:03d}.grib2",
+                "raw": "gfs/prod/gfs.{date}/{cyc}/wave/gridded/"
+                       "gfswave.t{cyc}z.epacif.0p16.f{fhr:03d}.grib2.idx",
+            },
+            "arctic": {
+                "res": "9 km",
+                "file": "gfswave.t{cyc}z.arctic.9km.f{fhr:03d}.grib2",
+                "raw": "gfs/prod/gfs.{date}/{cyc}/wave/gridded/"
+                       "gfswave.t{cyc}z.arctic.9km.f{fhr:03d}.grib2.idx",
+            },
+        },
     },
     # ── Two more opinions at 3 km ───────────────────────────────────────────
     # The High Resolution Window: the same box run by two different models,
@@ -659,7 +740,9 @@ MODELS = {
         "raw": "https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/"
                "aigfs.{date}/{cyc}/model/atmos/grib2/"
                "aigfs.t{cyc}z.pres.f{fhr:03d}.grib2.idx",
-        "fields": {"gh500", "t850", "wind250", "rh700", "vort500"},
+        # No narrow list. It carries heights, temperature, wind, humidity and
+        # vertical motion at thirteen pressure levels, which is fifteen
+        # charts on its own, and naming five of them threw the rest away.
         "upper": True,
         "step": 6, "out": 240,
         "regions": {"conus": {}, "tropics": {"out": 384}},
@@ -899,6 +982,211 @@ MODELS = {
         "first": 6, "step": 6, "out": 240, "crop": True,
         "regions": {"conus": {}, "tropics": {"shear": True}},
     },
+
+    # ── Twelve more, every address checked against the live buckets ─────────
+    # These go to NOAA's open data mirrors on S3 by full URL rather than to
+    # NOMADS by path. NOMADS rate limits with a redirect to a throttle page,
+    # which reads as a missing file, and a build that adds twelve models to
+    # the list is exactly the burst that triggers it. The mirrors carry the
+    # identical files with no limit.
+    "gefs0p25": {
+        # The ensemble mean again, but on the quarter degree grid rather than
+        # the half degree one. Twice the detail in each direction, published
+        # in a smaller "s" file that carries the everyday fields only, so it
+        # is the one to open for a readable ensemble map of the weather
+        # rather than for upper air.
+        "fetch": "range",
+        "label": "GEFS Mean 0.25 deg", "res": "0.25 deg ens",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "atmos/pgrb2sp25/geavg.t{cyc}z.pgrb2s.0p25.f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "regions": {"conus": {}, "tropics": {"out": 240}},
+    },
+
+    "cfs": {
+        # The Climate Forecast System, which is the one model here that is
+        # not answering "what is the weather". It runs months out at a coarse
+        # grid, so a single day in it means nothing and the pattern over a
+        # fortnight means quite a lot. Six hourly surface fluxes.
+        "fetch": "range",
+        "label": "CFS Seasonal", "res": "0.5 deg seasonal",
+        "cycle_h": 6, "lag_h": 8,
+        "raw": "https://noaa-cfs-pds.s3.amazonaws.com/cfs.{date}/{cyc}/"
+               "6hrly_grib_01/flxf{date}{cyc}.01.{date}{cyc}.grb2.idx",
+        "step": 6, "out": 240,
+        "regions": {"conus": {}, "tropics": {"out": 384}},
+    },
+
+    "urma": {
+        # RTMA's later, better cousin. Same analysis at the same 2.5 km, but
+        # rerun hours afterwards once the late reporting observations have
+        # arrived, so it is the best available answer to "what actually
+        # happened" rather than the fastest one.
+        "fetch": "range",
+        "label": "URMA 2.5 km Analysis", "res": "2.5 km analysis",
+        "cycle_h": 1, "lag_h": 7,
+        "raw": [
+            "https://noaa-urma-pds.s3.amazonaws.com/urma2p5.{date}/"
+            "urma2p5.t{cyc}z.2dvaranl_ndfd.grb2_wexp.idx",
+            "https://noaa-urma-pds.s3.amazonaws.com/urma2p5.{date}/"
+            "urma2p5.t{cyc}z.2dvaranl_ndfd.grb2.idx",
+        ],
+        "step": 1, "out": 0,
+    },
+
+    "gefschem": {
+        # The aerosol half of GEFS: dust lifted off deserts, smoke off fires,
+        # sea salt and sulphate, carried around the world. This is the model
+        # behind a hazy orange sky a continent away from the fire, and the
+        # one that says whether Saharan dust is about to sit on top of a
+        # developing tropical wave and kill it.
+        "fetch": "range",
+        "label": "GEFS Aerosol", "res": "0.25 deg aerosol",
+        "cycle_h": 12, "lag_h": 8,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "chem/pgrb2ap25/gefs.chem.t{cyc}z.a2d_0p25.f{fhr:03d}"
+               ".grib2.idx",
+        "step": 6, "out": 120,
+        "regions": {"conus": {}, "tropics": {"out": 120}},
+    },
+
+    "namfire": {
+        # NAM's fire weather nest: 1.33 km, and movable. It is repositioned
+        # each day over wherever the fire weather threat actually is, so its
+        # box is not fixed and its bounds come from the file rather than from
+        # a region here.
+        "fetch": "range",
+        "label": "NAM Fire Weather Nest", "res": "1.33 km",
+        "cycle_h": 6, "lag_h": 4,
+        "raw": "https://noaa-nam-pds.s3.amazonaws.com/nam.{date}/"
+               "nam.t{cyc}z.firewxnest.hiresf{fhr:02d}.tm00.grib2.idx",
+        "step": 1, "out": 36,
+    },
+
+
+    "gdas": {
+        # The global analysis GFS is launched from: the model's own best
+        # estimate of the state of the whole atmosphere right now, at a
+        # quarter degree, with every observation on earth folded in. RTMA
+        # does this at 2.5 km over the United States; this does it worldwide.
+        "fetch": "range",
+        "label": "GDAS Global Analysis", "res": "0.25 deg analysis",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gdas.{date}/{cyc}/"
+               "atmos/gdas.t{cyc}z.pgrb2.0p25.f{fhr:03d}.idx",
+        "step": 6, "out": 0,
+        "upper": True,
+        "regions": {"conus": {}, "tropics": {}},
+    },
+
+    "gefswavemean": {
+        # The wave ensemble's mean. A single wave run says how big the swell
+        # will be; the mean of thirty says how confident that is, which for
+        # a coastal warning is the more useful half.
+        "fetch": "range",
+        "label": "GEFS Wave Mean", "res": "0.25 deg wave ens",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "wave/gridded/gefs.wave.t{cyc}z.mean.global.0p25"
+               ".f{fhr:03d}.grib2.idx",
+        "step": 6, "out": 168,
+        "regions": {"tropics": {}},
+    },
+
+    "gefsp02": {
+        # One more member of the ensemble, run from a slightly different
+        # starting point. Five of them side by side is what spaghetti is:
+        # where they agree the forecast is solid, where they fan out it is a
+        # coin toss, and no single chart can tell you which.
+        "fetch": "range",
+        "label": "GEFS Member 2", "res": "0.5 deg ens",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "atmos/pgrb2ap5/gep02.t{cyc}z.pgrb2a.0p50"
+               ".f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "upper": True,
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+
+    "gefsp03": {
+        # One more member of the ensemble, run from a slightly different
+        # starting point. Five of them side by side is what spaghetti is:
+        # where they agree the forecast is solid, where they fan out it is a
+        # coin toss, and no single chart can tell you which.
+        "fetch": "range",
+        "label": "GEFS Member 3", "res": "0.5 deg ens",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "atmos/pgrb2ap5/gep03.t{cyc}z.pgrb2a.0p50"
+               ".f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "upper": True,
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+
+    "gefsp04": {
+        # One more member of the ensemble, run from a slightly different
+        # starting point. Five of them side by side is what spaghetti is:
+        # where they agree the forecast is solid, where they fan out it is a
+        # coin toss, and no single chart can tell you which.
+        "fetch": "range",
+        "label": "GEFS Member 4", "res": "0.5 deg ens",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "atmos/pgrb2ap5/gep04.t{cyc}z.pgrb2a.0p50"
+               ".f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "upper": True,
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+
+    "gefsp05": {
+        # One more member of the ensemble, run from a slightly different
+        # starting point. Five of them side by side is what spaghetti is:
+        # where they agree the forecast is solid, where they fan out it is a
+        # coin toss, and no single chart can tell you which.
+        "fetch": "range",
+        "label": "GEFS Member 5", "res": "0.5 deg ens",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "atmos/pgrb2ap5/gep05.t{cyc}z.pgrb2a.0p50"
+               ".f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "upper": True,
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+    "gefsp06": {
+        # One more member of the ensemble, run from a slightly different
+        # starting point. Five of them side by side is what spaghetti is:
+        # where they agree the forecast is solid, where they fan out it is a
+        # coin toss, and no single chart can tell you which.
+        "fetch": "range",
+        "label": "GEFS Member 6", "res": "0.5 deg ens",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "atmos/pgrb2ap5/gep06.t{cyc}z.pgrb2a.0p50"
+               ".f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "upper": True,
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+    "gefsp07": {
+        # One more member of the ensemble, run from a slightly different
+        # starting point. Five of them side by side is what spaghetti is:
+        # where they agree the forecast is solid, where they fan out it is a
+        # coin toss, and no single chart can tell you which.
+        "fetch": "range",
+        "label": "GEFS Member 7", "res": "0.5 deg ens",
+        "cycle_h": 6, "lag_h": 7,
+        "raw": "https://noaa-gefs-pds.s3.amazonaws.com/gefs.{date}/{cyc}/"
+               "atmos/pgrb2ap5/gep07.t{cyc}z.pgrb2a.0p50"
+               ".f{fhr:03d}.idx",
+        "step": 6, "out": 168,
+        "upper": True,
+        "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
 }
 
 # Order matters: this is also the order they are built in, and the time budget
@@ -917,7 +1205,16 @@ DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   # so the address is the most nearly certain kind of guess
                   # available without probing NOAA.
                   "gfs0p50", "gfs1p00",
-                  "hrefpmmn", "hrefsprd", "gefsc00", "gefsp01"]
+                  "hrefpmmn", "hrefsprd", "gefsc00", "gefsp01",
+                  # Added this pass, every address checked against the live
+                  # open data buckets. The analyses and the seasonal run are
+                  # cheap; the six ensemble members go last because together
+                  # they still cost less than one high resolution model and
+                  # nothing breaks if the clock runs out before them.
+                  "gdas", "urma", "gefs0p25", "cfs", "gefschem",
+                  "namfire", "gefswavemean",
+                  "gefsp02", "gefsp03", "gefsp04", "gefsp05",
+                  "gefsp06", "gefsp07"]
 # NAM's nests, the regional analyses and the regional blends used to be nine
 # more names on that list. They are regions of "nam", "rtma" and "nbm" now, so
 # they are built by naming the parent: build_model walks a model's regions.
@@ -1024,6 +1321,13 @@ MB_PER_HOUR = {
     # first time check_models.py runs against them.
     "href": 10.4, "hireswarw2": 6.0, "rrfs": 5.4, "hrrrsub": 5.4,
     "ecmwfaifs": 4.3, "ecmwfens": 4.3, "aigfs": 3.2,
+    # The thirteen added in this pass. Estimated from the nearest comparable
+    # model and corrected the first time check_models.py runs against them,
+    # the same as everything else in this block.
+    "gefs0p25": 0.3, "cfs": 0.2, "urma": 17.3, "gefschem": 0.3,
+    "namfire": 4.0, "gdas": 0.6, "gefswavemean": 1.6,
+    "gefsp02": 0.07, "gefsp03": 0.07, "gefsp04": 0.07, "gefsp05": 0.07,
+    "gefsp06": 0.07, "gefsp07": 0.07,
     # Whole global fields with no cropping and no index, so these are the
     # expensive ones per hour even though the models are not large.
     "gem": 11.0, "icon": 21.0,
@@ -1046,8 +1350,9 @@ MB_PER_HOUR = {
 # and the regional analyses are cut to one small area apiece rather than the
 # lower 48, so charging them the parent's rate would order the cheapest-first
 # build wrongly and overstate the day's bandwidth several times over.
-REGION_COST = {"conus": 1.0, "conus32": 0.7, "tropics": 1.4,
-               "alaska": 0.3, "hawaii": 0.12, "prico": 0.12}
+REGION_COST = {"conus": 1.0, "conus32": 0.7, "tropics": 1.4, "alaska": 0.3,
+               "hawaii": 0.12, "prico": 0.12,
+               "atlantic": 1.2, "epacific": 0.8, "arctic": 1.0}
 
 # Some servers refuse the default python-requests user agent outright, and a
 # 403 from that is indistinguishable from a wrong address. Saying who we are
@@ -1151,9 +1456,9 @@ FIELDS = {
     "mslp":  {"short": ("prmsl", "msl", "mslma", "mslet"),
               "levtype": ("meanSea", "meanSeaLevel"), "level": 0,
               "convert": lambda a: a / 100.0,  "range": (960, 1050), "ramp": "viridis"},
-    "cape":  {"short": ("cape",),    "levtype": ("surface",), "level": 0,
+    "cape":  {"short": ("cape", "mucape"), "levtype": ("surface",), "level": 0,
               "convert": lambda a: a,          "range": (0, 5000),  "ramp": "heat"},
-    "refc":  {"short": ("refc",),
+    "refc":  {"short": ("refc", "dbz_cmax", "dbzcmax"),
               "levtype": ("atmosphere", "entireAtmosphere"), "level": 0,
               "convert": lambda a: a,          "range": (-10, 75),  "ramp": "radar"},
     "apcp":  {"short": ("tp", "acpcp", "apcp"), "levtype": ("surface",), "level": 0,
@@ -1184,7 +1489,8 @@ FIELDS = {
     # Wind gust at the surface, which is what actually breaks things. Sustained
     # wind is the number a storm is named for, the gust is the number that
     # takes the roof off.
-    "gust":  {"short": ("gust", "i10fg", "fg10"), "levtype": ("surface",),
+    "gust":  {"short": ("gust", "i10fg", "fg10", "10fg"),
+              "levtype": ("surface",),
               "level": 0,
               "convert": lambda a: a * 1.94384, "range": (0, 120), "ramp": "wind"},
     # Deep layer wind shear: how much the wind changes between 850 and 200 mb.
@@ -1261,11 +1567,11 @@ FIELDS = {
     # Instantaneous precipitation rate, as millimetres per hour. Different
     # question from accumulated precipitation: this is how hard it is coming
     # down at that moment, which is what flash flooding follows.
-    "prate": {"short": ("prate",),    "levtype": ("surface",), "level": 0,
+    "prate": {"short": ("prate", "tprate"), "levtype": ("surface",), "level": 0,
               "convert": lambda a: a * 3600.0,  "range": (0, 25),
               "ramp": "precip"},
     # Snow on the ground, as centimetres. Published in metres.
-    "snod":  {"short": ("sde", "snod"), "levtype": ("surface",), "level": 0,
+    "snod":  {"short": ("sde", "snod", "sd"), "levtype": ("surface",), "level": 0,
               "convert": lambda a: a * 100.0,   "range": (0, 60),
               "ramp": "snow"},
     # Surface lifted index. Negative means the atmosphere is unstable, so the
@@ -1277,7 +1583,8 @@ FIELDS = {
     # Downward shortwave radiation: how much sun is reaching the ground. Reads
     # as cloud cover from the other direction, and is the field solar output
     # actually follows.
-    "dswrf": {"short": ("dswrf", "sdswrf"), "levtype": ("surface",), "level": 0,
+    "dswrf": {"short": ("dswrf", "sdswrf", "ssrd"),
+              "levtype": ("surface",), "level": 0,
               "convert": lambda a: a,           "range": (0, 1000),
               "ramp": "heat"},
 
@@ -1293,64 +1600,510 @@ FIELDS = {
     # ── Upper air ───────────────────────────────────────────────────────────
     # Everything above here is read at the ground, at head height, or through
     # the whole column, which is one slice of the atmosphere and the one the
-    # weather is felt in. These five are read at pressure levels: the layers
-    # a forecaster actually reasons with. The ground tells you what today is;
+    # weather is felt in. These are read at pressure levels: the layers a
+    # forecaster actually reasons with. The ground tells you what today is;
     # these tell you why, and what tomorrow is going to be.
     #
     # They are fetched only by models that ask for them, the same way shear
     # is, because a pressure level is a whole extra message per field per
     # forecast hour and most models are not opened for this.
-
-    # 500 mb height, in decametres. The single most-read chart in weather.
-    # 500 mb sits near the middle of the atmosphere by mass, so this surface
-    # is the steering flow: the height field is where the troughs and ridges
-    # live, and everything at the ground is carried along by it. Low numbers
-    # are a trough (cold, stormy), high numbers a ridge (warm, settled).
-    "gh500": {"short": ("gh",), "levtype": ("isobaricInhPa",), "level": 500,
-              "convert": lambda a: a / 10.0,    "range": (480, 600),
-              "ramp": "height"},
-    # 850 mb temperature. About 1.5 km up, which is above the ground's own
-    # daily heating and cooling, so it shows the real air mass rather than
-    # whether the sun happened to be out. It is the field warm and cold
-    # fronts are drawn from, and the 0 C line at this level is roughly the
-    # rain-or-snow line.
-    "t850": {"short": ("t",), "levtype": ("isobaricInhPa",), "level": 850,
-             "convert": lambda a: a - 273.15,   "range": (-30, 30),
-             "ramp": "temp"},
-    # 250 mb wind, in knots. This is the jet stream. Storms at the ground
-    # form and deepen underneath the fast parts of it, so the jet is where a
-    # forecaster looks first to find out where anything is going to happen.
-    # Worked out from the two components, since no model publishes the speed
-    # at a pressure level.
-    "wind250": {"short": (), "levtype": (), "level": 250,
-                "convert": lambda a: a * 1.94384, "range": (0, 160),
-                "ramp": "wind", "derive": "wind250"},
-    # 700 mb humidity. The mid-level moisture that decides whether clouds
-    # thicken into rain or dry out into nothing. A dry slot here on top of a
-    # wet surface is the classic setup for a forecast that busts.
-    "rh700": {"short": ("r",), "levtype": ("isobaricInhPa",), "level": 700,
-              "convert": lambda a: a,            "range": (0, 100),
-              "ramp": "moisture"},
-    # 500 mb vorticity, scaled to the units the charts are drawn in. Spin.
-    # A blob of high vorticity moving along the 500 mb flow is a shortwave,
-    # and the air ahead of one is being lifted, which is what turns a moist
-    # air mass into a rain shield. Published as a very small number per
-    # second, so it is multiplied up to read the way it does on a chart.
-    "vort500": {"short": ("absv", "vo"), "levtype": ("isobaricInhPa",),
-                "level": 500,
-                "convert": lambda a: a * 1e5,    "range": (0, 40),
-                "ramp": "heat"},
+    #
+    # Built from the table below rather than written out one at a time. There
+    # are twenty of them and they differ only in level and scale, so writing
+    # each by hand would be twenty chances to paste the wrong range under the
+    # right name, and a chart painted on the wrong scale looks completely
+    # normal.
 }
+
+# level: (low, high) for the chart's colour scale, in the units the field is
+# converted to. The scales are per level on purpose: 500 mb heights run near
+# 550 decametres and 300 mb heights near 920, so one shared scale would paint
+# every level but one a flat single colour.
+UPPER_SPECS = {
+    # Geopotential height, in decametres. The pattern the weather is steered
+    # by. 500 mb is the classic one; 850 and 700 show how a system tilts with
+    # height, and 300 is the level the jet lives on.
+    "gh": {"short": ("gh",), "convert": lambda a: a / 10.0, "ramp": "height",
+           "levels": {850: (120, 160), 700: (280, 325),
+                      500: (480, 600), 300: (870, 980)}},
+    # Temperature, in Celsius. 850 is the air mass and roughly the snow line;
+    # 925 is the layer that mixes to the ground on a windy day; 700 and 500
+    # are the cold aloft that makes an atmosphere unstable.
+    "t": {"short": ("t",), "convert": lambda a: a - 273.15, "ramp": "temp",
+          "levels": {925: (-30, 35), 850: (-30, 30),
+                     700: (-40, 20), 500: (-45, -5)}},
+    # Relative humidity, as a percentage. Where the moisture is stacked, and
+    # where the dry slots are that stop cloud thickening into rain.
+    "r": {"short": ("r",), "convert": lambda a: a, "ramp": "moisture",
+          "key": "rh",
+          "levels": {850: (0, 100), 700: (0, 100), 500: (0, 100)}},
+    # Dewpoint at 850 mb, in Celsius. The moisture actually being fed into
+    # storms, without the daytime noise the surface dewpoint carries.
+    # Only the one spelling on purpose. ECMWF publishes a pressure level
+    # parameter called "d" and it is divergence, not dewpoint. Accepting that
+    # spelling would paint divergence on a dewpoint scale, which looks
+    # entirely plausible and is completely wrong. ECMWF carries no pressure
+    # level dewpoint at all, so it simply does not offer this chart.
+    "dpt": {"short": ("dpt",), "convert": lambda a: a - 273.15,
+            "ramp": "temp", "key": "d", "no_ecmwf": True,
+            "levels": {850: (-30, 25)}},
+    # Absolute vorticity, scaled to the units charts are drawn in. Spin. A
+    # blob of it moving along the 500 mb flow is a shortwave, and the air
+    # ahead of one is being lifted.
+    "absv": {"short": ("absv", "vo"), "convert": lambda a: a * 1e5,
+             "ramp": "heat", "key": "vort", "ecmwf": "vo",
+             "levels": {500: (0, 40)}},
+    # Vertical motion at 700 mb, in microbars per second, with the sign
+    # flipped so up is positive. Published the other way round, which reads
+    # backwards on a map. This is the field that says where it is actually
+    # raining rather than where it could.
+    "w": {"short": ("w", "dzdt"), "convert": lambda a: -a * 10.0,
+          "ramp": "velocity", "levels": {700: (-25, 25)}},
+}
+
+# Wind at a pressure level is never published as a speed, so every one of
+# these is built from its two components, the same way the 10 m wind is when
+# a model carries no speed field.
+WIND_PL_SPECS = {925: (0, 70), 850: (0, 80), 700: (0, 90),
+                 500: (0, 120), 300: (0, 170), 250: (0, 170)}
+
+# The plain names NOAA's index uses, so the download knows which messages to
+# ask for. ECMWF's own names are the FIELDS short names above.
+_IDX_VAR = {"gh": "HGT", "t": "TMP", "r": "RH", "dpt": "DPT",
+            "absv": "ABSV", "w": "VVEL"}
+
+UPPER_FIELDS = []
+UPPER_SOURCES = {}
+ECMWF_UPPER = set()
+
+for _fam, _spec in UPPER_SPECS.items():
+    # The name a chart is known by is not always the parameter it is read
+    # from: humidity is "r" in the files and "rh" everywhere else, and
+    # vorticity is "absv" in the files and "vort" on the page. The alias is
+    # here so the two can differ without the page and the Pi disagreeing.
+    _pref = _spec.get("key", _fam)
+    for _lev, _rng in _spec["levels"].items():
+        _key = f"{_pref}{_lev}"
+        FIELDS[_key] = {
+            "short": _spec["short"], "levtype": ("isobaricInhPa",),
+            "level": _lev, "convert": _spec["convert"], "range": _rng,
+            "ramp": _spec["ramp"],
+        }
+        UPPER_FIELDS.append(_key)
+        UPPER_SOURCES[_key] = [(_IDX_VAR[_fam], f"{_lev} mb")]
+        FIELDS[_key]["family"] = _fam
+        # RELV is the relative kind, which differs from absolute vorticity by
+        # the earth's own spin. That is a smooth background across a map
+        # rather than a feature, so either draws the same shortwaves.
+        if _fam == "absv":
+            UPPER_SOURCES[_key].append(("RELV", f"{_lev} mb"))
+        # DZDT is the same vertical motion in metres per second where VVEL is
+        # in pascals per second. The high resolution models publish one, the
+        # global models the other.
+        if _fam == "w":
+            UPPER_SOURCES[_key].append(("DZDT", f"{_lev} mb"))
+        if not _spec.get("no_ecmwf"):
+            ECMWF_UPPER.add((_spec.get("ecmwf", _spec["short"][0]), _lev))
+
+for _lev, _rng in WIND_PL_SPECS.items():
+    FIELDS[f"wind{_lev}"] = {
+        "short": (), "levtype": (), "level": _lev,
+        "convert": lambda a: a * 1.94384, "range": _rng,
+        "ramp": "wind", "derive": "windpl",
+    }
+    UPPER_FIELDS.append(f"wind{_lev}")
+    ECMWF_UPPER.add(("u", _lev))
+    ECMWF_UPPER.add(("v", _lev))
+
+UPPER_FIELDS = tuple(UPPER_FIELDS)
+
+# The rest of the catalogue, added after the pressure levels above simply
+# because those are generated and this is written out. Same table.
+FIELDS.update({
+
+    # == Severe weather =====================================================
+    # The fields a storm is actually diagnosed from, rather than the ones it
+    # is felt as. Every one of these was already sitting in files the Pi
+    # downloads; none of them had ever been read out.
+
+    # Storm relative helicity through the lowest 3 km, in square metres per
+    # square second. How much the wind turns with height in the layer a
+    # thunderstorm's inflow comes from. Turning inflow is what makes a
+    # rotating storm, so this is the tornado ingredient CAPE cannot supply:
+    # CAPE says the storm can be strong, this says it can spin.
+    "hlcy": {"short": ("hlcy",),
+             "levtype": ("heightAboveGroundLayer", "heightAboveGround",
+                         "unknown"), "level": 3000,
+             "convert": lambda a: a,           "range": (0, 600),
+             "ramp": "helicity"},
+    # Updraft helicity through the 2 to 5 km layer. Rotation in the updraft
+    # itself, which is the model's own way of saying "this is a supercell".
+    # High values on a forecast map are where the discrete rotating storms
+    # are expected, and it is the field severe outlooks are drawn against.
+    "uphl": {"short": ("mxuphl", "uphl", "unknown"),
+             "levtype": ("heightAboveGroundLayer", "heightAboveGround",
+                         "unknown"), "level": 5000,
+             "convert": lambda a: a,           "range": (0, 250),
+             "ramp": "helicity"},
+    # Reflectivity a kilometre above the ground rather than the strongest
+    # anywhere in the column. Closer to what a radar beam actually sees near
+    # a storm, and it does not light up from high hail cores the way
+    # composite reflectivity does.
+    "refd1km": {"short": ("refd",), "levtype": ("heightAboveGround",),
+                "level": 1000,
+                "convert": lambda a: a,        "range": (-10, 75),
+                "ramp": "radar"},
+    # Echo top: how high the storm's radar echo reaches, in kilometres. A
+    # tall echo is a strong updraft, and a collapsing one often precedes a
+    # downburst.
+    "echotop": {"short": ("retop",),
+                "levtype": ("cloudTop", "nominalTop", "unknown"), "level": 0,
+                "convert": lambda a: a / 1000.0, "range": (0, 18),
+                "ramp": "radar"},
+    # Vertically integrated liquid: how much water the whole column of storm
+    # is holding, in kilograms per square metre. The classic hail signature,
+    # because ice aloft reads to a radar as an enormous amount of liquid.
+    "vil": {"short": ("vil", "tcolw"),
+            "levtype": ("atmosphere", "entireAtmosphere",
+                        "atmosphereSingleLayer", "unknown"), "level": 0,
+            "convert": lambda a: a,            "range": (0, 70),
+            "ramp": "radar"},
+    # Forecast hail size at the ground, in millimetres.
+    "hail": {"short": ("hail",), "levtype": ("surface",), "level": 0,
+             "convert": lambda a: a * 1000.0,  "range": (0, 75),
+             "ramp": "heat"},
+    # Lightning flash rate, flashes per square kilometre per five minutes.
+    # The high resolution models forecast this directly now, which turns
+    # "there might be storms" into "here, and this many strikes".
+    "ltng": {"short": ("ltng", "ltpinx"),
+             "levtype": ("atmosphere", "entireAtmosphere",
+                         "atmosphereSingleLayer", "unknown"), "level": 0,
+             "convert": lambda a: a,           "range": (0, 12),
+             "ramp": "heat"},
+    # Bulk wind difference through the lowest 6 km, in knots. Not the same as
+    # the deep layer shear used for hurricanes: this is the shallower layer
+    # that decides whether a thunderstorm organises into a supercell. About
+    # 35 knots is the usual threshold. Built from its two components.
+    "shear06": {"short": (), "levtype": (), "level": 6000,
+                "convert": lambda a: a * 1.94384, "range": (0, 80),
+                "ramp": "wind", "derive": "shear06"},
+
+    # == Aviation and the boundary layer ====================================
+
+    # Mixing height: how deep the layer is that the ground stirs up during
+    # the day, in metres. Sets how far smoke and pollution spread out, how
+    # gusty an afternoon gets, and how high a fire's smoke plume goes.
+    "hpbl": {"short": ("hpbl", "blh"), "levtype": ("surface",), "level": 0,
+             "convert": lambda a: a,           "range": (0, 3500),
+             "ramp": "moisture"},
+    # Cloud ceiling height above ground, in metres. The number an airport
+    # closes on. Read together with visibility it is the whole of an
+    # aviation forecast.
+    "ceil": {"short": ("ceil", "hgt", "gh", "ceiling"),
+             "levtype": ("cloudCeiling", "unknown"), "level": 0,
+             "convert": lambda a: a,           "range": (0, 4000),
+             "ramp": "visibility"},
+    # Freezing level, in metres. Where the air first reaches 0 C going up.
+    # It is the snow line on a mountain, the icing level for aircraft, and
+    # the difference between rain and snow at any given elevation.
+    "frzlvl": {"short": ("hgt", "gh", "hzerocl", "deg0l"),
+               "levtype": ("isothermZero", "isothermal", "unknown"),
+               "level": 0,
+               "convert": lambda a: a,         "range": (0, 5000),
+               "ramp": "snow"},
+    # Wind at 80 metres, in knots. Turbine hub height, and also the level
+    # that says whether a strong low level jet will mix down to the ground
+    # overnight. Built from its two components.
+    "wind80": {"short": (), "levtype": (), "level": 80,
+               "convert": lambda a: a * 1.94384, "range": (0, 80),
+               "ramp": "wind", "derive": "wind80"},
+    # The three cloud decks, as percentages. Total cloud cover says how much
+    # sky is covered; these say at what height, which is the difference
+    # between a grey day and a bright one with cirrus.
+    "lcdc": {"short": ("lcc", "lcdc"),
+             "levtype": ("lowCloudLayer", "unknown"), "level": 0,
+             "convert": lambda a: a,           "range": (0, 100),
+             "ramp": "cloud"},
+    "mcdc": {"short": ("mcc", "mcdc"),
+             "levtype": ("middleCloudLayer", "unknown"), "level": 0,
+             "convert": lambda a: a,           "range": (0, 100),
+             "ramp": "cloud"},
+    "hcdc": {"short": ("hcc", "hcdc"),
+             "levtype": ("highCloudLayer", "unknown"), "level": 0,
+             "convert": lambda a: a,           "range": (0, 100),
+             "ramp": "cloud"},
+
+    # == Ground, water and snow =============================================
+
+    # Station pressure at the actual surface, in hectopascals. Different from
+    # mean sea level pressure, which is that number corrected to sea level so
+    # maps can be compared. This one follows the terrain, so it reads as a
+    # map of elevation with the weather on top.
+    "pres": {"short": ("sp", "pres"), "levtype": ("surface",), "level": 0,
+             "convert": lambda a: a / 100.0,   "range": (600, 1050),
+             "ramp": "viridis"},
+    # Soil temperature in the top 10 cm, in Celsius. What decides whether
+    # falling snow sticks or melts on contact, and whether a freeze reaches
+    # roots and pipes.
+    "soilt": {"short": ("st", "tsoil"),
+              "levtype": ("depthBelowLandLayer", "depthBelowLand", "unknown"),
+              "level": (0, 10),
+              "convert": lambda a: a - 273.15, "range": (-20, 40),
+              "ramp": "temp"},
+    # Soil moisture in the top 10 cm, as a fraction of the soil's volume.
+    # Dry soil heats faster and burns; saturated soil turns the next rain
+    # straight into runoff.
+    "soilm": {"short": ("soilw", "swvl1"),
+              "levtype": ("depthBelowLandLayer", "depthBelowLand", "unknown"),
+              "level": (0, 10),
+              "convert": lambda a: a * 100.0,  "range": (0, 50),
+              "ramp": "moisture"},
+    # Snowfall accumulation, in centimetres. The number a snow forecast is
+    # actually written in, as opposed to snow depth, which is what is lying
+    # there already.
+    "snowacc": {"short": ("asnow", "sf", "snow_gsp"),
+                "levtype": ("surface",), "level": 0,
+                "convert": lambda a: a * 100.0, "range": (0, 60),
+                "ramp": "snow"},
+    # Snow water equivalent, in millimetres. How much water is locked up in
+    # the snowpack, which is what melts into a river in spring and what
+    # collapses a roof in winter.
+    "weasd": {"short": ("sdwe", "weasd"), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a,          "range": (0, 150),
+              "ramp": "snow"},
+    # Apparent temperature, in Celsius: what it feels like once humidity and
+    # wind are taken into account. Heat index in summer, wind chill in
+    # winter, one field.
+    "apt": {"short": ("aptmp",), "levtype": ("heightAboveGround",), "level": 2,
+            "convert": lambda a: a - 273.15,   "range": (-45, 50),
+            "ramp": "temp"},
+    # Outgoing longwave radiation at the top of the atmosphere, in watts per
+    # square metre. This is essentially the infrared satellite picture the
+    # model is forecasting: cold high cloud tops radiate little, so low
+    # numbers are deep convection.
+    "olr": {"short": ("ulwrf", "ttr"),
+            "levtype": ("nominalTop", "topOfAtmosphere", "unknown"),
+            "level": 0,
+            "convert": lambda a: a,            "range": (80, 320),
+            "ramp": "cloud"},
+
+    # == Smoke and dust =====================================================
+    # The high resolution models and the aerosol ensemble carry these; most
+    # do not, so most simply do not offer them.
+
+    # Smoke concentration in the air people are breathing, in micrograms per
+    # cubic metre, published at 8 m above ground.
+    "smoke": {"short": ("massden", "mass_density"),
+              "levtype": ("heightAboveGround",), "level": 8,
+              "convert": lambda a: a * 1e9,    "range": (0, 250),
+              "ramp": "heat"},
+    # The whole column of smoke or dust overhead, in milligrams per square
+    # metre. This is the one that reads as a plume on a map: the haze you
+    # can see from the ground and the orange sun, rather than what is being
+    # inhaled.
+    "colmd": {"short": ("colmd", "col_mass"),
+              "levtype": ("atmosphere", "entireAtmosphere",
+                          "atmosphereSingleLayer", "unknown"), "level": 0,
+              "convert": lambda a: a * 1e6,    "range": (0, 400),
+              "ramp": "heat"},
+    # Aerosol optical depth: how much sunlight the whole column of haze
+    # blocks. Unitless, and the number air quality and solar forecasts both
+    # follow.
+    "aod": {"short": ("aotk", "aod550"),
+            "levtype": ("atmosphere", "entireAtmosphere",
+                        "atmosphereSingleLayer", "unknown"), "level": 0,
+            "convert": lambda a: a,            "range": (0, 3),
+            "ramp": "heat"},
+
+    # == Marine =============================================================
+    # Waves come in two kinds and a wave model publishes both separately.
+    # Combining them into one significant wave height, which is all this had
+    # before, throws away the distinction that matters most at a coast.
+
+    # Wind sea: the short choppy waves the local wind is making right now.
+    "wvhgt": {"short": ("shww", "wvhgt"), "levtype": ("surface",),
+              "level": (0, 1),
+              "convert": lambda a: a,          "range": (0, 8),
+              "ramp": "viridis"},
+    # Swell: the long waves that have travelled here from somewhere else.
+    # Swell from a hurricane reaches a coast days before the storm does, and
+    # is what closes beaches under a clear sky.
+    "swell": {"short": ("shts", "swell"), "levtype": ("surface", "unknown"),
+              "level": (0, 1),
+              "convert": lambda a: a,          "range": (0, 10),
+              "ramp": "viridis"},
+    # And their two periods, in seconds. Period is how a forecaster tells
+    # them apart: local wind waves are short and choppy, a 15 second swell
+    # has crossed an ocean to get here.
+    "wvper": {"short": ("mpww", "wvper"), "levtype": ("surface",),
+              "level": (0, 1),
+              "convert": lambda a: a,          "range": (0, 14),
+              "ramp": "heat"},
+    "swper": {"short": ("mpts", "swper"), "levtype": ("surface", "unknown"),
+              "level": (0, 1),
+              "convert": lambda a: a,          "range": (0, 22),
+              "ramp": "heat"},
+    # Wave direction, in degrees. Which way the sea is running, which is what
+    # decides whether a harbour entrance is workable.
+    "dirpw": {"short": ("mwd", "dirpw"), "levtype": ("surface",),
+              "level": (0, 1),
+              "convert": lambda a: a,          "range": (0, 360),
+              "ramp": "direction"},
+    # Sea ice cover, as a percentage.
+    "icec": {"short": ("ci", "icec", "siconc"), "levtype": ("surface",),
+             "level": 0,
+             "convert": lambda a: a * 100.0,   "range": (0, 100),
+             "ramp": "snow"},
+    # Which way the wind is blowing from, in degrees. Wraps, so it uses the
+    # ramp that comes back to where it started rather than one that runs low
+    # to high, or every northerly would draw a hard seam across the map.
+    "wdir": {"short": ("wdir", "10wdir"),
+             "levtype": ("heightAboveGround", "surface"), "level": (0, 10),
+             "convert": lambda a: a,           "range": (0, 360),
+             "ramp": "direction"},
+    # The day's high and low, which is what a forecast is actually read for
+    # and which no chart here answered: the temperature field is the value at
+    # one instant, and the instant a run happens to land on is rarely the
+    # warmest or coldest part of the day.
+    "tmax": {"short": ("tmax", "mx2t", "mx2t3"),
+             "levtype": ("heightAboveGround",),
+             "level": 2,
+             "convert": lambda a: a - 273.15, "range": (-40, 50),
+             "ramp": "temp"},
+    "tmin": {"short": ("tmin", "mn2t", "mn2t3"),
+             "levtype": ("heightAboveGround",),
+             "level": 2,
+             "convert": lambda a: a - 273.15, "range": (-45, 35),
+             "ramp": "temp"},
+    # Coarse particulate, the bigger grit that dust storms carry, beside the
+    # fine stuff the health advisories are written against.
+    "pm10": {"short": ("pmtc",), "levtype": ("surface",), "level": 0,
+             "convert": lambda a: a,           "range": (0, 300),
+             "ramp": "heat"},
+    # Scattering aerosol depth: the part of the haze that scatters light
+    # rather than absorbing it, which is the difference between a white sky
+    # and a brown one.
+    "sctaod": {"short": ("sctaotk",),
+               "levtype": ("atmosphere", "entireAtmosphere",
+                           "atmosphereSingleLayer", "unknown"), "level": 0,
+               "convert": lambda a: a,         "range": (0, 3),
+               "ramp": "heat"},
+    # Single scattering albedo: how much of what the haze does is scattering
+    # rather than absorbing. Low numbers are sooty smoke, which heats the air
+    # it is in; high numbers are dust and sea salt, which do not.
+    "ssalb": {"short": ("ssalbk",),
+              "levtype": ("atmosphere", "entireAtmosphere",
+                          "atmosphereSingleLayer", "unknown"), "level": 0,
+              "convert": lambda a: a,          "range": (0.7, 1.0),
+              "ramp": "viridis"},
+    # A second and third swell, because a sea often carries more than one,
+    # from more than one distant storm, running in different directions.
+    # Where they cross is where the water gets genuinely dangerous.
+    "swell2": {"short": ("shts", "swell"), "levtype": ("surface", "unknown"),
+               "level": (0, 2),
+               "convert": lambda a: a,         "range": (0, 8),
+               "ramp": "viridis"},
+    "swper2": {"short": ("mpts", "swper"), "levtype": ("surface", "unknown"),
+               "level": (0, 2),
+               "convert": lambda a: a,         "range": (0, 22),
+               "ramp": "heat"},
+    "swdir":  {"short": ("dwts", "swdir"), "levtype": ("surface", "unknown"),
+               "level": (0, 1),
+               "convert": lambda a: a,         "range": (0, 360),
+               "ramp": "direction"},
+    "wvdir":  {"short": ("mdww", "wvdir"), "levtype": ("surface",),
+               "level": (0, 1),
+               "convert": lambda a: a,         "range": (0, 360),
+               "ramp": "direction"},
+    "swell3": {"short": ("shts", "swell"), "levtype": ("surface", "unknown"),
+               "level": (0, 3),
+               "convert": lambda a: a,         "range": (0, 6),
+               "ramp": "viridis"},
+    "swper3": {"short": ("mpts", "swper"), "levtype": ("surface", "unknown"),
+               "level": (0, 3),
+               "convert": lambda a: a,         "range": (0, 22),
+               "ramp": "heat"},
+    "swdir2": {"short": ("dwts", "swdir"), "levtype": ("surface", "unknown"),
+               "level": (0, 2),
+               "convert": lambda a: a,         "range": (0, 360),
+               "ramp": "direction"},
+    # Asymmetry factor: whether the haze scatters light forward or back,
+    # which is why a smoky sky is bright looking away from the sun and dark
+    # looking towards it.
+    # Skin temperature: the temperature of whatever the atmosphere is actually
+    # touching. Over water that is the sea surface; over land it is the ground
+    # itself, which on a summer afternoon runs far hotter than the air at head
+    # height and is what a fire and a heat wave both follow.
+    # == Simulated satellite and cloud structure =============================
+    # The high resolution models run a radiative transfer step and publish
+    # what a satellite would see if the forecast came true. Put beside the
+    # real satellite picture an hour from now, it is the fastest way to tell
+    # whether a model has the storm in the right place.
+
+    # Clean infrared, which is the channel every satellite loop on television
+    # is made of. Cold is high cloud, so the scale runs backwards from most:
+    # the interesting end is the cold end.
+    "satir": {"short": ("sbt113", "sbt114", "btmp"),
+              "levtype": ("nominalTop", "topOfAtmosphere", "unknown"),
+              "level": 0,
+              "convert": lambda a: a - 273.15,  "range": (-80, 40),
+              "ramp": "satir"},
+    # Cloud base and cloud top height, in metres. The thickness between them
+    # is the difference between a deck of stratus and a thunderstorm.
+    "cldbase": {"short": ("hgt", "gh"),
+                "levtype": ("cloudBase", "unknown"), "level": 0,
+                "convert": lambda a: a,         "range": (0, 6000),
+                "ramp": "cloud"},
+    "cldtop": {"short": ("hgt", "gh"),
+               "levtype": ("cloudTop", "unknown"), "level": 0,
+               "convert": lambda a: a,          "range": (0, 16000),
+               "ramp": "cloud"},
+    # Reflectivity at 4 km, which is up near the level where hail grows. A
+    # strong echo up there with a weaker one below is the classic overhang.
+    "refd4km": {"short": ("refd",), "levtype": ("heightAboveGround",),
+                "level": 4000,
+                "convert": lambda a: a,         "range": (-10, 75),
+                "ramp": "radar"},
+    # Column ice, which is the frozen half of what integrated liquid counts.
+    "tcoli": {"short": ("tcoli",),
+              "levtype": ("atmosphere", "entireAtmosphere",
+                          "atmosphereSingleLayer", "unknown"), "level": 0,
+              "convert": lambda a: a,           "range": (0, 20),
+              "ramp": "snow"},
+    # Frozen precipitation accumulation, in millimetres: the sleet and
+    # graupel, counted apart from the snow.
+    "frozr": {"short": ("frozr",), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a,           "range": (0, 30),
+              "ramp": "snow"},
+    # Percent of precipitation falling frozen. This is the rain and snow line
+    # drawn as a field rather than guessed at from the temperature: 50 per
+    # cent is where it is falling as both at once.
+    "cpofp": {"short": ("cpofp",), "levtype": ("surface",), "level": 0,
+              "convert": lambda a: a,           "range": (0, 100),
+              "ramp": "snow"},
+
+    "skt":    {"short": ("skt", "tmp"), "levtype": ("surface",), "level": 0,
+               "convert": lambda a: a - 273.15, "range": (-40, 60),
+               "ramp": "temp"},
+    "asyf":   {"short": ("asysfk",),
+               "levtype": ("atmosphere", "entireAtmosphere",
+                           "atmosphereSingleLayer", "unknown"), "level": 0,
+               "convert": lambda a: a,         "range": (0.4, 0.9),
+               "ramp": "viridis"},
+})
 
 # The two pressure levels the shear field is worked out from. Fetched only by
 # models that ask for shear, since for everything else they are dead weight.
 SHEAR_LEVELS = (200, 850)
 
-# The upper air set, and the one level whose wind is worked out from its two
-# components rather than read. Same rule as shear: fetched only by models that
-# ask, because a pressure level costs a message per field per forecast hour.
-UPPER_FIELDS = ("gh500", "t850", "wind250", "rh700", "vort500")
-WIND250_LEVEL = 250
+# The pressure levels whose winds are built from components. Every level any
+# wind chart is drawn at, plus the two the shear field is differenced across,
+# since the decoder keeps all of them aside the same way.
+WIND_PL_LEVELS = tuple(sorted(WIND_PL_SPECS))
+KEEP_UV_LEVELS = tuple(sorted(set(WIND_PL_LEVELS) | set(SHEAR_LEVELS)))
+# The height above ground the 80 m wind is built at, which is turbine hub
+# height and the level a low level jet mixes down from.
+WIND80_LEVEL = 80
 
 
 def _matches(spec, short, levtype, level):
@@ -1401,7 +2154,17 @@ WANT_VARS = {"TMP", "DPT", "PRMSL", "MSLET", "MSLMA",
              # humidity, cloud, visibility, the convective cap, rain rate,
              # snow on the ground, lifted index and incoming sunlight.
              "RH", "TCDC", "VIS", "CIN", "PRATE", "SNOD", "WEASD",
-             "LFTX", "4LFTX", "DSWRF"}
+             "LFTX", "4LFTX", "DSWRF",
+             # Severe, aviation, ground, smoke and marine. Same rule as
+             # above: these ride in files already being downloaded, at
+             # levels already being asked for, and were never read.
+             "HLCY", "MXUPHL", "REFD", "RETOP", "VIL", "TCOLW", "HAIL",
+             "LTNG", "HPBL", "HGT", "LCDC", "MCDC", "HCDC",
+             "PRES", "TSOIL", "SOILW", "ASNOW", "APTMP", "ULWRF",
+             "MASSDEN", "COLMD", "AOTK",
+             "WVHGT", "SWELL", "WVPER", "SWPER", "DIRPW", "ICEC",
+             "CEIL", "WDIR", "TMAX", "TMIN", "SCTAOTK", "SSALBK",
+             "WVDIR", "SWDIR", "ASYSFK"}
 # Exact level names, except the last, which is a prefix: models spell the whole
 # column differently. GFS says "entire atmosphere (considered as a single
 # layer)", HRRR just says "entire atmosphere", and guessing wrong is what turns
@@ -1484,7 +2247,10 @@ FIELD_SOURCES = {
     "cape":  [("CAPE", "surface")],
     "refc":  [("REFC", "entire atmosphere*")],
     "apcp":  [("APCP", "surface")],
-    "gust":  [("GUST", "surface")],
+    # The analyses put the gust at 10 m where the forecast models put it at
+    # the surface. Same field, and without the second spelling RTMA and URMA
+    # produce no gust chart at all.
+    "gust":  [("GUST", "surface"), ("GUST", "10 m above ground")],
     "pwat":  [("PWAT", "entire atmosphere*")],
     "sst":   [("WTMP", "surface")],
     "swh":   [("HTSGW", "surface")],
@@ -1503,26 +2269,98 @@ FIELD_SOURCES = {
     "snod":  [("SNOD", "surface")],
     "lftx":  [("LFTX", "surface"), ("4LFTX", "surface")],
     "dswrf": [("DSWRF", "surface")],
+
+    # Severe weather. Every var and level name here was read out of a real
+    # GFS or HRRR index rather than guessed: a level spelled even slightly
+    # differently matches nothing and the chart silently never appears.
+    "hlcy":    [("HLCY", "3000-0 m above ground")],
+    "uphl":    [("MXUPHL", "5000-2000 m above ground"),
+                ("UPHL", "5000-2000 m above ground"),
+                ("MXUPHL", "3000-0 m above ground")],
+    "refd1km": [("REFD", "1000 m above ground")],
+    "echotop": [("RETOP", "cloud top")],
+    "vil":     [("VIL", "entire atmosphere"), ("TCOLW", "entire atmosphere*")],
+    "hail":    [("HAIL", "surface")],
+    "ltng":    [("LTNG", "entire atmosphere")],
+
+    # Aviation and the boundary layer.
+    "hpbl":    [("HPBL", "surface")],
+    # CEIL is what the analyses call it; the forecast models publish the same
+    # thing as a height at the ceiling level.
+    "ceil":    [("HGT", "cloud ceiling"), ("CEIL", "cloud ceiling")],
+    "frzlvl":  [("HGT", "0C isotherm")],
+    "lcdc":    [("LCDC", "low cloud layer"), ("TCDC", "low cloud layer")],
+    "mcdc":    [("MCDC", "middle cloud layer"), ("TCDC", "middle cloud layer")],
+    "hcdc":    [("HCDC", "high cloud layer"), ("TCDC", "high cloud layer")],
+
+    # Ground, water and snow.
+    "pres":    [("PRES", "surface")],
+    "soilt":   [("TSOIL", "0-0.1 m below ground")],
+    "soilm":   [("SOILW", "0-0.1 m below ground")],
+    "snowacc": [("ASNOW", "surface")],
+    "weasd":   [("WEASD", "surface")],
+    "apt":     [("APTMP", "2 m above ground")],
+    "olr":     [("ULWRF", "top of atmosphere")],
+
+    # Smoke and dust.
+    "smoke":   [("MASSDEN", "8 m above ground")],
+    "colmd":   [("COLMD", "entire atmosphere*")],
+    "aod":     [("AOTK", "entire atmosphere*")],
+
+    # Marine. Swell arrives numbered by sequence rather than by level, since
+    # a sea can carry several swells from several distant storms at once, and
+    # the first in the sequence is the dominant one.
+    "wvhgt":   [("WVHGT", "surface")],
+    "swell":   [("SWELL", "1 in sequence"), ("SWELL", "surface")],
+    "wvper":   [("WVPER", "surface")],
+    "swper":   [("SWPER", "1 in sequence"), ("SWPER", "surface")],
+    "dirpw":   [("DIRPW", "surface")],
+    "icec":    [("ICEC", "surface")],
+    "wdir":    [("WDIR", "10 m above ground"), ("WDIR", "surface")],
+    "asyf":    [("ASYSFK", "entire atmosphere*")],
+    "skt":     [("TMP", "surface")],
+    "satir":   [("SBT113", "top of atmosphere"),
+                ("SBT114", "top of atmosphere")],
+    "cldbase": [("HGT", "cloud base")],
+    "cldtop":  [("HGT", "cloud top")],
+    "refd4km": [("REFD", "4000 m above ground")],
+    "tcoli":   [("TCOLI", "entire atmosphere*")],
+    "frozr":   [("FROZR", "surface")],
+    "cpofp":   [("CPOFP", "surface")],
+    "tmax":    [("TMAX", "2 m above ground")],
+    "tmin":    [("TMIN", "2 m above ground")],
+    "pm10":    [("PMTC", "surface")],
+    "sctaod":  [("SCTAOTK", "entire atmosphere*")],
+    "ssalb":   [("SSALBK", "entire atmosphere*")],
+    "swell2":  [("SWELL", "2 in sequence")],
+    "swell3":  [("SWELL", "3 in sequence")],
+    "swper2":  [("SWPER", "2 in sequence")],
+    "swper3":  [("SWPER", "3 in sequence")],
+    "swdir2":  [("SWDIR", "2 in sequence")],
+    "swdir":   [("SWDIR", "1 in sequence"), ("SWDIR", "surface")],
+    "wvdir":   [("WVDIR", "surface")],
 }
 # Wind is its own case: taken as a speed where the model publishes one, and
 # from both components where it does not. Fetching all three, which the cross
 # product did, is paying for the same field twice.
 WIND_SPEED = ("WIND", "10 m above ground")
 WIND_PARTS = [("UGRD", "10 m above ground"), ("VGRD", "10 m above ground")]
+# A wave model runs on its own grid and publishes the wind driving the sea at
+# "surface" rather than at 10 m. Without this spelling every wave model shows
+# waves with no wind, which is the one thing a mariner wants beside them.
+WIND_SPEED_ALT = ("WIND", "surface")
 
-# The upper air messages, kept in their own table rather than folded into the
-# one above so that a model which never asked for a pressure level does not
-# start paying for five more messages an hour by accident.
-UPPER_SOURCES = {
-    "gh500":   [("HGT", "500 mb")],
-    "t850":    [("TMP", "850 mb")],
-    "rh700":   [("RH", "700 mb")],
-    # Absolute vorticity is what NOAA publishes; ECMWF publishes the relative
-    # kind. They differ by the earth's own spin, which is a smooth background
-    # across a map rather than a feature, so either draws the same shortwaves.
-    "vort500": [("ABSV", "500 mb"), ("RELV", "500 mb")],
-}
-WIND250_PARTS = [("UGRD", f"{WIND250_LEVEL} mb"), ("VGRD", f"{WIND250_LEVEL} mb")]
+# The component messages every pressure level wind is built from, and the two
+# height level ones. UPPER_SOURCES itself is generated up beside the fields it
+# names, so the level in a field's name and the level it is read at cannot
+# drift apart.
+WIND_PL_PARTS = {lev: [("UGRD", f"{lev} mb"), ("VGRD", f"{lev} mb")]
+                 for lev in WIND_PL_LEVELS}
+WIND80_PARTS = [("UGRD", "80 m above ground"), ("VGRD", "80 m above ground")]
+# The 0 to 6 km bulk shear, which the high resolution models publish as its
+# two components already differenced across the layer.
+SHEAR06_PARTS = [("VUCSH", "0-6000 m above ground"),
+                 ("VVCSH", "0-6000 m above ground")]
 
 
 def _lev_matches(pattern, level):
@@ -1589,7 +2427,8 @@ def select_from_idx(rows, want_shear=False, only=None, want_upper=False):
 
     if not only or "wind" in only:
         speed = next((r for r in rows
-                      if (r["var"], r["lev"]) == WIND_SPEED), None)
+                      if (r["var"], r["lev"]) in (WIND_SPEED, WIND_SPEED_ALT)),
+                     None)
         if speed:
             take(speed, "wind<-WIND")
         else:
@@ -1611,12 +2450,14 @@ def select_from_idx(rows, want_shear=False, only=None, want_upper=False):
                 if hit:
                     take(hit, f"{key}<-{var}")
                     break
-        if not only or "wind250" in only:
-            for want in WIND250_PARTS:
+        for lev, parts in WIND_PL_PARTS.items():
+            if only and f"wind{lev}" not in only:
+                continue
+            for want in parts:
                 one = next((r for r in rows
                             if (r["var"], r["lev"]) == want), None)
                 if one:
-                    take(one, f"wind250<-{want[0]}")
+                    take(one, f"wind{lev}<-{want[0]}")
 
     if want_shear:
         levels = {f"{mb} mb" for mb in SHEAR_LEVELS}
@@ -1709,14 +2550,52 @@ ICON_BASE = "https://opendata.dwd.de/weather/nwp/icon/grib"
 
 # Environment Canada names a file after the variable, the level type and the
 # level, so the wanted fields are listed the way that server spells them.
+# Environment Canada publishes one file per field per hour, so widening this
+# list costs one more small request per hour rather than a bigger download.
+# Seven fields was leaving most of a good model on the shelf.
+#
+# A name that is not published is skipped rather than failing the hour, which
+# is what makes a list this long safe: the Canadians rename things between
+# versions and a field that vanishes costs that field, not the run.
 GEM_FIELDS = [
-    ("TMP", "TGL", "2"), ("DEPR", "TGL", "2"), ("PRMSL", "MSL", "0"),
-    ("UGRD", "TGL", "10"), ("VGRD", "TGL", "10"), ("APCP", "SFC", "0"),
-    ("PWAT", "EATM", "0"),
+    # Surface and near surface.
+    ("TMP", "TGL", "2"), ("DEPR", "TGL", "2"), ("RH", "TGL", "2"),
+    ("PRMSL", "MSL", "0"), ("PRES", "SFC", "0"),
+    ("UGRD", "TGL", "10"), ("VGRD", "TGL", "10"),
+    ("WIND", "TGL", "10"), ("GUST", "TGL", "10"), ("WDIR", "TGL", "10"),
+    # Precipitation and snow.
+    ("APCP", "SFC", "0"), ("PRATE", "SFC", "0"),
+    ("SNOD", "SFC", "0"), ("WEASD", "SFC", "0"),
+    # Cloud, moisture and radiation.
+    ("TCDC", "SFC", "0"), ("PWAT", "EATM", "0"), ("DSWRF", "SFC", "0"),
+    ("CAPE", "SFC", "0"),
+    # Upper air, which is where a global model earns its keep.
+    ("HGT", "ISBL", "0500"), ("HGT", "ISBL", "0700"), ("HGT", "ISBL", "0850"),
+    ("TMP", "ISBL", "0500"), ("TMP", "ISBL", "0700"), ("TMP", "ISBL", "0850"),
+    ("TMP", "ISBL", "0925"),
+    ("RH", "ISBL", "0500"), ("RH", "ISBL", "0700"), ("RH", "ISBL", "0850"),
+    ("UGRD", "ISBL", "0250"), ("VGRD", "ISBL", "0250"),
+    ("UGRD", "ISBL", "0500"), ("VGRD", "ISBL", "0500"),
+    ("UGRD", "ISBL", "0850"), ("VGRD", "ISBL", "0850"),
 ]
 
 # DWD names theirs after the variable alone, in lower case, one directory each.
-ICON_FIELDS = ["t_2m", "td_2m", "pmsl", "u_10m", "v_10m", "tot_prec", "tqv"]
+# DWD, same idea and the same skip-what-is-missing rule. These are the single
+# level names ICON publishes; the global, European and German runs carry
+# slightly different subsets of them and each simply builds what it has.
+ICON_FIELDS = [
+    # Temperature and moisture.
+    "t_2m", "td_2m", "relhum_2m", "tmax_2m", "tmin_2m",
+    # Pressure and wind.
+    "pmsl", "ps", "u_10m", "v_10m", "vmax_10m",
+    # Precipitation and snow.
+    "tot_prec", "rain_gsp", "snow_gsp", "h_snow", "snowlmt",
+    # Cloud, moisture, instability and the model's own reflectivity.
+    "clct", "clcl", "clcm", "clch", "ceiling", "tqv",
+    "cape_ml", "hzerocl", "dbz_cmax", "hbas_con",
+    # Radiation.
+    "asob_s",
+]
 
 
 def gem_urls(m, date_str, cyc, fhr):
@@ -1884,15 +2763,23 @@ _ecmwf_host_hint = [None]
 # What to take from ECMWF, by its own parameter names. Everything not listed is
 # skipped without downloading it, which is the point: the whole file is around
 # 100 MB and this pulls a few MB of it.
-ECMWF_PARAMS = {"2t", "2d", "msl", "10u", "10v", "tp", "tcwv", "sst"}
+# Read off a real ECMWF index rather than guessed. The whole surface list they
+# publish is: 100u 100v 10fg 10u 10v 2d 2t asn ewss lsm mn2t3 msl mucape mx2t3
+# nsss ptype ro rsn sd sf sithick skt sp ssr ssrd str strd sve svn tcc tcw
+# tcwv tp tprate ttr zos. Eight of those were being taken and the rest, which
+# includes the gust, the cloud, the CAPE, the snow and the day's high and low,
+# were being skipped past inside a file already on the wire.
+#
+# "sst" stays in the list although ECMWF does not publish it: skin temperature
+# is the closest they have and it is a different field over land, so it gets
+# its own chart rather than being passed off as sea temperature.
+ECMWF_PARAMS = {"2t", "2d", "msl", "10u", "10v", "tp", "tcwv", "sst",
+                "10fg", "mucape", "tcc", "sd", "sf", "sp", "skt",
+                "ssrd", "ttr", "mx2t3", "mn2t3", "tprate"}
 ECMWF_SHEAR_PARAMS = {"u", "v"}
-# The upper air set, as ECMWF's own parameter names and the level each is
-# wanted at. ECMWF publishes relative vorticity as "vo" where NOAA publishes
-# the absolute kind, which is the same picture plus a smooth background.
-ECMWF_UPPER = {
-    ("gh", 500), ("t", 850), ("r", 700), ("vo", 500),
-    ("u", WIND250_LEVEL), ("v", WIND250_LEVEL),
-}
+# ECMWF's own parameter names for the same set are generated beside the
+# fields, up in UPPER_SPECS, for the same reason: a level written twice is a
+# level that can be written differently twice.
 
 
 def ecmwf_paths(m, date_str, cyc, fhr, host=None):
@@ -2172,7 +3059,8 @@ def ask_from_inventory(pairs, extra_levels=(), upper=False):
             levs_.add(lev_flag(level))
     if upper:
         wanted = {(v, l) for opts in UPPER_SOURCES.values() for v, l in opts}
-        wanted |= set(WIND250_PARTS)
+        for parts in WIND_PL_PARTS.values():
+            wanted |= set(parts)
         for var, level in pairs:
             if (var, level) in wanted:
                 vars_.add("var_" + var)
@@ -2223,6 +3111,17 @@ def log(msg):
 #
 # Three days of frames is a promise the disk has to be able to keep. This is
 # what makes it ask first. Retention is what fits, not what was wanted.
+# A note on what this pass cost, since it is the number that matters on a
+# home connection: the catalogue went from twenty nine fields to ninety seven
+# and from six fields per high resolution model to twenty five, which is
+# roughly three times the download it was. Nothing here breaks under that,
+# because the guard below shortens the retention window rather than filling
+# the card, but the window will be shorter. Two knobs pull it back:
+#
+#   GWCFC_FINE_LEAN=1     the high resolution models go back to six fields
+#   --models a,b,c        build only the ones actually opened
+#
+# and dropping "upper" from a model's entry drops its twenty pressure levels.
 DISK_FLOOR_MB = float(os.environ.get("GWCFC_DISK_FLOOR_MB", "1500"))
 
 
@@ -2337,6 +3236,25 @@ RAMPS = {
     # colours and the warm settled ridges are the warm ones.
     "height": [(0,(70,20,110)),(0.25,(40,90,190)),(0.5,(60,180,170)),
                (0.7,(220,220,120)),(0.85,(230,130,50)),(1,(160,20,30))],
+    # Rotation. Nothing at the bottom, because most of a map has no spin in
+    # it and colouring that would bury the part that does, then straight up
+    # through the severe weather colours. Deliberately not a rainbow: the
+    # question this field answers is "where", not "how much".
+    "helicity":[(0,(20,20,40)),(0.15,(40,90,160)),(0.4,(90,190,140)),
+                (0.62,(245,225,110)),(0.8,(235,120,45)),(1,(180,10,60))],
+    # Compass direction, which has to wrap: 359 degrees and 1 degree are next
+    # to each other, so the ramp has to come back to where it started or
+    # every north wind would show as a hard seam across the map.
+    "direction":[(0,(230,90,80)),(0.25,(230,210,80)),(0.5,(80,200,130)),
+                 (0.75,(80,150,230)),(1,(230,90,80))],
+    # Simulated infrared, drawn the way every television satellite loop is:
+    # warm ground in greys running to white, then colour piled onto the
+    # coldest cloud tops, because on this field cold means tall and tall
+    # means the storm is serious. Runs cold to warm, so it is reversed
+    # relative to a temperature ramp.
+    "satir":  [(0,(255,255,255)),(0.1,(200,40,220)),(0.2,(220,40,40)),
+               (0.3,(240,180,40)),(0.4,(60,200,120)),(0.5,(30,60,160)),
+               (0.62,(20,20,20)),(1,(235,235,235))],
 }
 
 
@@ -2489,6 +3407,50 @@ def raw_candidates(m):
     return [r.replace("{storm}", storm) if storm else r for r in raw]
 
 
+# NOAA mirrors nearly everything on NOMADS to AWS open data, with the same
+# filenames under a different prefix. The mirrors matter because NOMADS rate
+# limits with a redirect to a throttle page rather than an honest 429, so a
+# burst of requests, which is exactly what building fifty eight models is,
+# starts answering "missing file" partway through. Same bytes, no limit.
+#
+# Keyed by the first path segment of the NOMADS path, which is the product
+# name. The value is the bucket and what replaces that segment.
+# Every one of these was checked by building the mirror address for a real
+# model and fetching it. The blend, the ensemble of high resolution runs and
+# the HiResW nests are deliberately absent: they have no mirror that answers,
+# so listing them would be a fallback that quietly never works.
+S3_MIRRORS = {
+    "gfs":  "noaa-gfs-bdp-pds",
+    "gdas": "noaa-gfs-bdp-pds",
+    "nam":  "noaa-nam-pds",
+    "hrrr": "noaa-hrrr-bdp-pds",
+    "rap":  "noaa-rap-pds",
+    "gens": "noaa-gefs-pds",
+    "rtma": "noaa-rtma-pds",
+    "urma": "noaa-urma-pds",
+    "hafs": "noaa-nws-hafs-pds",
+}
+
+
+def mirror_url(tail):
+    """The AWS address of a NOMADS path, or None if there is no mirror.
+
+    A NOMADS path looks like `gfs/prod/gfs.20260825/00/atmos/...`. The bucket
+    is chosen by the first segment and the `prod` that follows it is dropped,
+    which is the whole of the difference between the two layouts.
+    """
+    parts = tail.split("/")
+    if len(parts) < 3:
+        return None
+    bucket = S3_MIRRORS.get(parts[0])
+    if not bucket:
+        return None
+    rest = parts[1:]
+    if rest and rest[0] == "prod":
+        rest = rest[1:]
+    return f"https://{bucket}.s3.amazonaws.com/" + "/".join(rest)
+
+
 def find_index(m, date_str, cyc, fhr, timeout=30):
     """The first index path that answers, with its text. (url, text) or None.
 
@@ -2496,10 +3458,23 @@ def find_index(m, date_str, cyc, fhr, timeout=30):
     started publishing whole models only to S3 open-data buckets, so a model
     that lives there is addressed by naming its own host instead of being
     excluded for not being on the file server.
+
+    Every NOMADS path is also tried on its AWS mirror. That is not belt and
+    braces: NOMADS answers a burst with a redirect to a throttle page, which
+    is indistinguishable from a missing file, and a run that builds the whole
+    catalogue is a burst by definition.
     """
+    tried = []
     for tmpl in raw_candidates(m):
         tail = tmpl.format(date=date_str, cyc=cyc, fhr=fhr)
-        url = tail if tail.startswith("http") else f"{RAW_BASE}/" + tail
+        if tail.startswith("http"):
+            tried.append(tail)
+            continue
+        tried.append(f"{RAW_BASE}/" + tail)
+        alt = mirror_url(tail)
+        if alt:
+            tried.append(alt)
+    for url in tried:
         try:
             r = http_get(url, timeout=timeout)
         except requests.RequestException:
@@ -2735,17 +3710,30 @@ def open_fields(grib_path, regrid_box=None):
                 # Wind components at the two shear levels, kept aside the same
                 # way. Nothing draws the wind at 200 mb on its own; it is only
                 # here to be differenced against 850.
+                # Wind components at any level a chart is built from, kept
+                # aside rather than matched. No model publishes a wind speed
+                # at a pressure level, so every one of those is built from
+                # its two components, and the two shear levels are only here
+                # to be differenced against each other.
                 if short in ("u", "v") and levt == "isobaricInhPa" \
-                        and lev in SHEAR_LEVELS:
+                        and lev in KEEP_UV_LEVELS:
                     uv[f"{short}{lev}"] = (arr, lats, lons)
                     continue
 
-                # The jet stream level, kept aside the same way. No model
-                # publishes a wind speed at a pressure level, so this one is
-                # always built from its two components.
-                if short in ("u", "v") and levt == "isobaricInhPa" \
-                        and lev == WIND250_LEVEL:
-                    uv[f"{short}{lev}"] = (arr, lats, lons)
+                # Turbine hub height, the same way.
+                if short in ("u", "v") and levt == "heightAboveGround" \
+                        and lev == WIND80_LEVEL:
+                    uv[f"{short}h80"] = (arr, lats, lons)
+                    continue
+
+                # The 0 to 6 km bulk shear components, which arrive already
+                # differenced across the layer, so this is a length rather
+                # than a difference of two winds.
+                if short in ("vucsh", "vvcsh") \
+                        and lev in (6000, 0) and levt in (
+                            "heightAboveGroundLayer", "heightAboveGround",
+                            "unknown"):
+                    uv[short] = (arr, lats, lons)
                     continue
 
                 for key, spec in FIELDS.items():
@@ -2795,12 +3783,26 @@ def open_fields(grib_path, regrid_box=None):
         found["shear"] = (np.sqrt(du ** 2 + dv ** 2), uv[f"u{hi}"][1],
                           uv[f"u{hi}"][2])
 
-    # The jet, which is a plain speed at one level rather than a difference
-    # between two.
-    ju, jv = f"u{WIND250_LEVEL}", f"v{WIND250_LEVEL}"
-    if ju in uv and jv in uv:
-        found["wind250"] = (np.sqrt(uv[ju][0] ** 2 + uv[jv][0] ** 2),
-                            uv[ju][1], uv[ju][2])
+    # Every pressure level wind, which is a plain speed at one level rather
+    # than a difference between two.
+    for _lev in WIND_PL_LEVELS:
+        ju, jv = f"u{_lev}", f"v{_lev}"
+        if ju in uv and jv in uv:
+            found[f"wind{_lev}"] = (
+                np.sqrt(uv[ju][0] ** 2 + uv[jv][0] ** 2),
+                uv[ju][1], uv[ju][2])
+
+    # Turbine hub height, built the same way.
+    if "uh80" in uv and "vh80" in uv:
+        found["wind80"] = (np.sqrt(uv["uh80"][0] ** 2 + uv["vh80"][0] ** 2),
+                           uv["uh80"][1], uv["uh80"][2])
+
+    # And the 0 to 6 km bulk shear, whose components are already the
+    # difference across the layer, so this is just their length.
+    if "vucsh" in uv and "vvcsh" in uv:
+        found["shear06"] = (
+            np.sqrt(uv["vucsh"][0] ** 2 + uv["vvcsh"][0] ** 2),
+            uv["vucsh"][1], uv["vucsh"][2])
 
     # A file full of messages that matched nothing means the keys in FIELDS
     # disagree with what this eccodes build calls them. Printing what was

@@ -50,44 +50,36 @@ def ok(name, cond, extra=""):
 
 src = open(PY, encoding="utf-8").read()
 html = open(HTML, encoding="utf-8").read()
-tree = ast.parse(src)
 
+# Loaded rather than parsed. The field tables are generated from a spec now
+# rather than written out, so reading the source text finds an empty dict and
+# a loop, and an earlier version of this test cheerfully reported that there
+# were no upper air fields at all. The heavy dependencies are stubbed so this
+# still runs without a GRIB stack installed.
+import importlib.util  # noqa: E402
+import types  # noqa: E402
 
-def node(name):
-    for n in tree.body:
-        if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == name:
-            return n.value
-    raise AssertionError(f"{name} not found in gfs_pipeline.py")
+for _n in ("eccodes", "numpy", "PIL", "PIL.Image", "requests"):
+    try:
+        __import__(_n)
+    except ImportError:
+        _m = types.ModuleType(_n)
+        _m.__getattr__ = lambda k: types.SimpleNamespace()
+        sys.modules[_n] = _m
+
+_spec = importlib.util.spec_from_file_location("gp", PY)
+gp = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gp)
+
+MODELS = gp.MODELS
+FIELDS = gp.FIELDS
+UPPER = gp.UPPER_FIELDS
+UPPER_SOURCES = gp.UPPER_SOURCES
+RAMPS = gp.RAMPS
 
 
 def const(name):
-    return ast.literal_eval(node(name))
-
-
-def shallow(dict_node):
-    out = {}
-    for k, v in zip(dict_node.keys, dict_node.values):
-        if isinstance(v, ast.Dict):
-            inner = {}
-            for kk, vv in zip(v.keys, v.values):
-                try:
-                    inner[kk.value] = ast.literal_eval(vv)
-                except Exception:
-                    inner[kk.value] = "<expr>"
-            out[k.value] = inner
-        else:
-            try:
-                out[k.value] = ast.literal_eval(v)
-            except Exception:
-                out[k.value] = "<expr>"
-    return out
-
-
-MODELS = shallow(node("MODELS"))
-FIELDS = shallow(node("FIELDS"))
-UPPER = const("UPPER_FIELDS")
-UPPER_SOURCES = const("UPPER_SOURCES")
-RAMPS = const("RAMPS")
+    return getattr(gp, name)
 
 print("\n1. ECMWF asks for the products that are actually published")
 # Verified against a live listing of the open data bucket: the ensemble mean
@@ -151,24 +143,21 @@ ok("no model still points at the retired graphcastgfs prefix",
 print("\n4. AIGFS asks for fields that exist")
 # This is the one that fails silently: a "fields" set is used to narrow the
 # download, and a name in it that no table defines simply matches nothing.
-declared = ai.get("fields")
-ok("AIGFS declares which fields it wants", isinstance(declared, (set, frozenset)),
-   repr(declared))
-if isinstance(declared, (set, frozenset)):
-    missing = sorted(f for f in declared if f not in FIELDS)
-    ok("every field it names is defined in the Pi's field table",
-       not missing, ", ".join(missing))
-    ok("it asks for upper air", ai.get("upper") is True)
-    # AIGFS carries no surface fields at all, so a surface field in its list
-    # would be a chart that never appears.
-    surface = sorted(f for f in declared
-                     if f in FIELDS and "isobaricInhPa"
-                     not in str(FIELDS[f].get("levtype", "")) and f != "wind250")
-    ok("it asks for nothing at the ground, because it carries nothing there",
-       not surface, ", ".join(surface))
+# It used to name five fields, which capped it at three charts because it
+# carries no surface fields for the other two to come from. Asking for the
+# whole upper air set instead is what takes it to fifteen.
+ok("AIGFS asks for upper air", ai.get("upper") is True)
+ok("and does not narrow itself to a handful of fields",
+   ai.get("fields") is None, repr(ai.get("fields")))
 
 print("\n5. the upper air fields are defined all the way through")
-ok("there are five of them", len(UPPER) == 5, str(UPPER))
+# Twenty now: heights, temperatures, humidity, dewpoint, vorticity and
+# vertical motion across the levels a forecast is actually reasoned at, plus
+# a wind at each of six of them.
+ok("there are twenty of them", len(UPPER) == 20, f"{len(UPPER)}: {UPPER}")
+ok("every level a wind is drawn at has a field",
+   all(f"wind{lev}" in UPPER for lev in gp.WIND_PL_LEVELS),
+   str(gp.WIND_PL_LEVELS))
 for f in UPPER:
     ok(f"{f} is in the Pi's field table", f in FIELDS)
 for f in UPPER:
@@ -184,28 +173,32 @@ for f in UPPER:
 # The level is checked, not only that a source exists. A field named gh500
 # read off the 550 mb message is a chart that draws, looks plausible and is
 # simply the wrong layer, which is the worst kind of wrong.
-LEVEL_FOR = {"gh500": "500 mb", "t850": "850 mb",
-             "rh700": "700 mb", "vort500": "500 mb"}
+# The level in a field's name has to be the level it is downloaded at AND the
+# level the decoder reads it at. A gh500 read off the 550 mb message draws
+# fine, looks entirely plausible, and is the wrong layer.
 for f in UPPER:
-    if f == "wind250":
+    if f.startswith("wind"):
         continue
+    want = re.sub(r"^[a-z]+", "", f) + " mb"
     ok(f"{f} says which message to read it from", f in UPPER_SOURCES)
     levs = {lev for _var, lev in UPPER_SOURCES.get(f, [])}
-    ok(f"and reads {f} at {LEVEL_FOR[f]}", levs == {LEVEL_FOR[f]},
-       ", ".join(sorted(levs)))
-    # The level in the name has to be the level in the field table too, or the
-    # decoder and the downloader are reading two different layers.
-    ok(f"and the decoder agrees {f} is at {LEVEL_FOR[f]}",
-       str(FIELDS.get(f, {}).get("level")) == LEVEL_FOR[f].split()[0],
+    ok(f"and reads {f} at {want}", levs == {want}, ", ".join(sorted(levs)))
+    ok(f"and the decoder agrees {f} is at {want}",
+       str(FIELDS.get(f, {}).get("level")) == want.split()[0],
        str(FIELDS.get(f, {}).get("level")))
-ok("the jet is built from components rather than read",
-   FIELDS.get("wind250", {}).get("derive") == "wind250")
-ok("and both of its components are asked for",
-   "WIND250_PARTS" in src and src.count("WIND250_LEVEL") >= 4)
-ok("the decoder keeps the jet's components aside",
-   "lev == WIND250_LEVEL" in src)
-ok("and turns them into a speed",
-   'found["wind250"]' in src)
+# No model publishes a wind speed at a pressure level, so every one of these
+# is built from its two components the way the 10 m wind is.
+for _lev in gp.WIND_PL_LEVELS:
+    ok(f"the {_lev}mb wind is built from components rather than read",
+       FIELDS.get(f"wind{_lev}", {}).get("derive") == "windpl")
+    ok(f"and both {_lev}mb components are asked for",
+       len(gp.WIND_PL_PARTS.get(_lev, [])) == 2)
+ok("the decoder keeps every one of those levels aside",
+   "lev in KEEP_UV_LEVELS" in src)
+ok("and turns each pair into a speed",
+   'found[f"wind{_lev}"]' in src)
+ok("the shear levels are kept aside too, so shear still works",
+   all(lev in gp.KEEP_UV_LEVELS for lev in gp.SHEAR_LEVELS))
 
 print("\n6. upper air is opt in, and the right models opted in")
 # A pressure level is an extra message per field per forecast hour. Every
@@ -220,7 +213,9 @@ ok("the filter service path passes it through",
    'bool(m.get("upper"))' in src)
 ok("the ECMWF path passes it through",
    'm.get("upper") and pl and (param, plev) in ECMWF_UPPER' in src)
-want_upper = {"gfs", "nam", "gefs", "ecmwf", "ecmwfaifs", "aigfs"}
+want_upper = {"gfs", "nam", "gefs", "gdas", "ecmwf", "ecmwfaifs", "aigfs",
+              "gefsp02", "gefsp03", "gefsp04", "gefsp05",
+              "gefsp06", "gefsp07"}
 for name in sorted(want_upper):
     ok(f"{name} asks for upper air", MODELS.get(name, {}).get("upper") is True)
 # Nothing else should have quietly picked it up.
@@ -229,16 +224,13 @@ extra = sorted(k for k, v in MODELS.items()
 ok("and nothing else did", not extra, ", ".join(extra))
 
 print("\n7. ECMWF's own names for the same five")
-# Parsed by hand rather than evaluated: the jet's level is written as the
-# WIND250_LEVEL name so the two halves of the pipeline cannot drift apart, and
-# a name is not a literal.
-LEVEL_NAMES = {"WIND250_LEVEL": const("WIND250_LEVEL")}
-pairs = set()
-for elt in node("ECMWF_UPPER").elts:
-    param = elt.elts[0].value
-    lev = elt.elts[1]
-    pairs.add((param, LEVEL_NAMES.get(getattr(lev, "id", ""),
-                                      getattr(lev, "value", None))))
+pairs = set(gp.ECMWF_UPPER)
+# ECMWF publishes a pressure level parameter called "d" and it is DIVERGENCE,
+# not dewpoint. Painting divergence on a dewpoint scale looks entirely
+# plausible and is completely wrong, so the dewpoint chart is deliberately
+# absent from ECMWF rather than read off the wrong message.
+ok("ECMWF is never asked for a pressure level dewpoint",
+   not any(p == "d" for p, _l in pairs))
 for want in [("gh", 500), ("t", 850), ("r", 700), ("vo", 500)]:
     ok(f"ECMWF {want[0]} at {want[1]} mb is wanted", want in pairs)
 ok("and both jet components", ("u", 250) in pairs and ("v", 250) in pairs)
@@ -344,7 +336,98 @@ ok("the button says pause while it is running",
    "_hdPlayTimer ? 'Pause'" in html)
 ok("the transport is styled", "#hd-panel .hd-tape" in html)
 
-print("\n10. house rules")
+print("\n10. thirteen more models, and every model's product count")
+# The count of what a model can actually build is measured live by
+# tools/check-model-products.py, which fetches the real index and matches it
+# against the field table. That needs network, so it is not run here; what is
+# pinned here is everything that made those numbers move, so a change that
+# would quietly undo them fails without needing the network.
+NEW_MODELS = {
+    "gdas": "GDAS Global Analysis", "urma": "URMA 2.5 km Analysis",
+    "gefs0p25": "GEFS Mean 0.25 deg", "cfs": "CFS Seasonal",
+    "gefschem": "GEFS Aerosol", "namfire": "NAM Fire Weather Nest",
+    "gefswavemean": "GEFS Wave Mean",
+    "gefsp02": "GEFS Member 2", "gefsp03": "GEFS Member 3",
+    "gefsp04": "GEFS Member 4", "gefsp05": "GEFS Member 5",
+    "gefsp06": "GEFS Member 6", "gefsp07": "GEFS Member 7",
+}
+ok("thirteen models were added", len(NEW_MODELS) == 13)
+for name, label in NEW_MODELS.items():
+    m = MODELS.get(name, {})
+    ok(f"{name} is in the catalogue", bool(m))
+    ok(f"{name} is labelled {label}", m.get("label") == label, m.get("label"))
+    ok(f"{name} is built by default", name in const("DEFAULT_MODELS"))
+    ok(f"{name} has a disk estimate", name in const("MB_PER_HOUR"))
+# nam32 is NAM's conus32 region, not a model. Adding it back as a model would
+# undo the fold that made one entry per model with the place as a switch.
+ok("the 32 km NAM is a region of NAM rather than a model again",
+   "nam32" not in MODELS and "conus32" in (MODELS["nam"].get("regions") or {}))
+ok("the wave model's three published grids are regions of it",
+   set(MODELS["gfswave"].get("regions") or {})
+   >= {"tropics", "atlantic", "epacific", "arctic"},
+   str(list(MODELS["gfswave"].get("regions") or {})))
+ok("and RAP's Alaska file is a region of RAP",
+   "alaska" in (MODELS["rap"].get("regions") or {}))
+regions = {r for m in MODELS.values() for r in (m.get("regions") or {})}
+undefined = sorted(r for r in regions
+                   if r not in const("REGIONS") and not r[0].isdigit())
+ok("every region a model names has a box and a label",
+   not undefined, ", ".join(undefined))
+ok("and the page has a readable name for each",
+   all(f"{r}:" in html or f"'{r}'" in html for r in const("REGIONS")))
+
+# The high resolution models were capped at six fields to save bandwidth,
+# which is not a model. Six is still available behind an environment switch.
+FINE = const("FINE_FULL")
+ok("the fine models ask for at least fifteen fields",
+   len(FINE) >= 15, str(len(FINE)))
+ok("including the storm scale ones only they carry",
+   {"uphl", "echotop", "vil", "hail", "ltng", "satir"} <= FINE)
+ok("and the lean six are still reachable by environment variable",
+   "GWCFC_FINE_LEAN" in src and len(const("FINE_CORE")) == 6)
+
+# Mirrors. Every entry was checked by building the address for a real model
+# and fetching it; the ones with no working mirror are deliberately absent.
+MIRRORS = const("S3_MIRRORS")
+ok("the NOMADS paths have AWS mirrors to fall back on", len(MIRRORS) >= 8)
+ok("and only buckets that actually answered are listed",
+   not ({"blend", "href", "hiresw"} & set(MIRRORS)),
+   ", ".join(sorted({"blend", "href", "hiresw"} & set(MIRRORS))))
+ok("a NOMADS path becomes an AWS address",
+   const("mirror_url")("gfs/prod/gfs.20260825/00/atmos/x.idx")
+   == "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20260825/00/atmos/x.idx",
+   str(const("mirror_url")("gfs/prod/gfs.20260825/00/atmos/x.idx")))
+ok("and a path with no mirror says so rather than inventing one",
+   const("mirror_url")("rrfs/prod/rrfs.20260825/x.idx") is None)
+ok("the mirror is tried as well as NOMADS, not instead of it",
+   "tried.append(f\"{RAW_BASE}/\" + tail)" in src)
+
+print("\n11. ninety seven products, every one labelled and grouped")
+ok("the Pi can build ninety plus fields", len(FIELDS) >= 90, str(len(FIELDS)))
+ok("the page offers every one of them", len(listed) == len(FIELDS),
+   f"page {len(listed)} vs pi {len(FIELDS)}")
+ok("and offers nothing the Pi cannot build",
+   not [f for f in listed if f not in FIELDS],
+   ", ".join(f for f in listed if f not in FIELDS)[:120])
+groups = re.findall(r"group:\s*'([^']+)'", mfields.group(1) if mfields else "")
+ok("every field is in a group", len(groups) == len(listed),
+   f"{len(groups)} groups for {len(listed)} fields")
+ok("there are enough groups to be worth grouping by",
+   len(set(groups)) >= 8, ", ".join(sorted(set(groups))))
+ok("the panel renders them grouped rather than as one wall of buttons",
+   "hd-gt" in html and "class=\"hd-g\"" in html)
+ok("and the dropdown groups them too", "optgroup" in html)
+# A label like "Instability" says nothing. Every label should name the
+# quantity, and the level where the level is the point.
+labels = re.findall(r"label:\s*'([^']+)'", mfields.group(1) if mfields else "")
+ok("no label is a bare single word for a levelled field",
+   all(("mb" in l or "(" in l or " " in l)
+       for l in labels), ", ".join(l for l in labels if " " not in l))
+ok("the page's tables are generated rather than hand kept",
+   html.count("GENERATED by tools/sync-model-fields.py") == 3,
+   str(html.count("GENERATED by tools/sync-model-fields.py")))
+
+print("\n12. house rules")
 # Built from its code point rather than written out, so this file can check
 # for the character without containing one and failing its own rule.
 EM_DASH = chr(0x2014)

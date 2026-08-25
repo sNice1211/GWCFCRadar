@@ -82,7 +82,25 @@ def shallow(dict_node):
 
 
 MODELS = shallow(node("MODELS"))
-FIELDS = shallow(node("FIELDS"))
+# Loaded rather than parsed. The field table is generated from a spec now
+# (twenty pressure level charts differ only in level and scale, so writing
+# each by hand was twenty chances to paste the wrong range under the right
+# name), and reading the source text finds an empty dict and a loop.
+import importlib.util  # noqa: E402
+import types  # noqa: E402
+
+for _n in ("eccodes", "numpy", "PIL", "PIL.Image", "requests"):
+    try:
+        __import__(_n)
+    except ImportError:
+        _m = types.ModuleType(_n)
+        _m.__getattr__ = lambda k: types.SimpleNamespace()
+        sys.modules[_n] = _m
+
+_spec = importlib.util.spec_from_file_location("gp", PY)
+_gp = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_gp)
+FIELDS = _gp.FIELDS
 REGIONS = shallow(node("REGIONS"))
 DEFAULTS = const("DEFAULT_MODELS")
 COST = const("MB_PER_HOUR")
