@@ -150,6 +150,11 @@ MODELS = {
         "file": "gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}",
         "raw": "gfs/prod/gfs.{date}/{cyc}/atmos/gfs.t{cyc}z.pgrb2.0p25.f{fhr:03d}.idx",
         "step": 3, "out": 120,
+        # Upper air on. Five pressure level charts on top of the surface
+        # set: the 500 mb pattern, the 850 mb air mass, the jet, the mid
+        # level moisture and the spin at 500. Costs five more messages a
+        # forecast hour and turns a surface model into a full one.
+        "upper": True,
         # The tropical crop is not another model, it is this one cut somewhere
         # else and asked different questions: further out, six-hourly, and with
         # the shear field that only means anything over warm water.
@@ -174,6 +179,11 @@ MODELS = {
         "file": "nam.t{cyc}z.awphys{fhr:02d}.tm00.grib2",
         "raw": "nam/prod/nam.{date}/nam.t{cyc}z.awphys{fhr:02d}.tm00.grib2.idx",
         "step": 3, "out": 60,
+        # Upper air on. Five pressure level charts on top of the surface
+        # set: the 500 mb pattern, the 850 mb air mass, the jet, the mid
+        # level moisture and the spin at 500. Costs five more messages a
+        # forecast hour and turns a surface model into a full one.
+        "upper": True,
         # Backslashes are real characters here, not an escape for this file:
         # the service reads a level name as a regular expression, so brackets
         # have to be escaped for it. They must NOT be percent-encoded in
@@ -334,6 +344,11 @@ MODELS = {
         "raw": "gens/prod/gefs.{date}/{cyc}/atmos/pgrb2ap5/"
                "geavg.t{cyc}z.pgrb2a.0p50.f{fhr:03d}.idx",
         "step": 6, "out": 168,
+        # Upper air on. Five pressure level charts on top of the surface
+        # set: the 500 mb pattern, the 850 mb air mass, the jet, the mid
+        # level moisture and the spin at 500. Costs five more messages a
+        # forecast hour and turns a surface model into a full one.
+        "upper": True,
         "vars": ["var_TMP", "var_UGRD", "var_VGRD", "var_PRMSL", "var_APCP"],
         "levs": ["lev_2_m_above_ground", "lev_10_m_above_ground",
                  "lev_mean_sea_level", "lev_surface"],
@@ -551,6 +566,11 @@ MODELS = {
         "source": "ecmwf",
         "step": 6, "out": 144,
         "crop": True,
+        # Upper air on. Five pressure level charts on top of the surface
+        # set: the 500 mb pattern, the 850 mb air mass, the jet, the mid
+        # level moisture and the spin at 500. Costs five more messages a
+        # forecast hour and turns a surface model into a full one.
+        "upper": True,
         "regions": {"conus": {},
                     "tropics": {"out": 240, "shear": True}},
     },
@@ -616,14 +636,43 @@ MODELS = {
         "label": "ECMWF AIFS", "res": "0.25 deg AI", "cycle_h": 12, "lag_h": 8,
         "source": "ecmwf", "ecmwf_model": "aifs-single",
         "step": 6, "out": 144, "crop": True,
+        # Upper air on. Five pressure level charts on top of the surface
+        # set: the 500 mb pattern, the 850 mb air mass, the jet, the mid
+        # level moisture and the spin at 500. Costs five more messages a
+        # forecast hour and turns a surface model into a full one.
+        "upper": True,
         "regions": {"conus": {}, "tropics": {"out": 240, "shear": True}},
+    },
+    "aigfs": {
+        # NOAA's machine learned model, the American answer to AIFS. It began
+        # life as GraphCastGFS and was renamed; the old name's files stop in
+        # May, which is why anything still asking for graphcastgfs finds
+        # nothing. It is published only to the open data bucket and never to
+        # the file server, so its index is named by full URL.
+        #
+        # Pressure levels only: thirteen of them, carrying heights,
+        # temperature, wind, humidity and vertical motion, and no surface
+        # fields at all. That is what makes it an upper air model in the menu
+        # rather than another surface one.
+        "fetch": "range",
+        "label": "AIGFS", "res": "0.25 deg AI", "cycle_h": 6, "lag_h": 6,
+        "raw": "https://noaa-nws-graphcastgfs-pds.s3.amazonaws.com/"
+               "aigfs.{date}/{cyc}/model/atmos/grib2/"
+               "aigfs.t{cyc}z.pres.f{fhr:03d}.grib2.idx",
+        "fields": {"gh500", "t850", "wind250", "rh700", "vort500"},
+        "upper": True,
+        "step": 6, "out": 240,
+        "regions": {"conus": {}, "tropics": {"out": 384}},
     },
     "ecmwfens": {
         # The ensemble mean, from the enfo stream. Published as type "em"
         # rather than "fc", which is the only real difference in the address.
         "label": "ECMWF ENS mean", "res": "0.25 deg ens", "cycle_h": 12,
         "lag_h": 9,
-        "source": "ecmwf", "ecmwf_stream": "enfo", "ecmwf_type": "em",
+        # Published as "ef", not "em". The ensemble mean was asked for by a
+        # name ECMWF does not use in open data, so every hour 404ed and the
+        # model built nothing at all. Checked against the bucket listing.
+        "source": "ecmwf", "ecmwf_stream": "enfo", "ecmwf_type": "ef",
         # An ensemble mean at step 0 is just the analysis, which ECMWF does not
         # publish as "em", so hour 0 would 404 every run. Start at the first
         # forecast step, where the mean actually exists.
@@ -742,7 +791,8 @@ MODELS = {
     "ecmwfwave": {
         # ECMWF's wave model, which is the same files one stream over.
         "label": "ECMWF Wave", "res": "0.25 deg", "cycle_h": 12, "lag_h": 8,
-        "source": "ecmwf", "ecmwf_stream": "wave", "ecmwf_type": "wf",
+        # The wave stream's type is "fc" like the atmospheric one, not "wf".
+        "source": "ecmwf", "ecmwf_stream": "wave", "ecmwf_type": "fc",
         "step": 6, "out": 144, "crop": True,
         "regions": {"tropics": {}},
     },
@@ -843,7 +893,9 @@ MODELS = {
         "label": "ECMWF AIFS ENS", "res": "0.25 deg AI ens", "cycle_h": 12,
         "lag_h": 9,
         "source": "ecmwf", "ecmwf_model": "aifs-ens",
-        "ecmwf_stream": "enfo", "ecmwf_type": "em",
+        # The AI ensemble publishes a control run ("cf") and perturbed members
+        # ("pf"), and no mean. The control is the one member worth drawing.
+        "ecmwf_stream": "enfo", "ecmwf_type": "cf",
         "first": 6, "step": 6, "out": 240, "crop": True,
         "regions": {"conus": {}, "tropics": {"shear": True}},
     },
@@ -855,7 +907,7 @@ MODELS = {
 # hour stale are last.
 DEFAULT_MODELS = ["hrrr", "rtma", "rap", "gfs", "nam", "namnest", "nbm",
                   "href", "gefs", "gefsspr", "gfswave",
-                  "ecmwf", "ecmwfaifs",
+                  "ecmwf", "ecmwfaifs", "aigfs",
                   "hireswarw", "hireswarw2", "hireswfv3",
                   "hrrrsub",
                   "hafs", "hafsb",
@@ -971,7 +1023,7 @@ MB_PER_HOUR = {
     # Not yet measured, so estimated from a comparable model and corrected the
     # first time check_models.py runs against them.
     "href": 10.4, "hireswarw2": 6.0, "rrfs": 5.4, "hrrrsub": 5.4,
-    "ecmwfaifs": 4.3, "ecmwfens": 4.3,
+    "ecmwfaifs": 4.3, "ecmwfens": 4.3, "aigfs": 3.2,
     # Whole global fields with no cropping and no index, so these are the
     # expensive ones per hour even though the models are not large.
     "gem": 11.0, "icon": 21.0,
@@ -1014,14 +1066,26 @@ RAW_BASE = "https://nomads.ncep.noaa.gov/pub/data/nccf/com"
 # identical URL, seconds apart.
 #
 # Two defences. A minimum gap between NOMADS requests so the burst never trips
-# the limiter, and a back-off retry when one slips through anyway. Only NOMADS
-# needs this; the S3 buckets and ECMWF do not throttle this way.
+# the limiter, and a back-off retry when one slips through anyway.
+#
+# ECMWF needs the same treatment, which the earlier note here denied. Its S3
+# mirror answers a burst with 503 SlowDown, and a full build asks for one
+# index and one range per forecast hour back to back. Four quick retries are
+# not enough to outlast that, so ECMWF hours failed in clumps and the model
+# looked like it was not published. Measured against the live bucket: paced
+# requests answer, bursts do not.
 _NOMADS_MIN_GAP = 0.7          # seconds; NOMADS allows about 120 hits a minute
 _nomads_last = [0.0]
+_ECMWF_MIN_GAP = 0.35
+_ecmwf_last = [0.0]
 
 
 def is_nomads(url):
     return "nomads.ncep.noaa.gov" in url
+
+
+def is_ecmwf(url):
+    return "data.ecmwf.int" in url or "ecmwf-forecasts" in url
 
 
 def http_get(url, tries=4, **kw):
@@ -1034,12 +1098,18 @@ def http_get(url, tries=4, **kw):
     ask again, longer each time.
     """
     nomads = is_nomads(url)
+    ecmwf = is_ecmwf(url)
     for attempt in range(tries):
         if nomads:
             gap = _NOMADS_MIN_GAP - (time.time() - _nomads_last[0])
             if gap > 0:
                 time.sleep(gap)
             _nomads_last[0] = time.time()
+        elif ecmwf:
+            gap = _ECMWF_MIN_GAP - (time.time() - _ecmwf_last[0])
+            if gap > 0:
+                time.sleep(gap)
+            _ecmwf_last[0] = time.time()
         try:
             r = HTTP.get(url, allow_redirects=not nomads, **kw)
         except requests.RequestException:
@@ -1051,7 +1121,12 @@ def http_get(url, tries=4, **kw):
         # for a burst. The files are public, so a 403 on one is the limiter,
         # not a real permission wall.
         if r.status_code in (302, 403, 429, 503) and attempt < tries - 1:
-            time.sleep(1.5 * (attempt + 1))
+            # SlowDown means the host is asking for a real pause, not a
+            # polite one: doubling beats a linear crawl at outlasting it.
+            wait = 1.5 * (attempt + 1)
+            if ecmwf or r.status_code in (429, 503):
+                wait = max(wait, 2.0 * (2 ** attempt))
+            time.sleep(wait)
             continue
         return r
     return r
@@ -1214,11 +1289,68 @@ FIELDS = {
               "level": 0,
               "convert": lambda a: a,           "range": (0, 4),
               "ramp": "precip"},
+
+    # ── Upper air ───────────────────────────────────────────────────────────
+    # Everything above here is read at the ground, at head height, or through
+    # the whole column, which is one slice of the atmosphere and the one the
+    # weather is felt in. These five are read at pressure levels: the layers
+    # a forecaster actually reasons with. The ground tells you what today is;
+    # these tell you why, and what tomorrow is going to be.
+    #
+    # They are fetched only by models that ask for them, the same way shear
+    # is, because a pressure level is a whole extra message per field per
+    # forecast hour and most models are not opened for this.
+
+    # 500 mb height, in decametres. The single most-read chart in weather.
+    # 500 mb sits near the middle of the atmosphere by mass, so this surface
+    # is the steering flow: the height field is where the troughs and ridges
+    # live, and everything at the ground is carried along by it. Low numbers
+    # are a trough (cold, stormy), high numbers a ridge (warm, settled).
+    "gh500": {"short": ("gh",), "levtype": ("isobaricInhPa",), "level": 500,
+              "convert": lambda a: a / 10.0,    "range": (480, 600),
+              "ramp": "height"},
+    # 850 mb temperature. About 1.5 km up, which is above the ground's own
+    # daily heating and cooling, so it shows the real air mass rather than
+    # whether the sun happened to be out. It is the field warm and cold
+    # fronts are drawn from, and the 0 C line at this level is roughly the
+    # rain-or-snow line.
+    "t850": {"short": ("t",), "levtype": ("isobaricInhPa",), "level": 850,
+             "convert": lambda a: a - 273.15,   "range": (-30, 30),
+             "ramp": "temp"},
+    # 250 mb wind, in knots. This is the jet stream. Storms at the ground
+    # form and deepen underneath the fast parts of it, so the jet is where a
+    # forecaster looks first to find out where anything is going to happen.
+    # Worked out from the two components, since no model publishes the speed
+    # at a pressure level.
+    "wind250": {"short": (), "levtype": (), "level": 250,
+                "convert": lambda a: a * 1.94384, "range": (0, 160),
+                "ramp": "wind", "derive": "wind250"},
+    # 700 mb humidity. The mid-level moisture that decides whether clouds
+    # thicken into rain or dry out into nothing. A dry slot here on top of a
+    # wet surface is the classic setup for a forecast that busts.
+    "rh700": {"short": ("r",), "levtype": ("isobaricInhPa",), "level": 700,
+              "convert": lambda a: a,            "range": (0, 100),
+              "ramp": "moisture"},
+    # 500 mb vorticity, scaled to the units the charts are drawn in. Spin.
+    # A blob of high vorticity moving along the 500 mb flow is a shortwave,
+    # and the air ahead of one is being lifted, which is what turns a moist
+    # air mass into a rain shield. Published as a very small number per
+    # second, so it is multiplied up to read the way it does on a chart.
+    "vort500": {"short": ("absv", "vo"), "levtype": ("isobaricInhPa",),
+                "level": 500,
+                "convert": lambda a: a * 1e5,    "range": (0, 40),
+                "ramp": "heat"},
 }
 
 # The two pressure levels the shear field is worked out from. Fetched only by
 # models that ask for shear, since for everything else they are dead weight.
 SHEAR_LEVELS = (200, 850)
+
+# The upper air set, and the one level whose wind is worked out from its two
+# components rather than read. Same rule as shear: fetched only by models that
+# ask, because a pressure level costs a message per field per forecast hour.
+UPPER_FIELDS = ("gh500", "t850", "wind250", "rh700", "vort500")
+WIND250_LEVEL = 250
 
 
 def _matches(spec, short, levtype, level):
@@ -1315,7 +1447,8 @@ def inventory(m, date_str, cyc, fhr):
     Returns {(variable, level)} or None when the index cannot be read, in which
     case the caller falls back to asking blind.
     """
-    url = f"{RAW_BASE}/" + m["raw"].format(date=date_str, cyc=cyc, fhr=fhr)
+    tail = m["raw"].format(date=date_str, cyc=cyc, fhr=fhr)
+    url = tail if tail.startswith("http") else f"{RAW_BASE}/" + tail
     try:
         r = http_get(url, timeout=30)
         if r.status_code != 200 or "<" in r.text[:40]:
@@ -1377,6 +1510,20 @@ FIELD_SOURCES = {
 WIND_SPEED = ("WIND", "10 m above ground")
 WIND_PARTS = [("UGRD", "10 m above ground"), ("VGRD", "10 m above ground")]
 
+# The upper air messages, kept in their own table rather than folded into the
+# one above so that a model which never asked for a pressure level does not
+# start paying for five more messages an hour by accident.
+UPPER_SOURCES = {
+    "gh500":   [("HGT", "500 mb")],
+    "t850":    [("TMP", "850 mb")],
+    "rh700":   [("RH", "700 mb")],
+    # Absolute vorticity is what NOAA publishes; ECMWF publishes the relative
+    # kind. They differ by the earth's own spin, which is a smooth background
+    # across a map rather than a feature, so either draws the same shortwaves.
+    "vort500": [("ABSV", "500 mb"), ("RELV", "500 mb")],
+}
+WIND250_PARTS = [("UGRD", f"{WIND250_LEVEL} mb"), ("VGRD", f"{WIND250_LEVEL} mb")]
+
 
 def _lev_matches(pattern, level):
     if pattern.endswith("*"):
@@ -1405,7 +1552,7 @@ def parse_idx(text):
     return rows
 
 
-def select_from_idx(rows, want_shear=False, only=None):
+def select_from_idx(rows, want_shear=False, only=None, want_upper=False):
     """
     The messages worth downloading, as byte ranges, and what they are.
 
@@ -1452,6 +1599,24 @@ def select_from_idx(rows, want_shear=False, only=None):
                             if (r["var"], r["lev"]) == want), None)
                 if one:
                     take(one, f"wind<-{want[0]}")
+
+    if want_upper:
+        for key, options in UPPER_SOURCES.items():
+            if only and key not in only:
+                continue
+            for var, levpat in options:
+                hit = next((r for r in rows
+                            if r["var"] == var
+                            and _lev_matches(levpat, r["lev"])), None)
+                if hit:
+                    take(hit, f"{key}<-{var}")
+                    break
+        if not only or "wind250" in only:
+            for want in WIND250_PARTS:
+                one = next((r for r in rows
+                            if (r["var"], r["lev"]) == want), None)
+                if one:
+                    take(one, f"wind250<-{want[0]}")
 
     if want_shear:
         levels = {f"{mb} mb" for mb in SHEAR_LEVELS}
@@ -1504,7 +1669,8 @@ def fetch_hour_range(m, date_str, cyc, fhr, path):
     grib_url = idx_url[:-4] if idx_url.endswith(".idx") else idx_url
 
     rows = parse_idx(idx_text)
-    keep, _names = select_from_idx(rows, m.get("shear"), m.get("fields"))
+    keep, _names = select_from_idx(rows, m.get("shear"), m.get("fields"),
+                                   m.get("upper"))
     if not keep:
         log(f"    f{fhr:03d}: index had none of the wanted fields")
         return False
@@ -1720,6 +1886,13 @@ _ecmwf_host_hint = [None]
 # 100 MB and this pulls a few MB of it.
 ECMWF_PARAMS = {"2t", "2d", "msl", "10u", "10v", "tp", "tcwv", "sst"}
 ECMWF_SHEAR_PARAMS = {"u", "v"}
+# The upper air set, as ECMWF's own parameter names and the level each is
+# wanted at. ECMWF publishes relative vorticity as "vo" where NOAA publishes
+# the absolute kind, which is the same picture plus a smooth background.
+ECMWF_UPPER = {
+    ("gh", 500), ("t", 850), ("r", 700), ("vo", 500),
+    ("u", WIND250_LEVEL), ("v", WIND250_LEVEL),
+}
 
 
 def ecmwf_paths(m, date_str, cyc, fhr, host=None):
@@ -1799,11 +1972,17 @@ def fetch_hour_ecmwf(m, date_str, cyc, fhr, path):
         except ValueError:
             continue
         param = rec.get("param")
+        try:
+            plev = int(rec.get("levelist", 0) or 0)
+        except (TypeError, ValueError):
+            plev = 0
+        pl = rec.get("levtype") == "pl"
         if param in ECMWF_PARAMS and rec.get("levtype") == "sfc":
             pass
         elif (m.get("shear") and param in ECMWF_SHEAR_PARAMS
-              and rec.get("levtype") == "pl"
-              and int(rec.get("levelist", 0) or 0) in SHEAR_LEVELS):
+              and pl and plev in SHEAR_LEVELS):
+            pass
+        elif m.get("upper") and pl and (param, plev) in ECMWF_UPPER:
             pass
         else:
             continue
@@ -1967,7 +2146,7 @@ def crop_to_box(arr, lats, lons, box):
     return arr, lats, lons, bounds
 
 
-def ask_from_inventory(pairs, extra_levels=()):
+def ask_from_inventory(pairs, extra_levels=(), upper=False):
     """
     Turn what is in the file into the flags that ask for the useful part.
 
@@ -1975,6 +2154,11 @@ def ask_from_inventory(pairs, extra_levels=()):
     and only the wind components are taken from them. Asking for everything at
     850 mb would pull temperature and humidity too, which nothing here draws,
     on a box big enough that the waste is real.
+
+    "upper" adds the five pressure level charts, each named as one variable at
+    one level rather than as a level list, for the same reason: the filter
+    service returns every combination of what it is given, so asking for four
+    variables at four levels to draw four charts fetches sixteen messages.
     """
     vars_, levs_ = set(), set()
     for var, level in pairs:
@@ -1986,6 +2170,13 @@ def ask_from_inventory(pairs, extra_levels=()):
         elif level in extra_levels and var in ("UGRD", "VGRD"):
             vars_.add("var_" + var)
             levs_.add(lev_flag(level))
+    if upper:
+        wanted = {(v, l) for opts in UPPER_SOURCES.values() for v, l in opts}
+        wanted |= set(WIND250_PARTS)
+        for var, level in pairs:
+            if (var, level) in wanted:
+                vars_.add("var_" + var)
+                levs_.add(lev_flag(level))
     return sorted(vars_), sorted(levs_)
 
 
@@ -2140,6 +2331,12 @@ RAMPS = {
     # on any snow map anyone has seen before.
     "snow":   [(0,(245,250,255)),(0.2,(190,225,245)),(0.45,(110,175,225)),
                (0.7,(60,105,190)),(1,(30,30,110))],
+    # 500 mb height. Purple and blue at the low end, red at the high end,
+    # which is the convention every upper air chart is drawn in and which
+    # reads correctly without a legend: the cold stormy troughs are the cool
+    # colours and the warm settled ridges are the warm ones.
+    "height": [(0,(70,20,110)),(0.25,(40,90,190)),(0.5,(60,180,170)),
+               (0.7,(220,220,120)),(0.85,(230,130,50)),(1,(160,20,30))],
 }
 
 
@@ -2293,9 +2490,16 @@ def raw_candidates(m):
 
 
 def find_index(m, date_str, cyc, fhr, timeout=30):
-    """The first index path that answers, with its text. (url, text) or None."""
+    """The first index path that answers, with its text. (url, text) or None.
+
+    A raw path may be a full URL rather than a path under NOMADS. NOAA has
+    started publishing whole models only to S3 open-data buckets, so a model
+    that lives there is addressed by naming its own host instead of being
+    excluded for not being on the file server.
+    """
     for tmpl in raw_candidates(m):
-        url = f"{RAW_BASE}/" + tmpl.format(date=date_str, cyc=cyc, fhr=fhr)
+        tail = tmpl.format(date=date_str, cyc=cyc, fhr=fhr)
+        url = tail if tail.startswith("http") else f"{RAW_BASE}/" + tail
         try:
             r = http_get(url, timeout=timeout)
         except requests.RequestException:
@@ -2381,7 +2585,8 @@ def fetch_hour(m, date_str, cyc, fhr, path):
     pairs = inventory(m, date_str, cyc, fhr)
     if pairs:
         v, l = ask_from_inventory(
-            pairs, SHEAR_LEVEL_NAMES if m.get("shear") else ())
+            pairs, SHEAR_LEVEL_NAMES if m.get("shear") else (),
+            bool(m.get("upper")))
         if v and l:
             attempts.append((v, l, "indexed"))
     attempts.append((m.get("vars", VAR_FLAGS), m.get("levs", LEV_FLAGS), "declared"))
@@ -2535,6 +2740,14 @@ def open_fields(grib_path, regrid_box=None):
                     uv[f"{short}{lev}"] = (arr, lats, lons)
                     continue
 
+                # The jet stream level, kept aside the same way. No model
+                # publishes a wind speed at a pressure level, so this one is
+                # always built from its two components.
+                if short in ("u", "v") and levt == "isobaricInhPa" \
+                        and lev == WIND250_LEVEL:
+                    uv[f"{short}{lev}"] = (arr, lats, lons)
+                    continue
+
                 for key, spec in FIELDS.items():
                     if not _matches(spec, short, levt, lev):
                         continue
@@ -2581,6 +2794,13 @@ def open_fields(grib_path, regrid_box=None):
         dv = uv[f"v{hi}"][0] - uv[f"v{lo}"][0]
         found["shear"] = (np.sqrt(du ** 2 + dv ** 2), uv[f"u{hi}"][1],
                           uv[f"u{hi}"][2])
+
+    # The jet, which is a plain speed at one level rather than a difference
+    # between two.
+    ju, jv = f"u{WIND250_LEVEL}", f"v{WIND250_LEVEL}"
+    if ju in uv and jv in uv:
+        found["wind250"] = (np.sqrt(uv[ju][0] ** 2 + uv[jv][0] ** 2),
+                            uv[ju][1], uv[ju][2])
 
     # A file full of messages that matched nothing means the keys in FIELDS
     # disagree with what this eccodes build calls them. Printing what was
