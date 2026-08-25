@@ -97,6 +97,20 @@ console.log('\n2. demo mode: browsable before any archive exists');
   ok('with no base configured it runs on demo data and says so',
      r.demo && r.banner, JSON.stringify(r));
   ok('the six region cards are on screen', r.regions === 6, String(r.regions));
+
+  const fonts = await page.evaluate(() => {
+    const bad = [];
+    document.querySelectorAll('body *').forEach(el => {
+      if (!el.offsetParent && el.tagName !== 'BODY') return;
+      const f = getComputedStyle(el).fontFamily || '';
+      if (f && !/comfortaa/i.test(f.split(',')[0])) {
+        bad.push(el.tagName + '#' + (el.id || '') + ' -> ' + f.slice(0, 40));
+      }
+    });
+    return bad.slice(0, 6);
+  });
+  ok('nothing on the page renders in anything but Comfortaa',
+     fonts.length === 0, fonts.join(' | '));
 }
 
 console.log('\n2b. Home goes to the home page, never to the radar');

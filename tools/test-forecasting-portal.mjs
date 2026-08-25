@@ -26,6 +26,9 @@ ok('no emoji: the artwork is drawn',
    }));
 ok('Comfortaa is the typeface', /family=Comfortaa/.test(html)
    && /"Comfortaa"/.test(html));
+ok('the copied app CSS asks for nothing else: its mono and display faces '
+   + 'are Comfortaa too',
+   /--mono:\s*"Comfortaa"/.test(html) && /--display:\s*"Comfortaa"/.test(html));
 ok('it uses the radar app\'s own Firebase project, so the accounts are the same',
    /projectId:\s*"gwcfc-radar"/.test(html));
 ok('publishing writes to an outlooks collection with a latest pointer',
@@ -173,6 +176,21 @@ console.log('\n2. the format matches the design');
   ok('the palette offers the five PDF symbols, 5 down to 1',
      r.palette.join(',') === '5,4,3,2,1', r.palette.join(','));
   ok('the map is live under the format', r.mapUp);
+
+  // Every element that renders text, measured rather than assumed.
+  const fonts = await page.evaluate(() => {
+    const bad = [];
+    document.querySelectorAll('body *').forEach(el => {
+      if (!el.offsetParent && el.tagName !== 'BODY') return;   // hidden, never seen
+      const f = getComputedStyle(el).fontFamily || '';
+      if (f && !/comfortaa/i.test(f.split(',')[0])) {
+        bad.push(el.tagName + '#' + (el.id || '') + ' -> ' + f.slice(0, 40));
+      }
+    });
+    return bad.slice(0, 6);
+  });
+  ok('nothing on the page renders in anything but Comfortaa',
+     fonts.length === 0, fonts.join(' | '));
 }
 
 console.log('\n3. testing mode is open, and the flag is the only reason');
