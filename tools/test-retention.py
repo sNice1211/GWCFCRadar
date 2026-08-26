@@ -93,17 +93,28 @@ def const(src, name):
     raise AssertionError(f"{name} not found")
 
 
-print("\n1. every window really is three days")
+print("\n1. the disk holds a day more than playback offers")
+# Playback reaches three days; the disk keeps four. With both at three the
+# oldest playable day was always partly deleted already - the pruner had
+# been eating its start since the moment it became "three days ago". The
+# fourth day is the disposal buffer that keeps the whole third day intact,
+# and only past four days is a frame thrown away.
 RK = const(radar_src, "KEEP_HOURS")
 MK = const(radar_src, "MRMS_KEEP_HOURS")
 SK = const(sat_src, "KEEP_HOURS")
-ok("radar keeps 72 hours", RK >= 72, str(RK))
-ok("MRMS keeps 72 hours", MK >= 72, str(MK))
+ok("radar keeps 96 hours (three playable days plus the disposal buffer)",
+   RK >= 96, str(RK))
+ok("MRMS keeps 96 hours too", MK >= 96, str(MK))
 ok("satellite keeps 72 hours", SK >= 72, str(SK))
 ok("and every one can be changed without editing code",
    all(f'GWCFC_{v}' in s for v, s in
        [("RADAR_KEEP_HOURS", radar_src), ("MRMS_KEEP_HOURS", radar_src),
         ("SAT_KEEP_HOURS", sat_src)]))
+page = open(os.path.join(ROOT, "index.html"), encoding="utf-8").read()
+ok("the site's loop lengths still top out at three days, not four",
+   "PR_LOOP_LENGTHS = [1, 3, 6, 12, 24, 48, 72]" in page)
+ok("and MRMS playback is capped at three days as well",
+   "MRMS_PLAY_HOURS = 72" in page)
 
 print("\n2. and every one has a ceiling as well, because a window is not a budget")
 RM = const(radar_src, "MAX_FRAMES")
@@ -112,12 +123,13 @@ SM = const(sat_src, "MAX_FRAMES")
 ok("radar caps its frame count", RM >= 500, str(RM))
 ok("MRMS caps its frame count", MM >= 300, str(MM))
 ok("satellite caps its frame count", SM >= 200, str(SM))
-# Three days at the real cadences: radar about every 4 min, satellite every
-# 10. A ceiling below that would silently shorten the window people were
-# promised, which is worse than not offering it.
-ok("the radar ceiling is not lower than three days of scans actually needs",
-   RM >= 72 * 60 / 4 * 0.9, f"{RM} vs {int(72 * 60 / 4)} expected")
-ok("nor is the satellite one",
+# The full window at the real cadences: radar about every 4 min (and its
+# window is now four days), satellite every 10 across three. A ceiling below
+# that would silently shorten the window people were promised, which is
+# worse than not offering it.
+ok("the radar ceiling is not lower than four days of scans actually needs",
+   RM >= 96 * 60 / 4 * 0.9, f"{RM} vs {int(96 * 60 / 4)} expected")
+ok("nor is the satellite one below its three days",
    SM >= 72 * 60 / 10 * 0.9, f"{SM} vs {int(72 * 60 / 10)} expected")
 
 print("\n3. the radar pruner deletes by age, and only by age")

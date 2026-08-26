@@ -41,29 +41,35 @@ const ok = (name, cond, extra) => {
   else { fail++; console.log('  FAIL ' + name + (extra ? '  <' + extra + '>' : '')); }
 };
 
-// Three days of frames, the way the Pi writes them: rotation every 5 minutes,
-// hail every 5, and a freezing level on the hourly lane. The mismatch is the
-// point - products are on different cadences and must still line up in time.
+// Frames the way the Pi writes them: rotation every 5 minutes, hail every 5,
+// and a freezing level on the hourly lane. The mismatch is the point -
+// products are on different cadences and must still line up in time. The
+// rotation lane carries the Pi's full FOUR days (three playable days plus
+// the disposal-buffer day the pruner has not yet thrown away); playback must
+// trim that fourth day off rather than quietly showing it.
 const BOUNDS = [[20, -130], [55, -60]];
-const start = Date.UTC(2026, 7, 17, 12, 0, 0);          // 72 h before the end
+const end = Date.UTC(2026, 7, 20, 12, 0, 0);
 const stamp = (ms) => {
   const d = new Date(ms), p = (n) => String(n).padStart(2, '0');
   return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`
        + `_${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
 };
-const series = (stepMin, name) => {
+const series = (stepMin, name, hours = 72) => {
   const out = [];
-  for (let ms = start; ms <= start + 72 * 3600e3; ms += stepMin * 60e3) {
+  for (let ms = end - hours * 3600e3; ms <= end; ms += stepMin * 60e3) {
     out.push({ t: stamp(ms), file: `${stamp(ms)}/${name}.png` });
   }
   return out;
 };
-const rotationFrames = series(5, 'rotation');
+const rotationFrames = series(5, 'rotation', 96);
 const meshFrames = series(5, 'mesh');
 const h0cFrames = series(60, 'h0c');
+// What the trim must keep: only rotation frames within 72 h of the newest.
+const ROT_PLAYABLE = rotationFrames.filter(
+  f => f.t >= stamp(end - 72 * 3600e3)).length;
 const MANIFEST = {
   updated: '2026-08-20T12:00:00+00:00',
-  keep_hours: 72,
+  keep_hours: 96,
   products: {
     rotation: { label: 'Rotation Tracks', bounds: BOUNDS, unit: 'per s',
                 frames: rotationFrames, latest: rotationFrames.at(-1).t,
@@ -128,9 +134,12 @@ console.log('\n1. turning a product on builds three days of frames, not one');
       firstIsOldest: f.length > 1 && f[0].time < f[1].time,
     };
   });
-  ok('every frame the Pi has is in the loop', r.n > 800, String(r.n));
+  ok('three full days of frames are in the loop', r.n > 800, String(r.n));
   ok('and they really span three days', r.spanH >= 71 && r.spanH <= 73,
      r.spanH.toFixed(1) + ' h');
+  ok('the manifest carried a fourth day that playback trims off',
+     rotationFrames.length > ROT_PLAYABLE && r.n === ROT_PLAYABLE,
+     `manifest ${rotationFrames.length}, playable ${ROT_PLAYABLE}, loop ${r.n}`);
   ok('so MRMS is a playback source', r.active);
   ok('oldest first, so the timeline reads left to right', r.firstIsOldest);
   ok('it opens on the newest frame', r.onNewest, String(r.idx));

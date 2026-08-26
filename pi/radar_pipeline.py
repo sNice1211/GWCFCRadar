@@ -97,22 +97,26 @@ TDWR_SITES = [
 # would then report a "day" of history that was actually much less. Pruning by
 # wall-clock age keeps whatever genuinely happened in the window, however
 # unevenly spaced, and self-corrects once building resumes.
-# How far back playback reaches. Three days, because that is what was asked
-# for and because the frames are small: a Level 3 picture is tens of
-# kilobytes, so 72 hours of one site is measured in tens of megabytes rather
-# than gigabytes.
+# How long frames live on disk. Four days, one more than playback offers:
+# the player reaches back three days, and with disk retention set to exactly
+# three the oldest playable day was always partly eaten already - the pruner
+# had been deleting its start since the moment it became "three days ago".
+# The fourth day is the disposal buffer that keeps the whole third day
+# playable; only once a frame passes four days old is it thrown away.
+# The frames are small: a Level 3 picture is tens of kilobytes, so even 96
+# hours of one site is measured in tens of megabytes rather than gigabytes.
 #
-# The ceiling matters more than the window on a Pi. A site scanning every four
-# minutes produces about 1,080 frames in three days, and there are hundreds of
-# sites; the count cap is what stops a busy severe-weather day filling the
-# card while the age cap is still happy.
-KEEP_HOURS = float(os.environ.get("GWCFC_RADAR_KEEP_HOURS", "72"))
-MAX_FRAMES = int(os.environ.get("GWCFC_RADAR_MAX_FRAMES", "1200"))
+# The ceiling matters more than the window on a Pi. A site scanning every
+# four minutes produces about 1,440 frames in four days, and there are
+# hundreds of sites; the count cap is what stops a busy severe-weather day
+# filling the card while the age cap is still happy.
+KEEP_HOURS = float(os.environ.get("GWCFC_RADAR_KEEP_HOURS", "96"))
+MAX_FRAMES = int(os.environ.get("GWCFC_RADAR_MAX_FRAMES", "1600"))
 
 # MRMS is national rather than per-site, so one frame covers the whole country
 # and there are thirty-eight products of them. Same window, its own ceiling.
-MRMS_KEEP_HOURS = float(os.environ.get("GWCFC_MRMS_KEEP_HOURS", "72"))
-MRMS_MAX_FRAMES = int(os.environ.get("GWCFC_MRMS_MAX_FRAMES", "900"))
+MRMS_KEEP_HOURS = float(os.environ.get("GWCFC_MRMS_KEEP_HOURS", "96"))
+MRMS_MAX_FRAMES = int(os.environ.get("GWCFC_MRMS_MAX_FRAMES", "1200"))
 
 # Level 2 products, as MetPy names the moments inside the file.
 L2_PRODUCTS = {

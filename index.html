@@ -20115,9 +20115,11 @@ try {
 // day of JSON up front, and a finished historical frame never changes, so
 // once fetched it is never asked for again.
 let _prLoop = { frames: [], idx: -1, site: null, lvl: null, cache: new Map() };
-// Hours of history offered. The Pi keeps three days now, so 72 is on the
-// list: the frames are already on its disk and the only thing that was
-// stopping playback reaching them was this number.
+// Hours of history offered, topping out at three days. The Pi holds FOUR
+// days on disk and disposes of frames only past that, so the whole third
+// day is always intact by the time playback asks for it - with disk and
+// playback both at three days, the oldest day was forever half-deleted.
+// The fourth day is a disposal buffer, never offered here.
 let _prLoopLenH = 3;
 const PR_LOOP_LENGTHS = [1, 3, 6, 12, 24, 48, 72];
 try {
@@ -20881,12 +20883,24 @@ function _mrmsLoopReset() {
   _mrmsLoop = { frames: [], idx: -1, key: null, base: _mrmsLoop.base };
 }
 
+// Playback reaches back at most three days. The Pi keeps a fourth day on
+// disk purely as the disposal buffer (see PR_LOOP_LENGTHS above); without
+// this cap the MRMS timeline would quietly stretch into it.
+const MRMS_PLAY_HOURS = 72;
+
 // Build the scrub list from the manifest the Pi just answered with. Frames
 // are timestamps only at this point; nothing is fetched.
 function _mrmsLoopBuild(man, base) {
   const key = _mrmsLeadKey();
   const p = key && man.products && man.products[key];
-  const frames = (p && p.frames) || [];
+  let frames = (p && p.frames) || [];
+  if (frames.length) {
+    const newestMs = _mrmsStampMs(frames[frames.length - 1].t);
+    if (isFinite(newestMs)) {
+      const cutoff = newestMs - MRMS_PLAY_HOURS * 3600000;
+      frames = frames.filter(f => _mrmsStampMs(f.t) >= cutoff);
+    }
+  }
   if (!key || frames.length < 2) { _mrmsLoopReset(); _mrmsLoop.key = key; return; }
   const keptStamp = (_mrmsLoop.key === key && _mrmsLoop.idx >= 0
                      && _mrmsLoop.frames[_mrmsLoop.idx])
@@ -47408,7 +47422,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The Forecasting Portal can now sign you in on the spot: pressing Publish while signed out opens the sign-in card right there (and the header offers a Sign in link), instead of asking for an account with no way to provide one.';
+const APP_LATEST_UPDATE = 'Radar playback now always has its full three days: the Pi keeps a fourth day of frames on disk as a disposal buffer (data is only thrown away once it passes four days old), so the oldest day of the loop is never half-deleted, and MRMS playback is capped at the same three days.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
