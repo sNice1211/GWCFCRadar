@@ -15,10 +15,13 @@ service cloud.firestore {
         && request.auth.token.email.lower() == 'ralphies1005@gmail.com';
     }
 
-    // Fields only the owner may ever set.
+    // Fields only the owner may ever set. forecaster is here because it is
+    // what lets an account publish outlooks and alerts to everyone: a flag
+    // people could write onto their own profile would be no gate at all.
     function touchesRoleFields() {
       return request.resource.data.diff(resource.data).affectedKeys()
-        .hasAny(['staffRole', 'staffRoleSetBy', 'staffRoleSetAt']);
+        .hasAny(['staffRole', 'staffRoleSetBy', 'staffRoleSetAt',
+                 'forecaster', 'forecasterSetBy', 'forecasterSetAt']);
     }
 
     function isStaff() {
@@ -68,7 +71,8 @@ service cloud.firestore {
 
       allow create: if isOwner()
         || (isSignedIn() && request.auth.uid == uid
-            && !('staffRole' in request.resource.data));
+            && !('staffRole' in request.resource.data)
+            && !('forecaster' in request.resource.data));
 
       allow update: if isOwner()
         || (isSignedIn() && request.auth.uid == uid && !touchesRoleFields());
@@ -311,17 +315,16 @@ service cloud.firestore {
     // pressed it.
     //
     // Writing is for forecasters: the owner, staff, or an account whose
-    // profile an administrator has marked as a forecaster. That is the same
-    // gate the portal itself describes, enforced where it cannot be bypassed.
+    // profile the owner has marked with the forecaster flag. Deliberately
+    // NOT the signup "role" words: people choose those for themselves when
+    // making an account, and a self-chosen word must never grant publishing.
+    // The forecaster flag is in touchesRoleFields above, so only the owner
+    // can set it, from Manage Members in the radar app.
     function isForecasterAccount() {
       return isOwner() || isStaff() || (realAccount()
         && exists(/databases/$(database)/documents/users/$(request.auth.uid))
-        && (
-          get(/databases/$(database)/documents/users/$(request.auth.uid))
-            .data.get('forecaster', false) == true
-          || get(/databases/$(database)/documents/users/$(request.auth.uid))
-            .data.get('role', '') in ['forecaster', 'administrator', 'admin']
-        ));
+        && get(/databases/$(database)/documents/users/$(request.auth.uid))
+            .data.get('forecaster', false) == true);
     }
 
     match /outlooks/{docId} {

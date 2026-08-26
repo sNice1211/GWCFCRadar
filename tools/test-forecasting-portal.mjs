@@ -82,7 +82,12 @@ await ctx.addInitScript(() => {
     firestore: () => ({
       collection: (c) => ({
         doc: (d) => ({
-          get: async () => ({ exists: false, data: () => ({}) }),
+          // The signed-in user's profile document is real in this harness:
+          // with the sign-in wall up, the page reads it to decide whether
+          // the account is a forecaster at all.
+          get: async () => (c === 'users'
+            ? { exists: true, data: () => window.__profile }
+            : { exists: false, data: () => ({}) }),
           set: async (doc) => { window.__published.push({ path: c + '/' + d, doc }); },
         }),
         add: async (doc) => { window.__published.push({ path: c + '/(auto)', doc }); },
@@ -147,6 +152,36 @@ await page.goto('file://' + join(ROOT, 'forecasting-portal.html'),
                 { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(1200);
 
+console.log('\n1. the sign-in wall is up until a forecaster signs in');
+{
+  const before = await page.evaluate(() => ({
+    open: PORTAL_OPEN,
+    gateUp: !document.getElementById('gate').classList.contains('off'),
+    banner: document.getElementById('testbar').style.display !== 'none',
+    tools: document.getElementById('btn-tools').disabled,
+    pub: document.getElementById('btn-publish').disabled,
+  }));
+  ok('testing mode is off for real', before.open === false);
+  ok('the gate stands and the testing banner is gone',
+     before.gateUp && !before.banner, JSON.stringify(before));
+  ok('every tool is locked until someone signs in', before.tools && before.pub);
+
+  // Sign in as an account the owner has flagged as a forecaster.
+  const after = await page.evaluate(async () => {
+    await window.__authCb({ uid: 'u1', displayName: 'Ralph',
+                            email: 'forecaster@example.test', isAnonymous: false });
+    return {
+      gateDown: document.getElementById('gate').classList.contains('off'),
+      tools: document.getElementById('btn-tools').disabled,
+      fcstr: OUTLOOK.forecaster,
+    };
+  });
+  ok('a flagged forecaster signing in drops the gate and unlocks the tools',
+     after.gateDown && !after.tools, JSON.stringify(after));
+  ok('and is stamped as the forecaster on duty', after.fcstr === 'Ralph',
+     after.fcstr);
+}
+
 console.log('\n2. the format matches the design');
 {
   const r = await page.evaluate(() => {
@@ -193,36 +228,21 @@ console.log('\n2. the format matches the design');
      fonts.length === 0, fonts.join(' | '));
 }
 
-console.log('\n3. testing mode is open, and the flag is the only reason');
+console.log('\n3. who counts as a forecaster, exactly');
 {
+  // The gate matches the database rules: the owner-granted flag or a staff
+  // role. NOT the signup "role" words - people pick those for themselves,
+  // and a self-chosen word must never grant publishing to everyone.
   const r = await page.evaluate(() => ({
-    open: PORTAL_OPEN,
-    gateHidden: document.getElementById('gate').classList.contains('off'),
-    banner: document.getElementById('testbar').style.display !== 'none',
-    bannerText: document.getElementById('testbar').textContent,
-    tools: !document.getElementById('btn-tools').disabled,
-    pub: !document.getElementById('btn-publish').disabled,
+    asVisitor: isForecaster({ displayName: 'Visitor' }),
+    asFlagged: isForecaster({ displayName: 'Ralph', forecaster: true }),
+    asRoleWord: isForecaster({ role: 'administrator' }),
+    asStaff: isForecaster({ staffRole: 'moderator' }),
   }));
-  ok('the sign-in wall is down while testing',
-     r.open === true && r.gateHidden && r.tools && r.pub, JSON.stringify(r));
-  ok('and a bar says so, so it cannot be forgotten',
-     r.banner && /sign-in is off/i.test(r.bannerText), r.bannerText);
-
-  // With the flag off, the same page locks: the gate is the real thing,
-  // just switched out of the way for now.
-  const locked = await page.evaluate(async () => {
-    const real = PORTAL_OPEN;
-    // eslint-disable-next-line no-global-assign
-    PORTAL_OPEN = false;
-    const asVisitor = isForecaster({ displayName: 'Visitor' });
-    const asFlagged = isForecaster({ displayName: 'Ralph', forecaster: true });
-    const asAdmin = isForecaster({ role: 'administrator' });
-    PORTAL_OPEN = real;
-    return { asVisitor, asFlagged, asAdmin };
-  }).catch(() => null);
-  ok('with the flag off, only flagged accounts count as forecasters',
-     locked === null || (locked.asVisitor === false && locked.asFlagged === true
-       && locked.asAdmin === true), JSON.stringify(locked));
+  ok('a plain account is not a forecaster', r.asVisitor === false);
+  ok('the owner-granted flag is', r.asFlagged === true);
+  ok('a self-chosen signup role word is NOT', r.asRoleWord === false);
+  ok('real staff are', r.asStaff === true, JSON.stringify(r));
 }
 
 console.log('\n4. placing storms, and drawing hatched zones');
@@ -517,34 +537,42 @@ console.log('\n6. the app\'s real Alert Desk, running in the portal');
 
 console.log('\n7. publishing');
 {
-  // Publishing now insists on a signed-in account. The anonymous fallback it
-  // used to lean on is gone: the database rules would refuse the write anyway,
-  // and signing in anonymously replaced any saved real account, which is what
-  // kept logging people out. First prove the refusal, then sign in properly.
+  // Signed out: refused outright, nothing written.
   const refused = await page.evaluate(async () => {
+    const keepP = PROFILE, keepU = USER;
+    PROFILE = null; USER = null;
     window.__published = [];
     await publishOutlook();
-    return {
-      n: window.__published.length,
-      gate: !document.getElementById('gate').classList.contains('off'),
-      dismiss: document.getElementById('gate-dismiss').style.display !== 'none',
-      who: document.getElementById('whoami').innerHTML,
-    };
+    const n = window.__published.length;
+    PROFILE = keepP; USER = keepU;
+    return n;
   });
-  ok('publishing while signed out is refused instead of going anonymous',
-     refused.n === 0, String(refused.n));
-  ok('the refusal opens the sign-in card, with a way back to testing',
-     refused.gate && refused.dismiss);
-  ok('the header offers Sign in while testing signed out',
-     /Sign in/.test(refused.who), refused.who);
-  await page.evaluate(() => gateHide());
+  ok('publishing while signed out is refused, nothing is written',
+     refused === 0, String(refused));
+
+  // An account with no forecaster flag: also refused.
+  const blocked = await page.evaluate(async () => {
+    const keepP = PROFILE, keepU = USER;
+    PROFILE = { displayName: 'Visitor' };     // an account with no flag
+    USER = { uid: 'u9', email: 'visitor@example.test' };
+    window.__published = [];
+    await publishOutlook();
+    const n = window.__published.length;
+    PROFILE = keepP; USER = keepU;
+    return n;
+  });
+  ok('an account without the forecaster flag cannot publish',
+     blocked === 0, String(blocked));
+
+  // The flagged forecaster from section 1 publishes for real.
   const r = await page.evaluate(async () => {
     window.__published = [];
-    await window.__authCb({ uid: 'u1', displayName: 'Ralph', isAnonymous: false });
     await publishOutlook();
     const paths = window.__published.map(p => p.path);
-    const doc = (window.__published[0] || {}).doc || {};
-    return { paths, doc, stamped: document.getElementById('two-time').textContent };
+    const doc = window.__published.find(p => p.path === 'outlooks/latest');
+    const desk = window.__published.find(p => p.path === 'outlooks/desk');
+    return { paths, doc: (doc || {}).doc || {}, desk: (desk || {}).doc || null,
+             stamped: document.getElementById('two-time').textContent };
   });
   ok('publishing writes the current outlook and archives the issuance',
      r.paths.includes('outlooks/latest') && r.paths.some(p => /\(auto\)/.test(p)),
@@ -557,25 +585,15 @@ console.log('\n7. publishing');
        && !!r.doc.forecaster && !!r.doc.view,
      JSON.stringify({ keys: Object.keys(r.doc), cones: (r.doc.cones || []).length,
        alerts: (r.doc.alerts || []).length }));
+  // The shared desk is what lets EVERY forecaster's alerts reach the site at
+  // once: one entry per forecaster, merged, never overwritten wholesale.
+  ok('the shared alert desk gets this forecaster\'s entry, keyed by uid',
+     !!r.desk && !!r.desk.u1 && Array.isArray(r.desk.u1.alerts)
+       && r.desk.u1.alerts.length === 1 && r.desk.u1.alerts[0].code === 'TOR'
+       && r.desk.u1.forecaster === 'Ralph',
+     JSON.stringify(r.desk));
   ok('and the graphic re-stamps itself with the issue time',
      /UTC/.test(r.stamped), r.stamped);
-
-  // The permission check still exists and still bites; testing mode is the
-  // only thing standing it down, so turning the flag off restores it.
-  const blocked = await page.evaluate(async () => {
-    const real = PORTAL_OPEN;
-    PORTAL_OPEN = false;
-    const keepP = PROFILE, keepU = USER;
-    PROFILE = { displayName: 'Visitor' };     // an account with no flag
-    USER = { uid: 'u9' };
-    window.__published = [];
-    await publishOutlook();
-    const n = window.__published.length;
-    PROFILE = keepP; USER = keepU; PORTAL_OPEN = real;
-    return n;
-  }).catch(() => -1);
-  ok('with the wall back up, an unapproved account still cannot publish',
-     blocked === 0 || blocked === -1, String(blocked));
 }
 
 console.log('\n8. nothing threw');

@@ -7494,6 +7494,14 @@ footer {
   outline: none;
 }
 .lqm-staff-sel:disabled { opacity: 0.45; cursor: not-allowed; }
+/* The owner-only forecaster grant beside each member's role. */
+.lqm-staff-fc {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 3px;
+  font-family: 'Comfortaa', sans-serif; font-size: 9px; color: #4dd0e1;
+  cursor: pointer; user-select: none;
+}
+.lqm-staff-fc input { accent-color: #4dd0e1; cursor: pointer; }
+.lqm-staff-fc input:disabled { cursor: not-allowed; }
 .lqm-staff-note {
   font-family: 'Comfortaa', sans-serif; font-size: 10px;
   color: rgba(212,232,255,0.45); line-height: 1.5; margin: 10px 0 0;
@@ -30686,17 +30694,42 @@ function _fsDecode(v) {
 // problem worth naming; a 404 means nothing is published, which is Tuesday.
 let _gwcfcBlocked = false;
 async function _gwcfcFetch() {
-  const r = await fetch(
-    'https://firestore.googleapis.com/v1/projects/gwcfc-radar/databases/(default)'
-    + '/documents/outlooks/latest', { cache: 'no-store' })
-    .catch(() => null);
-  _gwcfcBlocked = !!(r && r.status === 403);
-  if (!r || !r.ok) return null;
-  const doc = await r.json().catch(() => null);
-  if (!doc || !doc.fields) return null;
-  const out = {};
-  Object.entries(doc.fields).forEach(([k, v]) => { out[k] = _fsDecode(v); });
-  return out;
+  const base = 'https://firestore.googleapis.com/v1/projects/gwcfc-radar/'
+             + 'databases/(default)/documents/outlooks/';
+  const grab = async (name) => {
+    const r = await fetch(base + name, { cache: 'no-store' }).catch(() => null);
+    if (name === 'latest') _gwcfcBlocked = !!(r && r.status === 403);
+    if (!r || !r.ok) return null;
+    const doc = await r.json().catch(() => null);
+    if (!doc || !doc.fields) return null;
+    const out = {};
+    Object.entries(doc.fields).forEach(([k, v]) => { out[k] = _fsDecode(v); });
+    return out;
+  };
+  // Two documents: the last published outlook, and the shared alert desk
+  // holding one entry per forecaster. The desk is what makes everyone's
+  // alerts visible to everyone: the latest outlook only carries whatever its
+  // own publisher had in force, and each publish overwrites it wholesale, so
+  // without the desk, forecaster B publishing would erase A's alerts from
+  // the map. Desk alerts win over the same forecaster's copy in latest.
+  const [out, desk] = await Promise.all([grab('latest'), grab('desk')]);
+  if (!out && !desk) return null;
+  const merged = out || {};
+  if (desk) {
+    const fromDesk = [];
+    Object.values(desk).forEach(v => {
+      if (v && Array.isArray(v.alerts)) {
+        v.alerts.forEach(a => {
+          if (a) fromDesk.push({ forecaster: v.forecaster, ...a });
+        });
+      }
+    });
+    const have = new Set(fromDesk.map(a => a.uid).filter(Boolean));
+    merged.alerts = (merged.alerts || [])
+      .filter(a => !(a && a.uid && have.has(a.uid)))
+      .concat(fromDesk);
+  }
+  return merged;
 }
 
 // One document feeds two overlays (the outlook areas and the alert desk),
@@ -46043,7 +46076,8 @@ async function lqmOpenStaffView() {
         email: v.email || '',
         avatarImage: v.avatarImage || '',
         emoji: v.avatarEmoji || v.emoji || '',
-        staffRole: _staffRoleFor(v.email, v.staffRole)
+        staffRole: _staffRoleFor(v.email, v.staffRole),
+        forecaster: v.forecaster === true
       };
     }).sort((a, b) => a.name.localeCompare(b.name));
     _staffRenderList(document.getElementById('lqm-staff-search')?.value || '');
@@ -46085,6 +46119,8 @@ function _staffRenderList(filter) {
           <div class="lqm-staff-email">${_escapeHtml(u.email || u.uid)}</div>
         </div>
         <select class="lqm-staff-sel" ${isOwnerRow ? 'disabled' : ''} onchange="staffSetRole('${u.uid}', this.value, this)">${opts}</select>
+        <label class="lqm-staff-fc" title="Forecaster: may publish outlooks and alerts to everyone from the Forecasting Portal. Only you can grant this.">
+          <input type="checkbox" ${isOwnerRow ? 'checked disabled' : (u.forecaster ? 'checked' : '')} onchange="staffSetForecaster('${u.uid}', this.checked, this)"> FC</label>
       </div>`;
     }).join('');
   }
@@ -46097,6 +46133,31 @@ function _hashHue(s) {
   let h = 0;
   for (let i = 0; i < (s || '').length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h % 360;
+}
+
+// The forecaster flag, owner-granted only. This is what the database rules
+// read before accepting a publish from the Forecasting Portal, so ticking it
+// here is the whole approval process.
+async function staffSetForecaster(uid, on, el) {
+  if (!_isOwner() || !_fbDb) return;
+  const rec = _staffUsers.find(u => u.uid === uid);
+  if (el) el.disabled = true;
+  try {
+    await _fbDb.collection('users').doc(uid).set({
+      forecaster: !!on,
+      forecasterSetBy: _currentUser.email || _currentUser.uid,
+      forecasterSetAt: firebase.firestore.FieldValue.serverTimestamp(),
+    }, { merge: true });
+    if (rec) rec.forecaster = !!on;
+    showToast(`${rec ? rec.name : 'Member'} ${on ? 'is now a forecaster'
+      : 'is no longer a forecaster'}`, 2600);
+  } catch (e) {
+    console.warn('Set forecaster failed:', e);
+    if (el) el.checked = !on;
+    showToast(`Couldn't change forecaster: ${e.message || 'permission denied'}`, 4000);
+  } finally {
+    if (el) el.disabled = false;
+  }
 }
 
 async function staffSetRole(uid, role, selEl) {
@@ -47422,7 +47483,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Radar playback now always has its full three days: the Pi keeps a fourth day of frames on disk as a disposal buffer (data is only thrown away once it passes four days old), so the oldest day of the loop is never half-deleted, and MRMS playback is capped at the same three days.';
+const APP_LATEST_UPDATE = 'GWCFC Alerts now shows what every forecaster has in force, not just the last person to publish, and the Forecasting Portal now requires a signed-in account with the forecaster role. The owner grants that role with the new FC box in Manage Members.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

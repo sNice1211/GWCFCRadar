@@ -121,6 +121,21 @@ let fsDoc = { name: 'projects/x/databases/(default)/documents/outlooks/latest',
               fields: fsv(OUTLOOK).mapValue.fields };
 let fsMissing = false;
 let fsForbidden = false;
+// The shared alert desk: one entry per forecaster. Absent (404) by default so
+// the sections above it measure the plain single-document behaviour; a later
+// section switches it on to prove alerts from EVERY forecaster merge in.
+// u1 re-issues w1 (the same TOR as latest, which must not double-draw) and
+// u2 contributes an alert latest knows nothing about.
+const DESK = {
+  u1: { forecaster: 'Ralph', at: 'now', alerts: [OUTLOOK.alerts[0]] },
+  u2: { forecaster: 'Sam', at: 'now', alerts: [
+    { uid: 'w9', code: 'SVR', areaDesc: 'Other County, AL',
+      geometry: { type: 'Polygon',
+        coordinates: [[[-87, 33], [-86, 33], [-86, 34], [-87, 34], [-87, 33]]] },
+      issued: NOW - 2 * 60000, expires: NOW + 40 * 60000, status: 'active' },
+  ] },
+};
+let deskOn = false;
 
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH
@@ -152,6 +167,14 @@ await page.route('**://**', route => {
       body: '{"error":{"code":403,"status":"PERMISSION_DENIED"}}' });
     if (fsMissing) return route.fulfill({ status: 404, body: '{}' });
     return json(route, fsDoc);
+  }
+  if (url.includes('firestore.googleapis.com')
+      && url.includes('outlooks/desk')) {
+    if (!deskOn) return route.fulfill({ status: 404,
+      headers: { 'access-control-allow-origin': '*' }, body: '{}' });
+    return json(route, {
+      name: 'projects/x/databases/(default)/documents/outlooks/desk',
+      fields: fsv(DESK).mapValue.fields });
   }
   return route.abort();
 });
@@ -409,6 +432,36 @@ console.log('\n5. the GWCFC Alerts overlay draws the desk\'s live products');
      await page.evaluate(() => _gwaLayers.length === 0 && !_gwaOn));
 }
 
+console.log('\n5b. alerts from EVERY forecaster merge onto the map');
+{
+  // The shared desk carries one entry per forecaster. u1 re-issues the same
+  // TOR that latest already holds (it must draw once, not twice) and u2 has
+  // an in-force SVR that latest knows nothing about, because someone else
+  // published after u2 issued it. Both must be on everyone's map.
+  deskOn = true;
+  await page.evaluate(() => { _gwcfcDocCache = { at: 0, doc: null }; });
+  await page.evaluate(() => toggleOverlayPill('gwcfc-alerts'));
+  await page.waitForTimeout(600);
+  const s = await page.evaluate(() => {
+    const polys = _gwaLayers.filter(l => l.setStyle);
+    return {
+      nPolys: polys.length,
+      reds: polys.filter(l => l.options.color === '#ff0000').length,
+      popups: polys.map(l => l.getPopup() ? l.getPopup().getContent() : ''),
+    };
+  });
+  ok('both forecasters\' in-force alerts draw', s.nPolys === 2, String(s.nPolys));
+  ok('the alert both documents carry draws once, not twice', s.reds === 1,
+     String(s.reds));
+  ok('the second forecaster\'s alert is really the desk one',
+     s.popups.some(p => /Other County/.test(p)),
+     s.popups.map(p => p.slice(0, 60)).join(' | '));
+  await page.evaluate(() => toggleOverlayPill('gwcfc-alerts'));
+  await page.waitForTimeout(300);
+  deskOn = false;
+  await page.evaluate(() => { _gwcfcDocCache = { at: 0, doc: null }; });
+}
+
 console.log('\n6. an unpublished outlook says so instead of looking broken');
 {
   fsMissing = true;
@@ -456,6 +509,17 @@ console.log('\n7. house rules');
   ok('but writing it takes a forecaster account',
      /isForecasterAccount/.test(rules)
      && /allow create, update: if isForecasterAccount/.test(rules));
+  // The forecaster role is GRANTED, never self-assigned: the flag is among
+  // the owner-only fields, a fresh account cannot smuggle it in at signup,
+  // and the self-chosen signup "role" words grant nothing.
+  ok('the forecaster flag is an owner-only field',
+     /hasAny\(\[[^\]]*'forecaster'/.test(rules));
+  ok('a new account cannot create itself as a forecaster',
+     /!\('forecaster' in request\.resource\.data\)/.test(rules));
+  ok('self-chosen signup role words grant nothing',
+     !rules.includes("data.get('role'"));
+  ok('the radar has the owner-side switch that grants the role',
+     /staffSetForecaster/.test(html) && /forecasterSetBy/.test(html));
   ok('the piEndpoint block the Pi depends on is in the same file',
      /match \/piEndpoint\//.test(rules));
   ok('every collection the apps write is covered by a rule',
