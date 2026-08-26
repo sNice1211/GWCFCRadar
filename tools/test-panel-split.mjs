@@ -120,6 +120,7 @@ const OUTLOOK = {
 let fsDoc = { name: 'projects/x/databases/(default)/documents/outlooks/latest',
               fields: fsv(OUTLOOK).mapValue.fields };
 let fsMissing = false;
+let fsForbidden = false;
 
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_PATH
@@ -146,6 +147,9 @@ await page.route('**://**', route => {
   if (url.includes('/spaghetti/al042026.json')) return json(route, DEAD);
   if (url.includes('firestore.googleapis.com')
       && url.includes('outlooks/latest')) {
+    if (fsForbidden) return route.fulfill({ status: 403,
+      headers: { 'access-control-allow-origin': '*' },
+      body: '{"error":{"code":403,"status":"PERMISSION_DENIED"}}' });
     if (fsMissing) return route.fulfill({ status: 404, body: '{}' });
     return json(route, fsDoc);
   }
@@ -413,8 +417,23 @@ console.log('\n6. an unpublished outlook says so instead of looking broken');
   await page.waitForTimeout(500);
   ok('nothing draws and nothing crashes',
      await page.evaluate(() => _gwcfcOn && _gwcfcLayers.length === 0));
+  ok('a plain 404 is read as not published, not as blocked',
+     await page.evaluate(() => _gwcfcBlocked === false));
   await page.evaluate(() => toggleOverlayPill('gwcfc-outlook'));
   fsMissing = false;
+
+  // A 403 is a different statement entirely: the security rules refuse the
+  // read. This is the state the whole feature shipped into, because the
+  // deployed rules had no outlooks block at all, and it must be NAMED
+  // rather than shrugged off as "nothing published".
+  fsForbidden = true;
+  await page.evaluate(() => { _gwcfcDocCache = { at: 0, doc: null }; });
+  await page.evaluate(() => toggleOverlayPill('gwcfc-outlook'));
+  await page.waitForTimeout(500);
+  ok('a 403 is recognised as the rules blocking the read',
+     await page.evaluate(() => _gwcfcBlocked === true));
+  await page.evaluate(() => toggleOverlayPill('gwcfc-outlook'));
+  fsForbidden = false;
 }
 
 console.log('\n7. house rules');
@@ -426,6 +445,34 @@ console.log('\n7. house rules');
      && /'gwcfc-alerts':\s+"Warnings, watches/.test(html));
   ok('the portal colour tables are mirrored, not reinvented',
      /extreme:.*#ff44ff/.test(html) && /'Tornado Warning': '#ff0000'/.test(html));
+  // The rules file that has to be pasted in the Firebase console must carry
+  // everything both apps depend on: outlooks was the block whose absence
+  // silently refused every publish, and piEndpoint is what the Pi's address
+  // discovery needs, so a paste of this file must never break either.
+  const rules = readFileSync(join(ROOT, 'firebase', 'firestore.rules'), 'utf8');
+  ok('the rules file has the outlooks block', /match \/outlooks\//.test(rules));
+  ok('anyone may read the published outlook',
+     /match \/outlooks\/[\s\S]{0,200}allow read: if true/.test(rules));
+  ok('but writing it takes a forecaster account',
+     /isForecasterAccount/.test(rules)
+     && /allow create, update: if isForecasterAccount/.test(rules));
+  ok('the piEndpoint block the Pi depends on is in the same file',
+     /match \/piEndpoint\//.test(rules));
+  ok('every collection the apps write is covered by a rule',
+     ['users', 'chat', 'guests', 'cloudcam', 'discordLinks', 'asturioSync',
+      'outlooks', 'piEndpoint', 'chatBridge', 'modelCache', 'sharedAlerts',
+      'omBudget']
+       .every(c => rules.includes('match /' + c + '/')));
+  const pasteFile = readFileSync(join(ROOT, 'firebase', 'FIRESTORE_RULES.txt'),
+                                 'utf8');
+  ok('the paste file carries the complete rules text between its markers',
+     pasteFile.includes(rules.trimEnd()));
+  ok('the paste file keeps its how-to-publish instructions',
+     /HOW TO PUBLISH THEM/.test(pasteFile)
+       && /COPY FROM HERE/.test(pasteFile) && /TO HERE/.test(pasteFile));
+  ok('the portal names the real causes when the database refuses a publish',
+     /rules[\s\S]{0,120}have not been updated/.test(
+       readFileSync(join(ROOT, 'forecasting-portal.html'), 'utf8')));
   ok('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 }
 

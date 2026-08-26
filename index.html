@@ -30783,11 +30783,16 @@ function _fsDecode(v) {
   return null;
 }
 
+// Whether the last fetch was REFUSED rather than merely empty. A 403 means
+// the database rules block reading the outlook, which is a configuration
+// problem worth naming; a 404 means nothing is published, which is Tuesday.
+let _gwcfcBlocked = false;
 async function _gwcfcFetch() {
   const r = await fetch(
     'https://firestore.googleapis.com/v1/projects/gwcfc-radar/databases/(default)'
     + '/documents/outlooks/latest', { cache: 'no-store' })
     .catch(() => null);
+  _gwcfcBlocked = !!(r && r.status === 403);
   if (!r || !r.ok) return null;
   const doc = await r.json().catch(() => null);
   if (!doc || !doc.fields) return null;
@@ -30989,9 +30994,17 @@ async function _gwcfcRefresh() {
   if (!_gwcfcOn) return;
   if (!out) {
     _gwcfcClear();
-    if (typeof showToast === 'function')
-      showToast('No GWCFC outlook is published right now. One appears here '
-              + 'the moment a forecaster hits Publish on the portal.', 4500);
+    if (typeof showToast === 'function') {
+      if (_gwcfcBlocked) {
+        showToast('The database rules are blocking the outlook: the '
+                + 'outlooks block from firebase/firestore.rules has not '
+                + 'been published in the Firebase console yet.', 6000);
+      } else {
+        showToast('No GWCFC outlook is published right now. One appears '
+                + 'here the moment a forecaster hits Publish on the '
+                + 'portal.', 4500);
+      }
+    }
     return;
   }
   const drew = _gwcfcDraw(out);
@@ -31129,9 +31142,16 @@ async function _gwaRefresh() {
   if (!_gwaOn) return;
   if (!out) {
     _gwaClear();
-    if (typeof showToast === 'function')
-      showToast('No GWCFC alerts published. They appear here when the desk '
-              + 'issues one from the Forecasting Portal.', 4000);
+    if (typeof showToast === 'function') {
+      if (_gwcfcBlocked) {
+        showToast('The database rules are blocking the outlook document, '
+                + 'so no GWCFC alerts can be read either. Publish the '
+                + 'updated firebase/firestore.rules in the console.', 6000);
+      } else {
+        showToast('No GWCFC alerts published. They appear here when the '
+                + 'desk issues one from the Forecasting Portal.', 4000);
+      }
+    }
     return;
   }
   const drew = _gwaDraw(out.alerts || []);
@@ -47464,7 +47484,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The GWCFC Outlook overlay now shows the WHOLE published outlook: zones, storm markers, forecast cones with their centre line and time dots in the forecaster\'s own colours, and any desk alerts in force, so everything published from the Forecasting Portal reaches the map.';
+const APP_LATEST_UPDATE = 'Found why the portal\'s Publish button was refused: the database security rules never had an entry for outlooks, so every publish was denied at the door. The repo\'s rules file now carries the missing blocks (one console paste turns publishing on), and both the portal and the overlays say plainly when rules are the problem.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

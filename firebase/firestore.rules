@@ -213,5 +213,121 @@ service cloud.firestore {
       allow read: if true;
       allow write: if isSignedIn();
     }
+
+    // Shared weather-service allowance counter.
+    //
+    // The free weather service counts requests per internet connection per
+    // day, but the browser can only count what it spent itself. So a phone, a
+    // PC and the Pi on one connection each believe they have the whole
+    // allowance, and between them spend several times it without any of them
+    // noticing. That is what empties it and produces "Daily API request limit
+    // exceeded" on every model.
+    //
+    // Keeping the tally here makes it one shared number instead of one per
+    // device. Signed-out visitors have to be able to write it, because they
+    // spend the allowance too and a tally that ignores them is not a tally.
+    //
+    // The document id IS the time window (for example d-2026-08-13, or
+    // h-2026-08-13-14). A new window is a new document, so nothing ever needs
+    // resetting and yesterday's number cannot be edited into today's.
+    //
+    // Two rules do the protecting: the count may only ever go up, and only by
+    // a bounded step per write. So a passer-by cannot zero it to get free
+    // requests, nor slam it to the cap to lock everyone else out.
+    match /omBudget/{window} {
+      allow read: if true;
+
+      allow create: if request.resource.data.keys().hasOnly(['count', 'at'])
+        && request.resource.data.count is number
+        && request.resource.data.count >= 0
+        && request.resource.data.count <= 1000
+        && request.resource.data.at is number;
+
+      allow update: if request.resource.data.keys().hasOnly(['count', 'at'])
+        && request.resource.data.count is number
+        && request.resource.data.count >= resource.data.count
+        && request.resource.data.count <= resource.data.count + 1000
+        && request.resource.data.at is number;
+
+      // Never deleted. A window that can be deleted is a window that can be
+      // reset, which is the same hole as allowing the count to go down.
+      allow delete: if false;
+    }
+
+    // Where the Pi says it can be reached.
+    //
+    // The Pi is behind a tunnel that hands out a new address every restart, and
+    // the site is a static page with no way to guess it. Without this the
+    // address has to be pasted into the browser console after every reboot,
+    // which is a chore, easy to forget, and leaves the map quietly broken until
+    // somebody notices. So the Pi writes its own address here and the page
+    // reads it.
+    //
+    // Anyone may read it: it is a public address for public forecast files.
+    //
+    // Writing is another matter. This used to accept ANY signed-in client,
+    // and anonymous sign-in counts as signed in, so in practice the whole
+    // internet could overwrite the Pi's address and point every visitor's
+    // browser at a server of their choosing. Now only the Pi's own account
+    // (and the owner) may write it.
+    //
+    // SETUP, once:
+    //   1. Firebase console -> Authentication -> Users -> Add user.
+    //      Email: pi-publisher@gwcfc-radar.local  (or any address you like)
+    //      Password: something long and random.
+    //   2. On the Pi:  nano ~/.gwcfc_fb_auth.json  and put in:
+    //      {"email": "pi-publisher@gwcfc-radar.local", "password": "..."}
+    //      then:  chmod 600 ~/.gwcfc_fb_auth.json
+    //   3. If you chose a different email, change it below to match.
+    //   4. Publish these rules.
+    function isPiPublisher() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == 'pi-publisher@gwcfc-radar.local';
+    }
+
+    match /piEndpoint/{which} {
+      allow read: if true;
+
+      allow create, update: if (isPiPublisher() || isOwner())
+        && request.resource.data.keys().hasOnly(['url', 'at'])
+        && request.resource.data.url is string
+        && request.resource.data.url.size() < 200
+        && request.resource.data.url.matches('https://.*')
+        && request.resource.data.at is number;
+
+      allow delete: if isOwner();
+    }
+
+    // ── THE PUBLISHED OUTLOOK ─────────────────────────────────────────────
+    // The Forecasting Portal writes here: outlooks/latest is the current
+    // outlook and every issuance is also added as its own document. The site
+    // reads latest (without signing in) to draw the GWCFC Outlook and GWCFC
+    // Alerts overlays.
+    //
+    // There was NO rule for this collection, and Firestore denies whatever
+    // the rules do not mention, so the Publish button was refused at the
+    // database door with "Missing or insufficient permissions" no matter who
+    // pressed it.
+    //
+    // Writing is for forecasters: the owner, staff, or an account whose
+    // profile an administrator has marked as a forecaster. That is the same
+    // gate the portal itself describes, enforced where it cannot be bypassed.
+    function isForecasterAccount() {
+      return isOwner() || isStaff() || (realAccount()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid))
+            .data.get('forecaster', false) == true
+          || get(/databases/$(database)/documents/users/$(request.auth.uid))
+            .data.get('role', '') in ['forecaster', 'administrator', 'admin']
+        ));
+    }
+
+    match /outlooks/{docId} {
+      allow read: if true;
+      allow create, update: if isForecasterAccount();
+      allow delete: if isOwner();
+    }
   }
 }

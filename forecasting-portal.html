@@ -1725,7 +1725,19 @@ async function publishOutlook() {
     stampHeader();
     toast('Outlook published at ' + document.getElementById('two-time').textContent);
   } catch (e) {
-    toast('Could not publish: ' + (e && e.message ? e.message : e), 6000);
+    // "Missing or insufficient permissions" is Firestore's way of saying the
+    // security rules refused the write. Two real causes, said apart: the
+    // rules in the console predate the outlooks feature, or this account is
+    // signed in but nobody has marked it as a forecaster.
+    if (e && (e.code === 'permission-denied'
+              || /insufficient permissions/i.test(e.message || ''))) {
+      toast('The database refused the publish. Either the Firestore rules '
+          + 'in the Firebase console have not been updated with the '
+          + 'outlooks block (paste firebase/firestore.rules from the repo), '
+          + 'or this account is not marked as a forecaster.', 9000);
+    } else {
+      toast('Could not publish: ' + (e && e.message ? e.message : e), 6000);
+    }
   }
   btn.disabled = false;
 }
