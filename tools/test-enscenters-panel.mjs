@@ -136,10 +136,10 @@ console.log('\n1. the control is on the panel, next to the models it sits beside
     // The DeepMind controls are still where they were. This layer is an
     // addition to that panel, not a replacement for it.
     lab: !!document.getElementById('cyc-lab-btn'),
-    inPanel: !!document.querySelector('#spaghetti-models-panel #cyc-ens-centres-btn'),
+    inPanel: !!document.querySelector('#ai-cyclones-panel #cyc-ens-centres-btn'),
   }));
   ok('there is a GEFS centres button', seen.btn);
-  ok('it is inside the Spaghetti Models panel, with the other storm tracks',
+  ok('it is inside the AI Cyclones panel, beside the DeepMind tracks',
      seen.inPanel);
   ok('the section says which ensemble this is', /GEFS/.test(seen.head), seen.head);
   ok('there is a status line for it', seen.status);

@@ -2916,6 +2916,35 @@ body.wx-smooth-radar .leaflet-radarPane-pane canvas {
   background: rgba(0,0,0,0.35);
 }
 .spag-leg.off { opacity: 0.3; text-decoration: line-through; }
+/* The tag's stem: a name floating NEAR a line in a forty-line bundle is a
+   guess about which line it names. The stem pins it: a knob sits exactly on
+   the track's last point, a short angled shaft runs up and out of the
+   bundle, and the pill hangs off its end, like a flag on a pole. */
+.tag-stemwrap { position: relative; width: 0; height: 0; }
+.tag-stem {
+  position: absolute; left: -1px; bottom: 0; width: 2px; height: 17px;
+  background: var(--tag-color, #fff);
+  transform-origin: bottom center; transform: rotate(-45deg);
+  box-shadow: 0 0 3px rgba(0,0,0,0.9);
+}
+.tag-stem::before {
+  content: ''; position: absolute; left: -2px; bottom: -3px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--tag-color, #fff);
+  box-shadow: 0 0 3px rgba(0,0,0,0.9);
+}
+.tag-stemwrap .spag-tag,
+.tag-stemwrap .cyc-tagpill {
+  position: absolute; left: 12px; bottom: 10px; white-space: nowrap;
+}
+/* Labels on the GWCFC outlook areas and storm markers: the portal's own
+   little pills, so the map shows what the forecaster saw. */
+.gwo-label {
+  display: inline-block; padding: 1px 7px 2px; border-radius: 8px;
+  font-family: 'Comfortaa', sans-serif; font-size: 9px; font-weight: 700;
+  color: #111; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.6);
+  transform: translate(-50%, -50%);
+}
 #tanim-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
 #tanim-play, #tanim-stop {
   flex: 0 0 auto; width: 26px; height: 22px; padding: 0; cursor: pointer;
@@ -9574,11 +9603,45 @@ body.clean-mode #clean-hint { opacity: 1; }
         <span class="spag-chip on" data-group="hurricane" onclick="_spagGroupToggle('hurricane')">Hurricane</span>
         <span class="spag-chip on" data-group="mean" onclick="_spagGroupToggle('mean')">GEFS mean</span>
         <span class="spag-chip" data-group="members" onclick="_spagGroupToggle('members')">GEFS members</span>
+        <span class="spag-chip" data-group="past" onclick="_spagGroupToggle('past')" title="A-decks persist all season; this shows guidance for storms that have already died">Past storms</span>
       </div>
       <button id="spag-btn" onclick="_spagToggle()">Show guidance</button>
       <div id="spag-status">Open a storm and the guidance loads from the Pi.</div>
       <div id="spag-legend" style="display:none"></div>
         </div>
+      </div>
+      <div class="spanel-card" id="spcard-anim" style="--sp-accent:#d9b8ff">
+        <div class="spanel-head" onclick="_spCardToggle('anim')">
+          <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> <span class="spanel-title">Track Animation</span> 
+          <span class="spanel-chev">&#x25BE;</span>
+        </div>
+        <div class="spanel-body">
+      <div id="tanim-row">
+        <button id="tanim-play" onclick="_tanimToggle()" title="Play or pause the forecast-hour clock">&#x25B6;</button>
+        <button id="tanim-stop" onclick="_tanimStop()" title="Stop and bring the still lines back">&#x2715;</button>
+        <input type="range" id="tanim-scrub" min="0" max="168" value="0" step="1" oninput="_tanimSeek(+this.value)">
+        <span id="tanim-hour">F+000</span>
+        <select id="tanim-speed" onchange="_tanimSetSpeed(this.value)" title="How fast forecast time runs">
+          <option value="12">Slow</option>
+          <option value="24" selected>Normal</option>
+          <option value="48">Fast</option>
+        </select>
+      </div>
+      <p id="tanim-note">Runs a forecast-hour clock over every visible track at once: guidance lines, AI cyclones and GEFS centres dot their way out together, so the spread you see growing IS the forecast uncertainty.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Cyclones Panel: its own home. DeepMind's models and the GEFS
+         ensemble centres answer a different question from the a-deck
+         guidance, and sharing a panel buried them at the bottom of a
+         scroll. Same card inside, so the controls and their ids are
+         untouched. -->
+    <div id="ai-cyclones-panel" class="models-style-panel">
+      <div class="models-panel-header">
+        <div id="ai-cyclones-drag" class="dtb-drag" title="Drag to move">&#x28FF;</div>
+        <div class="models-panel-title"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg> AI Cyclones</div>
+        <button class="models-close-btn" onclick="collapseAiCyclonesPanel()" title="Close panel (tracks stay on the map)">&times;</button>
       </div>
       <div class="spanel-card" id="spcard-cyclones" style="--sp-accent:#ffd166">
         <div class="spanel-head" onclick="_spCardToggle('cyclones')">
@@ -9612,26 +9675,6 @@ body.clean-mode #clean-hint { opacity: 1; }
       <p id="cyc-ens-intro">The other half of this section: not a cyclone product anyone publishes. The Pi reads raw GEFS pressure and thickness and finds the storms itself, closed lows with a warm column above them, in all 31 members, coloured by the strength each one reaches and named for the nearest active storm. Draw them over the DeepMind tracks to see where the two kinds of model agree.</p>
       <button id="cyc-ens-centres-btn" onclick="_ensToggle()" title="Cyclone centres detected in the raw GEFS ensemble, coloured by peak intensity">GEFS centres</button>
       <div id="cyc-ens-status">Not loaded.</div>
-        </div>
-      </div>
-      <div class="spanel-card" id="spcard-anim" style="--sp-accent:#d9b8ff">
-        <div class="spanel-head" onclick="_spCardToggle('anim')">
-          <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-play></use></svg> <span class="spanel-title">Track Animation</span> 
-          <span class="spanel-chev">&#x25BE;</span>
-        </div>
-        <div class="spanel-body">
-      <div id="tanim-row">
-        <button id="tanim-play" onclick="_tanimToggle()" title="Play or pause the forecast-hour clock">&#x25B6;</button>
-        <button id="tanim-stop" onclick="_tanimStop()" title="Stop and bring the still lines back">&#x2715;</button>
-        <input type="range" id="tanim-scrub" min="0" max="168" value="0" step="1" oninput="_tanimSeek(+this.value)">
-        <span id="tanim-hour">F+000</span>
-        <select id="tanim-speed" onchange="_tanimSetSpeed(this.value)" title="How fast forecast time runs">
-          <option value="12">Slow</option>
-          <option value="24" selected>Normal</option>
-          <option value="48">Fast</option>
-        </select>
-      </div>
-      <p id="tanim-note">Runs a forecast-hour clock over every visible track at once: guidance lines, AI cyclones and GEFS centres dot their way out together, so the spread you see growing IS the forecast uncertainty.</p>
         </div>
       </div>
       <p id="cyc-credits">
@@ -19114,15 +19157,17 @@ function _cycDrawTrack(points, style, key, label, sink) {
   const tag = L.marker(lastLeg[lastLeg.length - 1], {
     icon: L.divIcon({
       className: '',
-      iconAnchor: [-4, 8],
-      html: `<span style="
-        display:inline-block;padding:1px 6px 2px;
-        background:rgba(0,0,0,0.72);
-        border:1px solid ${style.color};border-radius:8px;
-        color:${style.color};font-family:'Comfortaa', sans-serif;
-        font-size:9px;font-weight:700;white-space:nowrap;
-        cursor:pointer;text-shadow:0 1px 3px #000;
-      ">${label}</span>`,
+      iconAnchor: [0, 0],
+      html: `<div class="tag-stemwrap" style="--tag-color:${style.color}">
+        <div class="tag-stem"></div>
+        <span class="cyc-tagpill" style="
+          display:inline-block;padding:1px 6px 2px;
+          background:rgba(0,0,0,0.72);
+          border:1px solid ${style.color};border-radius:8px;
+          color:${style.color};font-family:'Comfortaa', sans-serif;
+          font-size:9px;font-weight:700;white-space:nowrap;
+          cursor:pointer;text-shadow:0 1px 3px #000;
+        ">${label}</span></div>`,
     }),
     zIndexOffset: 250,
   }).addTo(map);
@@ -24337,7 +24382,8 @@ const LAYER_DESCRIPTIONS = {
   'radar-mrms':   'MRMS is a national mosaic NOAA builds by merging every radar together, then computing things no single radar can: rotation tracks, hail swaths, rainfall totals, lightning probability and more. Your Pi builds the pictures; the whole catalogue lives in here.',
   // The Models row's two doors.
   'run-models':      'Forecast model charts - GFS, ECMWF, HRRR, NAM and more - browsable by product and forecast hour, with an Ensemble Spread view that shows where the models disagree.',
-  'spaghetti-models': 'Tropical guidance in one panel: official NHC tracks and cones, AI cyclone forecasts, and storm-track spaghetti from multiple models, every line wearing its model\'s name tag.',
+  'spaghetti-models': 'Tropical guidance from the NHC a-deck: official tracks and cones, plus storm-track spaghetti from every published model, each line wearing its model\'s name tag on a stem. Includes the track animation.',
+  'ai-cyclones': 'AI hurricane forecasts in their own panel: Google DeepMind\'s FNV3 and GenCast ensembles, plus the tropical cyclones the Pi finds itself in the raw GEFS ensemble. Experimental research output, shown beside the official guidance rather than instead of it.',
   // Level 3 products that only exist pre-computed (no Level 2 equivalent).
   'pi-onehour':    'Radar-estimated rainfall over just the last hour, in inches. Where the colors pile up is where flash flooding starts.',
   'pi-stormtotal': 'Storm total precipitation: all the rain the radar has estimated since the current event began. The running score of a long storm.',
@@ -24420,7 +24466,7 @@ function _getBubbleActive(id) {
   if (id === 'wind')        return !!windActive;
   if (id === 'temperature') return !!temperatureActive;
   if (id === 'pressure')    return !!pressureActive;
-  if (id === 'models')      return _runModelsPanelIsOpen() || !!_hdOn || _spaghettiModelsPanelIsOpen() || _sndPanelIsOpen();
+  if (id === 'models')      return _runModelsPanelIsOpen() || !!_hdOn || _spaghettiModelsPanelIsOpen() || _aiCyclonesPanelIsOpen() || _sndPanelIsOpen();
   return !!activeBubbles[id];
 }
 
@@ -24529,6 +24575,14 @@ function toggleOverlayPill(id) {
     _jtwcToggle();
     const pill = document.getElementById('op-jtwc-outlook');
     if (pill) pill.classList.toggle('active', _jtwcOn);
+  } else if (id === 'gwcfc-outlook') {
+    _gwcfcOutlookToggle();
+    const pill = document.getElementById('op-gwcfc-outlook');
+    if (pill) pill.classList.toggle('active', _gwcfcOn);
+  } else if (id === 'gwcfc-alerts') {
+    _gwcfcAlertsToggle();
+    const pill = document.getElementById('op-gwcfc-alerts');
+    if (pill) pill.classList.toggle('active', _gwaOn);
   } else if (id === 'cloudcam') {
     activeLayers.cloudcam = !activeLayers.cloudcam;
     const pill = document.getElementById('op-cloudcam');
@@ -29134,9 +29188,8 @@ function openSpaghettiModelsPanel() {
   if (btn) btn.classList.add('active');
   _tropInit();
   if (typeof _spCardRestore === 'function') _spCardRestore();
-  // The AI cyclone section fills itself from the Pi's newest run.
-  if (typeof _spagCycSync === 'function') _spagCycSync().catch(() => {});
-  // And the model guidance draws itself, unless this person hid it earlier.
+  // The model guidance draws itself, unless this person hid it earlier.
+  // (The AI cyclone section lives in its own panel now.)
   if (typeof _spagLoadStormTracks === 'function')
     _spagLoadStormTracks().catch(() => {});
 }
@@ -29154,10 +29207,6 @@ function closeSpaghettiModelsPanel() {
   if (btn) btn.classList.remove('active');
   _clearTropTrackLayers();
   _clearSpagModelTracks();
-  // Closing the panel clears its map layers, and the AI cyclone tracks and
-  // the GEFS ensemble centres are its layers now too.
-  if (typeof _cycDisable === 'function' && _cycOn) _cycDisable();
-  if (typeof _ensDisable === 'function' && _ensOn) _ensDisable();
 }
 
 function _spaghettiModelsPanelIsOpen() {
@@ -29165,11 +29214,61 @@ function _spaghettiModelsPanelIsOpen() {
   return !!panel && panel.style.display !== 'none' && panel.style.display !== '';
 }
 
+// ── The AI Cyclones panel: DeepMind + the GEFS centres, in their own home ──
+function openAiCyclonesPanel() {
+  const panel = document.getElementById('ai-cyclones-panel');
+  if (!panel) return;
+  panel.style.display = 'flex';
+  activeBubbles['ai-cyclones'] = true;
+  const btn = document.getElementById('sub-ai-cyclones');
+  if (btn) btn.classList.add('active');
+  if (typeof _spCardRestore === 'function') _spCardRestore();
+  // The section fills itself from the Pi's newest run.
+  if (typeof _spagCycSync === 'function') _spagCycSync().catch(() => {});
+}
+
+function collapseAiCyclonesPanel() {
+  const panel = document.getElementById('ai-cyclones-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+function closeAiCyclonesPanel() {
+  const panel = document.getElementById('ai-cyclones-panel');
+  if (panel) panel.style.display = 'none';
+  activeBubbles['ai-cyclones'] = false;
+  const btn = document.getElementById('sub-ai-cyclones');
+  if (btn) btn.classList.remove('active');
+  // Closing the panel clears its map layers.
+  if (typeof _cycDisable === 'function' && _cycOn) _cycDisable();
+  if (typeof _ensDisable === 'function' && _ensOn) _ensDisable();
+}
+
+function _aiCyclonesPanelIsOpen() {
+  const panel = document.getElementById('ai-cyclones-panel');
+  return !!panel && panel.style.display !== 'none' && panel.style.display !== '';
+}
+
 
 const MODELS_SUB_BUBBLES = [
   { id: 'run-models',       icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-chart-up></use></svg>', label: 'Run Models' },
-  { id: 'spaghetti-models', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', label: 'Spaghetti Models' },
+  { id: 'spaghetti-models', icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-noodles></use></svg>', label: 'Spaghetti Models' },
+  { id: 'ai-cyclones',      icon: '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg>', label: 'AI Cyclones' },
 ];
+
+// One place that knows how each Models feature opens, closes, and reports
+// itself, so adding a panel is a row here instead of a fourth copy of the
+// ternary below.
+const _MODELS_PANELS = {
+  'run-models':       { isOpen: () => _runModelsPanelIsOpen(),
+                        open: () => openRunModelsPanel(),
+                        close: () => closeRunModelsPanel() },
+  'spaghetti-models': { isOpen: () => _spaghettiModelsPanelIsOpen(),
+                        open: () => openSpaghettiModelsPanel(),
+                        close: () => closeSpaghettiModelsPanel() },
+  'ai-cyclones':      { isOpen: () => _aiCyclonesPanelIsOpen(),
+                        open: () => openAiCyclonesPanel(),
+                        close: () => closeAiCyclonesPanel() },
+};
 
 function toggleModelsSub() {
   const wrap = document.getElementById('sub-bubbles');
@@ -29180,20 +29279,14 @@ function toggleModelsSub() {
   back.onclick = () => { _syncParentBubble('models'); renderSubBubbles('regular'); };
   wrap.appendChild(back);
   MODELS_SUB_BUBBLES.forEach(b => {
-    const isOpen = b.id === 'run-models' ? _runModelsPanelIsOpen()
-                 : _spaghettiModelsPanelIsOpen();
+    const p = _MODELS_PANELS[b.id];
     const el = document.createElement('div');
-    el.className = 'sub-bubble' + (isOpen ? ' active' : '');
+    el.className = 'sub-bubble' + (p && p.isOpen() ? ' active' : '');
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = async () => {
-      if (b.id === 'run-models') {
-        _runModelsPanelIsOpen() ? closeRunModelsPanel() : openRunModelsPanel();
-      } else {
-        _spaghettiModelsPanelIsOpen() ? closeSpaghettiModelsPanel() : openSpaghettiModelsPanel();
-      }
-      el.classList.toggle('active', b.id === 'run-models' ? _runModelsPanelIsOpen()
-                                  : _spaghettiModelsPanelIsOpen());
+      if (p) p.isOpen() ? p.close() : p.open();
+      el.classList.toggle('active', !!(p && p.isOpen()));
       _syncParentBubble('models');
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
@@ -30008,11 +30101,16 @@ const _spagHidden = new Set(); // single aids clicked off in the legend
 
 // Which families of aid are drawn. GEFS members default OFF: thirty-one
 // extra lines is a choice someone should make, not a default they suffer.
+// "past" is not an aid family but rides in the same chip row: a-decks
+// persist for the whole season, so June's dead storms still have files in
+// August, and their stale guidance fans stay hidden unless asked for.
 const _spagGroupsOn = { official: true, consensus: true, global: true,
-                        hurricane: true, mean: true, members: false };
+                        hurricane: true, mean: true, members: false,
+                        past: false };
 const SPAG_GROUP_LABELS = { official: 'Official', consensus: 'Consensus',
                             global: 'Global', hurricane: 'Hurricane',
-                            mean: 'GEFS mean', members: 'GEFS members' };
+                            mean: 'GEFS mean', members: 'GEFS members',
+                            past: 'Past storms' };
 
 // One colour per model, stable across storms and sessions, so GFS is always
 // the same blue no matter which storm is up. Kind-based fallbacks catch any
@@ -30111,7 +30209,13 @@ async function _spagFreshDoc(entry) {
 // feed does not list yet, and guidance on a developing invest is exactly
 // when people come looking.
 function _spagTargets(idx) {
-  const storms = (idx && idx.storms) || [];
+  let storms = (idx && idx.storms) || [];
+  // Only what is happening NOW, unless the Past storms chip is on. An entry
+  // without the flag (an index built by an older Pi) counts as active, so a
+  // stale Pi degrades to the old behaviour rather than an empty map.
+  if (!_spagGroupsOn.past) {
+    storms = storms.filter(s => s.active !== false);
+  }
   const sel = document.getElementById('trop-storm-sel');
   const want = sel && sel.value ? sel.value.trim().toUpperCase() : '';
   if (want) {
@@ -30315,12 +30419,16 @@ function _spagDrawAid(pts, style, display, meta, group) {
   _spagModelTrackLayers.push(casing, line);
 
   // Members skip the tag: thirty-one name tags is not a legend, it is fog.
+  // The tag is anchored ON the endpoint and connected by a stem, so there
+  // is no guessing which of forty lines a name belongs to.
   if (group !== 'members') {
     const lastLeg = legs[legs.length - 1];
     const tag = L.marker(lastLeg[lastLeg.length - 1], {
-      icon: L.divIcon({ className: '', iconAnchor: [-8, 10],
-        html: `<div class="spag-tag" style="--spag-color:${style.color}">`
-            + `${_ccEsc(display)}</div>` }),
+      icon: L.divIcon({ className: '', iconAnchor: [0, 0],
+        html: `<div class="tag-stemwrap" style="--tag-color:${style.color}">`
+            + `<div class="tag-stem"></div>`
+            + `<div class="spag-tag" style="--spag-color:${style.color}">`
+            + `${_ccEsc(display)}</div></div>` }),
       interactive: false, zIndexOffset: 960 }).addTo(map);
     _spagModelTrackLayers.push(tag);
   }
@@ -30346,6 +30454,7 @@ function _spagNearestStorm(lat, lon, maxKm = 400) {
   if (!idx || !idx.storms) return null;
   let best = null, bd = maxKm;
   idx.storms.forEach(s => {
+    if (s.active === false) return;   // a dead storm names nothing
     if (s.lat == null || s.lon == null) return;
     const d = L.latLng(lat, lon).distanceTo(L.latLng(s.lat, s.lon)) / 1000;
     if (d < bd) { bd = d; best = s; }
@@ -30574,6 +30683,306 @@ function _tanimResume() {
 }
 
 function _tanimSetSpeed(v) { _tanim.speed = +v || 24; }
+
+
+// ══════════════════════════════════════════════════════════════════════════
+// ── THE GWCFC OUTLOOK, FROM OUR OWN FORECASTERS ───────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// The Forecasting Portal publishes to Firestore: outlooks/latest holds
+// whatever the forecaster drew, development-chance and alert areas as
+// polygons plus storm markers. This overlay reads that document the same
+// no-SDK way the Pi address is read, decodes Firestore's typed JSON, and
+// draws it in the portal's own colours, so what the forecaster sees while
+// composing is exactly what the site shows.
+
+let _gwcfcOn = false;
+let _gwcfcLayers = [];
+let _gwcfcTimer = null;
+
+// The portal's own tables, mirrored: an outlook drawn in one palette and
+// shown in another is two different forecasts.
+const GWO_CHANCES = { extreme: { label: 'Extreme', color: '#ff44ff' },
+                      high:    { label: 'High',    color: '#ee1111' },
+                      medium:  { label: 'Medium',  color: '#ff8c00' },
+                      low:     { label: 'Low',     color: '#ffe066' } };
+const GWO_ALERTS  = { emergency: { label: 'Emer.',   color: '#8b0000', text: '#ffdede' },
+                      warning:   { label: 'Warning', color: '#d81616', text: '#fff0f0' },
+                      watch:     { label: 'Watch',   color: '#e97c7c', text: '#2a0000' } };
+const GWO_CATS = { 5: '#ff00ff', 4: '#ff1111', 3: '#ff5a00',
+                   2: '#ffa000', 1: '#ffe600' };
+
+// Firestore's REST encoding wraps every value in its type. This unwraps
+// recursively, so the rest of the code reads plain objects.
+function _fsDecode(v) {
+  if (v == null || typeof v !== 'object') return null;
+  if ('stringValue' in v) return v.stringValue;
+  if ('doubleValue' in v) return Number(v.doubleValue);
+  if ('integerValue' in v) return Number(v.integerValue);
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('timestampValue' in v) return v.timestampValue;
+  if ('nullValue' in v) return null;
+  if ('mapValue' in v) {
+    const o = {};
+    Object.entries(v.mapValue.fields || {}).forEach(([k, x]) => {
+      o[k] = _fsDecode(x);
+    });
+    return o;
+  }
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(_fsDecode);
+  return null;
+}
+
+async function _gwcfcFetch() {
+  const r = await fetch(
+    'https://firestore.googleapis.com/v1/projects/gwcfc-radar/databases/(default)'
+    + '/documents/outlooks/latest', { cache: 'no-store' })
+    .catch(() => null);
+  if (!r || !r.ok) return null;
+  const doc = await r.json().catch(() => null);
+  if (!doc || !doc.fields) return null;
+  const out = {};
+  Object.entries(doc.fields).forEach(([k, v]) => { out[k] = _fsDecode(v); });
+  return out;
+}
+
+// One document feeds two overlays (the outlook areas and the alert desk),
+// so a short shared cache keeps toggling both from fetching it twice.
+let _gwcfcDocCache = { at: 0, doc: null };
+async function _gwcfcDocFresh() {
+  if (_gwcfcDocCache.doc && Date.now() - _gwcfcDocCache.at < 60 * 1000)
+    return _gwcfcDocCache.doc;
+  const doc = await _gwcfcFetch();
+  if (doc) _gwcfcDocCache = { at: Date.now(), doc };
+  return doc || _gwcfcDocCache.doc;
+}
+
+// Chaikin corner cutting, the portal's own rounding, so a zone the
+// forecaster smoothed arrives smoothed rather than back to its clicks.
+function _gwcfcRound(pts, passes) {
+  let out = pts.map(p => p.slice());
+  for (let n = 0; n < (passes || 3); n++) {
+    const next = [];
+    for (let i = 0; i < out.length; i++) {
+      const a = out[i], b = out[(i + 1) % out.length];
+      next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    out = next;
+  }
+  return out;
+}
+
+function _gwcfcClear() {
+  _gwcfcLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
+  _gwcfcLayers = [];
+}
+
+function _gwcfcDraw(out) {
+  _gwcfcClear();
+  const pane = _ovPane('gwcfc-outlook');
+  let drew = 0;
+
+  (out.areas || []).forEach(a => {
+    const spec = a.type === 'alert'
+      ? (GWO_ALERTS[a.level] || GWO_ALERTS.watch)
+      : (GWO_CHANCES[a.level] || GWO_CHANCES.low);
+    const shapes = [];
+    if (Array.isArray(a.poly) && a.poly.length > 2) {
+      shapes.push(a.round ? _gwcfcRound(a.poly, 3) : a.poly);
+    }
+    // Zones borrowed from county/province shapes ride along as geometry.
+    (a.zones || []).forEach(z => {
+      const g = z && z.geometry;
+      if (!g || !g.coordinates) return;
+      const rings = g.type === 'MultiPolygon'
+        ? g.coordinates.flat() : g.coordinates;
+      rings.forEach(ring => {
+        if (Array.isArray(ring) && ring.length > 2)
+          shapes.push(ring.map(c => [c[1], c[0]]));
+      });
+    });
+    let centre = null;
+    shapes.forEach(pts => {
+      const poly = L.polygon(pts, { pane, color: spec.color, weight: 3,
+        opacity: 1, fillColor: spec.color, fillOpacity: 0.22,
+        interactive: false });
+      poly.addTo(map);
+      _gwcfcLayers.push(poly);
+      drew++;
+      if (!centre) { try { centre = poly.getBounds().getCenter(); } catch (e) {} }
+    });
+    if (centre) {
+      const label = L.marker(centre, { pane: _ovMarkerPane('gwcfc-outlook'),
+        interactive: false,
+        icon: L.divIcon({ className: '', iconSize: [0, 0],
+          html: `<span class="gwo-label" style="background:${spec.color}`
+              + (a.type === 'alert' ? `;color:${spec.text}` : '')
+              + `">${_ccEsc(spec.label)}</span>` }) });
+      label.addTo(map);
+      _gwcfcLayers.push(label);
+    }
+  });
+
+  (out.storms || []).forEach(s => {
+    if (!isFinite(s.lat) || !isFinite(s.lon)) return;
+    const color = GWO_CATS[s.cat] || '#ffe600';
+    const dot = L.circleMarker([s.lat, s.lon], { pane, radius: 9,
+      color: '#fff', weight: 1.6, fillColor: color, fillOpacity: 0.95,
+      interactive: false });
+    dot.addTo(map);
+    _gwcfcLayers.push(dot);
+    drew++;
+    const label = L.marker([s.lat, s.lon], {
+      pane: _ovMarkerPane('gwcfc-outlook'), interactive: false,
+      icon: L.divIcon({ className: '', iconAnchor: [-10, 8],
+        html: `<span class="gwo-label" style="background:rgba(0,0,0,0.72);`
+            + `border:1px solid ${color};color:${color}">`
+            + `${_ccEsc(s.name || ('Cat ' + s.cat))}</span>` }) });
+    label.addTo(map);
+    _gwcfcLayers.push(label);
+  });
+
+  return drew;
+}
+
+async function _gwcfcRefresh() {
+  const out = await _gwcfcDocFresh();
+  if (!_gwcfcOn) return;
+  if (!out) {
+    _gwcfcClear();
+    if (typeof showToast === 'function')
+      showToast('No GWCFC outlook is published right now. One appears here '
+              + 'the moment a forecaster hits Publish on the portal.', 4500);
+    return;
+  }
+  const drew = _gwcfcDraw(out);
+  if (drew && out.issued && typeof showToast === 'function') {
+    const when = String(out.issued).slice(0, 16).replace('T', ' ');
+    showToast(`GWCFC outlook by ${out.forecaster || 'the desk'}, `
+            + `issued ${when}Z`, 3500);
+  } else if (!drew && typeof showToast === 'function') {
+    showToast('The published GWCFC outlook has nothing drawn on it.', 3500);
+  }
+}
+
+function _gwcfcOutlookToggle() {
+  _gwcfcOn = !_gwcfcOn;
+  if (_gwcfcOn) {
+    _gwcfcRefresh();
+    // A forecaster can republish at any moment, so while the overlay is up
+    // it checks back the way the alert feeds do.
+    _gwcfcTimer = setInterval(_gwcfcRefresh, 5 * 60 * 1000);
+  } else {
+    clearInterval(_gwcfcTimer);
+    _gwcfcTimer = null;
+    _gwcfcClear();
+  }
+}
+
+
+// ── GWCFC ALERTS: the portal's alert desk, on the map ─────────────────────
+// The same published document carries the alerts the desk issued: real
+// polygons with a product code, an area description and an expiry. Only the
+// ones still in force draw; an alert that ran out is history, not weather.
+let _gwaOn = false;
+let _gwaLayers = [];
+let _gwaTimer = null;
+
+// The portal's product codes and its alert colour table, mirrored, so a
+// Tornado Warning is the same red on both sides of the publish button.
+const GWA_EVENTS = {
+  TOR: 'Tornado Warning', SVR: 'Severe Thunderstorm Warning',
+  FFW: 'Flash Flood Warning', EWW: 'Extreme Wind Warning',
+  SQW: 'Snow Squall Warning', HUW: 'Hurricane Warning',
+  TRW: 'Tropical Storm Warning', SSW: 'Storm Surge Warning',
+  TOA: 'Tornado Watch', SVA: 'Severe Thunderstorm Watch',
+  FFA: 'Flash Flood Watch', HUA: 'Hurricane Watch',
+  TRA: 'Tropical Storm Watch', SSA: 'Storm Surge Watch',
+  SPS: 'Special Weather Statement',
+};
+const GWA_COLORS = {
+  'Tornado Warning': '#ff0000', 'Severe Thunderstorm Warning': '#ffd700',
+  'Flash Flood Warning': '#006400', 'Extreme Wind Warning': '#da70d6',
+  'Snow Squall Warning': '#1976d2', 'Hurricane Warning': '#ff00ff',
+  'Tropical Storm Warning': '#dc143c', 'Storm Surge Warning': '#b524f7',
+  'Tornado Watch': '#ff6666', 'Severe Thunderstorm Watch': '#ffff00',
+  'Flash Flood Watch': '#008000', 'Hurricane Watch': '#ff69b4',
+  'Tropical Storm Watch': '#f08080', 'Storm Surge Watch': '#db7ff7',
+  'Special Weather Statement': '#ffe066',
+};
+
+function _gwaClear() {
+  _gwaLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
+  _gwaLayers = [];
+}
+
+function _gwaDraw(alerts) {
+  _gwaClear();
+  const pane = _ovPane('gwcfc-alerts');
+  const now = Date.now();
+  let drew = 0;
+  (alerts || []).forEach(a => {
+    if (!a || a.status !== 'active') return;
+    if (a.expires && Number(a.expires) < now) return;
+    const g = a.geometry;
+    if (!g || !g.coordinates) return;
+    const event = GWA_EVENTS[a.code] || a.code || 'Alert';
+    const color = GWA_COLORS[event] || '#aaaaaa';
+    const polys = g.type === 'MultiPolygon' ? g.coordinates : [g.coordinates];
+    const exp = a.expires
+      ? new Date(Number(a.expires)).toLocaleTimeString('en-US',
+          { hour: 'numeric', minute: '2-digit' })
+      : '';
+    polys.forEach(rings => {
+      const pts = (rings[0] || []).map(c => [c[1], c[0]]);
+      if (pts.length < 3) return;
+      const poly = L.polygon(pts, { pane, color, weight: 2.5, opacity: 1,
+        fillColor: color, fillOpacity: 0.18 });
+      poly.bindPopup(
+        `<div style="font-family:'Comfortaa',sans-serif;font-size:12px;`
+        + `font-weight:700;color:${color}">${_ccEsc(event)}</div>`
+        + `<div style="font-family:var(--mono);font-size:10px;">`
+        + `${_ccEsc(a.areaDesc || '')}</div>`
+        + (exp ? `<div style="font-family:var(--mono);font-size:9px;`
+               + `opacity:0.7">Until ${exp} `
+               + `${String.fromCharCode(0xB7)} GWCFC forecast desk</div>` : ''),
+        { className: 'ap-popup-container', maxWidth: 280 });
+      poly.addTo(map);
+      _gwaLayers.push(poly);
+      drew++;
+    });
+  });
+  return drew;
+}
+
+async function _gwaRefresh() {
+  const out = await _gwcfcDocFresh();
+  if (!_gwaOn) return;
+  if (!out) {
+    _gwaClear();
+    if (typeof showToast === 'function')
+      showToast('No GWCFC alerts published. They appear here when the desk '
+              + 'issues one from the Forecasting Portal.', 4000);
+    return;
+  }
+  const drew = _gwaDraw(out.alerts || []);
+  if (!drew && typeof showToast === 'function')
+    showToast('No GWCFC alerts are in force right now.', 3000);
+}
+
+function _gwcfcAlertsToggle() {
+  _gwaOn = !_gwaOn;
+  if (_gwaOn) {
+    _gwaRefresh();
+    // A minute, not five: an issued warning appearing promptly is the whole
+    // point of the desk, and an expired one should leave just as fast.
+    _gwaTimer = setInterval(_gwaRefresh, 60 * 1000);
+  } else {
+    clearInterval(_gwaTimer);
+    _gwaTimer = null;
+    _gwaClear();
+  }
+}
 
 function _modelsNHCToggle() {
   _nhcOutlookOn = !_nhcOutlookOn;
@@ -46883,7 +47292,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The Google AI cyclone models work now: the Pi was asking Weather Lab for model names its download service never knew, and the fixed fetch brings in FNV3 (50 members) and GenCast, with each track named for the nearest active storm. The Spaghetti Models panel is also reorganized into tidy fold-away cards: Active Storms, Model Guidance, AI Cyclones and Track Animation.';
+const APP_LATEST_UPDATE = 'AI Cyclones has its own panel and Models sub-bubble now. Spaghetti shows only current storms by default (a Past storms chip brings the dead ones back), and every name tag is pinned to its line by a stem. Two new overlays: GWCFC Outlook and GWCFC Alerts, showing whatever our forecasters publish from the Forecasting Portal, live.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -48012,6 +48421,7 @@ document.addEventListener('DOMContentLoaded', () => {
   _makeDraggable(document.getElementById('eas-panel'),           document.getElementById('eas-panel-header'));
   _makeDraggable(document.getElementById('run-models-panel'),       document.getElementById('run-models-drag'));
   _makeDraggable(document.getElementById('spaghetti-models-panel'), document.getElementById('spaghetti-models-drag'));
+  _makeDraggable(document.getElementById('ai-cyclones-panel'), document.getElementById('ai-cyclones-drag'));
   _makeDraggable(document.getElementById('dist-toolbar'),        document.getElementById('dist-drag-handle'));
   _makeDraggable(document.getElementById('spc-controls'),        document.getElementById('spc-drag'));
   _makeDraggable(document.getElementById('wpc-controls'),        document.getElementById('wpc-drag'));
@@ -48529,6 +48939,12 @@ document.addEventListener('DOMContentLoaded', () => {
     </div>
     <div class="ov-pill" id="op-jtwc-outlook" data-ovid="jtwc-outlook" title="JTWC Tropical Outlook - western Pacific and Indian Ocean systems">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('jtwc-outlook')">JTWC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-gwcfc-outlook" data-ovid="gwcfc-outlook" title="GWCFC Outlook - the outlook our own forecasters publish from the Forecasting Portal">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('gwcfc-outlook')">GWCFC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
+    </div>
+    <div class="ov-pill" id="op-gwcfc-alerts" data-ovid="gwcfc-alerts" title="GWCFC Alerts - warnings, watches and statements issued from the Forecasting Portal's alert desk">
+      <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('gwcfc-alerts')">GWCFC Alerts</span><span class="ov-drag" title="Drag to reorder">⠿</span>
     </div>
     <div class="ov-pill" id="op-wpc-outlook" data-ovid="wpc-outlook" title="WPC Excessive Rainfall Outlook (Days 1-3 flood risk)">
       <span class="ov-bullet"></span><span class="ov-rowname" onclick="toggleOverlayPill('wpc-outlook')">WPC Outlook</span><span class="ov-drag" title="Drag to reorder">⠿</span>
@@ -49550,6 +49966,8 @@ const OV_DESCRIPTIONS = {
   'spc-reports':      'Tornado, hail, and wind reports logged by local National Weather Service offices today.',
   'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, including any active hurricanes or tropical storms and their forecast tracks.",
   'jtwc-outlook':     "The Joint Typhoon Warning Center's active systems, which is everything the National Hurricane Center does not cover: the western Pacific, the Indian Ocean and the southern hemisphere. That is the basin that produces the most tropical cyclones on Earth, and without this the map goes blank across it. A typhoon and a hurricane are the same thing with two names, so they are drawn with the same icons. JTWC is the US Navy rather than the National Weather Service, and it issues on a six hourly cycle. If the layer draws nothing, run _jtwcCheck() in the browser console to tell an empty basin apart from an unreachable server.",
+  'gwcfc-outlook':    "Our own outlook, drawn by GWCFC forecasters on the Forecasting Portal and published from there. Development-chance areas (Low through Extreme), alert areas, and storm markers appear here exactly as the forecaster drew them, in the portal's own colours, the moment Publish is pressed. Refreshes every five minutes while the overlay is on. If nothing draws, no outlook is currently published.",
+  'gwcfc-alerts':     "Warnings, watches and statements issued from the Forecasting Portal's alert desk: the GWCFC's own products, drawn as polygons in standard alert colours. Only alerts still in force appear, and an expired one leaves the map on its own. Tap a polygon for the product, the area it covers and when it ends. Checks for new issuances every minute while on.",
       'radar-normal':     "The radar products this site has always shown, served as tiles: MRMS, reflectivity, velocity, hydrometeor class and the two accumulations.",
   'radar-l2':         "Level 2 is what the radar itself produces: every gate of every sweep, streamed straight from the live feed and decoded in your browser. Pick any station on the map, including the T pills, which are the terminal radars at major airports.",
   'l2-ref':           "How heavy the precipitation is, in dBZ, from the station's own volume rather than a mosaic.",

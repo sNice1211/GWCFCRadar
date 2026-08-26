@@ -488,8 +488,22 @@ def build_document(adeck_text, bdeck_text, basin, cy, year):
             "tau_max": max((p["tau"] for p in pts), default=None),
         }
 
+    # Is this storm happening NOW? A-decks persist for the whole season, so
+    # June's dead storms still have files in August and would fan stale
+    # guidance across a quiet map. Alive means the best track has a fix
+    # within the last two days; with no best track at all (a brand new
+    # invest), a fresh guidance cycle stands in.
+    now = dt.datetime.now(dt.timezone.utc)
+    if best:
+        last_fix = dt.datetime.strptime(best[-1]["dtg"], "%Y%m%d%H").replace(
+            tzinfo=dt.timezone.utc)
+        active = (now - last_fix) <= dt.timedelta(hours=48)
+    else:
+        active = (now - cycle) <= dt.timedelta(hours=30)
+
     sid = f"{basin}{cy:02d}{year}"
     return {
+        "active": active,
         "id": sid,
         "atcf": f"{basin.upper()}{cy:02d}{year}",
         "name": name,
@@ -547,6 +561,7 @@ def build(year, only=None):
             "id": doc["id"], "atcf": doc["atcf"], "name": doc["name"],
             "basin": basin, "path": f"{doc['id']}.json",
             "cycle": doc["cycle"], "tier": doc["tier"],
+            "active": doc["active"],
             "lat": last.get("lat"), "lon": last.get("lon"),
             "vmax": last.get("vmax"), "mslp": last.get("mslp"),
             "n_aids": len(doc["aids"]), "n_tracks": n_tracks,

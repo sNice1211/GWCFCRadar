@@ -196,6 +196,25 @@ ok("the withheld-ECMWF note is on the document",
 ok("has_track needs two positioned points, one is a dot not a line",
    doc["aid_meta"]["TVCN"]["has_track"] is False
    and doc["aid_meta"]["AVNO"]["has_track"] is True)
+# A-decks persist all season, so a dead June storm still has a file in
+# August and would fan stale guidance across a quiet map. The active flag is
+# what stops that: dead when the last best-track fix is older than two days,
+# alive when it is fresh. Both sides pinned relative to the real clock.
+import datetime as _dt
+def _bdeck_at(dtg):
+    return (f"AL, 09, {dtg},   , BEST,   0, 218N,  651W,  65,  985, HU,"
+            "  34, NEQ,  120,   90,   60,   90, 1008,  200,  20,  60,   0,"
+            "   L,   0,    ,   0,   0, GABRIELLE,")
+_now = _dt.datetime.now(_dt.timezone.utc)
+stale = spag.build_document(adeck,
+    _bdeck_at((_now - _dt.timedelta(days=30)).strftime("%Y%m%d%H")),
+    "al", 9, 2026)
+ok("a storm whose last fix is a month old is marked inactive",
+   stale["active"] is False)
+fresh = spag.build_document(adeck,
+    _bdeck_at((_now - _dt.timedelta(hours=6)).strftime("%Y%m%d%H")),
+    "al", 9, 2026)
+ok("and one fixed six hours ago is active", fresh["active"] is True)
 
 print("\n7. storm discovery, from the directory listing")
 listing = ("<a href='aal092026.dat.gz'>x</a> <a href='aal832026.dat.gz'>t</a> "

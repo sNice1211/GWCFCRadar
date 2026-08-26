@@ -119,28 +119,31 @@ console.log('\n1. the panel is four cards, not one long scroll');
       .map(c => c.id),
     heads: [...document.querySelectorAll('#spaghetti-models-panel .spanel-head')]
       .map(h => h.textContent.trim().replace(/\s+/g, ' ')),
+    aiHeads: [...document.querySelectorAll('#ai-cyclones-panel .spanel-head')]
+      .map(h => h.textContent.trim().replace(/\s+/g, ' ')),
     bodies: document.querySelectorAll(
       '#spaghetti-models-panel .spanel-body').length,
   }));
-  ok('four cards, in reading order: storms, guidance, cyclones, animation',
-     s.ids.join(',') === 'spcard-storms,spcard-guidance,spcard-cyclones,spcard-anim',
+  ok('three cards in the spaghetti panel: storms, guidance, animation',
+     s.ids.join(',') === 'spcard-storms,spcard-guidance,spcard-anim',
      s.ids.join(','));
-  ok('each has a clickable head and a body', s.bodies === 4);
+  ok('each has a clickable head and a body', s.bodies === 3);
   ok('the heads say what each card is',
      /Active Storms/.test(s.heads[0]) && /Model Guidance/.test(s.heads[1])
-     && /AI Cyclones/.test(s.heads[2]) && /Track Animation/.test(s.heads[3]),
-     s.heads.join(' | '));
+     && /Track Animation/.test(s.heads[2]), s.heads.join(' | '));
+  ok('the cyclones card lives in the AI Cyclones panel now',
+     s.aiHeads.some(h => /AI Cyclones/.test(h)), s.aiHeads.join(' | '));
   const inside = await page.evaluate(() => ({
     storms: !!document.querySelector('#spcard-storms #trop-storm-sel'),
     spag: !!document.querySelector('#spcard-guidance #spag-btn')
        && !!document.querySelector('#spcard-guidance #spag-groups'),
-    cyc: !!document.querySelector('#spcard-cyclones #cyc-lab-btn')
-       && !!document.querySelector('#spcard-cyclones #cyc-ens-centres-btn'),
+    cyc: !!document.querySelector('#ai-cyclones-panel #spcard-cyclones #cyc-lab-btn')
+       && !!document.querySelector('#ai-cyclones-panel #cyc-ens-centres-btn'),
     anim: !!document.querySelector('#spcard-anim #tanim-play'),
   }));
   ok('the storm picker lives in the storms card', inside.storms);
   ok('the guidance controls live in the guidance card', inside.spag);
-  ok('DeepMind and the GEFS centres share the cyclones card', inside.cyc);
+  ok('DeepMind and the GEFS centres share the cyclones card, in its own panel', inside.cyc);
   ok('the transport lives in the animation card', inside.anim);
 }
 
@@ -237,8 +240,11 @@ console.log('\n6. house rules');
   ok('no em dash in the page', !html.includes(String.fromCharCode(0x2014)));
   ok('no leftover standalone section heads above the cards',
      !/<div id="spag-head">/.test(html) && !/<div id="tanim-head">/.test(html));
-  ok('the update bar says the Google models work now',
-     /Google AI cyclone models work now/.test(html));
+  // Not the update bar: that string describes whatever shipped LAST. The
+  // durable claim is that the variant table still carries the download
+  // API's real slugs.
+  ok('the variant table still names the real Google model slugs',
+     /FNV3:\s+'Google FNV3/.test(html) && /GENC:\s+'Google GenCast'/.test(html));
   ok('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 }
 
