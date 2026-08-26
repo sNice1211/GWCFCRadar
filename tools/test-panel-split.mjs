@@ -117,8 +117,15 @@ const OUTLOOK = {
       issued: NOW - 5 * 60000, expires: NOW + 60 * 60000, status: 'cancelled' },
   ],
 };
+// Documents arrive the way the portal really writes them now: the shapes
+// packed into ONE JSON string field, because Firestore refuses the nested
+// coordinate arrays raw. The site unpacks v on read.
+const packed = (o) => {
+  const { issued, forecaster, uid, ...shapes } = o;
+  return { issued, forecaster, uid, v: JSON.stringify(shapes) };
+};
 let fsDoc = { name: 'projects/x/databases/(default)/documents/outlooks/latest',
-              fields: fsv(OUTLOOK).mapValue.fields };
+              fields: fsv(packed(OUTLOOK)).mapValue.fields };
 let fsMissing = false;
 let fsForbidden = false;
 // The shared alert desk: one entry per forecaster. Absent (404) by default so
@@ -127,13 +134,14 @@ let fsForbidden = false;
 // u1 re-issues w1 (the same TOR as latest, which must not double-draw) and
 // u2 contributes an alert latest knows nothing about.
 const DESK = {
-  u1: { forecaster: 'Ralph', at: 'now', alerts: [OUTLOOK.alerts[0]] },
-  u2: { forecaster: 'Sam', at: 'now', alerts: [
+  u1: { forecaster: 'Ralph', at: 'now',
+        v: JSON.stringify([OUTLOOK.alerts[0]]) },
+  u2: { forecaster: 'Sam', at: 'now', v: JSON.stringify([
     { uid: 'w9', code: 'SVR', areaDesc: 'Other County, AL',
       geometry: { type: 'Polygon',
         coordinates: [[[-87, 33], [-86, 33], [-86, 34], [-87, 34], [-87, 33]]] },
       issued: NOW - 2 * 60000, expires: NOW + 40 * 60000, status: 'active' },
-  ] },
+  ]) },
 };
 let deskOn = false;
 

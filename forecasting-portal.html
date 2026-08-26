@@ -1746,13 +1746,20 @@ async function publishOutlook() {
     return;
   }
   const now = new Date();
+  // The shapes ride as ONE JSON string. Firestore refuses nested arrays,
+  // and every zone outline, cone ring and alert polygon is exactly that: a
+  // list of coordinate pairs. Packing them as text (the same trick the
+  // shared model cache uses) keeps the document valid; both this page and
+  // the radar unpack it on read.
   const doc = {
     issued: now.toISOString(),
     forecaster: OUTLOOK.forecaster,
     uid: USER ? USER.uid : 'testing',
-    view: map ? { lat: map.getCenter().lat, lon: map.getCenter().lng, zoom: map.getZoom() } : null,
-    storms: OUTLOOK.storms, areas: OUTLOOK.areas,
-    cones, alerts: desk,
+    v: JSON.stringify({
+      view: map ? { lat: map.getCenter().lat, lon: map.getCenter().lng, zoom: map.getZoom() } : null,
+      storms: OUTLOOK.storms, areas: OUTLOOK.areas,
+      cones, alerts: desk,
+    }),
   };
   const btn = document.getElementById('btn-publish');
   btn.disabled = true;
@@ -1765,7 +1772,7 @@ async function publishOutlook() {
     // desk still writes: that is how a forecaster's own alerts are cleared.
     await _fbDb.collection('outlooks').doc('desk').set({
       [USER.uid]: { forecaster: OUTLOOK.forecaster || '',
-                    at: doc.issued, alerts: desk },
+                    at: doc.issued, v: JSON.stringify(desk) },
     }, { merge: true });
     OUTLOOK.issued = doc.issued;
     stampHeader();
@@ -1795,6 +1802,11 @@ async function loadLatest() {
     const snap = await _fbDb.collection('outlooks').doc('latest').get();
     if (!snap.exists) return;
     const d = snap.data() || {};
+    // New documents pack the shapes in the v string (Firestore refuses the
+    // nested arrays raw); anything older carries them as plain fields.
+    if (typeof d.v === 'string') {
+      try { Object.assign(d, JSON.parse(d.v)); } catch (e) {}
+    }
     OUTLOOK.storms = d.storms || [];
     OUTLOOK.areas = d.areas || [];
     OUTLOOK.cones = d.cones || [];      // kept for the record

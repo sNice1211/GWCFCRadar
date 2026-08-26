@@ -577,20 +577,32 @@ console.log('\n7. publishing');
   ok('publishing writes the current outlook and archives the issuance',
      r.paths.includes('outlooks/latest') && r.paths.some(p => /\(auto\)/.test(p)),
      r.paths.join(', '));
-  ok('the published document carries the real tools\' work',
-     (r.doc.cones || []).length >= 1 && (r.doc.cones[0].ring || []).length > 3
-       && (r.doc.alerts || []).length === 1
-       && r.doc.alerts[0].code === 'TOR'
-       && (r.doc.areas || []).length >= 1 && !!r.doc.issued
-       && !!r.doc.forecaster && !!r.doc.view,
-     JSON.stringify({ keys: Object.keys(r.doc), cones: (r.doc.cones || []).length,
-       alerts: (r.doc.alerts || []).length }));
+  // The shapes ride packed as one JSON string, because Firestore refuses
+  // nested arrays and every outline is a list of coordinate pairs. A single
+  // raw array-of-arrays anywhere in the document kills the whole publish
+  // with "Nested arrays are not supported".
+  const deepFlat = (o) => o === null || typeof o !== 'object' ? true
+    : Array.isArray(o) ? o.every(x => !Array.isArray(x) && deepFlat(x))
+    : Object.values(o).every(deepFlat);
+  ok('the stored document contains no nested arrays anywhere',
+     deepFlat(r.doc), JSON.stringify(r.doc).slice(0, 120));
+  const payload = JSON.parse(r.doc.v || '{}');
+  ok('the published document carries the real tools\' work, packed in v',
+     (payload.cones || []).length >= 1 && (payload.cones[0].ring || []).length > 3
+       && (payload.alerts || []).length === 1
+       && payload.alerts[0].code === 'TOR'
+       && (payload.areas || []).length >= 1 && !!r.doc.issued
+       && !!r.doc.forecaster && !!payload.view,
+     JSON.stringify({ keys: Object.keys(payload),
+       cones: (payload.cones || []).length,
+       alerts: (payload.alerts || []).length }));
   // The shared desk is what lets EVERY forecaster's alerts reach the site at
   // once: one entry per forecaster, merged, never overwritten wholesale.
+  const deskAlerts = r.desk && r.desk.u1 ? JSON.parse(r.desk.u1.v || '[]') : [];
   ok('the shared alert desk gets this forecaster\'s entry, keyed by uid',
-     !!r.desk && !!r.desk.u1 && Array.isArray(r.desk.u1.alerts)
-       && r.desk.u1.alerts.length === 1 && r.desk.u1.alerts[0].code === 'TOR'
-       && r.desk.u1.forecaster === 'Ralph',
+     !!r.desk && !!r.desk.u1 && deskAlerts.length === 1
+       && deskAlerts[0].code === 'TOR' && r.desk.u1.forecaster === 'Ralph'
+       && deepFlat(r.desk),
      JSON.stringify(r.desk));
   ok('and the graphic re-stamps itself with the issue time',
      /UTC/.test(r.stamped), r.stamped);

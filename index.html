@@ -30715,11 +30715,21 @@ async function _gwcfcFetch() {
   const [out, desk] = await Promise.all([grab('latest'), grab('desk')]);
   if (!out && !desk) return null;
   const merged = out || {};
+  // The portal packs the shapes as one JSON string (Firestore refuses the
+  // nested coordinate arrays raw); older documents carry plain fields.
+  if (typeof merged.v === 'string') {
+    try { Object.assign(merged, JSON.parse(merged.v)); } catch (e) {}
+    delete merged.v;
+  }
   if (desk) {
     const fromDesk = [];
     Object.values(desk).forEach(v => {
-      if (v && Array.isArray(v.alerts)) {
-        v.alerts.forEach(a => {
+      let alerts = v && Array.isArray(v.alerts) ? v.alerts : null;
+      if (!alerts && v && typeof v.v === 'string') {
+        try { alerts = JSON.parse(v.v); } catch (e) {}
+      }
+      if (Array.isArray(alerts)) {
+        alerts.forEach(a => {
           if (a) fromDesk.push({ forecaster: v.forecaster, ...a });
         });
       }
@@ -47483,7 +47493,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'GWCFC Alerts now shows what every forecaster has in force, not just the last person to publish, and the Forecasting Portal now requires a signed-in account with the forecaster role. The owner grants that role with the new FC box in Manage Members.';
+const APP_LATEST_UPDATE = 'Fixed the portal publish failing with "Nested arrays are not supported": the database refuses raw coordinate lists, so zones, cones and alerts now travel packed as text and unpack on the map. Publishing works end to end.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
