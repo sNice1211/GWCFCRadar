@@ -20400,6 +20400,44 @@ async function _prDraw(base, lvl, idx) {
   _prLoopSyncTimeline();
 }
 
+// The Pi is the fast path, not the only one. When it cannot be read, or has
+// nothing built, the browser decodes Level 3 straight from the NOAA bucket
+// for the nearest station instead of stopping at a toast. This is the fix
+// for the worst failure this menu had: _prEnable would fail, leave _prOn
+// raised, and the next tap on a product bubble would hit the "already
+// showing, turn it off" branch and do NOTHING AT ALL, silently. A dead
+// tunnel read as the radar feature itself being broken.
+async function _prBucketFallback(reason) {
+  let site = _prBucketSite
+          || (typeof _l2Site !== 'undefined' && _l2Site)
+          || (typeof _l3Station !== 'undefined' && _l3Station) || null;
+  if (!site) {
+    try {
+      const c = map.getCenter();
+      site = _nearestStation(c.lat, c.lng);
+    } catch (e) { site = 'ktlx'; }
+  }
+  site = String(site || 'ktlx').toUpperCase();
+  // A product this station cannot publish would only bounce off the code
+  // table; reflectivity is the one thing every radar makes.
+  if (!_l3BucketCode(site, _prProduct, _prTilt)) {
+    _prProduct = 'reflectivity';
+  }
+  if (typeof showToast === 'function') {
+    showToast(reason + ' Decoding ' + site + ' straight from the NOAA '
+            + 'Level 3 bucket instead.', 5000);
+  }
+  await _l3BucketShow(site);
+  // The row again, so tilt chips and greying reflect the bucket site, but
+  // only if the Pi row is what the menu is showing right now: this can be
+  // reached from a background retry, and redrawing a menu the person has
+  // since navigated away from would hijack it.
+  if (document.getElementById('sub-pi-' + _prProduct)
+      && typeof _prRenderPiRow === 'function') {
+    _prRenderPiRow(_prLevel);
+  }
+}
+
 async function _prEnable() {
   // Re-enabling (a site/level/product change all call back through here)
   // must not leave the previous timer running alongside a new one - that
@@ -20410,11 +20448,8 @@ async function _prEnable() {
   _prOn = true;
   const base = _hdBase || await _hdResolveBase();
   if (!base) {
-    if (typeof showToast === 'function') {
-      showToast('No Pi address yet, so no radar to read. Turn on a Pi model '
-              + 'first, or check the Pi is publishing.', 4000);
-    }
-    return;
+    _prOn = false;
+    return _prBucketFallback('No Pi address published yet.');
   }
   _hdBase = base;
   let got = await _prLoadIndex(base);
@@ -20433,22 +20468,17 @@ async function _prEnable() {
     }
   }
   if (!got || got === 'unreachable') {
-    if (typeof showToast === 'function') {
-      if (got === 'unreachable') {
-        // The road failed, not the radar. Saying "no radar built" here sent
-        // a person to debug a Pi that was healthy the whole time.
-        let host = _hdBase;
-        try { host = new URL(_hdBase).host; } catch (e) {}
-        showToast('Could not reach the Pi at ' + host + '. The tunnel may be '
-                + 'down or blocked on this network; the Pi itself may be '
-                + 'fine. It is retried on every tap here.', 5000);
-      } else {
-        showToast('The Pi answered but has no radar built yet. It decodes a '
-                + 'fresh volume every five minutes once gwcfc-radar is '
-                + 'running.', 4000);
-      }
+    // The road failed, or the Pi has nothing built. Either way the browser
+    // can decode the NOAA bucket itself, so neither is allowed to be a dead
+    // end any more.
+    _prOn = false;
+    if (got === 'unreachable') {
+      let host = _hdBase;
+      try { host = new URL(_hdBase).host; } catch (e) {}
+      return _prBucketFallback('Could not reach the Pi at ' + host
+        + '; the tunnel may be down.');
     }
-    return;
+    return _prBucketFallback('The Pi answered but has no radar built yet.');
   }
   _prIndex = got.idx;
   // The pills can now show which radars the Pi builds.
@@ -47340,7 +47370,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'GWCFC products now wear their own tag: everything published from the Forecasting Portal carries a teal GWCFC chip and an office banner, with solid outlines, so it can never be confused with the practice Alert Desk\'s amber SIM products. Every outlook area, storm marker and issued alert is marked.';
+const APP_LATEST_UPDATE = 'Level 2 and Level 3 radar are fixed. When the Pi cannot be reached, Level 3 now decodes the nearest station straight from the NOAA bucket by itself instead of stopping at an error, and a bug that made product taps do nothing at all after a failed load is gone.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

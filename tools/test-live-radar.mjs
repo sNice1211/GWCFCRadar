@@ -232,6 +232,7 @@ console.log('\n2b. the menu offers what the site actually measures');
 }
 
 console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
+let echoSite = null;    // whichever site turns out to have echoes; 3b reuses it
 {
   // A plain NEXRAD nobody configured: this is the whole point of the fallback.
   await page.evaluate(() => {
@@ -245,9 +246,23 @@ console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
                                           on: _prOn }));
   ok('an unconfigured NEXRAD draws its Level 3 reflectivity', drew,
      JSON.stringify(st));
-  ok('with real painted pixels, not an invisible overlay',
-     await opaque() > 0, String(await opaque()));
   ok('and the page knows it is browser decoded', st.site === 'KABR', st.site);
+  // Painted pixels are a claim about the WEATHER as much as the code: a
+  // clear-air site honestly paints nothing, and this test once failed on a
+  // quiet day in Aberdeen while the decoder was fine. So the pixels are
+  // asserted on whichever of several stormy-climate sites has echoes right
+  // now, and only a nationwide blank counts as a failure.
+  echoSite = (await opaque()) > 0 ? 'KABR' : null;
+  if (!echoSite) {
+    for (const cand of ['KTLX', 'KLIX', 'KAMX', 'KMLB', 'KHGX', 'KFFC']) {
+      await clearDraw();
+      await page.evaluate(s => { _prProduct = 'reflectivity'; _prTilt = 1;
+                                 return _l3BucketShow(s); }, cand);
+      if (await waitForDraw() && await opaque() > 0) { echoSite = cand; break; }
+    }
+  }
+  ok('and somewhere in the country the decode paints real pixels',
+     !!echoSite, 'no echoes at any candidate site, which is not weather');
   await clearDraw();
 
   // The same path for a terminal, in the terminals' own dialect.
@@ -320,8 +335,39 @@ console.log('\n3. Level 3 from the bucket, for radars the Pi does not build');
     window.showToast = real;
     return seen;
   });
+  // Any of the three honest phrasings counts: the terminal explanation says
+  // what the antenna cannot make, the picture-only one says what the browser
+  // cannot decode, and the plain one says not published. This used to pin
+  // one phrasing and fail the moment the message got more specific.
   ok('a product a terminal does not carry is explained, not faked',
-     said.some(t => /not published/i.test(t)), said.join(' | '));
+     said.some(t => /not published|never makes|cannot decode/i.test(t)),
+     said.join(' | '));
+  await clearDraw();
+}
+
+console.log('\n3c. the Pi being unreachable is not a dead end any more');
+{
+  // The bug this guards: _prEnable failed on a dead tunnel, left _prOn
+  // raised, and the next tap on a product bubble hit the "already showing,
+  // turn it off" branch and did nothing at all, silently. Level 3 read as
+  // broken whenever the tunnel was down, which for most of a season was
+  // most of the time.
+  await page.evaluate(() => {
+    _hdBase = 'https://x.invalid/wx';
+    _hdResolveBase = async () => 'https://x.invalid/wx';
+    _prBucketSite = null;
+    _prProduct = 'reflectivity';
+    _prTilt = 1;
+    _prLevel = 'l3';
+    return _prEnable();
+  });
+  const fell = await waitForDraw();
+  const st = await page.evaluate(() => ({ bucket: _prBucketSite, on: _prOn,
+                                          overlay: !!_l3Overlay }));
+  ok('a dead tunnel falls back to the NOAA bucket by itself',
+     fell && !!st.bucket, JSON.stringify(st));
+  ok('and the layer is honestly on, so the next product tap redraws instead '
+     + 'of silently toggling nothing off', st.on === true, JSON.stringify(st));
   await clearDraw();
 }
 
@@ -330,8 +376,9 @@ console.log('\n3b. the value filter and custom colors, on live data');
   // Real weather from the live bucket, then the user's rules over it: a
   // filter floor must strictly shrink the painted area, an impossible floor
   // must empty it, and a one-color palette must paint exactly that color.
-  await page.evaluate(() => { _prProduct = 'reflectivity'; _prTilt = 1;
-                              return _l3BucketShow('KABR'); });
+  // The site section 3 found echoes at, so the rules have pixels to rule on.
+  await page.evaluate(s => { _prProduct = 'reflectivity'; _prTilt = 1;
+                             return _l3BucketShow(s); }, echoSite || 'KTLX');
   ok('live reflectivity is up for the rules to work on', await waitForDraw(),
      'no overlay');
   const r = await page.evaluate(() => {

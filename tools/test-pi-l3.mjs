@@ -434,12 +434,15 @@ console.log('\n1b. the Inspector reads a Pi model chart into a number');
 
   // Park the crosshair inside the chart and switch the Inspector on.
   await page.evaluate(() => { map.setView([35, -97], 5); toggleInspector(); });
+  // Match the label by its stem: the field catalogue relabels for clarity
+  // ('Temperature' became 'Temperature (2m)'), and pinning the exact string
+  // failed the Inspector for a rename that changed nothing about it.
   const rows = await page.waitForFunction(() =>
     typeof _inspLastRows !== 'undefined'
-    && _inspLastRows.some(r => r.label === 'Temperature')
+    && _inspLastRows.some(r => /^Temperature/.test(r.label || ''))
     && JSON.stringify(_inspLastRows), { timeout: 15000 })
     .then(h => JSON.parse(String(h))).catch(() => []);
-  const t = rows.find ? rows.find(r => r.label === 'Temperature') : null;
+  const t = rows.find ? rows.find(r => /^Temperature/.test(r.label || '')) : null;
   ok('the Inspector shows a row for the model field',
      !!t, JSON.stringify(rows));
   ok('and the pixel color reads back as the number it was painted from',
