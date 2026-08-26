@@ -61,21 +61,14 @@ const STATIC_HOSTS = new Set([
 ]);
 const STATIC_TTL_MS = 30 * 24 * 3600 * 1000;
 
-// The page itself: network first so a deploy always lands, with the cached
-// copy as the fallback when the network is slow or gone. The race means a
-// bad connection costs at most SHELL_TIMEOUT_MS before the app opens from
-// cache; the fetch keeps running in the background and refreshes the copy.
-const SHELL_TIMEOUT_MS = 9000;
-// 3500 was measured against a fast connection and was wrong for this one.
-// index.html is nearly three megabytes in a single file, and on a slow or
-// unsteady link it simply does not arrive in three and a half seconds. So
-// the timeout fired on EVERY load, the stale shell answered every time,
-// and a deploy could never reach the person waiting for it: the site was
-// permanently one version behind and nothing said why.
-//
-// This is only ever the wait before falling back to a copy that already
-// works, and only when there IS one. A first visit is not affected: with
-// nothing cached the code below gives the network its full chance anyway.
+// The page itself: the cached copy is served IMMEDIATELY and the network
+// copy is fetched in the background for next time. The old design raced
+// the network against a 9-second timeout, which meant every single repeat
+// open waited on the network for a multi-megabyte page it already had on
+// disk. Now a repeat open costs zero network wait; the price is that a
+// fresh deploy reaches a person one open later, which the update bar
+// announces anyway. A first-ever visit has nothing cached and still goes
+// straight to the network.
 
 // The tile cache grows a few hundred KB per radar frame per pan. Left alone
 // it balloons until cache.match itself gets slow, so it is trimmed back to
@@ -169,11 +162,10 @@ self.addEventListener('fetch', e => {
   let url;
   try { url = new URL(e.request.url); } catch { return; }
 
-  // Opening the app: fresh when the network answers quickly, cached copy
-  // when it does not. This is what makes a repeat visit on hotel wifi feel
-  // instant instead of re-downloading the whole page.
+  // Opening the app: the cached copy INSTANTLY, refreshed in the background.
+  // See shellStaleWhileRevalidate for why this beats waiting on the network.
   if (e.request.mode === 'navigate' && url.origin === self.location.origin) {
-    e.respondWith(shellNetworkFirst(e.request));
+    e.respondWith(shellStaleWhileRevalidate(e.request));
     return;
   }
 
@@ -185,7 +177,8 @@ self.addEventListener('fetch', e => {
   // screenshot of the page.
   if (url.origin === self.location.origin
       && (url.pathname.endsWith('.webmanifest')
-          || url.pathname.includes('/icons/'))) {
+          || url.pathname.includes('/icons/')
+          || url.pathname.includes('/assets/img/'))) {
     e.respondWith(cacheFirst(e.request, STATIC_TTL_MS, STATIC_CACHE));
     return;
   }
@@ -212,33 +205,25 @@ self.addEventListener('fetch', e => {
 // says: /?focus_alert=... and / are the same page and must share one copy.
 function _shellKey() { return self.registration.scope; }
 
-async function shellNetworkFirst(req) {
+async function shellStaleWhileRevalidate(req) {
   const cache = await caches.open(STATIC_CACHE);
   // cache:'no-cache' is the load-bearing option here. A plain fetch(req) is
   // answered by the browser's own HTTP cache first, and GitHub Pages marks
-  // the page cacheable for ten minutes - so after a deploy, this "network"
-  // fetch could return the OLD page, and then save that stale copy as the
-  // shell, where the timeout path would keep serving it. The site looked
-  // like it never updated, because this code was laundering staleness into
-  // the one copy meant to be fresh. no-cache forces a revalidation with the
-  // server instead: a cheap 304 when nothing changed, the new page the
-  // moment one is deployed.
+  // the page cacheable for ten minutes - so after a deploy, this background
+  // fetch could return the OLD page and save that stale copy as the shell.
+  // no-cache forces a revalidation with the server instead: a cheap 304
+  // when nothing changed, the new page the moment one is deployed.
   const netP = fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' })
     .then(res => {
       if (res && res.ok) { try { cache.put(_shellKey(), res.clone()); } catch (e) {} }
       return res;
     });
-  let timer;
-  const raced = await Promise.race([
-    netP.catch(() => 'net-error'),
-    new Promise(res => { timer = setTimeout(() => res('timeout'), SHELL_TIMEOUT_MS); }),
-  ]);
-  clearTimeout(timer);
-  if (raced !== 'timeout' && raced !== 'net-error' && raced) return raced;
   const hit = await cache.match(_shellKey());
-  if (hit) return hit;
-  // Nothing cached yet: give the slow network its full chance rather than
-  // failing a first-ever visit at the timeout.
+  if (hit) {
+    // Serve the disk copy now; let the refresh land quietly for next open.
+    netP.catch(() => {});
+    return hit;
+  }
   try { return await netP; } catch { return new Response('offline', { status: 503 }); }
 }
 

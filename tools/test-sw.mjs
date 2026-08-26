@@ -123,15 +123,13 @@ async function main() {
      /fetch\(req\.url,\s*\{\s*cache:\s*'no-cache'/.test(src));
   ok('and the stale shell cache is purged by the version bump',
      /gwcfc-static-v3/.test(src) && !/STATIC_CACHE = 'gwcfc-static-v2'/.test(src));
-  // A timeout shorter than the page takes to arrive is a timeout that fires
-  // every single time, and then the stale shell answers every single time.
-  // index.html is nearly three megabytes, so this has to be generous.
-  const ms = +(/SHELL_TIMEOUT_MS = (\d+)/.exec(src) || [])[1];
-  ok('and the shell timeout is longer than this page takes to arrive',
-     ms >= 8000, String(ms));
+  // The shell is served from disk instantly and refreshed in the background:
+  // a repeat open must never wait on the network for a page already held.
+  ok('the shell strategy is stale-while-revalidate',
+     /shellStaleWhileRevalidate/.test(src) && !/SHELL_TIMEOUT_MS/.test(src));
 }
 
-console.log('\n3. opening the app: network first, shell stored');
+console.log('\n3. first-ever open: nothing cached, the network answers and is stored');
   netImpl = async () => new Response('<html>fresh</html>', { status: 200 });
   netCalls = 0;
   const NAV = GET('https://ralphhtml.github.io/GWCFCRadar/?focus_alert=x', 'navigate');
@@ -149,16 +147,19 @@ console.log('\n3. opening the app: network first, shell stored');
   ok('the cached shell answers when the network throws',
      r5 && (await r5.clone().text()) === '<html>fresh</html>', String(r5 && r5.status));
 
-  console.log('\n5. the network is merely slow: the shell answers at the timeout');
+  console.log('\n5. a repeat open never waits on the network at all');
   let slowResolve;
-  netImpl = () => new Promise(res => { slowResolve = res; }); // hangs until we let it go
+  netCalls = 0;
+  netImpl = () => new Promise(res => { slowResolve = res; }); // hangs until released
   const t0 = Date.now();
   const r6 = await dispatchFetch(GET('https://ralphhtml.github.io/GWCFCRadar/', 'navigate'));
   const waited = Date.now() - t0;
-  ok('the cached shell arrives instead of a blank wait',
+  ok('the cached shell arrives instantly, even mid-hang',
      r6 && (await r6.clone().text()) === '<html>fresh</html>', String(r6 && r6.status));
-  ok('and it took about the timeout, not forever',
-     waited >= 8000 && waited < 11000, waited + 'ms');
+  ok('with zero network wait: the disk copy answers, not a timeout',
+     waited < 1000, waited + 'ms');
+  ok('while a background refresh was still fired for next time',
+     netCalls === 1, String(netCalls));
   slowResolve(new Response('late', { status: 200 })); // release the hanging fetch
 
   console.log('\n6. live data is never intercepted');
