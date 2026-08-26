@@ -995,6 +995,8 @@ body, button, input, select, textarea, table, code, kbd, pre,
       <div class="gate-err" id="gate-err"></div>
       <div class="gate-alt">No account? Make one in the
         <a href="index.html">radar app</a>, then come back.</div>
+      <div class="gate-alt" id="gate-dismiss" style="display:none">
+        <a href="#" onclick="gateHide();return false">Keep testing without publishing</a></div>
     </div>
     <div id="gate-signedout" style="display:none">
       <button class="btn ghost" onclick="location.reload()">Sign in as someone else</button>
@@ -1619,6 +1621,17 @@ function gateShow(msg, signedOut) {
   document.getElementById('gate-signedout').style.display = signedOut ? '' : 'none';
 }
 function gateHide() { document.getElementById('gate').classList.add('off'); }
+// Testing mode hides the gate, which left a trap: publishing still needs a
+// real signed-in account (the database refuses anything else), but the page
+// offered no way to sign in. This shows the same sign-in card on demand,
+// with a way back for someone who only wants to keep testing.
+function gateShowSignIn(msg) {
+  document.getElementById('gate').classList.remove('off');
+  document.getElementById('gate-msg').textContent = msg;
+  document.getElementById('gate-form').style.display = '';
+  document.getElementById('gate-signedout').style.display = 'none';
+  document.getElementById('gate-dismiss').style.display = PORTAL_OPEN ? '' : 'none';
+}
 function gateErr(m) { document.getElementById('gate-err').textContent = m || ''; }
 
 async function gateSignIn() {
@@ -1653,7 +1666,16 @@ async function onUser(u) {
   USER = u;
   if (!u) {
     PROFILE = null;
-    if (PORTAL_OPEN) { stampHeader(); return; }
+    if (PORTAL_OPEN) {
+      stampHeader();
+      // Testing mode never forces the gate, but publishing will need an
+      // account, so the header offers the sign-in instead of hiding it.
+      document.getElementById('whoami').innerHTML =
+        '<a href="#" onclick="gateShowSignIn(\'Sign in to publish what you '
+        + 'compose. Testing works without an account.\');return false">'
+        + 'Sign in</a>';
+      return;
+    }
     OUTLOOK.forecaster = '';
     stampHeader();
     setEditable(false);
@@ -1701,8 +1723,14 @@ async function publishOutlook() {
   // could never get one through. Worse, Firebase keeps ONE signed-in user per
   // site and an anonymous sign-in REPLACES a saved real account, so pressing
   // Publish before the account finished loading silently logged people out of
-  // the portal AND the radar site.
-  if (!USER) { toast('Sign in to publish.'); return; }
+  // the portal AND the radar site. Signed out, the button opens the sign-in
+  // card itself: a toast saying "sign in" with no way to do it was a trap.
+  if (!USER) {
+    gateShowSignIn('Publishing needs a signed-in account, so the site can '
+      + 'trust what appears on the outlook. Sign in, then press Publish '
+      + 'again.');
+    return;
+  }
   const cones = portalSerializeCones();
   const desk = portalSerializeDesk();
   if (!OUTLOOK.storms.length && !OUTLOOK.areas.length

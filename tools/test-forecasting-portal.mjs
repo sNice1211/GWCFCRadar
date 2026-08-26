@@ -524,10 +524,20 @@ console.log('\n7. publishing');
   const refused = await page.evaluate(async () => {
     window.__published = [];
     await publishOutlook();
-    return window.__published.length;
+    return {
+      n: window.__published.length,
+      gate: !document.getElementById('gate').classList.contains('off'),
+      dismiss: document.getElementById('gate-dismiss').style.display !== 'none',
+      who: document.getElementById('whoami').innerHTML,
+    };
   });
   ok('publishing while signed out is refused instead of going anonymous',
-     refused === 0, String(refused));
+     refused.n === 0, String(refused.n));
+  ok('the refusal opens the sign-in card, with a way back to testing',
+     refused.gate && refused.dismiss);
+  ok('the header offers Sign in while testing signed out',
+     /Sign in/.test(refused.who), refused.who);
+  await page.evaluate(() => gateHide());
   const r = await page.evaluate(async () => {
     window.__published = [];
     await window.__authCb({ uid: 'u1', displayName: 'Ralph', isAnonymous: false });
