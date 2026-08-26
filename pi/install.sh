@@ -490,13 +490,14 @@ EOF
 
 cat > "$UNITS/gwcfc-cyclones.timer" <<'EOF'
 [Unit]
-Description=Cyclones twice a day, a little after each run publishes
+Description=DeepMind cyclones, once per synoptic cycle
 
 [Timer]
-# They run at 00 and 12 and publish a few hours later. Checking every three
-# hours picks a run up soon after it lands without asking pointlessly, and the
-# pipeline exits at once when the newest run is already built.
-OnCalendar=*-*-* 03,06,09,15,18,21:23
+# Weather Lab publishes four cycles a day and each lands a couple of hours
+# after its synoptic time. Checking every three hours picks each one up soon
+# after it arrives, and the pipeline exits at once when the newest cycle is
+# already built.
+OnCalendar=*-*-* 02,05,08,11,14,17,20,23:23
 Persistent=true
 
 [Install]
