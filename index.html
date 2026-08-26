@@ -2943,7 +2943,28 @@ body.wx-smooth-radar .leaflet-radarPane-pane canvas {
   display: inline-block; padding: 1px 7px 2px; border-radius: 8px;
   font-family: 'Comfortaa', sans-serif; font-size: 9px; font-weight: 700;
   color: #111; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.6);
-  transform: translate(-50%, -50%);
+}
+.gwo-labelwrap {
+  display: inline-flex; align-items: center; gap: 3px;
+  transform: translate(-50%, -50%); white-space: nowrap;
+}
+/* The office tag. Two kinds of home-made product can be on this map: the
+   practice Alert Desk's, which wear amber SIM chips and dashed outlines so
+   they can never be mistaken for the real thing, and the ones GWCFC's own
+   forecasters PUBLISH from the portal. These wear this teal GWCFC chip and
+   solid outlines instead: same honesty, opposite claim. One glance says
+   which kind you are looking at. */
+.gwo-chip {
+  display: inline-block; padding: 0 5px 1px; border-radius: 6px;
+  font-family: var(--mono); font-size: 7.5px; font-weight: 700;
+  letter-spacing: 0.5px; color: #06222e; background: #4dd0e1;
+  border: 1px solid #b7f0f9; box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  white-space: nowrap;
+}
+.ap-gwcfc-banner {
+  display: block; margin: 0 0 6px; padding: 3px 7px; border-radius: 6px;
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  color: #06222e; background: #4dd0e1;
 }
 #tanim-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
 #tanim-play, #tanim-stop {
@@ -30815,9 +30836,11 @@ function _gwcfcDraw(out) {
       const label = L.marker(centre, { pane: _ovMarkerPane('gwcfc-outlook'),
         interactive: false,
         icon: L.divIcon({ className: '', iconSize: [0, 0],
-          html: `<span class="gwo-label" style="background:${spec.color}`
+          html: `<span class="gwo-labelwrap">`
+              + `<span class="gwo-chip">GWCFC</span>`
+              + `<span class="gwo-label" style="background:${spec.color}`
               + (a.type === 'alert' ? `;color:${spec.text}` : '')
-              + `">${_ccEsc(spec.label)}</span>` }) });
+              + `">${_ccEsc(spec.label)}</span></span>` }) });
       label.addTo(map);
       _gwcfcLayers.push(label);
     }
@@ -30835,9 +30858,11 @@ function _gwcfcDraw(out) {
     const label = L.marker([s.lat, s.lon], {
       pane: _ovMarkerPane('gwcfc-outlook'), interactive: false,
       icon: L.divIcon({ className: '', iconAnchor: [-10, 8],
-        html: `<span class="gwo-label" style="background:rgba(0,0,0,0.72);`
+        html: `<span style="display:inline-flex;align-items:center;gap:3px;`
+            + `white-space:nowrap"><span class="gwo-chip">GWCFC</span>`
+            + `<span class="gwo-label" style="background:rgba(0,0,0,0.72);`
             + `border:1px solid ${color};color:${color}">`
-            + `${_ccEsc(s.name || ('Cat ' + s.cat))}</span>` }) });
+            + `${_ccEsc(s.name || ('Cat ' + s.cat))}</span></span>` }) });
     label.addTo(map);
     _gwcfcLayers.push(label);
   });
@@ -30936,20 +30961,43 @@ function _gwaDraw(alerts) {
     polys.forEach(rings => {
       const pts = (rings[0] || []).map(c => [c[1], c[0]]);
       if (pts.length < 3) return;
+      // SOLID outline, on purpose. The practice Alert Desk draws its
+      // simulated products dashed with amber SIM chips; a published GWCFC
+      // product is the office's real issuance and must not share that
+      // costume. Solid line, teal GWCFC chip, its own banner.
       const poly = L.polygon(pts, { pane, color, weight: 2.5, opacity: 1,
         fillColor: color, fillOpacity: 0.18 });
       poly.bindPopup(
-        `<div style="font-family:'Comfortaa',sans-serif;font-size:12px;`
+        `<div class="ap-gwcfc-banner">GWCFC FORECAST OFFICE PRODUCT - `
+        + `issued from the Forecasting Portal, not the National Weather `
+        + `Service</div>`
+        + `<div style="font-family:'Comfortaa',sans-serif;font-size:12px;`
         + `font-weight:700;color:${color}">${_ccEsc(event)}</div>`
         + `<div style="font-family:var(--mono);font-size:10px;">`
         + `${_ccEsc(a.areaDesc || '')}</div>`
         + (exp ? `<div style="font-family:var(--mono);font-size:9px;`
-               + `opacity:0.7">Until ${exp} `
-               + `${String.fromCharCode(0xB7)} GWCFC forecast desk</div>` : ''),
+               + `opacity:0.7">Until ${exp}</div>` : ''),
         { className: 'ap-popup-container', maxWidth: 280 });
       poly.addTo(map);
       _gwaLayers.push(poly);
       drew++;
+      // The office chip rides the polygon itself, the way the desk's SIM
+      // chip rides its products, so the two can be told apart at map level
+      // without opening a popup.
+      let centre = null;
+      try { centre = poly.getBounds().getCenter(); } catch (e) {}
+      if (centre) {
+        const chip = L.marker(centre, {
+          pane: _ovMarkerPane('gwcfc-alerts'), interactive: false,
+          icon: L.divIcon({ className: '', iconSize: [0, 0],
+            html: `<span class="gwo-labelwrap">`
+                + `<span class="gwo-chip">GWCFC</span>`
+                + `<span class="gwo-label" style="background:${color};`
+                + `color:#fff;text-shadow:0 1px 2px #000">`
+                + `${_ccEsc(event)}</span></span>` }) });
+        chip.addTo(map);
+        _gwaLayers.push(chip);
+      }
     });
   });
   return drew;
@@ -47292,7 +47340,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'AI Cyclones has its own panel and Models sub-bubble now. Spaghetti shows only current storms by default (a Past storms chip brings the dead ones back), and every name tag is pinned to its line by a stem. Two new overlays: GWCFC Outlook and GWCFC Alerts, showing whatever our forecasters publish from the Forecasting Portal, live.';
+const APP_LATEST_UPDATE = 'GWCFC products now wear their own tag: everything published from the Forecasting Portal carries a teal GWCFC chip and an office banner, with solid outlines, so it can never be confused with the practice Alert Desk\'s amber SIM products. Every outlook area, storm marker and issued alert is marked.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

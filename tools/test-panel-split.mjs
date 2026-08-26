@@ -266,6 +266,10 @@ console.log('\n4. the GWCFC Outlook overlay draws what the portal published');
      s.labels.join(','));
   ok('the storm marker is labelled by name',
      s.labels.some(l => /GABRIELLE/.test(l)), s.labels.join(','));
+  const chips = await page.evaluate(() =>
+    document.querySelectorAll('.gwo-chip').length);
+  ok('every outlook label wears the GWCFC office chip: two areas and a '
+     + 'storm makes three', chips === 3, String(chips));
   await page.evaluate(() => toggleOverlayPill('gwcfc-outlook'));
   await page.waitForTimeout(300);
   ok('toggling off removes every piece',
@@ -278,21 +282,43 @@ console.log('\n5. the GWCFC Alerts overlay draws the desk\'s live products');
      await page.evaluate(() => !!document.getElementById('op-gwcfc-alerts')));
   await page.evaluate(() => toggleOverlayPill('gwcfc-alerts'));
   await page.waitForTimeout(600);
-  const s = await page.evaluate(() => ({
-    on: _gwaOn,
-    n: _gwaLayers.length,
-    colors: _gwaLayers.map(l => l.options.color),
-    popup: _gwaLayers[0] && _gwaLayers[0].getPopup()
-      ? _gwaLayers[0].getPopup().getContent() : '',
-  }));
+  const s = await page.evaluate(() => {
+    const polys = _gwaLayers.filter(l => l.setStyle);
+    return {
+      on: _gwaOn,
+      nPolys: polys.length,
+      colors: polys.map(l => l.options.color),
+      dashed: polys.some(l => l.options.dashArray),
+      popup: polys[0] && polys[0].getPopup()
+        ? polys[0].getPopup().getContent() : '',
+      chips: [...document.querySelectorAll('.gwo-chip')]
+        .map(e => e.textContent),
+      chipBg: document.querySelector('.gwo-chip')
+        ? getComputedStyle(document.querySelector('.gwo-chip'))
+            .backgroundColor : '',
+    };
+  });
   ok('the overlay is on', s.on);
   ok('exactly the one alert still in force draws: the expired SVR and the '
-     + 'cancelled FFW stay off the map', s.n === 1, String(s.n));
+     + 'cancelled FFW stay off the map', s.nPolys === 1, String(s.nPolys));
   ok('the Tornado Warning wears tornado red', s.colors[0] === '#ff0000',
      s.colors.join(','));
   ok('tapping it says what, where and until when',
      /Tornado Warning/.test(s.popup) && /Test County/.test(s.popup)
-     && /Until/.test(s.popup), s.popup.slice(0, 120));
+     && /Until/.test(s.popup), s.popup.slice(0, 200));
+  // The office tag, which must never be confusable with the practice
+  // desk's simulation costume: the desk's products are dashed with amber
+  // SIM chips; a published GWCFC product is solid with a teal GWCFC chip
+  // and a banner that names the office.
+  ok('the popup opens with the GWCFC office banner',
+     /GWCFC FORECAST OFFICE PRODUCT/.test(s.popup), s.popup.slice(0, 120));
+  ok('and never calls itself simulated',
+     !/SIMULATED/i.test(s.popup));
+  ok('the polygon is solid, not the desk\'s simulation dashes', !s.dashed);
+  ok('a GWCFC chip rides the polygon on the map itself',
+     s.chips.includes('GWCFC'), s.chips.join(','));
+  ok('and the chip is the office teal, not the SIM amber',
+     s.chipBg === 'rgb(77, 208, 225)', s.chipBg);
   await page.evaluate(() => toggleOverlayPill('gwcfc-alerts'));
   await page.waitForTimeout(200);
   ok('off means off',
