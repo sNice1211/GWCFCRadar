@@ -473,6 +473,25 @@ console.log('\n7. house rules');
   ok('the portal names the real causes when the database refuses a publish',
      /rules[\s\S]{0,120}have not been updated/.test(
        readFileSync(join(ROOT, 'forecasting-portal.html'), 'utf8')));
+  // The sign-in system's hard-won lessons, pinned so they cannot quietly
+  // regress: the Firebase scripts must load one after another with retries
+  // (parallel loading ran them in download order and a wrong order left the
+  // page half-started), readiness must mean auth AND the database are up (a
+  // latched app object used to report ready forever and the sign-in button
+  // crashed on undefined), and a browser that has held a real account must
+  // never be signed in anonymously (that replaces the saved session, which
+  // the user experienced as being randomly logged out).
+  ok('the Firebase scripts load in order with retries',
+     /s\.onload=function\(\)\{i\+\+;loadNext\(0\);\}/.test(html)
+       && /s\.onerror=function\(\)/.test(html)
+       && /loadNext\(tries\+1\)/.test(html));
+  ok('firebase readiness means auth and the database are both up',
+     /if \(_fbAuth && _fbDb\) return true;/.test(html));
+  ok('a browser that held a real account is never signed in anonymously',
+     /gwcfc_had_account/.test(html)
+       && /if \(_fbAuth && !hadAccount\)/.test(html));
+  ok('the sign-in button says so when the system has not loaded',
+     (html.match(/has not finished loading/g) || []).length >= 2);
   ok('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 }
 

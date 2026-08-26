@@ -1696,10 +1696,13 @@ function setEditable(on) {
 // can show the current outlook without knowing how it was made.
 async function publishOutlook() {
   if (!isForecaster(PROFILE)) { toast('Only approved forecasters can publish.'); return; }
-  if (!USER && PORTAL_OPEN && _fbAuth) {
-    try { await _fbAuth.signInAnonymously(); } catch (e) {}
-  }
-  if (!USER && !PORTAL_OPEN) { toast('Sign in to publish.'); return; }
+  // No anonymous fallback here any more, for two reasons. The database rules
+  // only accept a publish from a forecaster account, so an anonymous session
+  // could never get one through. Worse, Firebase keeps ONE signed-in user per
+  // site and an anonymous sign-in REPLACES a saved real account, so pressing
+  // Publish before the account finished loading silently logged people out of
+  // the portal AND the radar site.
+  if (!USER) { toast('Sign in to publish.'); return; }
   const cones = portalSerializeCones();
   const desk = portalSerializeDesk();
   if (!OUTLOOK.storms.length && !OUTLOOK.areas.length

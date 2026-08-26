@@ -9204,14 +9204,27 @@ body.gwcfc-crosshair #map::after {
 <!-- Firebase SDK loaded dynamically so it never blocks window.load or init() -->
 <script>
 (function(){
+  // Loaded one after another, not all at once. Scripts added this way run in
+  // whatever order they finish downloading, and auth/firestore both need the
+  // app script to have run first - when auth happened to finish before app,
+  // its setup failed silently and the page was left half-started: it looked
+  // signed out, and pressing Sign In crashed on an undefined auth object.
+  // A script that fails to arrive is retried a few times with growing waits,
+  // so one flaky request no longer kills accounts for the whole visit.
   var libs=['firebase-app-compat.js','firebase-auth-compat.js','firebase-firestore-compat.js'];
-  var loaded=0;
-  libs.forEach(function(l){
+  var i=0;
+  function loadNext(tries){
+    if(i>=libs.length){if(typeof _fbInit==='function')_fbInit();return;}
     var s=document.createElement('script');
-    s.src='https://www.gstatic.com/firebasejs/9.22.2/'+l;
-    s.onload=function(){loaded++;if(loaded===libs.length&&typeof _fbInit==='function')_fbInit();};
+    s.src='https://www.gstatic.com/firebasejs/9.22.2/'+libs[i];
+    s.onload=function(){i++;loadNext(0);};
+    s.onerror=function(){
+      s.remove();
+      if(tries<3)setTimeout(function(){loadNext(tries+1);},1000*Math.pow(2,tries));
+    };
     document.head.appendChild(s);
-  });
+  }
+  loadNext(0);
 })();
 </script>
 </head>
@@ -45637,11 +45650,24 @@ let _fbApp, _fbAuth, _fbDb, _currentUser = null;
 let _viewStateApplied = false;
 
 function _fbInit() {
-  if (!FIREBASE_READY || _fbApp) return FIREBASE_READY;
+  if (!FIREBASE_READY) return false;
+  // Ready means auth AND the database are actually up, not merely that an app
+  // object exists. A half-finished start (the auth script arriving late or not
+  // at all) used to set _fbApp and then report ready forever, so the sign-in
+  // button walked straight into an undefined auth object and crashed with
+  // "Cannot read properties of undefined" instead of saying what was wrong.
+  if (_fbAuth && _fbDb) return true;
+  if (typeof firebase === 'undefined' || !firebase.auth || !firebase.firestore) return false;
   try {
-    _fbApp  = firebase.initializeApp(GWCFC_FB_CONFIG);
-    _fbAuth = firebase.auth();
-    _fbDb   = firebase.firestore();
+    _fbApp = _fbApp || (firebase.apps && firebase.apps.length
+                          ? firebase.app() : firebase.initializeApp(GWCFC_FB_CONFIG));
+    // Built into locals first: if either constructor throws, neither global is
+    // set, so a later retry starts clean and the auth listener below can never
+    // be registered twice.
+    const auth = firebase.auth();
+    const db   = firebase.firestore();
+    _fbAuth = auth;
+    _fbDb   = db;
     _fbAuth.onAuthStateChanged(u => u ? _onSignedIn(u) : _onSignedOut());
     // Coming back from Discord, finish the sign-in. Deliberately after auth is
     // wired up, so onAuthStateChanged catches the result.
@@ -45659,6 +45685,9 @@ function _onSignedIn(user) {
     // by anonymous auth, so _ccPut / Firestore writes now succeed.
     _initGuestSession();
   } else {
+    // Remember that a real account lives in this browser. See _onSignedOut
+    // for why this one flag is what stops the site logging people out.
+    try { localStorage.setItem('gwcfc_had_account', '1'); } catch (e) {}
     _updateProfileBadge(user);
     _loadUserPrefs(user.uid);
   }
@@ -45672,7 +45701,20 @@ function _onSignedOut() {
   _updateProfileBadge(null);
   // Sign in anonymously so all Firestore writes (Cloud Capture, guest tracking)
   // pass the "request.auth != null" security rule without requiring an account.
-  if (_fbAuth) {
+  //
+  // UNLESS a real account has signed in from this browser. Firebase keeps one
+  // signed-in user per site, and an anonymous sign-in REPLACES it: the saved
+  // account is thrown away for good. Auth occasionally reports "no user" on
+  // startup even though the account is still saved (a slow or failing browser
+  // storage read, common on phones), and when that happened the anonymous
+  // fallback here destroyed the real session - which the user experienced as
+  // the site randomly logging them out. Skipping the fallback costs nothing:
+  // a reload restores the account, and guest tracking still works locally.
+  // The flag is cleared on a deliberate sign-out, so true guests still get
+  // the anonymous session that lets their Firestore writes through.
+  let hadAccount = false;
+  try { hadAccount = localStorage.getItem('gwcfc_had_account') === '1'; } catch (e) {}
+  if (_fbAuth && !hadAccount) {
     _fbAuth.signInAnonymously().catch(() => _initGuestSession());
   } else {
     _initGuestSession();
@@ -47077,7 +47119,11 @@ function _fbErrMsg(err) {
 
 async function authSubmit() {
   if (!FIREBASE_READY) { _showAuthError('Firebase not configured yet , add your project keys to GWCFC_FB_CONFIG in the code.'); return; }
-  if (!_fbInit()) return;
+  if (!_fbInit()) {
+    _showAuthError('The sign-in system has not finished loading. Check the '
+      + 'connection, wait a moment and try again, or reload the page.');
+    return;
+  }
 
   const btn      = document.getElementById('auth-submit-btn');
   const credRaw  = document.getElementById('auth-input-cred').value.trim();
@@ -47137,12 +47183,19 @@ async function authSubmit() {
 
 async function authSignOut() {
   if (!_fbAuth) return;
+  // A deliberate sign-out clears the had-an-account flag BEFORE signing out,
+  // so the signed-out handler is allowed its anonymous guest session again.
+  try { localStorage.removeItem('gwcfc_had_account'); } catch (e) {}
   await _fbAuth.signOut();
   lqmCloseProfile();
 }
 
 async function authSignInWithGoogle() {
-  if (!_fbInit()) return;
+  if (!_fbInit()) {
+    _showAuthError('The sign-in system has not finished loading. Check the '
+      + 'connection, wait a moment and try again, or reload the page.');
+    return;
+  }
   const btn = document.getElementById('auth-google-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Opening Google…'; }
   try {
@@ -47484,7 +47537,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Found why the portal\'s Publish button was refused: the database security rules never had an entry for outlooks, so every publish was denied at the door. The repo\'s rules file now carries the missing blocks (one console paste turns publishing on), and both the portal and the overlays say plainly when rules are the problem.';
+const APP_LATEST_UPDATE = 'Fixed the random sign-outs and the sign-in crash. The account scripts now load in a guaranteed order with retries, a half-loaded page says so instead of crashing the Sign In button, and a browser that holds a real account is never silently switched to an anonymous session (that switch was what kept logging people out).';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

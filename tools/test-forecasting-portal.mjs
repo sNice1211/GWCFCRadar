@@ -517,8 +517,20 @@ console.log('\n6. the app\'s real Alert Desk, running in the portal');
 
 console.log('\n7. publishing');
 {
+  // Publishing now insists on a signed-in account. The anonymous fallback it
+  // used to lean on is gone: the database rules would refuse the write anyway,
+  // and signing in anonymously replaced any saved real account, which is what
+  // kept logging people out. First prove the refusal, then sign in properly.
+  const refused = await page.evaluate(async () => {
+    window.__published = [];
+    await publishOutlook();
+    return window.__published.length;
+  });
+  ok('publishing while signed out is refused instead of going anonymous',
+     refused === 0, String(refused));
   const r = await page.evaluate(async () => {
     window.__published = [];
+    await window.__authCb({ uid: 'u1', displayName: 'Ralph', isAnonymous: false });
     await publishOutlook();
     const paths = window.__published.map(p => p.path);
     const doc = (window.__published[0] || {}).doc || {};
@@ -557,6 +569,8 @@ console.log('\n7. publishing');
 }
 
 console.log('\n8. nothing threw');
+ok('the portal never signs in anonymously (that replaced real sessions)',
+   !html.includes('signInAnonymously'));
 ok('no uncaught page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();
