@@ -536,6 +536,35 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# Spaghetti model guidance from the ATCF a-decks. Text files, a few hundred
+# kilobytes per storm, so this is by far the lightest fetcher here.
+cat > "$UNITS/gwcfc-spag.service" <<EOF
+[Unit]
+Description=Fetch ATCF a-deck model guidance for active storms
+
+[Service]
+Type=oneshot
+ExecStart=$VENV/bin/python $REPO/pi/spaghetti_pipeline.py
+TimeoutStartSec=900
+Nice=10
+EOF
+
+cat > "$UNITS/gwcfc-spag.timer" <<'EOF'
+[Unit]
+Description=A-deck guidance, twice an hour
+
+[Timer]
+# The decks grow all day as aids land after each synoptic cycle, not on one
+# clean schedule, so a modest steady poll beats trying to predict them. The
+# files are tiny and NHC serves them statically; twice an hour is polite and
+# still catches a fresh cycle within minutes of it appearing.
+OnCalendar=*:7/30
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # Keeping itself current. Without this the Pi runs whatever was cloned until
 # somebody remembers to pull, which is how it ends up an hour of debugging away
 # from a bug that was fixed days ago.
@@ -666,6 +695,7 @@ systemctl --user enable --now gwcfc-sat.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-snd.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
 systemctl --user enable --now gwcfc-ens.timer      >/dev/null 2>&1
+systemctl --user enable --now gwcfc-spag.timer     >/dev/null 2>&1
 systemctl --user enable --now gwcfc-feeds.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
 systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1

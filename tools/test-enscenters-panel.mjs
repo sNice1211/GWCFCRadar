@@ -300,8 +300,9 @@ console.log('\n9. credit, and what the data may be used for');
      credit.length > 0);
   ok('it names Triple-A Tropics', /Triple-A Tropics/.test(credit), credit);
   ok('and names Andrew Austin-Adler', /Andrew Austin-Adler/.test(credit));
+  // \s+ not a space: the credit is markup, and markup wraps mid-phrase.
   ok('and says the method was used with permission',
-     /with permission/i.test(credit));
+     /with\s+permission/i.test(credit));
   ok('the DeepMind data is attributed', /Google DeepMind/.test(credit));
   // Weather Lab data comes with terms: it is experimental research output and
   // must not be presented as an operational forecast. Saying so is part of
@@ -313,8 +314,12 @@ console.log('\n9. credit, and what the data may be used for');
   ok('the pipeline credits it at source too',
      /Triple-A Tropics/.test(
        readFileSync(join(ROOT, 'pi', 'enscenters_pipeline.py'), 'utf8')));
-  ok('the update bar says what shipped',
-     /Ensemble Centres/.test(html));
+  // Not the update bar: that string describes whatever shipped LAST, and
+  // pinning it here made this suite fail the moment anything else shipped.
+  // The durable claim is that the feature's own section is still on the
+  // panel.
+  ok('the ensemble centres section is still on the panel',
+     /GEFS ensemble centres/i.test(html));
 }
 
 console.log('\n10. house rules');
