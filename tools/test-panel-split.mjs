@@ -91,7 +91,17 @@ const OUTLOOK = {
     { id: 'a2', type: 'alert', level: 'warning', round: true,
       poly: [[26, -70], [29, -70], [29, -66], [26, -66]] },
   ],
-  cones: [],
+  cones: [{
+    id: 'c1', speed: 12, curve: 0, dots: 3, offset: 0,
+    style: { outline: '#101010', outlineOpacity: 0.9, fill: '#cc2200',
+             fillOpacity: 0.25, line: '#ffe066',
+             dotFill: '#ffe066', dotStroke: '#ffb347' },
+    cats: { 2: 'cat3' },   // the portal's own vocabulary: cat1..cat5, td, s
+    start: [22.0, -66.0], end: [27.0, -74.0],
+    ring: [[21, -65], [23, -67], [25.5, -71], [28, -75], [26, -76],
+           [23.5, -72], [21.5, -67.5]],
+    center: [[22, -66], [23.2, -68], [24.4, -70], [25.6, -72], [26.8, -74]],
+  }],
   alerts: [
     { uid: 'w1', code: 'TOR', areaDesc: 'Test County, FL',
       geometry: { type: 'Polygon',
@@ -252,9 +262,11 @@ console.log('\n4. the GWCFC Outlook overlay draws what the portal published');
     };
   });
   ok('the overlay is on and the pill lights', s.on && s.pillActive);
-  // 2 area polygons + 2 area labels + 1 storm dot + 1 storm label = 6.
-  ok('areas, labels and the storm marker are all drawn', s.layers === 6,
-     String(s.layers));
+  // 2 area polygons + 2 area labels + 1 storm dot + 1 storm label, plus the
+  // cone's ring + centre line + 2 dots + 1 category icon + 1 tag, plus the
+  // in-force alert's polygon + chip (the alerts overlay is off) = 14.
+  ok('areas, labels, the storm marker, the cone and the desk alert are all '
+     + 'drawn', s.layers === 14, String(s.layers));
   ok('the high-chance area wears the portal\'s red',
      s.colors.includes('#ee1111'), s.colors.join(','));
   ok('the warning area wears the portal\'s warning red',
@@ -266,10 +278,50 @@ console.log('\n4. the GWCFC Outlook overlay draws what the portal published');
      s.labels.join(','));
   ok('the storm marker is labelled by name',
      s.labels.some(l => /GABRIELLE/.test(l)), s.labels.join(','));
+  // The forecast cone, drawn exactly as composed: the ring in the
+  // forecaster's own colours, the dashed centre line, three time dots plus
+  // one category icon where point 2 was marked C3.
+  const cone = await page.evaluate(() => {
+    const ring = _gwcfcLayers.find(l => l.setStyle
+      && l.options.fillColor === '#cc2200');
+    const line = _gwcfcLayers.find(l => l.options
+      && l.options.dashArray === '6 5');
+    const dots = _gwcfcLayers.filter(l => l.setRadius
+      && l.options.fillColor === '#ffe066');
+    const icons = _gwcfcLayers.filter(l => l.getIcon && !l.setRadius
+      && l.getElement && l.getElement()
+      && !l.getElement().querySelector('.gwo-label')).length;
+    return {
+      ring: !!ring, outline: ring && ring.options.color,
+      fillOp: ring && ring.options.fillOpacity,
+      line: !!line, lineCol: line && line.options.color,
+      dots: dots.length, icons,
+      tag: [...document.querySelectorAll('.gwo-label')]
+        .some(e => /Forecast Cone/.test(e.textContent)),
+    };
+  });
+  ok('the published cone ring draws in the forecaster\'s own colours',
+     cone.ring && cone.outline === '#101010' && cone.fillOp === 0.25,
+     JSON.stringify(cone));
+  ok('with the dashed centre line down its middle',
+     cone.line && cone.lineCol === '#ffe066', JSON.stringify(cone));
+  // dots: 3 spread dots minus the one displaced by the category = 2 circles,
+  // and the category icon marker stands at point 2.
+  ok('the time dots and the marked category both stand on the line',
+     cone.dots === 2 && cone.icons >= 1,
+     `dots ${cone.dots}, icons ${cone.icons}`);
+  ok('and the cone wears the office tag', cone.tag);
+  // With the alerts overlay OFF, the outlook carries the desk's in-force
+  // alert itself: one tornado-red polygon lives in the outlook layers.
+  const tor = await page.evaluate(() =>
+    _gwcfcLayers.filter(l => l.setStyle
+      && l.options.color === '#ff0000').length);
+  ok('the outlook also draws the in-force desk alert while the alerts '
+     + 'overlay is off', tor === 1, String(tor));
   const chips = await page.evaluate(() =>
     document.querySelectorAll('.gwo-chip').length);
-  ok('every outlook label wears the GWCFC office chip: two areas and a '
-     + 'storm makes three', chips === 3, String(chips));
+  ok('every published thing wears the GWCFC office chip: two areas, a '
+     + 'storm, a cone and an alert makes five', chips === 5, String(chips));
   await page.evaluate(() => toggleOverlayPill('gwcfc-outlook'));
   await page.waitForTimeout(300);
   ok('toggling off removes every piece',
@@ -319,6 +371,34 @@ console.log('\n5. the GWCFC Alerts overlay draws the desk\'s live products');
      s.chips.includes('GWCFC'), s.chips.join(','));
   ok('and the chip is the office teal, not the SIM amber',
      s.chipBg === 'rgb(77, 208, 225)', s.chipBg);
+  // The hand-over: with BOTH overlays on, the alerts layer owns the warning
+  // and the outlook does not paint a second copy underneath it.
+  await page.evaluate(() => toggleOverlayPill('gwcfc-outlook'));
+  await page.waitForTimeout(600);
+  const both = await page.evaluate(() => ({
+    inOutlook: _gwcfcLayers.filter(l => l.setStyle
+      && l.options.color === '#ff0000').length,
+    inAlerts: _gwaLayers.filter(l => l.setStyle
+      && l.options.color === '#ff0000').length,
+  }));
+  ok('with both overlays on, the alerts layer owns the warning and the '
+     + 'outlook does not double it',
+     both.inAlerts === 1 && both.inOutlook === 0, JSON.stringify(both));
+  // And the hand-back: turning the alerts overlay OFF while the outlook is
+  // up must give the warning back to the outlook, not drop it off the map.
+  await page.evaluate(() => toggleOverlayPill('gwcfc-alerts'));
+  await page.waitForTimeout(600);
+  const back = await page.evaluate(() => ({
+    inOutlook: _gwcfcLayers.filter(l => l.setStyle
+      && l.options.color === '#ff0000').length,
+    inAlerts: _gwaLayers.length,
+  }));
+  ok('turning the alerts overlay off hands the warning back to the outlook',
+     back.inOutlook === 1 && back.inAlerts === 0, JSON.stringify(back));
+  await page.evaluate(() => toggleOverlayPill('gwcfc-alerts'));
+  await page.waitForTimeout(600);
+  await page.evaluate(() => toggleOverlayPill('gwcfc-outlook'));
+  await page.waitForTimeout(300);
   await page.evaluate(() => toggleOverlayPill('gwcfc-alerts'));
   await page.waitForTimeout(200);
   ok('off means off',

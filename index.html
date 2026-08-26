@@ -30897,6 +30897,90 @@ function _gwcfcDraw(out) {
     _gwcfcLayers.push(label);
   });
 
+  // The forecast cones, drawn the way the portal draws them: the ring in
+  // the forecaster's own colours (or the portal's defaults), the dashed
+  // centre line, evenly spread time dots, and a category icon wherever the
+  // forecaster marked one. What was composed is what appears.
+  (out.cones || []).forEach(c => {
+    if (!Array.isArray(c.ring) || c.ring.length < 3) return;
+    const st = c.style || {};
+    const outline = st.outline || '#000000';
+    const fill = st.fill || '#aa0000';
+    const lineCol = st.line || '#ffe066';
+    const ringPoly = L.polygon(c.ring, { pane, color: outline, weight: 4,
+      opacity: st.outlineOpacity != null ? st.outlineOpacity : 0.95,
+      fillColor: fill,
+      fillOpacity: st.fillOpacity != null ? st.fillOpacity : 0.2,
+      interactive: false });
+    ringPoly.addTo(map);
+    _gwcfcLayers.push(ringPoly);
+    drew++;
+
+    const centre = Array.isArray(c.center) ? c.center : [];
+    if (centre.length > 1) {
+      const line = L.polyline(centre, { pane, color: lineCol, weight: 2,
+        opacity: 0.9, dashArray: '6 5', interactive: false });
+      line.addTo(map);
+      _gwcfcLayers.push(line);
+
+      // Dots at the portal's own spread: N dots split the line evenly.
+      const N0 = centre.length - 1;
+      const nDots = Math.max(0, Number(c.dots) || 0);
+      const idxs = new Set();
+      for (let d = 1; d <= nDots; d++) {
+        idxs.add(Math.round((d / (nDots + 1)) * N0));
+      }
+      // A category on a point outranks a plain dot at the same spot.
+      const cats = c.cats || {};
+      Object.keys(cats).forEach(k => idxs.add(Number(k)));
+      idxs.forEach(i => {
+        const pt = centre[i];
+        if (!pt) return;
+        const cat = cats[i] || cats[String(i)];
+        if (cat && typeof _ttbMakeIcon === 'function'
+            && typeof TTB_ICONS !== 'undefined'
+            && TTB_ICONS[String(cat).toLowerCase()]) {
+          const m = L.marker(pt, {
+            pane: _ovMarkerPane('gwcfc-outlook'), interactive: false,
+            icon: _ttbMakeIcon(String(cat).toLowerCase(), false) });
+          m.addTo(map);
+          _gwcfcLayers.push(m);
+        } else {
+          const dm = L.circleMarker(pt, { pane, radius: 4,
+            color: st.dotStroke || '#ffb347', weight: 1.5,
+            fillColor: st.dotFill || '#ffe066', fillOpacity: 0.95,
+            interactive: false });
+          dm.addTo(map);
+          _gwcfcLayers.push(dm);
+        }
+      });
+    }
+
+    // The office tag at the cone's origin, same costume as everything else
+    // GWCFC publishes.
+    const tagAt = centre[0] || c.start || c.ring[0];
+    if (tagAt) {
+      const tag = L.marker(tagAt, {
+        pane: _ovMarkerPane('gwcfc-outlook'), interactive: false,
+        icon: L.divIcon({ className: '', iconSize: [0, 0],
+          html: `<span class="gwo-labelwrap">`
+              + `<span class="gwo-chip">GWCFC</span>`
+              + `<span class="gwo-label" style="background:${fill};`
+              + `color:#fff;text-shadow:0 1px 2px #000">Forecast Cone`
+              + `</span></span>` }) });
+      tag.addTo(map);
+      _gwcfcLayers.push(tag);
+    }
+  });
+
+  // The desk's alerts belong to this overlay too: "everything I published"
+  // includes them. When the dedicated GWCFC Alerts overlay is already up it
+  // owns them, so they are not painted twice.
+  if (typeof _gwaOn !== 'undefined' && !_gwaOn
+      && typeof _gwaDrawInto === 'function') {
+    drew += _gwaDrawInto(out.alerts || [], _gwcfcLayers, 'gwcfc-outlook');
+  }
+
   return drew;
 }
 
@@ -30973,7 +31057,14 @@ function _gwaClear() {
 
 function _gwaDraw(alerts) {
   _gwaClear();
-  const pane = _ovPane('gwcfc-alerts');
+  return _gwaDrawInto(alerts, _gwaLayers, 'gwcfc-alerts');
+}
+
+// The renderer itself, aimed at whichever overlay is asking: the dedicated
+// GWCFC Alerts layer, or the Outlook overlay drawing the whole published
+// document when the alerts layer is off.
+function _gwaDrawInto(alerts, sink, paneId) {
+  const pane = _ovPane(paneId);
   const now = Date.now();
   let drew = 0;
   (alerts || []).forEach(a => {
@@ -31009,7 +31100,7 @@ function _gwaDraw(alerts) {
                + `opacity:0.7">Until ${exp}</div>` : ''),
         { className: 'ap-popup-container', maxWidth: 280 });
       poly.addTo(map);
-      _gwaLayers.push(poly);
+      sink.push(poly);
       drew++;
       // The office chip rides the polygon itself, the way the desk's SIM
       // chip rides its products, so the two can be told apart at map level
@@ -31018,7 +31109,7 @@ function _gwaDraw(alerts) {
       try { centre = poly.getBounds().getCenter(); } catch (e) {}
       if (centre) {
         const chip = L.marker(centre, {
-          pane: _ovMarkerPane('gwcfc-alerts'), interactive: false,
+          pane: _ovMarkerPane(paneId), interactive: false,
           icon: L.divIcon({ className: '', iconSize: [0, 0],
             html: `<span class="gwo-labelwrap">`
                 + `<span class="gwo-chip">GWCFC</span>`
@@ -31026,7 +31117,7 @@ function _gwaDraw(alerts) {
                 + `color:#fff;text-shadow:0 1px 2px #000">`
                 + `${_ccEsc(event)}</span></span>` }) });
         chip.addTo(map);
-        _gwaLayers.push(chip);
+        sink.push(chip);
       }
     });
   });
@@ -31060,6 +31151,9 @@ function _gwcfcAlertsToggle() {
     _gwaTimer = null;
     _gwaClear();
   }
+  // The Outlook overlay carries the alerts whenever this layer is off, so
+  // flipping this hands them over rather than doubling or dropping them.
+  if (typeof _gwcfcOn !== 'undefined' && _gwcfcOn) _gwcfcRefresh();
 }
 
 function _modelsNHCToggle() {
@@ -47370,7 +47464,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Level 2 and Level 3 radar are fixed. When the Pi cannot be reached, Level 3 now decodes the nearest station straight from the NOAA bucket by itself instead of stopping at an error, and a bug that made product taps do nothing at all after a failed load is gone.';
+const APP_LATEST_UPDATE = 'The GWCFC Outlook overlay now shows the WHOLE published outlook: zones, storm markers, forecast cones with their centre line and time dots in the forecaster\'s own colours, and any desk alerts in force, so everything published from the Forecasting Portal reaches the map.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -50044,7 +50138,7 @@ const OV_DESCRIPTIONS = {
   'spc-reports':      'Tornado, hail, and wind reports logged by local National Weather Service offices today.',
   'nhc-outlook':      "The National Hurricane Center's 5 day tropical outlook, including any active hurricanes or tropical storms and their forecast tracks.",
   'jtwc-outlook':     "The Joint Typhoon Warning Center's active systems, which is everything the National Hurricane Center does not cover: the western Pacific, the Indian Ocean and the southern hemisphere. That is the basin that produces the most tropical cyclones on Earth, and without this the map goes blank across it. A typhoon and a hurricane are the same thing with two names, so they are drawn with the same icons. JTWC is the US Navy rather than the National Weather Service, and it issues on a six hourly cycle. If the layer draws nothing, run _jtwcCheck() in the browser console to tell an empty basin apart from an unreachable server.",
-  'gwcfc-outlook':    "Our own outlook, drawn by GWCFC forecasters on the Forecasting Portal and published from there. Development-chance areas (Low through Extreme), alert areas, and storm markers appear here exactly as the forecaster drew them, in the portal's own colours, the moment Publish is pressed. Refreshes every five minutes while the overlay is on. If nothing draws, no outlook is currently published.",
+  'gwcfc-outlook':    "Our own outlook, drawn by GWCFC forecasters on the Forecasting Portal and published from there. Everything on the published outlook appears here exactly as the forecaster composed it: development-chance areas (Low through Extreme), alert areas, storm markers, forecast cones with their centre line and time dots, and any alerts the desk has in force (unless the GWCFC Alerts overlay is on, which then owns them). Refreshes every five minutes while on. If nothing draws, no outlook is currently published.",
   'gwcfc-alerts':     "Warnings, watches and statements issued from the Forecasting Portal's alert desk: the GWCFC's own products, drawn as polygons in standard alert colours. Only alerts still in force appear, and an expired one leaves the map on its own. Tap a polygon for the product, the area it covers and when it ends. Checks for new issuances every minute while on.",
       'radar-normal':     "The radar products this site has always shown, served as tiles: MRMS, reflectivity, velocity, hydrometeor class and the two accumulations.",
   'radar-l2':         "Level 2 is what the radar itself produces: every gate of every sweep, streamed straight from the live feed and decoded in your browser. Pick any station on the map, including the T pills, which are the terminal radars at major airports.",
