@@ -2834,16 +2834,12 @@ body.wx-smooth-radar .leaflet-radarPane-pane canvas {
   color: #008CBA;
   min-width: 32px;
 }
-#trop-panel-body, #sev-panel-body {
+#sev-panel-body {
   margin-top: 4px;
 }
-#trop-intro {
-  font-family: var(--mono); font-size: 10px; color: rgba(212,232,255,0.55);
-  line-height: 1.5; margin: 2px 0 8px;
-}
 /* ── The panel's section cards ─────────────────────────────────────────────
-   Four features share one panel, and stacked headings with dividers read as
-   one long scroll of controls. A card per feature, its accent on the left
+   Several features share one panel, and stacked headings with dividers read
+   as one long scroll of controls. A card per feature, its accent on the left
    edge and its heading a click target that folds it away, turns the panel
    into a table of contents: open what you are using, close the rest, and
    the choice is remembered. */
@@ -3024,16 +3020,6 @@ body.wx-smooth-radar .leaflet-radarPane-pane canvas {
   font-family: var(--mono); font-size: 9px; color: #ffd166;
   border-top: 1px dashed rgba(255,209,102,0.35); padding-top: 3px; margin-top: 3px;
 }
-#trop-storm-status {
-  font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,0.4); padding: 4px 0;
-}
-.trop-storm-card {
-  display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 6px;
-  background: rgba(0,140,186,0.06); border: 1px solid rgba(0,140,186,0.25); border-radius: 8px;
-}
-.trop-storm-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-.trop-storm-name { font-family: 'Comfortaa', sans-serif; font-size: 12px; font-weight: 700; color: #fff; }
-.trop-storm-meta { font-family: var(--mono); font-size: 9px; color: rgba(212,232,255,0.6); }
 /* Forecast hour grid */
 #sev-fcast-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -9600,28 +9586,6 @@ body.clean-mode #clean-hint { opacity: 1; }
         <div id="spaghetti-models-drag" class="dtb-drag" title="Drag to move">⠿</div>
         <div class="models-panel-title"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg> Spaghetti Models</div>
         <button class="models-close-btn" onclick="collapseSpaghettiModelsPanel()" title="Close panel (model overlay stays on the map)">×</button>
-      </div>
-      <div class="spanel-card" id="spcard-storms" style="--sp-accent:#4dd0e1">
-        <div class="spanel-head" onclick="_spCardToggle('storms')">
-          <svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cyclone></use></svg> <span class="spanel-title">Active Storms</span> <span class="spanel-tag">NHC live</span>
-          <span class="spanel-chev">&#x25BE;</span>
-        </div>
-        <div class="spanel-body">
-      <div class="sev-dropdowns">
-        <div class="sev-dd-wrap">
-          <label class="sev-dd-label">Basin</label>
-          <select id="trop-basin-sel" onchange="_tropSetBasin(this.value)"><option value="">All</option></select>
-        </div>
-        <div class="sev-dd-wrap">
-          <label class="sev-dd-label">Storm</label>
-          <select id="trop-storm-sel" onchange="_tropSetStorm(this.value)"><option value="">--</option></select>
-        </div>
-      </div>
-      <div id="trop-panel-body"></div>
-      <p id="trop-intro">The National Hurricane Center's official forecast track, cone, and any areas being watched for development. Same live feed as the <b>NHC Outlook</b> overlay pill, kept in sync.</p>
-      <div id="trop-storm-status">Loading active storms…</div>
-      <div id="trop-storm-list"></div>
-        </div>
       </div>
       <div class="spanel-card" id="spcard-guidance" style="--sp-accent:#7fb8ff">
         <div class="spanel-head" onclick="_spCardToggle('guidance')">
@@ -29359,19 +29323,16 @@ function toggleModelsSub() {
   wrap.style.display = 'flex';
 }
 
-// Spaghetti Models panel: NHC's own official track/cone/invests feed - the
-// same live data the "NHC Outlook" overlay pill draws, just also shown here
-// with a plain-language storm list. Turns the overlay pill on too, so the two
-// stay in sync rather than tracking their own separate on/off state.
+// Spaghetti Models panel: opening it turns on NHC's official track/cone/
+// invests feed - the same live data the "NHC Outlook" overlay pill draws -
+// and flips that pill on too, so the two stay in sync rather than tracking
+// their own separate on/off state.
 function _tropInit() {
   _nhcOutlookOn = true;
   const row = document.getElementById('nhc-tog-row');
   if (row) row.classList.add('on');
-  const statusEl = document.getElementById('trop-storm-status');
-  if (statusEl) statusEl.textContent = 'Loading active storms…';
   loadNHC5dayOutlook().catch(e => {
     console.warn('Spaghetti Models load error:', e);
-    if (statusEl) statusEl.textContent = 'Could not reach NHC right now - try again shortly.';
   });
 }
 
@@ -29961,8 +29922,6 @@ async function loadNHC5dayOutlook() {
   } else {
     _tropActiveStorms = [];
   }
-  _tropRenderStormList();
-  _tropPopulateSelectors();
   if (_spaghettiModelsPanelIsOpen()) _spagLoadStormTracks();
 
   // ── Past tracks (semi-transparent) ──────────────────────────────────────
@@ -30025,87 +29984,6 @@ async function loadNHC5dayOutlook() {
       tropicalLayers.push(m);
     } catch(e) { console.warn('NHC past obs icon error:', e, f); }
   });
-}
-
-function _tropRenderStormList() {
-  const statusEl = document.getElementById('trop-storm-status');
-  const listEl   = document.getElementById('trop-storm-list');
-  if (!statusEl || !listEl) return;
-  if (!_tropActiveStorms.length) {
-    statusEl.textContent = 'No active storms right now.';
-    listEl.innerHTML = '';
-    return;
-  }
-  statusEl.textContent = `${_tropActiveStorms.length} active storm${_tropActiveStorms.length > 1 ? 's' : ''}:`;
-  listEl.innerHTML = _tropActiveStorms.map(d => `
-    <div class="trop-storm-card">
-      <span class="trop-storm-dot" style="background:${d.color}"></span>
-      <div>
-        <div class="trop-storm-name">${d.emoji} ${_ccEsc(d.name)}</div>
-        <div class="trop-storm-meta">${_ccEsc(d.typeLbl)}${d.winds !== '-' ? ' · ' + d.winds + ' kt' : ''}${d.basin ? ' · ' + _ccEsc(d.basin) : ''}</div>
-      </div>
-    </div>
-  `).join('');
-}
-
-// Storm/Basin selectors - same two-dropdown layout Run Models uses for
-// Model/Product, so Spaghetti Models reads as the same kind of panel
-// instead of a plain list. Picking a storm flies the map to it and fills
-// the info box below (mirroring #sev-panel-body's role).
-function _tropPopulateSelectors() {
-  const basinSel = document.getElementById('trop-basin-sel');
-  const stormSel = document.getElementById('trop-storm-sel');
-  if (!basinSel || !stormSel) return;
-
-  const basins = [...new Set(_tropActiveStorms.map(s => s.basin).filter(Boolean))];
-  const curBasin = basinSel.value;
-  basinSel.innerHTML = '<option value="">All</option>' + basins.map(b => `<option value="${_ccEsc(b)}">${_ccEsc(b.toUpperCase())}</option>`).join('');
-  if (basins.includes(curBasin)) basinSel.value = curBasin;
-
-  const filtered = _tropActiveStorms.filter(s => !basinSel.value || s.basin === basinSel.value);
-  const curStorm = stormSel.value;
-  stormSel.innerHTML = filtered.length
-    ? filtered.map(s => `<option value="${_ccEsc(s.name)}">${s.emoji} ${_ccEsc(s.name)}</option>`).join('')
-    : '<option value="">No active storms</option>';
-  const match = filtered.find(s => s.name === curStorm) || filtered[0] || null;
-  if (match) stormSel.value = match.name;
-  _tropRenderStormInfo(match);
-}
-
-function _tropSetBasin(basin) {
-  const stormSel = document.getElementById('trop-storm-sel');
-  if (stormSel) stormSel.value = '';
-  _tropPopulateSelectors();
-  if (typeof _spagOn !== 'undefined' && _spagOn) _spagRender();
-}
-
-function _tropSetStorm(name) {
-  const storm = _tropActiveStorms.find(s => s.name === name) || null;
-  _tropRenderStormInfo(storm);
-  if (storm && isFinite(storm.lat) && isFinite(storm.lon) && typeof map !== 'undefined') {
-    map.flyTo([storm.lat, storm.lon], Math.max(map.getZoom(), 5));
-  }
-  // The guidance follows the pick: one storm chosen, one storm's spaghetti.
-  if (typeof _spagOn !== 'undefined' && _spagOn) _spagRender();
-}
-
-function _tropRenderStormInfo(storm) {
-  const body = document.getElementById('trop-panel-body');
-  if (!body) return;
-  if (!storm) { body.innerHTML = ''; return; }
-  const kt = parseInt(storm.winds) || 0;
-  const mph = kt ? Math.round(kt * 1.15078) : 0;
-  body.innerHTML = `
-    <div style="display:flex;align-items:center;gap:8px;padding:4px 0 8px;">
-      <span style="width:12px;height:12px;border-radius:50%;background:${storm.color};flex-shrink:0;"></span>
-      <div style="font-family:'Comfortaa',sans-serif;font-size:13px;font-weight:700;color:#fff;">${storm.emoji} ${_ccEsc(storm.name)}</div>
-    </div>
-    <div style="font-family:var(--mono);font-size:9px;color:rgba(212,232,255,0.6);display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;padding-bottom:6px;">
-      <div><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg> <b style="color:#fff">${kt ? fmtSpeed(mph) : '-'}</b></div>
-      <div><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg> <b style="color:#fff">${storm.pres || 'N/A'}</b></div>
-      <div>${_ccEsc(storm.typeLbl)}</div>
-      <div>${storm.basin ? _ccEsc(storm.basin.toUpperCase()) : ''}</div>
-    </div>`;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -30267,11 +30145,10 @@ async function _spagFreshDoc(entry) {
   return doc;
 }
 
-// The storms this render covers: the one picked in the Storm dropdown when
-// it matches something in the Pi's index, otherwise every storm the index
-// has. That "otherwise" matters: the index carries invests the NHC public
-// feed does not list yet, and guidance on a developing invest is exactly
-// when people come looking.
+// The storms this render covers: every storm the Pi's index has. That
+// breadth matters: the index carries invests the NHC public feed does not
+// list yet, and guidance on a developing invest is exactly when people
+// come looking.
 function _spagTargets(idx) {
   let storms = (idx && idx.storms) || [];
   // Only what is happening NOW, unless the Past storms chip is on. An entry
@@ -30279,12 +30156,6 @@ function _spagTargets(idx) {
   // stale Pi degrades to the old behaviour rather than an empty map.
   if (!_spagGroupsOn.past) {
     storms = storms.filter(s => s.active !== false);
-  }
-  const sel = document.getElementById('trop-storm-sel');
-  const want = sel && sel.value ? sel.value.trim().toUpperCase() : '';
-  if (want) {
-    const hit = storms.filter(s => (s.name || '').toUpperCase() === want);
-    if (hit.length) return hit;
   }
   return storms;
 }
@@ -47537,7 +47408,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Fixed the random sign-outs and the sign-in crash. The account scripts now load in a guaranteed order with retries, a half-loaded page says so instead of crashing the Sign In button, and a browser that holds a real account is never silently switched to an anonymous session (that switch was what kept logging people out).';
+const APP_LATEST_UPDATE = 'Removed the Active Storms card from the Spaghetti Models panel. It duplicated what the NHC Outlook overlay already draws on the map, so the panel is now just Model Guidance and Track Animation, and the guidance simply covers every current storm.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -51742,7 +51613,6 @@ function closeCredits() {
 /* ── 3. Cards inside a panel ──────────────────────────────────────────── */
 .alert-card,
 .eas-card,
-.trop-storm-card,
 .cyc-ens-card,
 .feature-card,
 .ad-item,

@@ -124,24 +124,28 @@ console.log('\n1. the panel is four cards, not one long scroll');
     bodies: document.querySelectorAll(
       '#spaghetti-models-panel .spanel-body').length,
   }));
-  ok('three cards in the spaghetti panel: storms, guidance, animation',
-     s.ids.join(',') === 'spcard-storms,spcard-guidance,spcard-anim',
+  // The Active Storms card is gone by request: it duplicated what the NHC
+  // Outlook overlay already draws on the map, so the panel is now just the
+  // guidance and the animation.
+  ok('two cards in the spaghetti panel: guidance and animation',
+     s.ids.join(',') === 'spcard-guidance,spcard-anim',
      s.ids.join(','));
-  ok('each has a clickable head and a body', s.bodies === 3);
+  ok('each has a clickable head and a body', s.bodies === 2);
   ok('the heads say what each card is',
-     /Active Storms/.test(s.heads[0]) && /Model Guidance/.test(s.heads[1])
-     && /Track Animation/.test(s.heads[2]), s.heads.join(' | '));
+     /Model Guidance/.test(s.heads[0])
+     && /Track Animation/.test(s.heads[1]), s.heads.join(' | '));
   ok('the cyclones card lives in the AI Cyclones panel now',
      s.aiHeads.some(h => /AI Cyclones/.test(h)), s.aiHeads.join(' | '));
   const inside = await page.evaluate(() => ({
-    storms: !!document.querySelector('#spcard-storms #trop-storm-sel'),
+    storms: !document.querySelector('#spcard-storms')
+       && !document.getElementById('trop-storm-sel'),
     spag: !!document.querySelector('#spcard-guidance #spag-btn')
        && !!document.querySelector('#spcard-guidance #spag-groups'),
     cyc: !!document.querySelector('#ai-cyclones-panel #spcard-cyclones #cyc-lab-btn')
        && !!document.querySelector('#ai-cyclones-panel #cyc-ens-centres-btn'),
     anim: !!document.querySelector('#spcard-anim #tanim-play'),
   }));
-  ok('the storm picker lives in the storms card', inside.storms);
+  ok('the Active Storms card and its picker are fully gone', inside.storms);
   ok('the guidance controls live in the guidance card', inside.spag);
   ok('DeepMind and the GEFS centres share the cyclones card, in its own panel', inside.cyc);
   ok('the transport lives in the animation card', inside.anim);
