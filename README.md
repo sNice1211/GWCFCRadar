@@ -10,7 +10,6 @@ and region combinations. No account, nothing to install.
 
     index.html    the whole site, in one file
     sw.js         service worker, for notifications and offline use
-    studio.html   the cyclone track editor
 
     assets/       images, audio and data the page loads
     icons/        app icons and notification badges
