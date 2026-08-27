@@ -31401,6 +31401,71 @@ function _gwcfcRound(pts, passes) {
   return out;
 }
 
+// The centre line of a published cone, recovered from the ring when the
+// document does not carry one.
+//
+// Every cone published before this was fixed has an EMPTY centre line: the
+// serializer read `centerPts`, a name the cone tool has never used, so the
+// expression was always undefined. The reader hangs the dashed line, the time
+// dots and the category icons off that array, so all three were missing from
+// every cone already out there, and no amount of fixing the writer brings
+// back a document that was written yesterday.
+//
+// The ring can give it back. A cone's outline is assembled as one pass up the
+// left edge, an arc across the wide end, then one pass back down the right
+// edge, and the two edges are the centre line pushed out sideways by the same
+// half-width in opposite directions. So the midpoint of the i-th point from
+// the start and the i-th from the end is the centre point they straddle:
+//
+//     ring = [ left[0..N], cap[1..N-1], right[N..0] ]   length 3N+1
+//     centre[i] = midpoint(ring[i], ring[len-1-i])
+//
+// The midpoint has to be the SPHERICAL one, not the average of the two
+// numbers. The edges are placed by walking a great circle out from the centre
+// at right angles, and a great circle is not a straight line in latitude and
+// longitude: averaging the coordinates of two points 180 km apart lands about
+// 1.7 km away from the point they were measured from, which was measured
+// rather than assumed. Walking half way back along the arc between them is
+// exact, and uses the cone tool's own arithmetic to do it.
+//
+// One caveat worth stating rather than hiding: this recovers the geometric
+// centre, and the tool draws its dots on a line that can be shifted sideways
+// by the OFFSET slider. At the default offset of zero they are the same line,
+// which is what almost every cone uses. Where a forecaster moved it, a
+// recovered icon sits on the true centre instead, a little off the line they
+// drew. Republishing that cone fixes it exactly, because the writer now
+// stores the real thing.
+function _gwcfcConeCentre(c) {
+  const given = Array.isArray(c && c.center) ? c.center : [];
+  if (given.length > 1) return given;
+  const ring = Array.isArray(c && c.ring) ? c.ring : [];
+  // 3N+1 points, so a ring that is not that shape is not one of ours and is
+  // left alone rather than folded into a line that means nothing.
+  if (ring.length < 7 || (ring.length - 1) % 3 !== 0) return given;
+  const canWalk = typeof _scDestinationPoint === 'function'
+    && typeof _scBearingDegrees === 'function'
+    && typeof map !== 'undefined' && map && typeof map.distance === 'function';
+  const N = (ring.length - 1) / 3;
+  const out = [];
+  for (let i = 0; i <= N; i++) {
+    const a = ring[i], b = ring[ring.length - 1 - i];
+    if (!Array.isArray(a) || !Array.isArray(b)) return given;
+    if (canWalk) {
+      try {
+        const A = L.latLng(a[0], a[1]), B = L.latLng(b[0], b[1]);
+        const metres = map.distance(A, B);
+        if (metres < 1) { out.push([a[0], a[1]]); continue; }
+        const mid = _scDestinationPoint(A, _scBearingDegrees(A, B),
+                                        (metres / 2) / 1609.344);
+        out.push([mid.lat, mid.lng]);
+        continue;
+      } catch (e) { /* fall through to the plain average */ }
+    }
+    out.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+  }
+  return out;
+}
+
 function _gwcfcClear() {
   _gwcfcLayers.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
   _gwcfcLayers = [];
@@ -31509,23 +31574,39 @@ function _gwcfcDraw(out, into, paneKey) {
     list.push(ringPoly);
     drew++;
 
-    const centre = Array.isArray(c.center) ? c.center : [];
+    const centre = _gwcfcConeCentre(c);
     if (centre.length > 1) {
       const line = L.polyline(centre, { pane, color: lineCol, weight: 2,
         opacity: 0.9, dashArray: '6 5', interactive: false });
       line.addTo(map);
       list.push(line);
 
-      // Dots at the portal's own spread: N dots split the line evenly.
       const N0 = centre.length - 1;
-      const nDots = Math.max(0, Number(c.dots) || 0);
       const idxs = new Set();
-      for (let d = 1; d <= nDots; d++) {
-        idxs.add(Math.round((d / (nDots + 1)) * N0));
+      // A multi-point cone puts one dot on every point that was CLICKED, not
+      // at even intervals, which is why its dots input is switched off in the
+      // tool: the clicks are the dots. Guessing even intervals for one of
+      // those puts every icon somewhere the forecaster did not put it.
+      const clicked = Array.isArray(c.dotIdx) ? c.dotIdx : null;
+      if (c.mode === 'multi' && clicked && clicked.length) {
+        clicked.forEach(i => idxs.add(Number(i)));
+      } else {
+        // Dots at the tool's own spread: N dots split the line evenly.
+        const nDots = Math.max(0, Number(c.dots) || 0);
+        for (let d = 1; d <= nDots; d++) {
+          idxs.add(Math.round((d / (nDots + 1)) * N0));
+        }
       }
       // A category on a point outranks a plain dot at the same spot.
+      //
+      // Only points that actually CARRY one. pointCats is a sparse array, one
+      // slot per centre point with null in the slots nobody marked, and
+      // Object.keys on an array hands back every index including the nulls.
+      // Taking all of them put a dot on all sixty-five points of every cone,
+      // which reads as a dotted line rather than as the handful of marks the
+      // forecaster placed.
       const cats = c.cats || {};
-      Object.keys(cats).forEach(k => idxs.add(Number(k)));
+      Object.keys(cats).forEach(k => { if (cats[k]) idxs.add(Number(k)); });
       idxs.forEach(i => {
         const pt = centre[i];
         if (!pt) return;
@@ -48222,7 +48303,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Manage Members now shows every member&#39;s full name and full email address instead of cutting them off. The panel widens for that view, long addresses wrap rather than ending in dots, and an account with no address on file says so instead of showing a raw id.';
+const APP_LATEST_UPDATE = 'Published forecast cones now show what was actually drawn: the dashed centre line, the time dots and the storm category icons a forecaster placed on the track. None of them had ever reached anybody, and cones published before today get theirs back too, with no need to republish.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -55557,8 +55638,32 @@ function _fdRedraw() {
   _fdRenderList();
 }
 
+// The centre line of a track, whatever the track calls it.
+//
+// centerLine is the offset line the tool draws and puts its dots on, so it is
+// the one a reader has to be given: an icon placed on the unoffset centre
+// would sit off the line it is meant to be standing on wherever the offset
+// slider is not zero.
+function _scCentreOf(track) {
+  if (!track) return [];
+  return track.centerLine || track.center || [];
+}
+
 // What publishing stores for a cone: the numbers that made it, never the
 // Leaflet layers, so the document is plain data any reader can draw.
+//
+// The centre line is read from `centerLine`, which is what _scBuildTrack
+// actually returns. It was read from `centerPts`, which that function has
+// never returned and nothing else has ever set, so the expression was always
+// undefined and every cone ever published carried an EMPTY centre line. The
+// reader draws the dashed line, the time dots and the per-point category
+// icons off that array, so all three silently vanished the moment a cone left
+// the tool: the ring drew, and nothing inside it did.
+//
+// dotIdx and mode ride along now as well. A multi-point cone puts its dots on
+// the points that were clicked rather than at even intervals, and without the
+// list of which points those were, a reader can only guess at even intervals
+// and put the icons somewhere the forecaster did not.
 function _fdSerializeCones() {
   const ll = (x) => [Number(x.lat.toFixed(4)), Number(x.lng.toFixed(4))];
   const cones = (typeof _scCones !== 'undefined' && _scCones) ? _scCones : [];
@@ -55567,10 +55672,12 @@ function _fdSerializeCones() {
     width: c.width == null ? null : c.width,
     style: c.style || null,
     cats: (c.track && c.track.pointCats) || null,
+    mode: (c.track && c.track.mode) || null,
+    dotIdx: (c.track && c.track.dotIdx) || null,
     start: c.track && c.track.start ? ll(c.track.start) : null,
     end: c.track && c.track.end ? ll(c.track.end) : null,
     ring: c.track && c.track.ring ? c.track.ring.map(ll) : [],
-    center: c.track && c.track.centerPts ? c.track.centerPts.map(ll) : [],
+    center: _scCentreOf(c.track).map(ll),
   }));
   // The cone still being edited counts too. Walking away from the toolbar
   // without pressing New should not quietly drop it from the outlook.
@@ -55579,10 +55686,12 @@ function _fdSerializeCones() {
     list.push({ id: 'live', speed: null, curve: null, dots: null, offset: null,
       style: (typeof _scStyle !== 'undefined' ? _scStyle : null),
       cats: live.pointCats || null,
+      mode: live.mode || null,
+      dotIdx: live.dotIdx || null,
       start: live.start ? ll(live.start) : null,
       end: live.end ? ll(live.end) : null,
       ring: live.ring.map(ll),
-      center: live.centerPts ? live.centerPts.map(ll) : [] });
+      center: _scCentreOf(live).map(ll) });
   }
   return list;
 }
