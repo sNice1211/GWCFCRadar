@@ -463,6 +463,14 @@ DISCOVERY_SOURCES = [
 ]
 
 ALT_SUFFIX_RE = re.compile(r"-alt\d*$", re.IGNORECASE)
+# What an NWR callsign looks like: four to six characters, starting with a
+# letter, and containing at least one digit. KIH21, WXL57, KEC38, WNG645.
+#
+# Loose on the prefix on purpose, because they are not all K and W. Strict
+# about the digit on purpose, because that is the whole job: it is what tells
+# a callsign apart from the town in the mount path ("Omaha", "Largo") and from
+# the bare letter on an alternate feed ("A").
+CALLSIGN_RE = re.compile(r"^(?=[A-Z0-9]*\d)[A-Z][A-Z0-9]{3,5}$", re.IGNORECASE)
 
 
 def _callsign_from_mount(kind, listenurl):
@@ -474,7 +482,18 @@ def _callsign_from_mount(kind, listenurl):
     base = ALT_SUFFIX_RE.sub("", tail)
     base = base.rsplit(".", 1)[0] if base.lower().endswith((".mp3", ".aac", ".ogg")) else base
     if kind == "wxr":
-        base = base.split("-")[-1]          # ST-City-CALLSIGN
+        # ST-City-CALLSIGN, USUALLY. Some mounts carry an alternate feed of
+        # the same transmitter and end in a letter: /NE-Omaha-KIH61-A. Taking
+        # the LAST piece made that station's id the single letter "A", so an
+        # alternate feed of KIH61 was archived under a junk name while KIH61
+        # itself, offered by another relay, was rejected as a duplicate of
+        # nothing. So the pieces are scanned from the end for one that is
+        # actually the shape of a callsign: a letter, then two or three more
+        # characters, at least one of them a digit. "A" is not that. "KIH61"
+        # is. If nothing matches, the last piece is still the best guess.
+        parts = [p for p in base.split("-") if p]
+        base = next((p for p in reversed(parts) if CALLSIGN_RE.match(p)),
+                    parts[-1] if parts else base)
     return base.upper()
 
 

@@ -577,6 +577,66 @@ EOF
 say "NWRchive recorder"
 NWR_ROOT="$HOME/nwr_archive"
 NWR_CONF="$HOME/stations.json"
+
+# OPT IN, and here is why that changed.
+#
+# This block used to run on every box that ran install.sh, including one that
+# is a radar Pi and nothing else. That box has about 50 GB free and is already
+# short of its own model budget. Measured on a real archive, 129 stations
+# recording tone-only cost 8.26 GB a DAY, about 64 MB per station per day, so
+# a 90 day archive is roughly 750 GB. It would have filled that disk in under
+# a week and taken the radar down with it. Ours escaped only by accident:
+# discovery failed because the two default stations were off air, so no
+# stations.json was written and the start below is guarded on that file.
+#
+# So it now installs only when asked, and only when the disk can take it.
+NWR_WANT="${GWCFC_NWR:-}"
+if [ -z "$NWR_WANT" ] && [ -s "$NWR_CONF" ]; then
+  NWR_WANT=1                      # already set up here; keep it working
+fi
+if [ -z "$NWR_WANT" ]; then
+  ok "not installed. It records weather radio around the clock and is a"
+  echo "   separate job from the radar, so it is opt in:"
+  echo "       GWCFC_NWR=1 bash $REPO/pi/install.sh"
+  echo "   Budget about 64 MB per station per day: 129 stations is 8.3 GB a"
+  echo "   day, and a 90 day archive is roughly 750 GB."
+  # Tidy up after an earlier run of this script that installed it unasked.
+  systemctl --user disable --now gwcfc-nwr.service gwcfc-nwr-index.service \
+    >/dev/null 2>&1 || true
+  rm -f "$UNITS/gwcfc-nwr.service" "$UNITS/gwcfc-nwr-index.service"
+fi
+
+if [ -n "$NWR_WANT" ]; then
+# How many days of recording the free space actually buys, said in days
+# rather than gigabytes, because days is the unit the answer is wanted in.
+# Checked against the stations that will really be recorded, not a guess.
+NWR_FREE_MB=$(df -Pm "$HOME" | awk 'NR==2 {print $4}')
+NWR_N=$(printf '%s' "${NWR_STATIONS:-KIH21,KEC50}" | awk -F, '{print NF}')
+if [ -s "$NWR_CONF" ]; then
+  NWR_N=$("$VENV/bin/python" -c "
+import json,sys
+try:
+    d = json.load(open('$NWR_CONF'))
+    print(len(d if isinstance(d, list) else d.get('stations', [])))
+except Exception:
+    print(0)" 2>/dev/null || echo 0)
+fi
+[ "${NWR_N:-0}" -lt 1 ] && NWR_N=1
+NWR_DAILY_MB=$((NWR_N * 64))
+NWR_DAYS=$((NWR_FREE_MB / NWR_DAILY_MB))
+echo "   $NWR_N station(s), about $NWR_DAILY_MB MB a day"
+echo "   $NWR_FREE_MB MB free, which is about $NWR_DAYS days of recording"
+if [ "$NWR_DAYS" -lt 7 ]; then
+  warn "under a week of room. NOT installing the recorder."
+  echo "   A full disk does not stop at the recordings: it takes the radar,"
+  echo "   the models and the tunnel down with it, and none of those failures"
+  echo "   look like a disk. Free some space, or record fewer stations with"
+  echo "   NWR_STATIONS=CALL1,CALL2, then run this again."
+  NWR_WANT=""
+fi
+fi
+
+if [ -n "$NWR_WANT" ]; then
 mkdir -p "$NWR_ROOT"
 ln -sfn "$NWR_ROOT" "$DATA/nwr"
 
@@ -635,6 +695,7 @@ Nice=15
 [Install]
 WantedBy=default.target
 EOF
+fi      # end of the opt-in NWRchive block
 
 cat > "$UNITS/gwcfc-update.service" <<EOF
 [Unit]
@@ -728,7 +789,11 @@ systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1
 systemctl --user restart gwcfc-publish.service     >/dev/null 2>&1
 # The recorder only makes sense once a station list exists; without one it
 # would crash-loop on a config error every ten seconds until discovery works.
-if [ -s "$NWR_CONF" ]; then
+# Both conditions. The station list is not enough on its own: the unit files
+# are only written inside the opt-in block, so without this a box that was
+# asked NOT to record but still has an old stations.json would try to start a
+# service that no longer exists.
+if [ -n "$NWR_WANT" ] && [ -s "$NWR_CONF" ]; then
   systemctl --user enable  gwcfc-nwr.service       >/dev/null 2>&1
   systemctl --user restart gwcfc-nwr.service       >/dev/null 2>&1
   systemctl --user enable  gwcfc-nwr-index.service >/dev/null 2>&1

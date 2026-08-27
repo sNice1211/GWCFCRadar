@@ -53,17 +53,29 @@ def log(msg):
     print(f"[{ts}] {msg}", flush=True)
 
 
-def parse_state(name):
-    """The LAST two-letter state token in a station name wins.
+def parse_state(name, url=None):
+    """Which state a station is in, from its name, or failing that its mount.
 
-    Relay names run like "KIH21 Sebring FL 162.475" or "WXR - Sebring, FL -
-    KIH21"; scanning from the end avoids callsign fragments and city words
-    that happen to collide with state codes.
+    The LAST two-letter state token in a station name wins. Relay names run
+    like "KIH21 Sebring FL 162.475" or "WXR - Sebring, FL - KIH21"; scanning
+    from the end avoids callsign fragments and city words that happen to
+    collide with state codes.
+
+    The url is the fallback, and it is not a nicety. A great many relays
+    report their mounts as "no name" or "Unspecified name", so the name has
+    nothing in it to read: those stations indexed with state null, and the
+    page files stations by region, so every one of them fell off the map
+    entirely. The mount path still says it: /FL-Largo-KEC38. Taken from the
+    FRONT there, because that is where the path puts it, and a two-letter
+    piece at the start of a mount is not going to be anything else.
     """
     tokens = re.findall(r"[A-Za-z]{2}", name or "")
     for tok in reversed(tokens):
         if tok.upper() in US_STATES and tok.isupper():
             return tok.upper()
+    for part in re.split(r"[/\-_]", (url or "")):
+        if len(part) == 2 and part.upper() in US_STATES:
+            return part.upper()
     return None
 
 
@@ -110,12 +122,19 @@ def read_highlight_meta(hl_dir, t):
 
 
 def load_station_names(path):
-    """id -> name from the archiver's stations.json, when offered."""
+    """id -> {name, url} from the archiver's stations.json, when offered.
+
+    The url comes along because the NAME often does not carry a state. A lot
+    of relays report their mounts as "no name" or "Unspecified name", and the
+    mount PATH says it anyway: /FL-Largo-KEC38. See parse_state.
+    """
     if not path:
         return {}
     try:
         with open(path) as f:
-            return {s["id"]: s.get("name", s["id"]) for s in json.load(f)
+            return {s["id"]: {"name": s.get("name", s["id"]),
+                              "url": s.get("url", "")}
+                    for s in json.load(f)
                     if isinstance(s, dict) and "id" in s}
     except (OSError, json.JSONDecodeError, ValueError, TypeError) as e:
         log(f"could not read stations file {path}: {e}")
@@ -148,7 +167,9 @@ def build(root, stations_path=None):
     for sid in sorted(station_ids):
         rolling = list_days(os.path.join(rolling_root, sid))
         highlights = list_days(os.path.join(hl_root, sid))
-        name = names.get(sid, sid)
+        meta = names.get(sid) or {}
+        name = meta.get("name") or sid
+        url = meta.get("url") or ""
 
         dates = {}
         for date_str in sorted(set(rolling) | set(highlights)):
@@ -167,7 +188,7 @@ def build(root, stations_path=None):
         index_stations.append({
             "id": sid,
             "name": name,
-            "state": parse_state(name),
+            "state": parse_state(name, url),
             "freq": parse_freq(name),
             "dates": dates,
         })
