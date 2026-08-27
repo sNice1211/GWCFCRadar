@@ -346,6 +346,31 @@ console.log('\n5. search and about');
 }
 
 console.log('\n6. nothing threw');
+// ── The centre's own name, and where Home goes ──────────────────────────────
+// Both were wrong at once: the footer called the network by a name it does
+// not have, and Home pointed at a relative index.html, which in THIS
+// repository is the radar app rather than the centre's website.
+{
+  const src = readFileSync(join(ROOT, 'nwrchive.html'), 'utf8');
+  ok('the network is called by its real name',
+     /Guta Weather &amp; Climate Forecasting Center/.test(src)
+       && !/Gulf West Central/.test(src));
+  ok('and it is named that way everywhere, footer and about alike',
+     (src.match(/Guta Weather &amp; Climate Forecasting Center/g) || []).length >= 2);
+  const links = await page.evaluate(() => ({
+    home: (document.getElementById('nav-home') || {}).getAttribute
+      ? document.getElementById('nav-home').getAttribute('href') : '',
+    footer: [...document.querySelectorAll('.home-link')]
+      .map(a => a.getAttribute('href')),
+  }));
+  ok('Home points at the website, spelled out in full',
+     links.home === 'https://gwcfc.net/', links.home);
+  ok('and so does the footer, rather than a relative index.html that is '
+     + 'the radar in this repo',
+     links.footer.length > 0 && links.footer.every(h => h === 'https://gwcfc.net/'),
+     links.footer.join(','));
+}
+
 ok('no uncaught page errors', errors.length === 0, errors.join(' | '));
 
 await browser.close();
