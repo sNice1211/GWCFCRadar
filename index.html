@@ -46479,7 +46479,32 @@ if ('serviceWorker' in navigator) {
     if (d.type === 'FOCUS_ALERT' && d.alertId) {
       _whenMapReady(() => _focusAlertById(d.alertId));
     }
+    // The page opens from the copy on disk so it opens instantly, and the
+    // newest version downloads behind it. Without this, that new version
+    // would sit there unmentioned until the NEXT open, which reads exactly
+    // like a change that never shipped. So say it, and offer the reload.
+    if (d.type === 'gwcfc-shell-updated') _gwNewVersionReady();
   });
+}
+
+let _gwUpdateShown = false;
+function _gwNewVersionReady() {
+  if (_gwUpdateShown) return;          // one offer per visit, not one per tab wake
+  _gwUpdateShown = true;
+  try {
+    if (typeof showToast === 'function') {
+      showToast('A newer version of the site just finished downloading. '
+              + 'Reload to use it.', 12000);
+    }
+    const bar = document.getElementById('update-bar');
+    if (bar) {
+      bar.classList.remove('off');
+      bar.innerHTML = 'A newer version is ready. '
+        + '<a href="#" style="color:#8fe3a8;font-weight:700" '
+        + 'onclick="location.reload();return false">Reload now</a>';
+      bar.style.display = '';
+    }
+  } catch (e) {}
 }
 document.addEventListener('DOMContentLoaded', () => {
   let id = null;
@@ -47555,7 +47580,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The Storm Cone tool has a new WIDTH box: it sets how wide the cone swath opens, as a percent of the track length, so you can draw a tight high-confidence cone or a broad uncertain one. It stays at the old 22 unless you change it.';
+const APP_LATEST_UPDATE = 'The Alert Desk can now write its own text: open the editor and change any word of the product, or paste a warning you wrote elsewhere and have it reformatted into our format. Whatever the text says is what gets issued.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -53631,6 +53656,10 @@ function _adNewDraft(code) {
     areaMode: 'draw', poly: [], zones: [], zoneType: 'county',
     areaName: '', mins: P.mins, tag: 'none',
     source: AD_SOURCES[0], extra: '',
+    // The product text, when it has been written or reformatted by hand.
+    // null means "generate it from the fields above", which is the default
+    // and what every product did before the text became editable.
+    body: null,
   };
 }
 
@@ -53672,6 +53701,11 @@ function _adAreaDesc(a) {
 // The bullets. Headline plus WHAT, WHERE, WHEN, IMPACTS and SOURCE, which is
 // the shape people actually read a warning in.
 function _adText(a) {
+  // A hand-edited or reformatted body wins over the generated one, and it
+  // wins EVERYWHERE: this function is the single source of the product text
+  // for the preview, the map popup and the published record alike, so an
+  // edit made at the desk is the text the public sees.
+  if (a && typeof a.body === 'string' && a.body.trim()) return a.body;
   const P = _adProduct(a.code);
   const L = [];
   L.push(AD_SIM_LINE);
@@ -54111,6 +54145,9 @@ function _adIssue() {
     code: d.code,
     haz: JSON.parse(JSON.stringify(d.haz)),
     tag: d.tag, source: d.source, extra: d.extra,
+    // Whatever the text actually says at the moment of issue, so a product
+    // edited by hand keeps those words on the map and in the published feed.
+    body: (d.body && d.body.trim()) ? d.body : null,
     areaDesc: _adDraftAreaDesc(),
     geometry: g,
     issued: now,
@@ -54385,9 +54422,31 @@ function _adRenderCompose() {
       <div class="ad-h">Preview</div>
       <div id="ad-preview"></div>
       <div class="ad-row">
+        <button type="button" class="ad-btn" id="ad-edit-btn" onclick="_adToggleEdit()">Edit this text</button>
+        <button type="button" class="ad-btn" id="ad-body-reset" style="display:none" onclick="_adResetBody()">Back to generated text</button>
+        <span class="ad-empty" id="ad-body-note"></span>
+      </div>
+      <div class="ad-row" id="ad-body-row" style="display:none">
+        <textarea class="ad-text" id="ad-body" rows="14" spellcheck="false"
+                  oninput="_adSetBody(this.value)"></textarea>
+      </div>
+      <div class="ad-row">
         <button type="button" class="ad-btn ad-primary" id="ad-issue" onclick="_adIssue()">Issue this product</button>
         <button type="button" class="ad-btn" onclick="_adResetDraft()">Start over</button>
         <span class="ad-empty" id="ad-status"></span>
+      </div>
+    </div>
+
+    <div class="ad-grp">
+      <div class="ad-h">Reformat your own text</div>
+      <div class="ad-empty">Paste a product you wrote yourself and this rewrites it in our format: our banner, our bullet order, your words. Nothing is thrown away - anything that is not a recognised bullet is kept at the end.</div>
+      <div class="ad-row">
+        <textarea class="ad-text" id="ad-import" rows="5" spellcheck="false"
+                  placeholder="Paste your own warning text here"></textarea>
+      </div>
+      <div class="ad-row">
+        <button type="button" class="ad-btn" onclick="_adImportText()">Reformat into our format</button>
+        <span class="ad-empty" id="ad-import-note"></span>
       </div>
     </div>`;
 
@@ -54410,6 +54469,7 @@ function _adSyncDraftUi() {
       + _adEsc(body).split(AD_SIM_LINE)
           .join(`<span class="ad-sim-line">${AD_SIM_LINE}</span>`);
   }
+  _adSyncBodyUi();
   const btn = document.getElementById('ad-issue');
   if (btn) btn.disabled = !_adCanIssue();
   const chips = document.getElementById('ad-zone-chips');
@@ -54418,6 +54478,158 @@ function _adSyncDraftUi() {
       ? _adDraft.zones.map(z => `<button type="button" class="ad-btn ad-mini" onclick="_adRemoveZone('${_adEsc(z.id)}')" title="Remove">${_adEsc(z.name)}${z.state ? ', ' + _adEsc(z.state) : ''} &times;</button>`).join(' ')
       : '<span class="ad-empty">No counties added yet.</span>';
   }
+}
+
+// ── Writing the product text by hand ──────────────────────────────────────
+// The desk generates a product from the boxes above, which is the fast path
+// and the right one most of the time. But a forecaster sometimes needs to say
+// something the boxes cannot express, so the generated text is a starting
+// point rather than a cage: open the editor, change any of it, and those are
+// the words that get issued. "Back to generated text" undoes the override.
+
+// Is the draft's text hand-written rather than generated?
+function _adBodyIsManual() {
+  return !!(_adDraft.body && _adDraft.body.trim());
+}
+
+// The text as it stands: the override if there is one, otherwise what the
+// fields generate right now.
+function _adCurrentText() {
+  return _adText(Object.assign({}, _adDraft, {
+    areaDesc: _adDraftAreaDesc(),
+    expires: Date.now() + (Number(_adDraft.mins) || 30) * 60000,
+  }));
+}
+
+function _adToggleEdit() {
+  const row = document.getElementById('ad-body-row');
+  if (!row) return;
+  const opening = row.style.display === 'none';
+  row.style.display = opening ? '' : 'none';
+  if (opening) {
+    // Seed the editor with the text on screen, so editing starts from what
+    // the forecaster was just reading rather than from an empty box.
+    const ta = document.getElementById('ad-body');
+    if (ta) { ta.value = _adCurrentText(); ta.focus(); }
+  }
+  _adSyncBodyUi();
+}
+
+function _adSetBody(v) {
+  _adDraft.body = v;
+  _adSyncDraftUi();
+}
+
+function _adResetBody() {
+  _adDraft.body = null;
+  const ta = document.getElementById('ad-body');
+  if (ta) ta.value = _adCurrentText();
+  _adSyncDraftUi();
+}
+
+// Paints the editor's own controls. Deliberately does NOT rewrite the
+// textarea while it holds an override, because that would fight the cursor
+// of whoever is typing in it.
+function _adSyncBodyUi() {
+  const manual = _adBodyIsManual();
+  const open = (document.getElementById('ad-body-row') || {}).style;
+  const note = document.getElementById('ad-body-note');
+  const reset = document.getElementById('ad-body-reset');
+  const edit = document.getElementById('ad-edit-btn');
+  if (note) {
+    note.textContent = manual
+      ? 'This product says exactly what is written below. The boxes above no longer rewrite it.'
+      : '';
+  }
+  if (reset) reset.style.display = manual ? '' : 'none';
+  if (edit) edit.textContent = (open && open.display === 'none') ? 'Edit this text' : 'Hide the editor';
+  // Keep the box showing the generated text while it is NOT an override, so
+  // opening the editor after changing a hazard shows the new wording.
+  const ta = document.getElementById('ad-body');
+  if (ta && !manual && open && open.display !== 'none') ta.value = _adCurrentText();
+}
+
+// ── Reformatting somebody else's text into ours ───────────────────────────
+// Takes a product written anywhere else and rewrites it in this desk's
+// format. Real warning text states its fields as "* WHAT...", one bullet
+// each, with the field's text sometimes running over several lines, and ends
+// with tag lines like "HAIL...1.75IN". That is what this reads.
+//
+// The rule it follows: never lose words. Anything that is not a recognised
+// bullet or tag is kept and placed at the end rather than dropped, because
+// silently deleting a sentence from a warning would be the worst possible
+// behaviour for this button.
+function _adReformat(raw) {
+  const lines = String(raw == null ? '' : raw).replace(/\r/g, '').split('\n');
+  const FIELD = /^[*\-\u2022]?\s*(WHAT|WHERE|WHEN|IMPACTS?|SOURCE|ADDITIONAL DETAILS)\s*(?:\.{2,}|:)\s*(.*)$/i;
+  const TAG = /^(HAIL|WIND|TORNADO|MAX HAIL SIZE|MAX WIND GUST|THUNDERSTORM DAMAGE THREAT|TORNADO DAMAGE THREAT|FLASH FLOOD DAMAGE THREAT)\s*(?:\.{2,}|:)\s*(.+)$/i;
+  const fields = {};
+  const tags = [];
+  const loose = [];
+  let cur = null;
+
+  lines.forEach(ln => {
+    const t = ln.trim();
+    if (!t) { cur = null; return; }
+    // Drop any simulation banner the text already carries, ours or another
+    // desk's, so reformatting twice does not stack banners.
+    if (t === AD_SIM_LINE || (/^\*{3,}/.test(t) && /SIMULAT/i.test(t))) return;
+    const tag = TAG.exec(t);
+    if (tag) { tags.push(tag[1].toUpperCase() + '...' + tag[2].trim()); cur = null; return; }
+    const f = FIELD.exec(t);
+    if (f) {
+      let name = f[1].toUpperCase();
+      if (name === 'IMPACT') name = 'IMPACTS';
+      if (name === 'ADDITIONAL DETAILS') name = 'EXTRA';
+      cur = name;
+      fields[name] = (f[2] || '').trim();
+      return;
+    }
+    if (cur) fields[cur] = (fields[cur] ? fields[cur] + ' ' : '') + t;
+    else loose.push(t);
+  });
+
+  const hasAny = Object.keys(fields).length || tags.length || loose.length;
+  if (!hasAny) return '';
+
+  const out = [AD_SIM_LINE, ''];
+  // Prose with no bullets at all becomes the WHAT, which is where a reader
+  // looks first; prose alongside bullets rides at the end instead.
+  const bulleted = ['WHAT', 'WHERE', 'WHEN', 'IMPACTS', 'SOURCE']
+    .some(k => fields[k]);
+  if (fields.WHAT) out.push('* WHAT...' + fields.WHAT);
+  else if (!bulleted && loose.length) out.push('* WHAT...' + loose.join(' '));
+  if (fields.WHERE) out.push('* WHERE...' + fields.WHERE);
+  if (fields.WHEN) out.push('* WHEN...' + fields.WHEN);
+  if (fields.IMPACTS) out.push('* IMPACTS...' + fields.IMPACTS);
+  if (fields.SOURCE) out.push('* SOURCE...' + fields.SOURCE);
+
+  const trailing = [];
+  if (fields.EXTRA) trailing.push(fields.EXTRA);
+  if (loose.length && (bulleted || fields.WHAT)) trailing.push(loose.join(' '));
+  if (trailing.length) { out.push(''); out.push(trailing.join('\n')); }
+  if (tags.length) { out.push(''); tags.forEach(t => out.push(t)); }
+  out.push('');
+  out.push(AD_SIM_LINE);
+  return out.join('\n');
+}
+
+function _adImportText() {
+  const box = document.getElementById('ad-import');
+  const note = document.getElementById('ad-import-note');
+  const raw = box ? box.value : '';
+  const out = _adReformat(raw);
+  if (!out) {
+    if (note) note.textContent = 'Nothing to reformat yet: paste your text above first.';
+    return;
+  }
+  _adDraft.body = out;
+  const row = document.getElementById('ad-body-row');
+  if (row) row.style.display = '';
+  const ta = document.getElementById('ad-body');
+  if (ta) ta.value = out;
+  if (note) note.textContent = 'Reformatted. It is now this product\'s text, and you can keep editing it below.';
+  _adSyncDraftUi();
 }
 
 function _adSetProduct(code) {

@@ -205,6 +205,15 @@ self.addEventListener('fetch', e => {
 // says: /?focus_alert=... and / are the same page and must share one copy.
 function _shellKey() { return self.registration.scope; }
 
+// Say something to every open tab. Used to announce that the copy on disk is
+// now behind the deployed one.
+async function _tellClients(msg) {
+  try {
+    const list = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    list.forEach(c => { try { c.postMessage(msg); } catch (e) {} });
+  } catch (e) {}
+}
+
 async function shellStaleWhileRevalidate(req) {
   const cache = await caches.open(STATIC_CACHE);
   // cache:'no-cache' is the load-bearing option here. A plain fetch(req) is
@@ -220,8 +229,17 @@ async function shellStaleWhileRevalidate(req) {
     });
   const hit = await cache.match(_shellKey());
   if (hit) {
-    // Serve the disk copy now; let the refresh land quietly for next open.
-    netP.catch(() => {});
+    // Serve the disk copy now, and let the refresh land for next open. But
+    // "next open" is not good enough on its own: someone waiting on a change
+    // reloads, sees the old page, and reasonably concludes it never shipped.
+    // So when the refresh turns out to be a DIFFERENT page, the open tabs are
+    // told, and the page offers a reload rather than hiding a version.
+    netP.then(res => {
+      if (!res || !res.ok) return;
+      const was = hit.headers.get('etag') || hit.headers.get('last-modified');
+      const now = res.headers.get('etag') || res.headers.get('last-modified');
+      if (was && now && was !== now) _tellClients({ type: 'gwcfc-shell-updated' });
+    }).catch(() => {});
     return hit;
   }
   try { return await netP; } catch { return new Response('offline', { status: 503 }); }

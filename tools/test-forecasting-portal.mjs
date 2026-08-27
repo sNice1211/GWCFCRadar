@@ -575,6 +575,94 @@ console.log('\n6. the app\'s real Alert Desk, running in the portal');
      r.drawn >= 1, String(r.drawn));
 }
 
+console.log('\n6b. the product text can be rewritten by hand');
+{
+  const r = await page.evaluate(() => {
+    _adDraft = _adNewDraft('TOR');
+    _adDraft.poly = [[27.8, -82.9], [28.1, -82.3], [27.5, -82.4]]
+      .map(p => ({ lat: p[0], lng: p[1] }));
+    const generated = _adCurrentText();
+    // Type over it, the way the editor does.
+    _adSetBody('* WHAT...A tornado on the ground near the bay.\n* WHERE...Right here.');
+    const overridden = _adCurrentText();
+    const manual = _adBodyIsManual();
+    _adIssue();
+    const stored = _adLoad().items[0];
+    const out = {
+      generated, overridden, manual,
+      issuedText: _adText(stored),
+      issuedBody: stored.body,
+      featureDesc: _adToFeature(stored).properties.description,
+    };
+    // Take this scene's product back out of the desk. Leaving it there would
+    // hand the publishing scene downstream two alerts where it expects the
+    // one that scene 6 issued.
+    _adState.items = _adState.items.filter(x => x.uid !== stored.uid);
+    _adSave();
+    // And back to generated.
+    _adDraft = _adNewDraft('TOR');
+    _adDraft.poly = [[27.8, -82.9], [28.1, -82.3], [27.5, -82.4]]
+      .map(p => ({ lat: p[0], lng: p[1] }));
+    _adSetBody('scratch');
+    _adResetBody();
+    out.afterReset = _adCurrentText();
+    out.manualAfterReset = _adBodyIsManual();
+    return out;
+  });
+  ok('the generated text is what you start from',
+     /WHAT\.\.\./.test(r.generated) && /SIMULATED/.test(r.generated));
+  ok('typing over it changes the product text',
+     /tornado on the ground near the bay/.test(r.overridden) && r.manual);
+  ok('the edited words are what actually gets issued',
+     /tornado on the ground near the bay/.test(r.issuedText)
+       && !!r.issuedBody, r.issuedText.slice(0, 60));
+  ok('and they are what the map popup and the published feed carry',
+     /tornado on the ground near the bay/.test(r.featureDesc));
+  ok('going back to generated text really undoes the override',
+     r.manualAfterReset === false && /WHERE\.\.\./.test(r.afterReset));
+}
+
+console.log('\n6c. somebody else\'s text, reformatted into ours');
+{
+  const r = await page.evaluate(() => {
+    const foreign = [
+      'BULLETIN - EAS ACTIVATION REQUESTED',
+      'Severe Thunderstorm Warning',
+      '',
+      '* WHERE...Northern Polk County.',
+      '* WHAT...Sixty mph wind gusts and quarter size hail.',
+      'Damaging winds will also be possible.',
+      '* WHEN...Until 515 PM EDT.',
+      '* SOURCE...Radar indicated.',
+      'HAIL...1.00IN',
+      'WIND...60MPH',
+    ].join('\n');
+    const once = _adReformat(foreign);
+    const twice = _adReformat(once);
+    const prose = _adReformat('Just a line about a storm with no bullets at all.');
+    const empty = _adReformat('   ');
+    return { once, twice, prose, empty,
+             simCount: (once.match(/SIMULATED PRODUCT/g) || []).length,
+             twiceSimCount: (twice.match(/SIMULATED PRODUCT/g) || []).length };
+  });
+  // Our format puts WHAT first, whatever order the source used.
+  ok('the bullets come back in our order, not the source\'s',
+     r.once.indexOf('* WHAT...') < r.once.indexOf('* WHERE...')
+       && r.once.indexOf('* WHERE...') < r.once.indexOf('* WHEN...'),
+     r.once);
+  ok('it wears our banner, top and bottom', r.simCount === 2, String(r.simCount));
+  ok('the tag lines survive',
+     /HAIL\.\.\.1\.00IN/.test(r.once) && /WIND\.\.\.60MPH/.test(r.once));
+  ok('a sentence that belonged to no bullet is kept, not silently dropped',
+     /Damaging winds will also be possible/.test(r.once));
+  ok('reformatting an already reformatted product does not stack banners',
+     r.twiceSimCount === 2, String(r.twiceSimCount));
+  ok('plain prose with no bullets becomes the WHAT',
+     /\* WHAT\.\.\.Just a line about a storm/.test(r.prose), r.prose);
+  ok('and an empty paste produces nothing rather than an empty banner',
+     r.empty === '');
+}
+
 console.log('\n7. publishing');
 {
   // Signed out: refused outright, nothing written.

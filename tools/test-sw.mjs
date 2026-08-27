@@ -67,8 +67,15 @@ const selfMock = {
   location: { origin: 'https://ralphhtml.github.io', hostname: 'ralphhtml.github.io' },
 };
 
+// Open tabs, so "the worker told the page a new version landed" is provable.
+const clientMsgs = [];
+const clientsMock = {
+  claim: async () => {},
+  matchAll: async () => [{ postMessage: (m) => clientMsgs.push(m) }],
+};
+
 const ctx = vm.createContext({
-  self: selfMock, caches, fetch: fetchMock, clients: { claim: async () => {}, matchAll: async () => [] },
+  self: selfMock, caches, fetch: fetchMock, clients: clientsMock,
   Response, Headers, URL, console, setTimeout, clearTimeout, Date, Promise, Math,
 });
 vm.runInContext(readFileSync(join(ROOT, 'sw.js'), 'utf8'), ctx);
@@ -161,6 +168,40 @@ console.log('\n3. first-ever open: nothing cached, the network answers and is st
   ok('while a background refresh was still fired for next time',
      netCalls === 1, String(netCalls));
   slowResolve(new Response('late', { status: 200 })); // release the hanging fetch
+  // Let that release finish writing the shell before the next scene sets its
+  // own cached copy, or the two writes race and the next scene reads this
+  // one's leftovers.
+  await new Promise(res => setTimeout(res, 30));
+
+  console.log('\n5b. a newer version announces itself instead of hiding');
+  {
+    // Serving from disk is what makes a repeat open instant, but it also
+    // means a fresh deploy sits unseen until the NEXT open, which reads like
+    // a change that never shipped. The worker has to say so.
+    clientMsgs.length = 0;
+    const KEY = 'https://ralphhtml.github.io/GWCFCRadar/';
+    const staticC = cacheStore.get('gwcfc-static-v3');
+    staticC.m.set(KEY, new Response('<html>v1</html>',
+      { status: 200, headers: { etag: 'W/"aaa"' } }));
+    netImpl = async () => new Response('<html>v2</html>',
+      { status: 200, headers: { etag: 'W/"bbb"' } });
+    const r = await dispatchFetch(GET(KEY, 'navigate'));
+    ok('the cached page still answers immediately',
+       (await r.clone().text()) === '<html>v1</html>');
+    await new Promise(res => setTimeout(res, 30));
+    ok('and the open tab is told a newer version landed',
+       clientMsgs.some(m => m && m.type === 'gwcfc-shell-updated'),
+       JSON.stringify(clientMsgs));
+
+    // The common case: nothing changed. Saying so would be crying wolf.
+    clientMsgs.length = 0;
+    staticC.m.set(KEY, new Response('<html>v2</html>',
+      { status: 200, headers: { etag: 'W/"bbb"' } }));
+    await dispatchFetch(GET(KEY, 'navigate'));
+    await new Promise(res => setTimeout(res, 30));
+    ok('an unchanged page says nothing at all', clientMsgs.length === 0,
+       JSON.stringify(clientMsgs));
+  }
 
   console.log('\n6. live data is never intercepted');
   const r7 = dispatchFetch(GET('https://api.weather.gov/alerts/active'));
