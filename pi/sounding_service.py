@@ -95,8 +95,14 @@ SOURCES = {
     "rap-now":  {"label": "RAP analysis",    "src": "Op40",  "fallback": "Bak40"},
     "rap-fcst": {"label": "RAP forecast",    "src": "Op40",  "fallback": "Bak40"},
     "obs":      {"label": "Observed (RAOB)", "src": "RAOB",  "fallback": None},
-    "nam":      {"label": "NAM forecast",    "src": "NAM",   "fallback": None},
-    "gfs":      {"label": "GFS forecast",    "src": "GFS",   "fallback": None},
+    # NAM and GFS are not served at a latitude and longitude in this format
+    # either. SounderPy has them, but only through get_bufkit_data, which
+    # wants a station id and so cannot answer "what is the air doing HERE".
+    # These labels say RAP because RAP is what comes back: a menu entry
+    # reading "GFS forecast" over a RAP analysis is the kind of wrong that
+    # gets acted on. Both are hidden in the app's own menu for this reason.
+    "nam":      {"label": "RAP analysis",    "src": "Op40",  "fallback": "Bak40"},
+    "gfs":      {"label": "RAP analysis",    "src": "Op40",  "fallback": "Bak40"},
     # HRRR is not served in this format, so it maps to the RAP analysis it is
     # initialised from rather than quietly returning nothing.
     "hrrr":     {"label": "RAP analysis",    "src": "Op40",  "fallback": "Bak40"},
@@ -104,10 +110,33 @@ SOURCES = {
 
 # Which model SounderPy is asked for. None means a balloon rather than a
 # model, which is a different call and a different kind of answer.
+#
+# Every one of these used to be wrong, and the site built ZERO soundings as a
+# result. Two separate mistakes:
+#
+#   1. "rap" is not the current RAP. It is the NCEI reanalysis archive, which
+#      lags real time by days, and its own banner says so: "RAP REANALYSIS
+#      DATA ACCESS FUNCTION". The real-time analysis is a different name,
+#      "rap-now", off the UCAR THREDDS server. Asking for "rap" and expecting
+#      this hour is asking the wrong service politely.
+#
+#   2. "hrrr", "nam" and "gfs" are not names get_model_data accepts at all.
+#      It takes exactly ['era', 'era5', 'rap', 'ruc', 'rap-ruc', 'rap-now',
+#      'ncep-fnl', 'ncep'] and raises ValueError on anything else, so those
+#      three could never have worked for a second. They exist in SounderPy,
+#      but through get_bufkit_data, which wants a station id rather than a
+#      latitude and longitude and so cannot answer the question this file
+#      asks. Mapping them onto the real-time RAP analysis is the honest
+#      substitution: it is what SOURCES already says happens for HRRR, and it
+#      answers rather than raising.
 SPY_MODELS = {
-    "rap": "rap", "rap-now": "rap", "rap-fcst": "rap",
-    "hrrr": "hrrr", "nam": "nam", "gfs": "gfs", "obs": None,
+    "rap": "rap-now", "rap-now": "rap-now", "rap-fcst": "rap-now",
+    "hrrr": "rap-now", "nam": "rap-now", "gfs": "rap-now", "obs": None,
 }
+# The names get_model_data will actually take. Kept here so a new entry above
+# is caught by a test rather than by a whole day of empty soundings.
+SPY_VALID = ("era", "era5", "rap", "ruc", "rap-ruc", "rap-now",
+             "ncep-fnl", "ncep")
 
 SOUNDING_URL = "https://rucsoundings.noaa.gov/get_soundings.cgi"
 FETCH_TIMEOUT = int(os.environ.get("GWCFC_SND_FETCH_TIMEOUT", "25"))
@@ -526,7 +555,17 @@ def fetch_sounderpy(source, lat, lon, when=None):
         if model is None:               # a balloon, not a model
             clean = spy.get_obs_data(str(lon), year, month, day, hour)
         else:
-            clean = spy.get_model_data(model, [float(lat)], [float(lon)],
+            # ONE list of two numbers, not two lists of one.
+            #
+            # The signature is get_model_data(model, latlon, year, month, day,
+            # hour). Passing [lat] and [lon] separately shifted every argument
+            # along by one: latlon arrived as [lat] alone, year as [lon],
+            # month as the year, and hour never arrived at all. SounderPy then
+            # read latlon[1] and raised IndexError, which the wrapper below
+            # turned into "could not fetch a RAP analysis ... : list index out
+            # of range" and the pipeline truncated before the colon. It read
+            # exactly like an upstream outage. No site had ever built.
+            clean = spy.get_model_data(model, [float(lat), float(lon)],
                                        year, month, day, hour)
     except Exception as e:
         raise RuntimeError(

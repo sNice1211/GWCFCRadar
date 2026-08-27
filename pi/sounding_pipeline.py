@@ -512,7 +512,16 @@ def run_pass(only=None, now=None):
         fails = int(st.get("fails", 0))
         # A site that keeps failing backs off rather than burning the pass
         # budget every fifteen minutes on an answer that is not coming.
-        if fails >= 3 and st.get("last_try"):
+        #
+        # Except when it was asked for by name. --site NAME is the documented
+        # way to debug ONE site, and it used to obey the backoff, so the exact
+        # sites worth debugging (the ones that have failed three times) were
+        # the ones it silently refused to try. It printed "0 built, 0 failed"
+        # and looked like the pipeline had nothing to do. Naming a site is a
+        # deliberate act and outranks a rule meant for the automatic pass.
+        if only:
+            pass
+        elif fails >= 3 and st.get("last_try"):
             try:
                 last = datetime.fromisoformat(st["last_try"])
                 if (now - last) < timedelta(minutes=45 * min(fails, 6)):
@@ -528,7 +537,18 @@ def run_pass(only=None, now=None):
         except Exception as e:
             failed += 1
             state[site_id] = {"fails": fails + 1, "last_try": now.isoformat()}
-            log(f"  snd {site_id}: {str(e)[:160]}")
+            # Not truncated any more, and this is not tidiness.
+            #
+            # The wrapper wraps the real error at the END of its sentence:
+            # "SounderPy could not fetch a RAP analysis for 35.2, -97.4 at
+            # 2026-08-27 14Z: list index out of range". At 160 characters the
+            # cut landed just before the colon, so what reached the log was
+            # only the polite half. It read as an upstream data outage. I
+            # concluded "upstream" twice, and was wrong both times.
+            #
+            # One site's error is one line. Sixty-eight of them is still less
+            # than a screen, and the last few words are the whole diagnosis.
+            log(f"  snd {site_id}: {str(e)}")
     else:
         stopped_at = 0
 
