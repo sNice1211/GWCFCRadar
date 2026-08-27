@@ -890,6 +890,9 @@ body, button, input, select, textarea, table, code, kbd, pre,
     <label for="sc-curve-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">CURVE</label>
     <input type="number" id="sc-curve-input" min="-10" max="10" step="0.5" value="0" oninput="_scOnCurveChange()" title="Cone path curvature (-10 to 10)">
     <div class="dtb-sep"></div>
+    <label for="sc-width-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">WIDTH</label>
+    <input type="number" id="sc-width-input" min="2" max="80" step="1" value="22" oninput="_scOnWidthChange()" title="How wide the cone opens, as a percent of track length (default 22)">
+    <div class="dtb-sep"></div>
     <label for="sc-dots-input" style="font-family:var(--mono);font-size:9px;color:rgba(255,255,255,0.45);letter-spacing:1px;">DOTS</label>
     <input type="number" id="sc-dots-input" min="0" max="20" step="1" value="8" oninput="_scOnDotsChange()" title="Dots along cone edges">
     <div class="dtb-sep"></div>
@@ -4343,6 +4346,13 @@ const SC_ARC_SEGMENTS = 28;
 const SC_MIN_TRACK_MILES = 1;
 const SC_DEFAULT_SPEED_MPH = 35;
 const SC_MIN_CAP_RADIUS_MILES = 5;
+// How wide the swath opens, as a percentage of how far the track runs. The
+// cone starts at a point and fans out to this fraction of its own length at
+// the far end, so a longer forecast track gets a proportionally wider cone,
+// which is how a real forecast cone behaves: uncertainty grows with lead
+// time. 22 was the hardcoded value before WIDTH became adjustable, so it
+// stays the default and every cone drawn until now looks unchanged.
+const SC_DEFAULT_WIDTH_PCT = 22;
 // Same category keys as Track Maker's TTB_ICONS, for the per-dot icon picker.
 const SC_CAT_LABELS = [
   ['', 'None'], ['cat5', 'Cat 5'], ['cat4', 'Cat 4'], ['cat3', 'Cat 3'], ['cat2', 'Cat 2'], ['cat1', 'Cat 1'],
@@ -4451,7 +4461,10 @@ function _scBuildTrack(path, existing, mode) {
   }
   const distanceMiles = totalMeters / 1609.344;
   const heading = pts.length > 1 ? _scBearingDegrees(start, end) : 0;
-  const capRadiusMiles = Math.max(SC_MIN_CAP_RADIUS_MILES, distanceMiles * 0.22);
+  const widthPct = (typeof _scGetWidth === 'function')
+    ? _scGetWidth() : SC_DEFAULT_WIDTH_PCT;
+  const capRadiusMiles = Math.max(SC_MIN_CAP_RADIUS_MILES,
+                                  distanceMiles * (widthPct / 100));
 
   const curve  = (typeof _scGetCurve  === 'function') ? _scGetCurve()  : 0;
   const offset = (typeof _scGetOffset === 'function') ? _scGetOffset() : 0;
@@ -5202,6 +5215,22 @@ function _scGetOffset() {
   return Number.isFinite(v) ? v : 0;
 }
 
+// How wide the swath opens, as a percent of the track's own length. Clamped
+// to the same range the input offers, so a typed-in 900 cannot throw a cone
+// across the hemisphere.
+function _scGetWidth() {
+  const v = Number(document.getElementById('sc-width-input')?.value);
+  if (!Number.isFinite(v)) return SC_DEFAULT_WIDTH_PCT;
+  return Math.min(80, Math.max(2, v));
+}
+
+function _scOnWidthChange() {
+  // Width changes the cone's geometry, so rebuild from the same drawn path
+  // and re-render. Per-point curvatures, categories and speeds ride along in
+  // the second argument, exactly as the curve and offset handlers do.
+  if (_scTrack) { _scTrack = _scBuildTrack(_scTrack.path, _scTrack); _scRenderCone(); }
+}
+
 function _scComputeAndShowResults() {
   if (!_scTrack) return;
   const speed = _scGetSpeedMph();
@@ -5411,7 +5440,8 @@ function _scCommitCurrent() {
   _scCones.push({
     id: _scActiveConeId, color: _scActiveConeColor,
     track: _scTrack, polygon: _scPolygon, centerLine: _scCenterLine, dotLayer: _scDotLayer,
-    speed: _scGetSpeedMph(), curve: _scGetCurve(), dots: _scGetDots(), offset: _scGetOffset(),
+    speed: _scGetSpeedMph(), curve: _scGetCurve(), dots: _scGetDots(),
+    offset: _scGetOffset(), width: _scGetWidth(),
     style: { ..._scStyle },
   });
   // Detach references so _scRenderCone() won't remove these committed layers
@@ -5489,10 +5519,15 @@ function _scSelectCone(id) {
   const curveEl  = document.getElementById('sc-curve-input');
   const dotsEl   = document.getElementById('sc-dots-input');
   const offsetEl = document.getElementById('sc-offset-input');
+  const widthEl  = document.getElementById('sc-width-input');
   if (speedEl)  speedEl.value  = target.speed;
   if (curveEl)  curveEl.value  = target.curve;
   if (dotsEl)   dotsEl.value   = target.dots;
   if (offsetEl) offsetEl.value = target.offset;
+  // A cone saved before WIDTH existed has none recorded; it was drawn at the
+  // old fixed 22, so that is what it goes back to rather than undefined.
+  if (widthEl)  widthEl.value  = (target.width == null)
+    ? SC_DEFAULT_WIDTH_PCT : target.width;
   _scEditingPointIdx = null;
   // The toolbar's rules follow the cone being edited: selecting a
   // multi-point cone flips to multi mode (curve controls off), a drag cone
@@ -6623,6 +6658,7 @@ function portalSerializeCones() {
   const list = (typeof _scCones !== 'undefined' ? _scCones : []).map(c => ({
     id: c.id,
     speed: c.speed, curve: c.curve, dots: c.dots, offset: c.offset,
+    width: c.width == null ? null : c.width,
     style: c.style || null,
     cats: (c.track && c.track.pointCats) || null,
     start: c.track && c.track.start ? ll(c.track.start) : null,

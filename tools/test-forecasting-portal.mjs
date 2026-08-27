@@ -398,6 +398,46 @@ console.log('\n5. the app\'s real Storm Cone tool, running in the portal');
   ok('three clicks and Finish make a real cone', r.cones >= 1 && r.hasRing,
      JSON.stringify(r));
 
+  // WIDTH is the swath control: a percentage of the track's own length, so
+  // doubling it doubles how far the cone opens at its far end. Measured on
+  // the real geometry rather than trusting the input's value.
+  const w = await page.evaluate(() => {
+    const track = _scTrack || (_scCones[0] && _scCones[0].track);
+    const el = document.getElementById('sc-width-input');
+    const before = track.capRadiusMiles;
+    _scTrack = track;
+    el.value = 44;                     // twice the 22 default
+    _scOnWidthChange();
+    const wide = _scTrack.capRadiusMiles;
+    const wideRing = _scTrack.ring.length;
+    el.value = 6;                      // and much narrower
+    _scOnWidthChange();
+    const narrow = _scTrack.capRadiusMiles;
+    el.value = 22;                     // put it back
+    _scOnWidthChange();
+    return { before, wide, narrow, restored: _scTrack.capRadiusMiles, wideRing,
+             clampHigh: (el.value = 900, _scGetWidth()),
+             clampLow: (el.value = -5, _scGetWidth()) };
+  });
+  ok('the WIDTH control exists and the cone starts at the old fixed 22',
+     w.before > 0, String(w.before));
+  ok('doubling WIDTH doubles how wide the swath opens',
+     Math.abs(w.wide / w.before - 2) < 0.02,
+     `${w.before.toFixed(2)} then ${w.wide.toFixed(2)} miles`);
+  ok('and a small WIDTH really narrows it', w.narrow < w.before,
+     `${w.narrow.toFixed(2)} vs ${w.before.toFixed(2)}`);
+  ok('the cone is still a closed ring at any width', w.wideRing > 3,
+     String(w.wideRing));
+  ok('setting it back restores the original swath',
+     Math.abs(w.restored - w.before) < 0.001, String(w.restored));
+  ok('a wild typed-in value is clamped rather than thrown across the map',
+     w.clampHigh === 80 && w.clampLow === 2,
+     `${w.clampHigh} / ${w.clampLow}`);
+  await page.evaluate(() => {
+    const el = document.getElementById('sc-width-input');
+    if (el) { el.value = 22; _scOnWidthChange(); }
+  });
+
   const cities = await page.evaluate(() => {
     _scToggleResults();
     const rows = document.querySelectorAll('#sc-results-body tr').length;
