@@ -45,11 +45,16 @@ const mkStorm = (id, name, lat, lon) => ({
   basin: 'al', cy: 9, year: 2026, cycle: '2026082600', tier: 'full',
   generated: '2026-08-26T01:00:00Z',
   aids: { OFCL: [P(0, lat, lon, 65, null), P(12, lat + 1, lon - 2, 70, null)],
-          AVNO: [P(0, lat, lon, 65, 985), P(12, lat + 1.1, lon - 2.1, 70, 980)] },
+          AVNO: [P(0, lat, lon, 65, 985), P(12, lat + 1.1, lon - 2.1, 70, 980)],
+          // An ensemble member whose name matches none of the old legend
+          // pattern, which is exactly the kind that flooded the legend.
+          CP01: [P(0, lat, lon, 60, 990), P(12, lat + 0.9, lon - 1.8, 62, 988)] },
   aid_meta: {
     OFCL: { kind: 'official', label: 'NHC official', n_points: 2,
             has_track: true, has_intensity: true, tau_max: 12 },
     AVNO: { kind: 'dynamical', label: 'GFS', n_points: 2,
+            has_track: true, has_intensity: true, tau_max: 12 },
+    CP01: { kind: 'ensemble_member', label: 'GEFS member 1', n_points: 2,
             has_track: true, has_intensity: true, tau_max: 12 } },
   official: 'OFCL',
   best_track: [{ dtg: '2026082600', lat, lon, vmax: 65, mslp: 985 }],
@@ -57,6 +62,18 @@ const mkStorm = (id, name, lat, lon) => ({
 });
 const LIVE = { ...mkStorm('al092026', 'GABRIELLE', 21.8, -65.1), active: true };
 const DEAD = { ...mkStorm('al042026', 'DEXTER', 35.0, -50.0), active: false };
+// Cycle stamps relative to now, so these keep meaning the same thing next
+// month instead of quietly ageing into the wrong side of the test.
+const cycleAgo = (hours) => {
+  const d = new Date(Date.now() - hours * 3600e3);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}`
+       + `${p(d.getUTCHours())}`;
+};
+const NOFLAG_FRESH = { ...mkStorm('al112026', 'HERMINE', 24.0, -70.0),
+                       cycle: cycleAgo(6) };
+const NOFLAG_STALE = { ...mkStorm('al022026', 'BARRY', 30.0, -55.0),
+                       cycle: cycleAgo(400) };
 const INDEX = {
   updated: '2026-08-26T01:05:00Z', source: 'ATCF a-decks',
   storms: [
@@ -66,6 +83,15 @@ const INDEX = {
     { id: 'al042026', atcf: 'AL042026', name: 'DEXTER', basin: 'al',
       path: 'al042026.json', cycle: '2026081200', tier: 'full', active: false,
       lat: 35.0, lon: -50.0, vmax: 40, mslp: 1000, n_aids: 2, n_tracks: 2 },
+    // No active flag at all, the shape an older Pi wrote. One is happening
+    // now, one died two weeks ago and would otherwise fan stale guidance
+    // across a quiet map for the rest of the season.
+    { id: 'al112026', atcf: 'AL112026', name: 'HERMINE', basin: 'al',
+      path: 'al112026.json', cycle: cycleAgo(6), tier: 'full',
+      lat: 24.0, lon: -70.0, vmax: 55, mslp: 990, n_aids: 3, n_tracks: 3 },
+    { id: 'al022026', atcf: 'AL022026', name: 'BARRY', basin: 'al',
+      path: 'al022026.json', cycle: cycleAgo(400), tier: 'full',
+      lat: 30.0, lon: -55.0, vmax: 35, mslp: 1004, n_aids: 3, n_tracks: 3 },
   ],
 };
 
@@ -168,6 +194,8 @@ await page.route('**://**', route => {
   if (url.includes('/spaghetti/latest.json')) return json(route, INDEX);
   if (url.includes('/spaghetti/al092026.json')) return json(route, LIVE);
   if (url.includes('/spaghetti/al042026.json')) return json(route, DEAD);
+  if (url.includes('/spaghetti/al112026.json')) return json(route, NOFLAG_FRESH);
+  if (url.includes('/spaghetti/al022026.json')) return json(route, NOFLAG_STALE);
   if (url.includes('firestore.googleapis.com')
       && url.includes('outlooks/latest')) {
     if (fsForbidden) return route.fulfill({ status: 403,
@@ -249,6 +277,59 @@ console.log('\n2. only current storms draw, until the chip says otherwise');
   ok('while a live one still can',
      await page.evaluate(() => (_spagNearestStorm(21.9, -65.0) || {}).name)
      === 'GABRIELLE');
+}
+
+console.log('\n2b. a deck with no active flags still hides dead storms');
+{
+  // The exact shape that produced a season of dead storms on a live map: an
+  // index written by a Pi from before the flag existed. Trusting "no flag"
+  // as "current" showed every storm the a-deck still carried, so the age of
+  // the storm's own cycle stamp decides instead.
+  const s = await page.evaluate(() => {
+    const names = _spagTargets(_spagIndex.idx).map(t => t.name);
+    return {
+      names,
+      freshKept: names.includes('HERMINE'),
+      staleDropped: !names.includes('BARRY'),
+      flaggedDeadStillDropped: !names.includes('DEXTER'),
+      flaggedLiveStillKept: names.includes('GABRIELLE'),
+    };
+  });
+  ok('a storm with no flag but a fresh cycle still draws', s.freshKept,
+     s.names.join(','));
+  ok('one with no flag and a long-dead cycle does not', s.staleDropped,
+     s.names.join(','));
+  ok('and the flag still wins wherever the Pi did record one',
+     s.flaggedDeadStillDropped && s.flaggedLiveStillKept, s.names.join(','));
+  // Past storms on: everything comes back, however it was judged.
+  const withPast = await page.evaluate(() => {
+    _spagGroupToggle('past');
+    const names = _spagTargets(_spagIndex.idx).map(t => t.name);
+    _spagGroupToggle('past');
+    return names;
+  });
+  ok('the Past storms chip still brings all of them back',
+     withPast.includes('BARRY') && withPast.includes('DEXTER'),
+     withPast.join(','));
+}
+
+console.log('\n2c. the legend names models, not every ensemble member');
+{
+  const s = await page.evaluate(async () => {
+    _spagGroupsOn.members = true;
+    await _spagRender();
+    const chips = [...document.querySelectorAll('#spag-legend .spag-leg')]
+      .map(e => e.textContent.trim());
+    const drewMember = _spagModelTrackLayers.length > 0;
+    _spagGroupsOn.members = false;
+    return { chips, drewMember };
+  });
+  ok('an ensemble member stays out of the legend',
+     !s.chips.includes('CP01'), s.chips.join(','));
+  ok('while the real models are still named',
+     s.chips.includes('OFCL') || s.chips.includes('AVNO'), s.chips.join(','));
+  ok('and the member is still drawn on the map, just not listed',
+     s.drewMember);
 }
 
 console.log('\n3. every name tag rides on its own line');

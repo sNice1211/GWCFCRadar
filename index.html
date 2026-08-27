@@ -30251,14 +30251,35 @@ async function _spagFreshDoc(entry) {
 // breadth matters: the index carries invests the NHC public feed does not
 // list yet, and guidance on a developing invest is exactly when people
 // come looking.
+// How old a storm's newest guidance cycle may be and still count as current.
+// The Pi works this out properly from the best track and records it as
+// `active`; this is the same judgement made here from the cycle stamp, for
+// decks written by a Pi that predates that flag.
+const SPAG_STALE_HOURS = 48;
+
+function _spagCycleAgeH(entry) {
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})$/.exec(
+    String((entry && entry.cycle) || ''));
+  if (!m) return null;
+  return (Date.now() - Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4])) / 3600000;
+}
+
+function _spagIsCurrent(entry) {
+  if (entry && entry.active === false) return false;
+  if (entry && entry.active === true) return true;
+  // No flag at all. Trusting that as "current" was the old behaviour, and it
+  // is what turned a quiet map into a whole season of dead storms: an a-deck
+  // keeps June's files all the way through August, so an index written
+  // before the Pi recorded the flag lists every storm of the year. Judge it
+  // by its own cycle stamp instead, which every index has always carried.
+  const age = _spagCycleAgeH(entry);
+  return age == null ? true : age <= SPAG_STALE_HOURS;
+}
+
 function _spagTargets(idx) {
   let storms = (idx && idx.storms) || [];
-  // Only what is happening NOW, unless the Past storms chip is on. An entry
-  // without the flag (an index built by an older Pi) counts as active, so a
-  // stale Pi degrades to the old behaviour rather than an empty map.
-  if (!_spagGroupsOn.past) {
-    storms = storms.filter(s => s.active !== false);
-  }
+  // Only what is happening NOW, unless the Past storms chip is on.
+  if (!_spagGroupsOn.past) storms = storms.filter(_spagIsCurrent);
   return storms;
 }
 
@@ -30400,7 +30421,7 @@ async function _spagRender() {
       if (_spagHidden.has(display)) {
         const st0 = _spagStyleFor(tech, meta.kind);
         legend.set(display, { tech: display, color: st0.color,
-                              label: meta.label, hidden: true });
+                              label: meta.label, hidden: true, group });
         continue;
       }
       const pts = (doc.aids[tech] || []).filter(p => p.lat != null);
@@ -30408,7 +30429,7 @@ async function _spagRender() {
       const st = _spagStyleFor(tech, meta.kind);
       _spagDrawAid(pts, st, display, meta, group);
       legend.set(display, { tech: display, color: st.color,
-                            label: meta.label, hidden: false });
+                            label: meta.label, hidden: false, group });
       n++;
       drawn++;
     }
@@ -30417,14 +30438,24 @@ async function _spagRender() {
   }
 
   // Members thin the legend into noise; the group chip is their handle.
+  // Filtered on the group the aid actually belongs to rather than on a
+  // pattern its name happens to match. The old rule caught AC01 and AP01 and
+  // missed CP01 through NP20, so forty ensemble members sat in a legend
+  // meant to name the handful of real models.
   const legOut = [...legend.values()]
-    .filter(e => !/^A[CP]\d\d$/.test(e.tech))
+    .filter(e => e.group !== 'members')
     .sort((a, b) => a.tech.localeCompare(b.tech));
   _spagRenderLegend(legOut);
+  // Naming every storm reads fine for the two or three that are usually
+  // running and becomes a paragraph when a deck carries more, so past a few
+  // it says how many rather than listing them.
+  const DOT = ` ${String.fromCharCode(0xB7)} `;
+  const bits = stormBits.length > 4
+    ? `${stormBits.length} storms${DOT}${drawn} aids`
+    : stormBits.join(DOT);
   _spagStatus(drawn
-    ? `Cycle ${[...cycles].sort().pop()}z ${String.fromCharCode(0xB7)} `
-      + stormBits.join(` ${String.fromCharCode(0xB7)} `)
-      + ` ${String.fromCharCode(0xB7)} NHC a-deck via the Pi`
+    ? `Cycle ${[...cycles].sort().pop()}z${DOT}${bits}`
+      + `${DOT}NHC a-deck via the Pi`
     : 'The deck is there but nothing positioned survives the filters. '
       + 'Try turning more groups on.');
 }
@@ -47631,7 +47662,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Spaghetti model names now sit directly on their own track instead of hanging off an angled stalk, so a bundle of forty lines reads without a thicket of sticks over it.';
+const APP_LATEST_UPDATE = 'Spaghetti models: only storms happening now, and a legend that names the real models. A whole season of dead storms could show if the Pi had not recorded which were current, and forty ensemble members were crowding out the handful of names worth reading.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
