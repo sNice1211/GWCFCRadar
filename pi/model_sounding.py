@@ -90,6 +90,64 @@ SOUNDING_OVERRIDE = {
                     "hrrr.t{cyc}z.wrfprsf{fhr:02d}.grib2.idx"},
 }
 
+# How far each model actually publishes, for a SOUNDING.
+#
+# Not the same number as the catalogue's "out", and this is the whole point.
+# That number is how far the image pipeline builds, and it is a bandwidth
+# choice: every extra forecast hour is another set of full-domain pictures
+# down a home connection, so GFS stops at 120 and HRRR at 18. A sounding is
+# one request for one half-degree box, a few tens of kilobytes, so none of
+# that reasoning applies and there is no reason to stop where the pictures do.
+#
+# (reach, step). Where a model's reach depends on which run it is, the second
+# entry is (cycles, longer_reach): HRRR and RAP publish much further out on
+# their four-hourly extended runs than on the ones in between, and offering
+# hour 40 of a run that stops at 18 is offering a stop that cannot answer.
+#
+# Anything not named here keeps the catalogue's own numbers, which is the safe
+# answer for a model whose reach was never checked.
+SOUNDING_REACH = {
+    "gfs":      {"out": 384, "step": 3},
+    "gfs0p50":  {"out": 384, "step": 3},
+    "gfs1p00":  {"out": 384, "step": 6},
+    "nam":      {"out": 84,  "step": 3},
+    "namnest":  {"out": 60,  "step": 3},
+    "rap":      {"out": 21,  "step": 1,
+                 "long": {"cycles": (3, 9, 15, 21), "out": 51}},
+    "hrrr":     {"out": 18,  "step": 1,
+                 "long": {"cycles": (0, 6, 12, 18), "out": 48}},
+    "gefs":     {"out": 384, "step": 6},
+    "gefsc00":  {"out": 384, "step": 6},
+    "gefsp01":  {"out": 384, "step": 6},
+    "gefsspr":  {"out": 384, "step": 6},
+    "cmce":     {"out": 384, "step": 6},
+    "hireswarw": {"out": 48, "step": 1},
+    "hireswfv3": {"out": 48, "step": 1},
+}
+
+
+def reach_for(key, m, cyc=None):
+    """How far out, and at what step, this model can be asked for a column.
+
+    cyc is the run being asked about. HRRR runs to 18 hours three times in
+    four and to 48 on the fourth, so a menu built without knowing the run
+    either hides two days of a real forecast or offers stops that answer with
+    an error. Given the run, it is simply a fact.
+    """
+    r = SOUNDING_REACH.get(key)
+    if not r:
+        return int(m.get("out") or 48), max(1, int(m.get("step") or 1))
+    out = int(r["out"])
+    long = r.get("long")
+    if long and cyc is not None:
+        try:
+            if int(cyc) in long["cycles"]:
+                out = int(long["out"])
+        except (TypeError, ValueError):
+            pass
+    return out, max(1, int(r.get("step") or 1))
+
+
 # Products that are two-dimensional by definition rather than by accident, so
 # there is no column in them to find and no version of them that has one.
 # Waves are the sea, RTMA is a surface analysis, and the National Blend is a
@@ -130,12 +188,24 @@ def models():
             continue
         if m["filter"] in NO_COLUMN_FILTERS:
             continue
+        # The run that would be asked for right now, so the reach reported is
+        # this run's reach rather than a best case that may not apply today.
+        try:
+            date_str, cyc = gp.cycle_for(m)
+        except Exception:
+            date_str, cyc = None, None
+        reach, step = reach_for(key, m, cyc)
         out[key] = {
             "label": m.get("label", key),
             "res": m.get("res", ""),
             "cycle_h": m.get("cycle_h"),
-            "out": m.get("out"),
-            "step": m.get("step", 1),
+            "run": f"{date_str}/{cyc}" if date_str else None,
+            # Deliberately NOT the catalogue's "out". That number is how far
+            # the picture pipeline builds, which is a bandwidth budget; a
+            # sounding is one small request and is not bound by it.
+            "out": reach,
+            "step": step,
+            "mapOut": m.get("out"),
             # A model that already asks for pressure levels for its own charts
             # is a safe bet; one that does not may still carry them, so it is
             # offered with a note rather than hidden. HRRR counts, because the
@@ -421,7 +491,9 @@ def main(argv=None):
     if a.list:
         for k, v in sorted(models().items()):
             print(f"  {k:12s} {v['label']:22s} {v['res']:10s} "
-                  f"{'upper air' if v['upper'] else ''}")
+                  f"run {str(v['run']):14s} "
+                  f"f000 to f{v['out']:03d} every {v['step']}h"
+                  f"{'   (maps stop at f%03d)' % v['mapOut'] if v.get('mapOut') and v['mapOut'] != v['out'] else ''}")
         return 0
     if a.lat is None or a.lon is None:
         print("--lat and --lon are needed to build one. --list shows what can.")

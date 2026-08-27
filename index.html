@@ -16702,16 +16702,27 @@ const SND_BACK_HOURS = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48];
 // with the list. Asked once per page, cached, and quietly skipped when there
 // is no Pi: the menu then simply has no model entries rather than a row of
 // entries that fail.
-let _sndPiSources = null;        // null until asked, [] when there are none
+let _sndPiSources = null;        // null until answered, [] when there are none
 let _sndPiSourcesPr = null;
 
+// An EMPTY answer is not kept.
+//
+// This was the bug that made the whole feature look dead. `if (_sndPiSources)`
+// is true for an empty array, so the first attempt was also the last: open the
+// panel once before the Pi's address had resolved, or once against a Pi still
+// running the old serve.py, and the model entries never appeared again for the
+// rest of the session however many times you reopened it. Restarting the Pi
+// did not help, because the page had already decided.
+//
+// A real list is worth keeping. Nothing is worth asking again for, which is
+// the case that matters: the Pi comes back, and the menu fills in.
 async function _sndLoadPiSources() {
-  if (_sndPiSources) return _sndPiSources;
+  if (_sndPiSources && _sndPiSources.length) return _sndPiSources;
   if (_sndPiSourcesPr) return _sndPiSourcesPr;
   _sndPiSourcesPr = (async () => {
     const base = _hdBase || (typeof _hdResolveBase === 'function'
       ? await _hdResolveBase() : null);
-    if (!base) return (_sndPiSources = []);
+    if (!base) { _sndPiSourcesPr = null; return (_sndPiSources = []); }
     let list = [];
     try {
       const r = await fetch(`${base}/sounding/sources`,
@@ -16719,8 +16730,14 @@ async function _sndLoadPiSources() {
       if (r.ok) {
         const d = await r.json();
         list = (d && Array.isArray(d.models)) ? d.models : [];
+      } else if (r.status === 404) {
+        // Worth saying once. An older serve.py has no such door, and the
+        // silent version of this is a menu that is simply missing half of
+        // itself with nothing to explain why.
+        console.log('[soundings] this Pi has no /sounding/sources yet; '
+          + 'update it and restart gwcfc-serve to get model soundings');
       }
-    } catch (e) { /* an older serve.py with no such door */ }
+    } catch (e) { /* an older serve.py, or the Pi is not answering */ }
     _sndPiSources = list.map(m => ({
       id: m.id,                       // "model:gfs"
       pi: m.id,
@@ -16766,27 +16783,59 @@ function _sndModelHours(src) {
   return hrs;
 }
 
-// Point the slider at whatever the current source measures in, and keep the
-// thumb where it was rather than snapping it home: switching from the GFS to
-// the NAM at hour 12 should show hour 12 of the NAM.
+// Point the slider at whatever the current source measures in.
+//
+// Three different meanings live on this one control, and until now which one
+// applied was only settled AFTER a fetch came back, from whatever it happened
+// to be. So switching source left the slider on the previous source's scale,
+// and dragging it in that moment asked for an hour that meant something else:
+// hour 12 of a forecast, read as twelve hours ago.
+//
+//   a model      forecast hours, its own cadence and reach
+//   an analysis  hours back through analyses that have happened
+//   the levels   the forecast hours the Pi's own images were built at
+//
+// Set from the SOURCE, before the fetch, so the control means the right thing
+// from the moment it is picked.
 function _sndSyncHourScale(el) {
   const pick = _sndFind(_sndSource);
   const sl = el && el.querySelector('.snd-hour');
   const lbl = el && el.querySelector('.snd-hour-lbl');
   if (!sl) return;
+  const wasModel = el._modelHours && el._modelHours.length;
+  const was = wasModel ? el._modelHours[+sl.value] : null;
+
   if (pick && pick.isModel) {
-    const was = el._modelHours ? el._modelHours[+sl.value] : null;
     el._modelHours = _sndModelHours(pick);
     sl.max = Math.max(0, el._modelHours.length - 1);
+    // Keep the hour rather than the stop number: switching from the GFS at
+    // hour 12 to the NAM should land on hour 12 of the NAM, not on the NAM's
+    // twelfth stop, which is a different time.
     const keep = was == null ? 0
       : el._modelHours.reduce((best, h, i) =>
           Math.abs(h - was) < Math.abs(el._modelHours[best] - was) ? i : best, 0);
     sl.value = keep;
     if (lbl) lbl.textContent =
       'F+' + String(el._modelHours[keep]).padStart(3, '0');
-  } else {
-    el._modelHours = null;
+    return;
   }
+
+  el._modelHours = null;
+  // The level images are the other forecast-hour source, and their hours come
+  // from the Pi's manifest rather than from a model's cadence.
+  if (pick && pick.id === 'levels') {
+    el._piMode = false;
+    const hrs = (_sndManifest && _sndManifest.hours) || [0];
+    sl.max = Math.max(0, hrs.length - 1);
+    sl.value = 0;
+    if (lbl) lbl.textContent = 'F+' + String(hrs[0] || 0).padStart(3, '0');
+    return;
+  }
+  // Everything else is an analysis, and its slider runs backwards.
+  el._piMode = true;
+  sl.max = SND_BACK_HOURS.length - 1;
+  sl.value = 0;
+  if (lbl) lbl.textContent = 'now';
 }
 
 // Repaint the picker once the Pi has said what it can serve. Built rather
@@ -18818,8 +18867,14 @@ async function _sndFetchFor(el, lat, lon, hr) {
     } catch (e) {
       const why = String((e && e.message) || e);
       try {
-        return { prof: await _sndOpenMeteo(lat, lon, hr || 0, pick.id),
-                 fellBack: why };
+        // Deliberately hour ZERO, not the forecast hour that was asked for.
+        // Open-Meteo's hour means hours BACK, so handing it 240 asks for ten
+        // days ago and draws it as though it were ten days ahead. Falling
+        // back to the current hour is honest; falling back to the same number
+        // is a chart that is wrong in a way nobody would spot.
+        const prof = await _sndOpenMeteo(lat, lon, 0, pick.id);
+        return { prof, fellBack: why + (hr ? ' Showing the current hour '
+          + `instead of F+${String(hr).padStart(3, '0')}.` : '') };
       } catch (e2) {
         throw new Error(why + ' (and Open-Meteo could not answer either: '
           + String((e2 && e2.message) || e2) + ')');
@@ -18903,14 +18958,23 @@ async function _sndRefresh(el, hr) {
     el._piMode = prof.via === 'pi' || prof.via === 'pisite'
       || prof.via === 'openmeteo';
 
+    // Unless a MODEL is what was asked for. A model fetch that failed and
+    // fell back to Open-Meteo comes back saying via 'openmeteo', which would
+    // rescale the slider from forecast hours to hours-back underneath a thumb
+    // the reader has not touched. What the control means belongs to the
+    // source that was chosen, not to whichever source happened to answer.
+    const _pickNow = _sndFind(_sndSource);
+    const _wantModel = !!(_pickNow && _pickNow.isModel);
+    if (_wantModel) el._piMode = false;
+
     const sl = el.querySelector('.snd-hour');
-    if (prof.via === 'model') {
+    if (prof.via === 'model' || _wantModel) {
       // A model's slider is its own forecast hours. Set from the source
       // rather than from what came back, so a fetch that fell back to
       // Open-Meteo does not silently rescale the control under the thumb.
       el._piMode = false;
-      const pick = _sndFind(_sndSource);
-      el._modelHours = el._modelHours || _sndModelHours(pick);
+      el._modelHours = (el._modelHours && el._modelHours.length)
+        ? el._modelHours : _sndModelHours(_pickNow);
       sl.max = Math.max(0, el._modelHours.length - 1);
       const at = el._modelHours.indexOf(prof.fhr == null ? (hr || 0) : prof.fhr);
       sl.value = at < 0 ? 0 : at;
@@ -48118,7 +48182,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Right-click a point and you can now pull a sounding out of the models themselves: the GFS, NAM, RAP, HRRR and the rest, at any forecast hour, cut from the same run the models panel is drawing. The analysis sources are back in that menu too, now that they build again.';
+const APP_LATEST_UPDATE = 'Model soundings now reach much further than the maps do: the GFS out to 384 hours where its charts stop at 120, and HRRR and RAP out to two days on their extended runs. Three bugs that made the model menu look empty are fixed, and the forecast-hour slider now means the right thing the moment you pick a source instead of after the first fetch.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

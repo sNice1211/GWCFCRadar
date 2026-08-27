@@ -213,7 +213,46 @@ for sid in ("'rap'", "'obs'", "'pisite'", "'levels'"):
     ok("%s is offered again" % sid.strip("'"),
        bool(line) and "hidden: true" not in line, line.strip()[:90])
 
-print("\n14. the slider means forecast hours for a model, and says so")
+print("\n14b. soundings reach further than the pictures do")
+# The catalogue's "out" is a bandwidth budget for full-domain images. A
+# sounding is one small box, so stopping where the pictures stop throws away
+# most of a run for no reason.
+for key, want in (("gfs", 384), ("nam", 84), ("gefs", 384)):
+    reach, step = ms.reach_for(key, MODELS[key], cyc="06")
+    ok("%s reaches f%03d for a sounding" % (key, want), reach == want, reach)
+    ok("  which is further than its maps go (f%03d)" % MODELS[key]["out"],
+       reach > MODELS[key]["out"])
+# HRRR and RAP publish much further on their extended runs, and offering
+# hour 40 of a run that stops at 18 is offering a stop that cannot answer.
+ok("HRRR reaches 48 on an extended run",
+   ms.reach_for("hrrr", MODELS["hrrr"], cyc="06")[0] == 48)
+ok("and only 18 on the ones in between",
+   ms.reach_for("hrrr", MODELS["hrrr"], cyc="07")[0] == 18)
+ok("RAP reaches 51 on an extended run",
+   ms.reach_for("rap", MODELS["rap"], cyc="15")[0] == 51)
+ok("and only 21 on the ones in between",
+   ms.reach_for("rap", MODELS["rap"], cyc="16")[0] == 21)
+ok("a model with no reach of its own keeps the catalogue's numbers",
+   ms.reach_for("nosuch", {"out": 33, "step": 7}) == (33, 7))
+ok("and the menu reports the reach, not the picture budget",
+   ms.models()["gfs"]["out"] > ms.models()["gfs"]["mapOut"],
+   f"{ms.models()['gfs']['out']} vs {ms.models()['gfs']['mapOut']}")
+
+print("\n15. the failures that made this look dead the first time")
+ok("an empty answer from the Pi is NOT cached forever, because an empty "
+   "array is truthy and that made the first try the last one",
+   "_sndPiSources && _sndPiSources.length" in app)
+ok("and a Pi with no such door says so in the console rather than silently "
+   "offering half a menu", "has no /sounding/sources yet" in app)
+ok("the slider scale is set from the SOURCE before the fetch, not from "
+   "whatever answered after it",
+   "_sndSyncHourScale" in app and "_wantModel" in app)
+ok("a model that fell back to Open-Meteo keeps its forecast-hour scale",
+   "if (_wantModel) el._piMode = false;" in app)
+ok("and that fallback asks for the current hour rather than reading the "
+   "forecast hour as hours ago", "_sndOpenMeteo(lat, lon, 0, pick.id)" in app)
+
+print("\n16. the slider means forecast hours for a model, and says so")
 ok("a model gets its own hour scale", "_sndModelHours" in app)
 ok("switching source rebuilds it before fetching, not after",
    app.index("_sndSyncHourScale(el);\n      _sndRefresh(el, 0);") > 0)

@@ -897,6 +897,40 @@ def check(lat=35.4, lon=-97.6):
             print(f"  {name:9} --  {e}")
         except Exception as e:
             print(f"  {name:9} !!  {e.__class__.__name__}: {e}")
+    # The model sources are a different path entirely: no SounderPy, no
+    # rucsoundings, just NOAA's filter service and eccodes. They can work
+    # perfectly while every analysis above fails, and the other way round, so
+    # they are checked separately rather than being assumed to follow.
+    print()
+    print("  Model soundings (a column out of the runs the maps are drawn "
+          "from):")
+    try:
+        import model_sounding
+    except Exception as e:
+        print(f"    UNAVAILABLE: {e}")
+        print("    model_sounding.py has to sit beside this file, and it "
+              "imports gfs_pipeline, which needs eccodes and numpy.")
+    else:
+        avail = model_sounding.models()
+        if not avail:
+            print("    none. gfs_pipeline could not be read, so there is no "
+                  "model catalogue to work from.")
+        else:
+            print(f"    {len(avail)} available: " + ", ".join(sorted(avail)))
+            # One real fetch, on the model most likely to be asked for. This
+            # is the whole point of a check: reporting what is installed is
+            # not the same as reporting that it works.
+            for probe in ("gfs", "nam", "rap"):
+                if probe not in avail:
+                    continue
+                try:
+                    out = model_sounding.model_profile(probe, lat, lon, 0)
+                    print(f"    {probe:9} ok  {out['levels']:>4} levels, "
+                          f"run {out['run']} f000")
+                except Exception as e:
+                    print(f"    {probe:9} --  {e}")
+                break
+
     print()
     if not libs["sounderpy"]:
         print("  SounderPy is missing, so the plain text soundings above are")
@@ -914,7 +948,15 @@ def main(argv=None):
                     help="say what is installed, fetch nothing")
     ap.add_argument("--lat", type=float)
     ap.add_argument("--lon", type=float)
-    ap.add_argument("--source", default="rap", choices=sorted(SOURCES))
+    # Not a choices= list any more. The model sources are named model:<key>
+    # and the keys come from the model catalogue at runtime, so argparse
+    # cannot know them in advance, and refusing them here would make the
+    # command unable to test the thing it is most often run to test.
+    ap.add_argument("--source", default="rap",
+                    help="one of " + ", ".join(sorted(SOURCES))
+                         + ", or model:<key> for a column out of a model run")
+    ap.add_argument("--fhr", type=int, default=0,
+                    help="forecast hour, for a model: source")
     ap.add_argument("--when", help="YYYYMMDDHH in UTC; default is the last hour")
     ap.add_argument("--no-cache", action="store_true")
     a = ap.parse_args(argv)
@@ -923,7 +965,8 @@ def main(argv=None):
         return check(a.lat if a.lat is not None else 35.4,
                      a.lon if a.lon is not None else -97.6)
     try:
-        out = sounding(a.source, a.lat, a.lon, a.when, not a.no_cache)
+        out = sounding(a.source, a.lat, a.lon, a.when, not a.no_cache,
+                       fhr=a.fhr)
     except RuntimeError as e:
         print(json.dumps({"error": str(e)}, indent=1))
         return 1
