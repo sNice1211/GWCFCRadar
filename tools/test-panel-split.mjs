@@ -253,30 +253,43 @@ console.log('\n2. only current storms draw, until the chip says otherwise');
 {
   await page.evaluate(() => _spagToggle());
   await page.waitForTimeout(500);
+  // Which storms are in play is read from the filter itself rather than
+  // from a sentence about it. The panel no longer prints that sentence when
+  // things are working, and a test that reads prose is testing the prose.
   let s = await page.evaluate(() => ({
-    tags: [...document.querySelectorAll('.spag-tag')].map(e => e.textContent),
-    status: document.getElementById('spag-status').textContent,
+    drew: _spagModelTrackLayers.length,
+    names: _spagTargets(_spagIndex.idx).map(t => t.name),
     chip: !!document.querySelector('#spag-groups [data-group="past"]'),
   }));
   ok('there is a Past storms chip, off by default', s.chip
      && await page.evaluate(() => _spagGroupsOn.past === false));
-  ok('the live storm draws', /GABRIELLE/.test(s.status), s.status);
-  ok('the dead one does not', !/DEXTER/.test(s.status), s.status);
+  ok('the live storm draws',
+     s.names.includes('GABRIELLE') && s.drew > 0, s.names.join(','));
+  ok('the dead one does not', !s.names.includes('DEXTER'), s.names.join(','));
   await page.evaluate(() => _spagGroupToggle('past'));
   await page.waitForTimeout(500);
   s = await page.evaluate(() => ({
-    status: document.getElementById('spag-status').textContent }));
+    names: _spagTargets(_spagIndex.idx).map(t => t.name) }));
   ok('turning the chip on brings the past storm back',
-     /DEXTER/.test(s.status) && /GABRIELLE/.test(s.status), s.status);
+     s.names.includes('DEXTER') && s.names.includes('GABRIELLE'),
+     s.names.join(','));
   await page.evaluate(() => _spagGroupToggle('past'));
   await page.waitForTimeout(400);
-  ok('and off hides it again', !/DEXTER/.test(await page.evaluate(() =>
-     document.getElementById('spag-status').textContent)));
+  ok('and off hides it again', !(await page.evaluate(() =>
+     _spagTargets(_spagIndex.idx).map(t => t.name))).includes('DEXTER'));
   ok('a dead storm cannot lend its name to an ensemble track',
      await page.evaluate(() => _spagNearestStorm(35.0, -50.0) === null));
   ok('while a live one still can',
      await page.evaluate(() => (_spagNearestStorm(21.9, -65.0) || {}).name)
      === 'GABRIELLE');
+  // Working quietly is the contract now: the chips are the readout, and a
+  // line of prose restating them was what crowded the top of the card.
+  ok('a successful draw says nothing in words',
+     (await page.evaluate(() =>
+       document.getElementById('spag-status').textContent)).trim() === '');
+  ok('and the panel carries no prose paragraphs at all',
+     await page.evaluate(() => !document.getElementById('spag-intro')
+                            && !document.getElementById('tanim-note')));
 }
 
 console.log('\n2b. a deck with no active flags still hides dead storms');
