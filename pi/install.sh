@@ -699,6 +699,31 @@ systemctl --user enable --now gwcfc-ens.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-spag.timer     >/dev/null 2>&1
 systemctl --user enable --now gwcfc-feeds.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-update.timer   >/dev/null 2>&1
+# The publishing account, BEFORE the publisher is started.
+#
+# Writing the Pi's address to Firestore needs a real account. The rules
+# started requiring one on 2026-08-26, and nothing here ever created the file
+# that holds it, so every deployment in the world began failing at the same
+# moment: 676 refusals in a row on this one, each a single log line, while the
+# site quietly served an address that had stopped answering hours earlier.
+#
+# Interactive: ask for it now, and prove it works before storing it.
+# Non-interactive (a re-run from a timer, a remote script): say so loudly and
+# carry on, because refusing to install over this would be worse.
+if [ ! -s "$HOME/.gwcfc_fb_auth.json" ]; then
+  say "Publishing account"
+  if [ -t 0 ]; then
+    echo "   This Pi has no account to publish its address with, so the site"
+    echo "   will not learn where it is. It takes about a minute to fix."
+    echo
+    "$VENV/bin/python" "$REPO/pi/publish_url.py" --set-auth || true
+  else
+    warn "no ~/.gwcfc_fb_auth.json, so the address CANNOT be published"
+    echo "   Every other part of this will work and the site will still not"
+    echo "   find the Pi. Run this when you are at a terminal:"
+    echo "       $VENV/bin/python $REPO/pi/publish_url.py --set-auth"
+  fi
+fi
 systemctl --user enable  gwcfc-publish.service     >/dev/null 2>&1
 systemctl --user restart gwcfc-publish.service     >/dev/null 2>&1
 # The recorder only makes sense once a station list exists; without one it

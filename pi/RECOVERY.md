@@ -131,6 +131,34 @@ journalctl --user -u gwcfc-publish -f
 
 You should see messages like "watching; the site is on http://127.0.0.1:8080" every 20 seconds, and "watching; published to https://..." when it finds a new address.
 
+### If it says "403: Missing or insufficient permissions"
+
+**This is the most common way the site breaks while the Pi is completely healthy.** The tunnel is up, the Pi answers, the address is right, and none of it reaches the site because the write is being refused. What visitors see is a radar that will not load, which looks nothing like the actual fault.
+
+Writing the address needs a real Firebase account. Anonymous used to be accepted and is not any more, because anyone at all can sign in anonymously with the public key, which would let anyone point every visitor's browser at a server of their choosing.
+
+```bash
+python3 ~/GWCFCRadar/pi/publish_url.py --check
+```
+
+If that says `publishes as : NOBODY`, this is your problem. To fix it:
+
+1. In the [Firebase console](https://console.firebase.google.com/), open **Authentication → Users → Add user**:
+   - Email: `pi-publisher@gwcfc-radar.local`
+   - Password: something long and random
+
+   The address is never emailed, so a `.local` one is fine. **Nothing else in the project is touched.** This account owns no data; it exists only to prove "I am the Pi". Creating or deleting it cannot affect your own account or anything in Firestore.
+
+2. On the Pi:
+   ```bash
+   python3 ~/GWCFCRadar/pi/publish_url.py --set-auth
+   systemctl --user restart gwcfc-publish
+   ```
+
+   It checks the password against Firebase before saving it, so you find out immediately rather than from a log line hours later.
+
+If you ever need to change the password: because the address is `.local`, **no reset email can arrive**. Delete the user in the console and add it again with a new one.
+
 ### Check the radar data is flowing:
 ```bash
 journalctl --user -u gwcfc-radar -f

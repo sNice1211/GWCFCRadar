@@ -314,6 +314,93 @@ def _post(url, payload):
 
 
 AUTH_FILE = os.path.expanduser("~/.gwcfc_fb_auth.json")
+DEFAULT_PI_EMAIL = "pi-publisher@gwcfc-radar.local"
+
+# How many runs in a row have failed, and since when. A publisher that fails
+# is not a one-off event, it is a condition, and the difference matters: the
+# outage on 2026-08-27 was 676 consecutive failures, each one a single line
+# that looked exactly like the last, in a log nobody had reason to open.
+FAIL_STATE = os.path.expanduser("~/.gwcfc-publish-failures")
+
+# The one sentence anyone reading a failure actually needs.
+SETUP_HELP = [
+    "This Pi has no publishing account, so it is signing in anonymously,",
+    "and the current database rules refuse anonymous writes to piEndpoint.",
+    "",
+    "  1. In the Firebase console, Authentication, Users, Add user:",
+    f"       {DEFAULT_PI_EMAIL}   with a long random password",
+    "  2. On this Pi:  python3 pi/publish_url.py --set-auth",
+    "",
+    "That is the whole fix. Nothing else on the Pi needs to change.",
+]
+
+
+def auth_creds():
+    """The Pi's publishing account, or None if it has not been set up."""
+    try:
+        with open(AUTH_FILE) as fh:
+            c = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if isinstance(c, dict) and c.get("email") and c.get("password"):
+        return c
+    return None
+
+
+def set_auth():
+    """Ask for the publishing account and write it down, once.
+
+    This exists because the file it writes has to exist and nothing created
+    it. The rules started requiring a real account on 2026-08-26, install.sh
+    never wrote this file, and so every deployment in the world began failing
+    at the same moment with no instruction anywhere near the failure.
+    """
+    print("The Pi needs its own Firebase account to publish its address.")
+    print("Create one in the Firebase console under Authentication, Users.")
+    print("The address is never emailed, so a .local one is fine.\n")
+    try:
+        email = input(f"  email [{DEFAULT_PI_EMAIL}]: ").strip() or DEFAULT_PI_EMAIL
+        try:
+            import getpass
+            password = getpass.getpass("  password: ")
+        except Exception:
+            password = input("  password: ")
+    except (EOFError, KeyboardInterrupt):
+        print("\nnothing written")
+        return 1
+    if not password:
+        print("no password given, nothing written")
+        return 1
+    # Proved before it is stored. Writing an unusable password and finding out
+    # hours later from a log line is the failure this whole change is about.
+    print("\n  checking it works...")
+    try:
+        _post("https://identitytoolkit.googleapis.com/v1/"
+              f"accounts:signInWithPassword?key={API_KEY}",
+              {"email": email, "password": password, "returnSecureToken": True})
+    except urllib.error.HTTPError as e:
+        detail = _detail(e)
+        print(f"  that did not sign in: {detail}")
+        if "EMAIL_NOT_FOUND" in detail:
+            print(f"  There is no account called {email} in this project yet.")
+            print("  Create it first: Firebase console, Authentication, Users,")
+            print("  Add user. Nothing else in the project is affected.")
+        elif "INVALID_PASSWORD" in detail or "INVALID_LOGIN" in detail:
+            print("  The account exists but that is not its password. The")
+            print("  address is a .local one, so no reset email can arrive:")
+            print("  delete the user and add it again with a new password.")
+        print("  nothing written")
+        return 1
+    except Exception as e:
+        print(f"  could not reach Firebase to check it: {e}")
+        print("  nothing written")
+        return 1
+    with open(AUTH_FILE, "w") as fh:
+        json.dump({"email": email, "password": password}, fh)
+    os.chmod(AUTH_FILE, 0o600)          # it is a password, in plain text
+    print(f"  signed in fine. Saved to {AUTH_FILE} (readable only by you).")
+    print("  Next:  systemctl --user restart gwcfc-publish")
+    return 0
 
 
 def sign_in():
@@ -328,13 +415,15 @@ def sign_in():
     ({"email": "...", "password": "..."}, a user created in the Firebase
     console just for the Pi), the write is made as that account, and the
     published rules can then refuse everyone else.
+
+    The anonymous fallback is kept, because a deployment still running the
+    older rules works on it and hard-failing would break them for no reason.
+    But it is no longer SILENT. It used to log nothing at all when the file
+    was simply absent, so the only trace of a Pi that could never publish
+    again was the refusal itself, one line, on repeat.
     """
-    try:
-        with open(AUTH_FILE) as fh:
-            c = json.load(fh)
-    except (OSError, ValueError):
-        c = {}
-    if isinstance(c, dict) and c.get("email") and c.get("password"):
+    c = auth_creds()
+    if c:
         try:
             r = _post(
                 "https://identitytoolkit.googleapis.com/v1/"
@@ -345,10 +434,76 @@ def sign_in():
         except urllib.error.HTTPError as e:
             log(f"pi-account sign-in failed ({_detail(e)}), "
                 "falling back to anonymous")
+            log(f"  the account in {AUTH_FILE} is {c['email']}; if that is not")
+            log("  a user in the Firebase project, or the password has changed,")
+            log("  run: python3 pi/publish_url.py --set-auth")
+    else:
+        log(f"no publishing account: {AUTH_FILE} does not exist")
+        log("  signing in anonymously, which the current rules refuse")
+        log("  FIX: python3 pi/publish_url.py --set-auth")
     r = _post(
         f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={API_KEY}",
         {"returnSecureToken": True})
     return r["idToken"]
+
+
+def _fail_count(reset=False):
+    """Consecutive failures, and when the run of them started.
+
+    Kept on disk rather than in memory because the publisher runs both as a
+    one-shot and as a watcher, and a one-shot that fails every hour for a
+    month is the same condition as a watcher failing every twenty seconds.
+    """
+    if reset:
+        try:
+            os.unlink(FAIL_STATE)
+        except OSError:
+            pass
+        return 0, 0.0
+    try:
+        with open(FAIL_STATE) as fh:
+            d = json.load(fh)
+        n, since = int(d.get("n", 0)), float(d.get("since", 0))
+    except (OSError, ValueError, TypeError):
+        n, since = 0, 0.0
+    n += 1
+    if not since:
+        since = time.time()
+    try:
+        with open(FAIL_STATE, "w") as fh:
+            json.dump({"n": n, "since": since}, fh)
+    except OSError:
+        pass
+    return n, since
+
+
+def _report_failure(code, detail):
+    """Say what went wrong, and say it louder the longer it has been wrong.
+
+    A failure that repeats identically is invisible: 676 lines that all read
+    the same are one line as far as anybody skimming is concerned. So the run
+    of them is counted and named, and the setup instructions are repeated at
+    the top of every fresh hour rather than once at the very beginning where
+    they scrolled away.
+    """
+    n, since = _fail_count()
+    log(f"could not publish: HTTP {code}: {detail}")
+    if code in (401, 403):
+        if not auth_creds():
+            for line in SETUP_HELP:
+                log("  " + line if line else "")
+        else:
+            log("  that is the rules refusing the write. Publish the piEndpoint")
+            log("  block from firebase/FIRESTORE_RULES.txt in the console, and")
+            log(f"  check {auth_creds()['email']} matches isPiPublisher() there.")
+    elif code == 400 and "CONFIGURATION_NOT_FOUND" in detail:
+        log("  anonymous sign-in is switched off for this project. Turn it")
+        log("  on under Authentication, Sign-in method, Anonymous.")
+    if n > 1:
+        hours = (time.time() - since) / 3600.0
+        log(f"  this has now failed {n} times in a row, over {hours:.1f} hours.")
+        log("  The site is on whatever address was published BEFORE that, which")
+        log("  may have stopped working. This is not a passing glitch.")
 
 
 def publish(url, token):
@@ -429,17 +584,11 @@ def publish_if_changed(force=False, patience=0):
     try:
         ok = publish(url, sign_in())
     except urllib.error.HTTPError as e:
-        detail = _detail(e)
-        log(f"could not publish: HTTP {e.code}: {detail}")
-        if e.code in (401, 403):
-            log("  that is the rules refusing the write. Publish the piEndpoint")
-            log("  block from firebase/FIRESTORE_RULES.txt in the console.")
-        elif e.code == 400 and "CONFIGURATION_NOT_FOUND" in detail:
-            log("  anonymous sign-in is switched off for this project. Turn it")
-            log("  on under Authentication, Sign-in method, Anonymous.")
+        _report_failure(e.code, _detail(e))
         return False
     except Exception as e:
         log(f"could not publish: {e}")
+        _fail_count()
         return False
     if ok:
         try:
@@ -447,6 +596,7 @@ def publish_if_changed(force=False, patience=0):
                 f.write(url)
         except OSError:
             pass
+        _fail_count(reset=True)
         log(f"published {url}")
     return ok
 
@@ -459,6 +609,32 @@ def check(patience=45):
     routable for a few seconds. Reporting a failure then is reporting
     impatience.
     """
+    # The publishing account, FIRST, because it is the one thing that can be
+    # wrong while every other line below reads perfectly. That is exactly what
+    # happened on 2026-08-27: the tunnel was up, the Pi answered, the address
+    # was correct, and none of it reached the site because the write was being
+    # refused. Nothing in this report said so.
+    creds = auth_creds()
+    if creds:
+        print(f"  publishes as   : {creds['email']}")
+    else:
+        print(f"  publishes as   : NOBODY. {AUTH_FILE} does not exist, so this")
+        print("    Pi signs in anonymously, and the current rules refuse that.")
+        print("    Everything below can look perfect and the site still never")
+        print("    hears about it.")
+        print("    FIX: python3 pi/publish_url.py --set-auth")
+    n, since = 0, 0.0
+    try:
+        with open(FAIL_STATE) as fh:
+            d = json.load(fh)
+        n, since = int(d.get("n", 0)), float(d.get("since", 0))
+    except (OSError, ValueError, TypeError):
+        pass
+    if n:
+        hours = (time.time() - since) / 3600.0 if since else 0.0
+        print(f"  recent runs    : {n} consecutive failures, over "
+              f"{hours:.1f} hours")
+
     pin = pinned_url()
     # Whether this address was PROVEN alive a moment ago, rather than merely
     # read out of a file. It changes what a failure below means, and the two
@@ -570,6 +746,8 @@ def why():
 def main():
     if "--why" in sys.argv:
         return why()
+    if "--set-auth" in sys.argv:
+        return set_auth()
     if "--check" in sys.argv:
         return check()
     # A named tunnel never changes, so its address is given once rather than
@@ -583,7 +761,7 @@ def main():
         try:
             ok = publish(url, sign_in())
         except urllib.error.HTTPError as e:
-            log(f"could not publish: HTTP {e.code}: {_detail(e)}")
+            _report_failure(e.code, _detail(e))
             return 1
         except Exception as e:
             log(f"could not publish: {e}")
