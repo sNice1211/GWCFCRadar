@@ -15765,47 +15765,95 @@ let _hdPanel = null;
 let _hdIndexAt = 0;
 const HD_INDEX_TTL = 10 * 60 * 1000;
 
-// Where the Pi is depends on a tunnel whose address changes when it restarts,
-// so it is looked up rather than written down. localStorage first so a new
-// address can be tried without touching anything else, then the shared
-// document the Pi keeps current.
-async function _hdResolveBase() {
-  // The published address is asked for FIRST, and a saved one is only a
-  // fallback. It was the other way round, which was wrong in the one case that
-  // matters: the tunnel hands out a new address whenever it restarts, the Pi
-  // publishes the new one, and a stale address saved here would shadow it for
-  // good. The site would insist the Pi was unreachable while the Pi was busy
-  // saying exactly where it was.
+// Where the Pi is.
+//
+// This used to be one question with one answer: ask the shared document the Pi
+// keeps current, believe it. On 2026-08-27 that cost the site a day. The Pi's
+// quick tunnel had rotated its name, the Pi could no longer publish the new
+// one (a database rule started refusing the write), and so the document went
+// on naming an address that had been dead for hours. The site believed it,
+// reported the Pi unreachable, and the Pi was answering perfectly the whole
+// time. Every part of that chain did what it was told.
+//
+// So there are two changes. The Pi has a permanent hostname now, which cannot
+// rotate, and it is a candidate here. And no candidate is believed on its
+// word any more: they are all ASKED, in parallel, and the first that actually
+// answers wins. An address that does not answer is not an address, however
+// officially it was published.
+//
+// The published address still comes first in that order, because a deployment
+// running its own Pi has nothing else, and the fixed name below is ours.
+const HD_FIXED_BASE = 'https://gwcfc.pythonsden.net';
+
+// Does anything answer there? latest.json is the smallest thing every Pi
+// serves, and asking for it proves the whole path: DNS, certificate, tunnel,
+// web server and the pipeline having written something.
+async function _hdAnswers(base) {
+  if (!base || !/^https?:\/\//.test(base)) return false;
   try {
-    const r = await fetch(
-      'https://firestore.googleapis.com/v1/projects/gwcfc-radar/databases/(default)' +
-      '/documents/piEndpoint/models', { cache: 'no-store' });
-    if (r.ok) {
-      const doc = await r.json();
-      const url = doc && doc.fields && doc.fields.url && doc.fields.url.stringValue;
-      if (url) {
-        const clean = String(url).replace(/\/+$/, '');
-        // Drop a saved address that disagrees, so it cannot come back later.
-        try {
-          if (localStorage.getItem(HD_BASE_KEY) &&
-              localStorage.getItem(HD_BASE_KEY) !== clean) {
-            localStorage.removeItem(HD_BASE_KEY);
-          }
-        } catch (e) {}
-        return clean;
-      }
+    const r = await fetch(`${base}/models/latest.json?t=${Date.now()}`,
+      { cache: 'no-store', signal: _abortSignal(4500) });
+    return !!(r && r.ok);
+  } catch (e) { return false; }
+}
+
+// One answer is kept for a minute. Resolving is a handful of network round
+// trips and about twenty places ask for it, so without this a page load would
+// probe the Pi dozens of times over.
+let _hdResolveCache = { at: 0, base: null, pr: null };
+const HD_RESOLVE_TTL = 60 * 1000;
+
+async function _hdResolveBase(force) {
+  if (!force && _hdResolveCache.base
+      && Date.now() - _hdResolveCache.at < HD_RESOLVE_TTL) {
+    return _hdResolveCache.base;
+  }
+  if (_hdResolveCache.pr) return _hdResolveCache.pr;
+  _hdResolveCache.pr = (async () => {
+    const published = await _hdFetchPublished();
+    let saved = null;
+    try {
+      saved = (localStorage.getItem(HD_BASE_KEY) || '').replace(/\/+$/, '') || null;
+    } catch (e) {}
+
+    // Unique, in order of authority. Asked all at once rather than one after
+    // another: three candidates each waited on in turn is three timeouts deep
+    // on the exact bad day this exists for.
+    const cands = [];
+    [published, HD_FIXED_BASE, saved].forEach(c => {
+      if (c && !cands.includes(c)) cands.push(c);
+    });
+    const alive = await Promise.all(cands.map(_hdAnswers));
+    const winner = cands[alive.findIndex(Boolean)] || null;
+
+    if (winner) {
+      // Drop a saved address that disagrees, so it cannot come back later.
+      try {
+        if (saved && saved !== winner) localStorage.removeItem(HD_BASE_KEY);
+      } catch (e) {}
+      return winner;
     }
-  } catch (e) {}
+    // Nothing answered. Hand back the published address anyway rather than
+    // null, so _hdWhyUnreachable can name it and say what is wrong with it.
+    return published || saved || null;
+  })();
   try {
-    const local = localStorage.getItem(HD_BASE_KEY);
-    if (local) return local.replace(/\/+$/, '');
-  } catch (e) {}
-  return null;
+    const base = await _hdResolveCache.pr;
+    _hdResolveCache = { at: Date.now(), base, pr: null };
+    return base;
+  } catch (e) {
+    _hdResolveCache = { at: 0, base: null, pr: null };
+    return null;
+  }
 }
 
 function _hdSetBase(url) {
   try { localStorage.setItem(HD_BASE_KEY, String(url).replace(/\/+$/, '')); } catch (e) {}
   _hdBase = String(url).replace(/\/+$/, '');
+  // The resolver remembers its answer for a minute. Without clearing it, a
+  // deliberately typed address would be quietly replaced by the memo of the
+  // one it was meant to replace.
+  _hdResolveCache = { at: Date.now(), base: _hdBase, pr: null };
   _hdManifest = null;
   _hdIndex = null;
   _hdIndexAt = 0;
@@ -15889,8 +15937,13 @@ function _hdWhyUnreachable() {
       + 'same network. From anywhere else there is nothing to answer. The '
       + 'tunnel is what gives it an address that works from everywhere.' };
   }
-  return { code: 'down', text: 'The Pi did not answer. It may be off, or the '
-    + 'tunnel may be down.' };
+  // The address is named. It used to say only "the Pi did not answer", which
+  // is the sentence that cost a day: the Pi WAS answering, on a different
+  // address, and the one line that would have shown that at a glance was the
+  // one address nobody printed.
+  return { code: 'down', text: `Nothing answered at ${base}. The Pi may be `
+    + 'off, or that address may be an old one that has stopped working while '
+    + 'the Pi moved to another.' };
 }
 
 // Re-point everything that depends on the Pi at a new address. Reuses
@@ -15917,13 +15970,37 @@ async function _hdPollAddress() {
   _hdWatchBusy = true;
   try {
     const fresh = await _hdFetchPublished();
-    if (fresh) _hdApplyNewBase(fresh);
+    if (!fresh || fresh === _hdBase) return;
+    // Asked before it is believed. This watcher used to move the whole site
+    // onto whatever the document said the moment it changed, which is how a
+    // stale published address kept dragging a working site onto a dead one
+    // every five seconds. A new address has to answer first.
+    if (!(await _hdAnswers(fresh))) return;
+    _hdApplyNewBase(fresh);
   } finally { _hdWatchBusy = false; }
+}
+
+// The other half of the same problem: the address we are ON can die without
+// the published one changing at all, which is exactly what happened when the
+// tunnel rotated and the Pi could no longer publish. So the current address is
+// checked too, and if it has stopped answering the candidates are re-resolved
+// from scratch, which is what finds the permanent hostname.
+let _hdHealthAt = 0;
+const HD_HEALTH_MS = 90 * 1000;
+async function _hdCheckCurrent() {
+  if (!_hdBase || Date.now() - _hdHealthAt < HD_HEALTH_MS) return;
+  _hdHealthAt = Date.now();
+  if (await _hdAnswers(_hdBase)) return;
+  const fresh = await _hdResolveBase(true);
+  if (fresh && fresh !== _hdBase) _hdApplyNewBase(fresh);
 }
 
 function _hdStartAddressWatch() {
   if (_hdWatchTimer) return;
-  _hdWatchTimer = setInterval(_hdPollAddress, HD_WATCH_MS);
+  _hdWatchTimer = setInterval(() => {
+    _hdPollAddress();
+    _hdCheckCurrent();
+  }, HD_WATCH_MS);
   // Catch up immediately when the tab comes back, rather than waiting out the
   // interval on a page that was backgrounded while the tunnel moved.
   if (typeof document !== 'undefined') {
@@ -47806,7 +47883,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Forecasters can now issue GWCFC products from the radar itself: zones, alert areas, storm marks and cones, composed over live radar and satellite instead of a plain map. The Forecasting Portal has an On the Radar button that hands you straight over. The old standalone cyclone track editor page is gone.';
+const APP_LATEST_UPDATE = 'The site no longer trusts a published address that has stopped answering: it now asks every address it knows and uses whichever one replies, so a rotated tunnel can no longer make a healthy Pi look switched off. NWRchive is also live on the real archive now, 129 stations across 38 states, instead of the two-station sample.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

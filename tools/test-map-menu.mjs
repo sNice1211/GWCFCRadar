@@ -407,6 +407,12 @@ console.log('\n8e. following a moving tunnel address');
     // Reassign the global function binding _hdPollAddress resolves against.
     let handedOut = 'https://new-pi.test';
     _hdFetchPublished = async () => handedOut;
+    // A published address is no longer believed on its word: it has to answer
+    // first, which is what stops a stale one dragging a working site onto a
+    // dead address. Nothing is routed in this suite, so the probe is stubbed
+    // to say this one is alive. test-pi-address.mjs is where the refusing
+    // half is proved.
+    _hdAnswers = async (base) => base === handedOut;
 
     await _hdPollAddress();
     const afterChange = _hdBase;

@@ -88,7 +88,7 @@ await page.route('**://**', route => {
   return route.abort();   // fonts etc.
 });
 
-console.log('\n2. demo mode: browsable before any archive exists');
+console.log('\n2. demo mode: browsable when the archive cannot be reached');
 {
   await page.goto('file://' + join(ROOT, 'nwrchive.html'),
                   { waitUntil: 'domcontentloaded' });
@@ -97,8 +97,18 @@ console.log('\n2. demo mode: browsable before any archive exists');
     demo: DEMO,
     banner: !!document.querySelector('.notice.demo'),
     regions: document.querySelectorAll('#app .card').length,
+    dflt: NWR_DEFAULT_BASE,
   }));
-  ok('with no base configured it runs on demo data and says so',
+  // The page ships pointed at the real archive. This is the check that it
+  // stays pointed there: it spent a while shipping with an empty default,
+  // which meant every visitor got the two-station sample and no way to tell
+  // that was not the archive.
+  ok('it ships pointed at a real archive, not at nothing',
+     /^https:\/\/\S+/.test(r.dflt || ''), JSON.stringify(r.dflt));
+  // In this run that host is not routed, so the fetch fails. Falling back to
+  // the sample rather than to an empty page is the behaviour under test, and
+  // saying so on screen is the half that matters.
+  ok('an unreachable archive falls back to the sample and says so',
      r.demo && r.banner, JSON.stringify(r));
   ok('the six region cards are on screen', r.regions === 6, String(r.regions));
 
