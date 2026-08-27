@@ -7417,6 +7417,11 @@ footer {
   backdrop-filter: blur(6px);
 }
 #lqm-profile-overlay.lqm-panel-open { display: block; }
+/* Manage Members is the one view in here that is a table of people rather
+   than a short list of settings. At 280px an address wraps onto three lines
+   next to a role picker and a checkbox, so the view that needs the room asks
+   for it and every other view keeps the narrow card it was designed as. */
+#lqm-profile-overlay.lqm-wide { max-width: min(520px, 94vw); }
 #lqm-profile-close {
   position: absolute;
   top: 10px;
@@ -7612,7 +7617,10 @@ footer {
 }
 .lqm-staff-row {
   display: flex;
-  align-items: center;
+  /* Was centred, which looked right while every row was one line high. Names
+     and addresses wrap now, so a two-line row would float its role picker in
+     the middle of the block instead of beside the name it belongs to. */
+  align-items: flex-start;
   gap: 9px;
   background: rgba(255,255,255,0.035);
   border: 1px solid rgba(255,255,255,0.07);
@@ -7627,15 +7635,32 @@ footer {
   background-size: cover; background-position: center;
   border: 1px solid rgba(255,255,255,0.18);
 }
-.lqm-staff-meta { flex: 1 1 auto; min-width: 0; }
+.lqm-staff-meta {
+  flex: 1 1 auto; min-width: 0;
+  /* The whole point of this panel is knowing WHO you are about to make a
+     forecaster, so both lines are readable rather than selectable-only. */
+  user-select: text; -webkit-user-select: text;
+}
+/* Both of these used to end in text-overflow: ellipsis, which is the right
+   answer for a label and the wrong one for an identity. Two people called
+   Alex at the same company are told apart by the end of the address, and the
+   end is exactly what an ellipsis eats. They wrap now.
+   overflow-wrap: anywhere, not break-word: an email has no spaces in it, so
+   there is nowhere to break unless mid-word breaks are allowed. */
 .lqm-staff-name {
   font-family: 'Comfortaa', sans-serif; font-size: 12px; color: #eaf4ff;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  line-height: 1.35; overflow-wrap: anywhere;
 }
 .lqm-staff-email {
-  font-size: 10px; color: rgba(212,232,255,0.45);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* Was 10px at 45 percent opacity, which is decoration rather than
+     information. This is the field being read. */
+  font-size: 11px; color: rgba(212,232,255,0.72);
+  font-family: var(--mono, ui-monospace, monospace);
+  line-height: 1.4; overflow-wrap: anywhere; margin-top: 1px;
 }
+/* Where a member has no address on their account there is nothing to read,
+   so the account id stands in and says that is what it is. */
+.lqm-staff-uid { color: rgba(212,232,255,0.42); font-style: italic; }
 .lqm-staff-sel {
   flex: 0 0 auto;
   background: rgba(0,0,0,0.35);
@@ -46403,6 +46428,9 @@ function _updateProfileBadge(user, avatarEmoji) {
     document.getElementById('lqm-view-profile').classList.add('open');
     document.getElementById('lqm-view-edit').classList.remove('open');
     document.getElementById('lqm-view-staff')?.classList.remove('open');
+    // The wide card belongs to the members view, so it goes with it. Left on,
+    // a 520px card would come back for a profile summary designed at 280.
+    document.getElementById('lqm-profile-overlay')?.classList.remove('lqm-wide');
     _syncOwnerUi();
   } else {
     if (sm)  { sm.innerHTML = '<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-user></use></svg>'; sm.style.background = ''; sm.style.color = '#008CBA'; sm.style.border = '1px solid rgba(0,140,186,0.5)'; }
@@ -46738,6 +46766,7 @@ async function lqmOpenStaffView() {
   if (!_isOwner()) return;   // the panel is owner-only even if the button leaks
   document.getElementById('lqm-view-profile').classList.remove('open');
   document.getElementById('lqm-view-staff').classList.add('open');
+  document.getElementById('lqm-profile-overlay')?.classList.add('lqm-wide');
   const list = document.getElementById('lqm-staff-list');
   if (list) list.innerHTML = `<div class="lqm-staff-note">Loading members…</div>`;
   try {
@@ -46762,6 +46791,7 @@ async function lqmOpenStaffView() {
 }
 function lqmCloseStaffView() {
   document.getElementById('lqm-view-staff').classList.remove('open');
+  document.getElementById('lqm-profile-overlay')?.classList.remove('lqm-wide');
   document.getElementById('lqm-view-profile').classList.add('open');
 }
 
@@ -46786,11 +46816,21 @@ function _staffRenderList(filter) {
       const opts = isOwnerRow
         ? `<option>Owner</option>`
         : STAFF_ROLES.map(r => `<option value="${r}"${r === u.staffRole ? ' selected' : ''}>${STAFF_ROLE_LABELS[r]}</option>`).join('');
-      return `<div class="lqm-staff-row">
+      // An account with no address is identified by its id, said as such
+      // rather than printed bare where an email would be: a long hex string
+      // in the email slot reads as a corrupted address.
+      const who = u.email
+        ? `<div class="lqm-staff-email">${_escapeHtml(u.email)}</div>`
+        : `<div class="lqm-staff-email lqm-staff-uid">no email on file `
+          + `&middot; ${_escapeHtml(u.uid)}</div>`;
+      // Everything about this member on hover as well, so a row can be read
+      // without the panel being wide enough to lay it all out.
+      const tip = `${u.name}\n${u.email || 'no email'}\n${u.uid}`;
+      return `<div class="lqm-staff-row" title="${_escapeHtml(tip)}">
         ${av}
         <div class="lqm-staff-meta">
           <div class="lqm-staff-name">${_escapeHtml(u.name)}</div>
-          <div class="lqm-staff-email">${_escapeHtml(u.email || u.uid)}</div>
+          ${who}
         </div>
         <select class="lqm-staff-sel" ${isOwnerRow ? 'disabled' : ''} onchange="staffSetRole('${u.uid}', this.value, this)">${opts}</select>
         <label class="lqm-staff-fc" title="Forecaster: may publish outlooks and alerts to everyone from the Forecasting Portal. Only you can grant this.">
@@ -48182,7 +48222,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Model soundings now reach much further than the maps do: the GFS out to 384 hours where its charts stop at 120, and HRRR and RAP out to two days on their extended runs. Three bugs that made the model menu look empty are fixed, and the forecast-hour slider now means the right thing the moment you pick a source instead of after the first fetch.';
+const APP_LATEST_UPDATE = 'Manage Members now shows every member&#39;s full name and full email address instead of cutting them off. The panel widens for that view, long addresses wrap rather than ending in dots, and an account with no address on file says so instead of showing a raw id.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
