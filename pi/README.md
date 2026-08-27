@@ -689,6 +689,36 @@ so the page offers exactly what exists.
 `manifest.json` carries the bounds, the hours that succeeded per field, and the
 value range, so the page can build a legend without opening any images.
 
+### Soundings cut out of those same models
+
+`model_sounding.py` answers the other question about the same run. The images
+above are one level across a map; this is every level at one point, which is
+what a right-click on the map asks for.
+
+    python3 pi/model_sounding.py --list
+    python3 pi/model_sounding.py --model hrrr --lat 35.4 --lon -97.6 --fhr 6
+
+It goes straight to the NOMADS filter service for a half-degree box around the
+point, at whatever pressure levels NOAA's own index says that file holds, and
+reads the column out with eccodes. Nothing is stored: it is a question asked
+and answered, cached for an hour.
+
+Everything about *where* the data lives is borrowed from `gfs_pipeline` rather
+than restated, so the sounding and the chart beside it always come from the
+same run. Two things it does differently:
+
+- **HRRR is redirected.** The map draws HRRR from `wrfsfc`, the surface file,
+  which contains no column at all. Soundings come from `wrfprs` on the 3d
+  filter script instead, and the index moves with the file. Redirecting one
+  and not the other is the bug `test-model-paths.py` exists to catch.
+- **Surface-only products are not offered.** Waves, RTMA and the National
+  Blend are two-dimensional by definition, so they are left out of the menu
+  rather than offered and failing.
+
+The browser reaches it through `GET /sounding?source=model:hrrr&fhr=6`, and
+asks `GET /sounding/sources` for the list, so a model added to the pipeline can
+be asked for a sounding with no change to the page.
+
 The manifest is written **last**. A run that dies halfway leaves no manifest, so
 the site keeps serving the previous complete run instead of a half-built set of
 pictures.

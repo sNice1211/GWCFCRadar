@@ -184,10 +184,41 @@ class CORSHandler(SimpleHTTPRequestHandler):
         if head == "/relay/ambient":
             self._relay_ambient()
             return
+        if head == "/sounding/sources":
+            self._sounding_sources()
+            return
         if head == "/sounding":
             self._sounding()
             return
         super().do_GET()
+
+    def _sounding_sources(self):
+        """GET /sounding/sources -> what this Pi can build a sounding from.
+
+        The page used to carry a typed list of sources, which is wrong in both
+        directions: a model added to the pipeline never appeared until someone
+        remembered to edit the page, and one this Pi cannot serve stayed on
+        offer and failed when picked. The Pi knows; this is it saying so.
+        """
+        try:
+            import sounding_service as snd
+        except Exception as e:
+            self._reply_json(501, {"error": "the sounding service is not "
+                                            f"installed beside serve.py ({e})"})
+            return
+        try:
+            models = snd.model_sources()
+        except Exception:
+            models = {}
+        self._reply_json(200, {
+            "analysis": [{"id": k, "label": v.get("label", k)}
+                         for k, v in sorted(snd.SOURCES.items())],
+            # Upper-air models first: those are the ones that certainly carry
+            # pressure levels, and a menu is a recommendation as well as a list.
+            "models": [{"id": "model:" + k, "key": k, **v} for k, v in
+                       sorted(models.items(),
+                              key=lambda kv: (not kv[1]["upper"], kv[0]))],
+        })
 
     def _sounding(self):
         """GET /sounding?lat=&lon=&source=&when= -> one analysed profile.
@@ -223,9 +254,39 @@ class CORSHandler(SimpleHTTPRequestHandler):
             return
 
         source = one("source", "rap") or "rap"
-        if source not in snd.SOURCES:
+        # "model:gfs" and friends: a column through one of the runs the models
+        # panel draws, rather than an analysis. Which models is asked of the
+        # model catalogue rather than listed here, so a model added to the
+        # pipeline can be asked for a sounding with no change on this side.
+        fhr, run = 0, None
+        prefix = getattr(snd, "MODEL_PREFIX", "model:")
+        if source.startswith(prefix):
+            available = snd.model_sources()
+            key_ = source[len(prefix):]
+            if key_ not in available:
+                self._reply_json(400, {
+                    "error": f"this Pi has no model called {key_!r} to cut a "
+                             "sounding out of",
+                    "models": sorted(available)})
+                return
+            try:
+                fhr = int(one("fhr", "0") or 0)
+            except ValueError:
+                self._reply_json(400, {"error": "fhr must be a whole number "
+                                                "of forecast hours"})
+                return
+            if not (0 <= fhr <= 384):
+                self._reply_json(400, {"error": "fhr is out of range"})
+                return
+            run = one("run") or None
+            if run and not re.fullmatch(r"\d{8}/\d{2}", run):
+                self._reply_json(400, {"error": "run must be YYYYMMDD/HH"})
+                return
+        elif source not in snd.SOURCES:
             self._reply_json(400, {"error": f"unknown source {source!r}",
-                                   "sources": sorted(snd.SOURCES)})
+                                   "sources": sorted(snd.SOURCES)
+                                              + ["model:" + k for k in
+                                                 sorted(snd.model_sources())]})
             return
         when = one("when") or None
         if when and not (len(when) == 10 and when.isdigit()):
@@ -235,7 +296,15 @@ class CORSHandler(SimpleHTTPRequestHandler):
         # A cache hit costs a file read, so it skips the queue entirely. That
         # is what makes clicking around the same storm feel instant even while
         # somebody else's fetch is running.
+        #
+        # The forecast hour is part of a model sounding's identity, so it is
+        # part of the key: f000 and f012 at one point are two soundings, and
+        # one key for both would serve whichever was asked for first.
         key = snd._cache_key(source, lat, lon, when)
+        if source.startswith(prefix):
+            key += f"_f{fhr:03d}"
+            if run:
+                key += "_" + run.replace("/", "")
         hit = snd._cache_read(key)
         if hit:
             hit["cached"] = True
@@ -248,7 +317,7 @@ class CORSHandler(SimpleHTTPRequestHandler):
                                    "retry": True})
             return
         try:
-            out = snd.sounding(source, lat, lon, when)
+            out = snd.sounding(source, lat, lon, when, fhr=fhr, run=run)
         except RuntimeError as e:
             # The expected failures: library missing, hour not published yet,
             # too few levels. All of them are sentences a person can read.

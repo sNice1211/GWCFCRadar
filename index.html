@@ -16650,9 +16650,21 @@ const SND_TABS = [
 // anything. This is the difference between putting a feature away and
 // throwing it out, and with the Pi off the air it is the honest state of the
 // panel: a menu should not offer a choice that cannot currently answer.
+// The analysis sources, which the Pi serves through SounderPy.
+//
+// These were all hidden while the sounding service could not build a single
+// one: the arguments to SounderPy were shifted by one, so every site failed,
+// and offering a menu of things that all fail is worse than offering none.
+// They build now, so they are on offer again.
+//
+// The MODEL sources are not in this list at all. They are whatever the Pi
+// says it can cut a column out of, fetched at open time by _sndLoadPiSources,
+// because a list typed here is wrong in both directions: a model added to the
+// pipeline never appears until somebody edits the page, and one this Pi
+// cannot serve stays on offer and fails when picked.
 const SND_SOURCES = [
-  { id: 'rap',    pi: 'rap',      label: 'RAP analysis (Pi)',   hidden: true },
-  { id: 'obs',    pi: 'obs',      label: 'Observed balloon (Pi)', hidden: true },
+  { id: 'rap',    pi: 'rap',      label: 'RAP analysis (Pi)' },
+  { id: 'obs',    pi: 'obs',      label: 'Observed balloon (Pi)' },
   { id: 'hrrr',   pi: 'hrrr',     label: 'HRRR (Pi)',           hidden: true },
   { id: 'nam',    pi: 'nam',      label: 'NAM (Pi)',            hidden: true },
   { id: 'gfs',    pi: 'gfs',      label: 'GFS (Pi)',            hidden: true },
@@ -16660,17 +16672,17 @@ const SND_SOURCES = [
   // parameters, drawn into a PNG at each upper-air site once an hour. Static
   // files, so they survive an old serve.py that has never heard of the
   // /sounding door. This is the only source that fills the Image view.
-  { id: 'pisite', pi: null,       label: 'Pi site images (SounderPy)', hidden: true },
+  { id: 'pisite', pi: null,       label: 'Pi site images (SounderPy)' },
   // Twelve levels read out of the model images the Pi builds every six hours
   // and analysed here. The coarsest of the Pi paths, and the one that answers
   // when the Pi has models but no sounding run yet.
-  { id: 'levels', pi: null,       label: 'Pi model levels',     hidden: true },
+  { id: 'levels', pi: null,       label: 'Pi model levels' },
   // The one that works with no Pi at all, and the reason the panel can
   // always draw something. Last in the list because it is the last resort.
   { id: 'web',    pi: null,       label: 'Open-Meteo (no Pi needed)' },
 ];
 // What the menu is allowed to show, and what a fresh visitor lands on.
-const _sndVisibleSources = () => SND_SOURCES.filter(s => !s.hidden);
+const _sndVisibleSources = () => _sndAllSources().filter(s => !s.hidden);
 const _sndDefaultSource = () =>
   (_sndVisibleSources()[0] || SND_SOURCES[0] || { id: 'web' }).id;
 // How far back the SounderPy sources can be asked to look, in hours. An
@@ -16680,9 +16692,121 @@ const _sndDefaultSource = () =>
 // sounding after the fact.
 const SND_BACK_HOURS = [0, 1, 2, 3, 6, 9, 12, 18, 24, 36, 48];
 
-// The first source the menu offers, which with every Pi entry hidden is
-// Open-Meteo. Written as a lookup rather than a literal so that unhiding a Pi
-// source above is the only edit needed to make it the default again.
+// ── SOUNDINGS FROM THE MODELS ON THE MAP ──────────────────────────────────
+// The models panel draws one level across a map. A sounding is the same data
+// cut the other way: every level at one point. Same runs, same servers.
+//
+// Which models can be asked is the Pi's answer, not ours. It knows which of
+// them publish pressure levels, which have moved, and which are surface-only
+// products with no column in them at all, and it answers /sounding/sources
+// with the list. Asked once per page, cached, and quietly skipped when there
+// is no Pi: the menu then simply has no model entries rather than a row of
+// entries that fail.
+let _sndPiSources = null;        // null until asked, [] when there are none
+let _sndPiSourcesPr = null;
+
+async function _sndLoadPiSources() {
+  if (_sndPiSources) return _sndPiSources;
+  if (_sndPiSourcesPr) return _sndPiSourcesPr;
+  _sndPiSourcesPr = (async () => {
+    const base = _hdBase || (typeof _hdResolveBase === 'function'
+      ? await _hdResolveBase() : null);
+    if (!base) return (_sndPiSources = []);
+    let list = [];
+    try {
+      const r = await fetch(`${base}/sounding/sources`,
+        { cache: 'no-store', signal: _abortSignal(12000) });
+      if (r.ok) {
+        const d = await r.json();
+        list = (d && Array.isArray(d.models)) ? d.models : [];
+      }
+    } catch (e) { /* an older serve.py with no such door */ }
+    _sndPiSources = list.map(m => ({
+      id: m.id,                       // "model:gfs"
+      pi: m.id,
+      model: m.key,
+      // The resolution earns its place in the label: picking between a 3 km
+      // and a 13 km sounding at the same point is the choice being made.
+      label: `${m.label}${m.res ? ' ' + m.res : ''} (model)`,
+      out: m.out || 48,
+      step: m.step || 1,
+      upper: !!m.upper,
+      isModel: true,
+    }));
+    _sndPiSourcesPr = null;
+    return _sndPiSources;
+  })();
+  return _sndPiSourcesPr;
+}
+
+// Everything the picker may show: the built-ins, then whatever the Pi added.
+function _sndAllSources() {
+  return SND_SOURCES.concat(_sndPiSources || []);
+}
+const _sndFind = (id) => _sndAllSources().find(s => s.id === id);
+
+// The forecast hours a model source offers on the slider.
+//
+// Thinned, on purpose. GFS runs to 120 hours every 3, which is 41 stops on a
+// slider a centimetre wide: nobody can land on one. Past the first day the
+// step widens, because that is how the question changes too. Nobody asks for
+// hour 87 specifically; they ask for "about three and a half days out".
+function _sndModelHours(src) {
+  const out = Math.max(0, Number(src && src.out) || 48);
+  const step = Math.max(1, Number(src && src.step) || 1);
+  const hrs = [];
+  for (let h = 0; h <= out; h += step) {
+    if (h <= 24 || h % Math.max(step, 3) === 0) {
+      if (h > 48 && h % Math.max(step, 6)) continue;
+      if (h > 120 && h % 12) continue;
+      hrs.push(h);
+    }
+  }
+  if (!hrs.length || hrs[0] !== 0) hrs.unshift(0);
+  return hrs;
+}
+
+// Point the slider at whatever the current source measures in, and keep the
+// thumb where it was rather than snapping it home: switching from the GFS to
+// the NAM at hour 12 should show hour 12 of the NAM.
+function _sndSyncHourScale(el) {
+  const pick = _sndFind(_sndSource);
+  const sl = el && el.querySelector('.snd-hour');
+  const lbl = el && el.querySelector('.snd-hour-lbl');
+  if (!sl) return;
+  if (pick && pick.isModel) {
+    const was = el._modelHours ? el._modelHours[+sl.value] : null;
+    el._modelHours = _sndModelHours(pick);
+    sl.max = Math.max(0, el._modelHours.length - 1);
+    const keep = was == null ? 0
+      : el._modelHours.reduce((best, h, i) =>
+          Math.abs(h - was) < Math.abs(el._modelHours[best] - was) ? i : best, 0);
+    sl.value = keep;
+    if (lbl) lbl.textContent =
+      'F+' + String(el._modelHours[keep]).padStart(3, '0');
+  } else {
+    el._modelHours = null;
+  }
+}
+
+// Repaint the picker once the Pi has said what it can serve. Built rather
+// than templated in place because the model entries arrive after the panel
+// does, and because grouping them apart is most of what makes a list of
+// twenty sources usable.
+function _sndSyncSourceMenu(el) {
+  const sel = el && el.querySelector('.snd-src');
+  if (!sel) return;
+  const group = (label, list) => !list.length ? '' :
+    `<optgroup label="${label}">` + list.map(s =>
+      `<option value="${s.id}">${_ccEsc(s.label)}</option>`).join('') + '</optgroup>';
+  const vis = _sndVisibleSources();
+  sel.innerHTML = group('Analyses and images', vis.filter(s => !s.isModel))
+                + group('Models, at a forecast hour', vis.filter(s => s.isModel));
+  sel.value = _sndSource;
+  if (!sel.value) { sel.value = _sndDefaultSource(); _sndSource = sel.value; }
+}
+
+// The first source the menu offers.
 let _sndSource = (SND_SOURCES.find(s => !s.hidden) || SND_SOURCES[0]).id;
 // Remembered per session so the panel stops knocking on a door that is not there.
 // A Pi running an older serve.py answers 404 for /sounding, and retrying that
@@ -17243,6 +17367,45 @@ function _sndWhenStamp(hoursBack) {
   const p = n => String(n).padStart(2, '0');
   return `${t.getUTCFullYear()}${p(t.getUTCMonth() + 1)}${p(t.getUTCDate())}`
        + `${p(t.getUTCHours())}`;
+}
+
+// A column through one of the models on the map, at a forecast hour.
+//
+// Deliberately a separate function from _sndPiSounding rather than another
+// argument on it, because the hour means the opposite thing: there it is
+// hours BACK through analyses that have already happened, here it is hours
+// FORWARD through a forecast that has not. Sharing one parameter for two
+// opposite meanings is how a panel ends up showing yesterday when asked for
+// tomorrow.
+async function _sndPiModelSounding(lat, lon, modelKey, fhr) {
+  if (!_hdBase) throw new Error('no address set for the Pi');
+  const q = new URLSearchParams({
+    lat: (+lat).toFixed(4), lon: (+lon).toFixed(4),
+    source: 'model:' + modelKey, fhr: String(Math.max(0, fhr | 0)),
+  });
+  let r;
+  try {
+    // Longer than the analysis door allows. This one may have to wait on
+    // NOMADS for a file that is still being written, and NOMADS paces
+    // requests, so a short timeout here reports a healthy Pi as a broken one.
+    r = await fetch(`${_hdBase}/sounding?${q.toString()}`,
+                    { cache: 'no-store', signal: _abortSignal(60000) });
+  } catch (e) {
+    throw new Error('the Pi did not answer the model sounding request');
+  }
+  let body = null;
+  try { body = await r.json(); } catch (e) {}
+  if (r.status === 404 || r.status === 501) {
+    _sndPiDown = true;
+    throw new Error('this Pi does not have the model sounding service');
+  }
+  if (!r.ok) {
+    throw new Error((body && body.error)
+      || `the Pi answered HTTP ${r.status} for the model sounding`);
+  }
+  if (!body || !body.profile) throw new Error('the Pi sent no profile back');
+  body.via = 'model';
+  return body;
 }
 
 async function _sndPiSounding(lat, lon, source, hoursBack) {
@@ -18293,6 +18456,13 @@ async function openSounding(lat, lon) {
     // the thumb still moves immediately, so the control feels no slower; only
     // the fetching waits to find out where the thumb actually stopped.
     const hourAt = (i) => {
+      // A model source has its own forecast hours, from its own cadence and
+      // its own length. They come first because they are neither of the two
+      // things below: not hours back through analyses, and not the hours the
+      // level-image manifest happens to hold.
+      if (el._modelHours && el._modelHours.length) {
+        return el._modelHours[Math.min(i, el._modelHours.length - 1)];
+      }
       if (el._piMode) {
         return SND_BACK_HOURS[Math.min(i, SND_BACK_HOURS.length - 1)];
       }
@@ -18304,7 +18474,9 @@ async function openSounding(lat, lon) {
       const hr = hourAt(i);
       const lbl = el.querySelector('.snd-hour-lbl');
       if (lbl) {
-        lbl.textContent = el._piMode
+        lbl.textContent = (el._modelHours && el._modelHours.length)
+          ? 'F+' + String(hr).padStart(3, '0')
+          : el._piMode
           ? (hr ? `-${hr}h` : 'now')
           : 'F+' + String(hr).padStart(3, '0');
       }
@@ -18317,6 +18489,10 @@ async function openSounding(lat, lon) {
       // the Pi may simply have been restarted with the new serve.py.
       _sndPiDown = false;
       try { localStorage.setItem('gwcfc_snd_source', _sndSource); } catch (err) {}
+      // The slider means something different for a model, so it is rebuilt
+      // before the fetch rather than after: dragging it during a slow fetch
+      // must not send hours from the source that was just left behind.
+      _sndSyncHourScale(el);
       _sndRefresh(el, 0);
     };
     // Both charts are canvases sized off their box, so a resize has to redraw
@@ -18339,7 +18515,12 @@ async function openSounding(lat, lon) {
     // Only a source the menu still offers. Someone who last chose a Pi source
     // would otherwise come back to a picker showing nothing, pointed at a
     // door that is not answering.
-    if (saved && SND_SOURCES.some(s => s.id === saved && !s.hidden)) {
+    // A model source saved from a previous visit is honoured before the Pi
+    // has answered, because it takes a moment to and dropping the choice in
+    // the meantime would silently move a returning forecaster off the model
+    // they had chosen.
+    if (saved && (_sndAllSources().some(s => s.id === saved && !s.hidden)
+                  || saved.startsWith('model:'))) {
       _sndSource = saved;
     }
   } catch (e) {}
@@ -18348,6 +18529,16 @@ async function openSounding(lat, lon) {
   // A hidden source can still be selected from code, and then the picker has
   // no option to show for it. It reads as the default rather than as blank.
   if (!_srcSel.value) _srcSel.value = _sndDefaultSource();
+  // Ask the Pi what models it can cut a column out of, and rebuild the menu
+  // when it answers. Not awaited: the panel opens and starts drawing now, and
+  // the extra entries appear a moment later rather than holding it up. A Pi
+  // that never answers simply leaves the menu as it was.
+  _sndLoadPiSources().then(() => {
+    if (!_sndPanelIsOpen()) return;
+    _sndSyncSourceMenu(el);
+    _sndSyncHourScale(el);
+  }).catch(() => {});
+  _sndSyncHourScale(el);
   el.querySelector('.snd-where').textContent =
     `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
   el.querySelector('.snd-note').textContent = 'Asking the Pi...';
@@ -18613,9 +18804,28 @@ function _sndVerdictHTML(d) {
 // unreachable, and a Pi that is off is the normal case rather than the
 // exceptional one.
 async function _sndFetchFor(el, lat, lon, hr) {
-  const pick = SND_SOURCES.find(s => s.id === _sndSource)
-    || SND_SOURCES.find(s => s.id === _sndDefaultSource())
+  const pick = _sndFind(_sndSource)
+    || _sndFind(_sndDefaultSource())
     || SND_SOURCES[0];
+
+  // A model, cut at a forecast hour. Falls back like everything else: naming
+  // a model is a preference about where the numbers come from, not an
+  // instruction to leave the panel empty when that model is unreachable.
+  if (pick.isModel) {
+    try {
+      return { prof: await _sndPiModelSounding(lat, lon, pick.model, hr || 0),
+               fellBack: null };
+    } catch (e) {
+      const why = String((e && e.message) || e);
+      try {
+        return { prof: await _sndOpenMeteo(lat, lon, hr || 0, pick.id),
+                 fellBack: why };
+      } catch (e2) {
+        throw new Error(why + ' (and Open-Meteo could not answer either: '
+          + String((e2 && e2.message) || e2) + ')');
+      }
+    }
+  }
 
   if (pick.id === 'web') {             // Open-Meteo, asked for directly
     return { prof: await _sndOpenMeteo(lat, lon, hr || 0, 'web'),
@@ -18694,7 +18904,19 @@ async function _sndRefresh(el, hr) {
       || prof.via === 'openmeteo';
 
     const sl = el.querySelector('.snd-hour');
-    if (el._piMode) {
+    if (prof.via === 'model') {
+      // A model's slider is its own forecast hours. Set from the source
+      // rather than from what came back, so a fetch that fell back to
+      // Open-Meteo does not silently rescale the control under the thumb.
+      el._piMode = false;
+      const pick = _sndFind(_sndSource);
+      el._modelHours = el._modelHours || _sndModelHours(pick);
+      sl.max = Math.max(0, el._modelHours.length - 1);
+      const at = el._modelHours.indexOf(prof.fhr == null ? (hr || 0) : prof.fhr);
+      sl.value = at < 0 ? 0 : at;
+      el.querySelector('.snd-hour-lbl').textContent =
+        'F+' + String(prof.fhr == null ? (hr || 0) : prof.fhr).padStart(3, '0');
+    } else if (el._piMode) {
       sl.max = SND_BACK_HOURS.length - 1;
       const back = Math.max(0, SND_BACK_HOURS.indexOf(hr || 0));
       sl.value = back;
@@ -18772,6 +18994,19 @@ function _sndNote(d, prof, fellBack) {
         + 'Prediction Center\'s tooling uses'
       : 'parameters worked out in the browser from every level the Pi saved');
     bits.push('the image below is the Pi\'s own drawing of this exact data');
+  } else if (prof.via === 'model') {
+    // Says which run and which hour, because that is the difference between
+    // this and every other source in the menu: it is a forecast, and a
+    // forecast without its run and its hour on it is an assertion.
+    bits.push(`${esc(prof.model || prof.source)} run ${esc(prof.run || '?')}`
+      + `, forecast hour ${esc(String(prof.fhr == null ? '?' : prof.fhr))}`);
+    bits.push(`${d.rows.length} pressure levels, cut out of the same run the `
+      + 'models panel draws');
+    bits.push(d.engine === 'SHARPpy'
+      ? 'parameters computed by SHARPpy on the Pi'
+      : 'parameters worked out in the browser');
+    bits.push('a forecast, not an analysis: this is what the model thinks the '
+      + 'air will be doing, not what it is doing');
   } else if (prof.via === 'openmeteo') {
     bits.push(`${esc(prof.label || 'Open-Meteo')} at ${esc(prof.valid || 'the last hour')}`);
     bits.push(`${d.rows.length} standard pressure levels, fetched by the `
@@ -47883,7 +48118,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The site no longer trusts a published address that has stopped answering: it now asks every address it knows and uses whichever one replies, so a rotated tunnel can no longer make a healthy Pi look switched off. NWRchive is also live on the real archive now, 129 stations across 38 states, instead of the two-station sample. Behind the scenes, the Pi now says loudly when it cannot publish its address instead of failing in silence, upper-air soundings build for the first time, and the weather radio recorder no longer installs itself onto machines with no room for it.';
+const APP_LATEST_UPDATE = 'Right-click a point and you can now pull a sounding out of the models themselves: the GFS, NAM, RAP, HRRR and the rest, at any forecast hour, cut from the same run the models panel is drawing. The analysis sources are back in that menu too, now that they build again.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

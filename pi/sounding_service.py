@@ -631,6 +631,39 @@ def _hours_before(stamp, n):
 LOOK_BACK_HOURS = 3
 
 
+# ── A sounding from one of the models on the map ───────────────────────────
+# A source named "model:gfs" or "model:hrrr" means the column through the run
+# the models panel is drawing, rather than an analysis from SounderPy. It is
+# the same data, cut the other way: the panel takes one level across a map,
+# this takes every level at one point.
+#
+# Kept apart from the look-back loop below on purpose. Stepping back an hour
+# is the right recovery for an ANALYSIS that has not published yet; a model
+# run has forecast hours rather than recent hours, and quietly serving f000
+# when f012 was asked for would answer a different question than the one put.
+MODEL_PREFIX = "model:"
+
+
+def model_sources():
+    """Which models this Pi can cut a sounding out of, for the menu."""
+    try:
+        import model_sounding
+        return model_sounding.models()
+    except Exception:
+        return {}
+
+
+def fetch_model_profile(source, lat, lon, fhr=0, run=None):
+    key = source[len(MODEL_PREFIX):]
+    try:
+        import model_sounding
+    except Exception as e:
+        raise RuntimeError(
+            "model soundings need model_sounding.py beside this file and the "
+            f"model pipeline it reads: {e}")
+    return model_sounding.model_profile(key, lat, lon, fhr, run)
+
+
 def fetch_profile(source, lat, lon, when=None):
     """One profile, from whichever source answers, at whichever recent hour has one.
 
@@ -808,16 +841,26 @@ def sharppy_params(prof):
     return out
 
 
-def sounding(source, lat, lon, when=None, use_cache=True):
+def sounding(source, lat, lon, when=None, use_cache=True, fhr=None, run=None):
     """A full answer: profile, parameters, and where both came from."""
+    # The forecast hour is part of the identity of a model sounding: f000 and
+    # f012 at the same point are two different soundings, and caching them
+    # under one key would serve whichever was asked for first for an hour.
     key = _cache_key(source, lat, lon, when)
+    if str(source or "").startswith(MODEL_PREFIX):
+        key += f"_f{int(fhr or 0):03d}"
+        if run:
+            key += "_" + str(run).replace("/", "")
     if use_cache:
         hit = _cache_read(key)
         if hit:
             hit["cached"] = True
             return hit
 
-    prof = fetch_profile(source, lat, lon, when)
+    if str(source or "").startswith(MODEL_PREFIX):
+        prof = fetch_model_profile(source, lat, lon, fhr or 0, run)
+    else:
+        prof = fetch_profile(source, lat, lon, when)
     prof["params"] = sharppy_params(prof)
     prof["engine"] = {
         "fetch": prof.get("upstream", "").split("/")[0] or "NOAA",
