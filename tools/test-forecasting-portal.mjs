@@ -645,20 +645,36 @@ console.log('\n6c. somebody else\'s text, reformatted into ours');
              simCount: (once.match(/SIMULATED PRODUCT/g) || []).length,
              twiceSimCount: (twice.match(/SIMULATED PRODUCT/g) || []).length };
   });
-  // Our format puts WHAT first, whatever order the source used.
-  ok('the bullets come back in our order, not the source\'s',
-     r.once.indexOf('* WHAT...') < r.once.indexOf('* WHERE...')
-       && r.once.indexOf('* WHERE...') < r.once.indexOf('* WHEN...'),
-     r.once);
+  // The office has its own product format now. These used to check that the
+  // Weather Service's bullet layout came back in our order; the answer is no
+  // longer a bullet layout at all, so they check the sections of a GWCFC
+  // product instead. The paste says Severe Thunderstorm Warning, so that is
+  // the product it should come back as.
+  ok('it comes back as a GWCFC product, in the format\'s own order',
+     r.once.indexOf('DISCUSSION & OUTLOOK') < r.once.indexOf('\nDATA\n')
+       && r.once.indexOf('\nDATA\n') < r.once.indexOf('\nHAZARDS\n')
+       && r.once.indexOf('\nHAZARDS\n') < r.once.indexOf("FORECASTER'S NOTES"),
+     r.once.slice(0, 200));
+  ok('and it is the product the text named',
+     /^SEVERE THUNDERSTORM WARNING /m.test(r.once), r.once.split('\n')[2]);
   ok('it wears our banner, top and bottom', r.simCount === 2, String(r.simCount));
-  ok('the tag lines survive',
-     /HAIL\.\.\.1\.00IN/.test(r.once) && /WIND\.\.\.60MPH/.test(r.once));
+  // The tag lines are not copied through any more, they are READ: a hail
+  // measurement belongs in the hail row, which is the whole point of having
+  // named rows rather than a block of tags at the bottom.
+  ok('the tag lines become the DATA rows they belong in',
+     /MAX HAIL SIZE: 1\.00IN/.test(r.once)
+       && /MAX WIND GUST: 60MPH/.test(r.once), r.once);
+  ok('WHERE and WHEN become the areas and the valid time',
+     /AREAS AFFECTED: Northern Polk County\./.test(r.once)
+       && /VALID: Until 515 PM EDT\./.test(r.once));
   ok('a sentence that belonged to no bullet is kept, not silently dropped',
      /Damaging winds will also be possible/.test(r.once));
   ok('reformatting an already reformatted product does not stack banners',
      r.twiceSimCount === 2, String(r.twiceSimCount));
-  ok('plain prose with no bullets becomes the WHAT',
-     /\* WHAT\.\.\.Just a line about a storm/.test(r.prose), r.prose);
+  ok('plain prose with no bullets becomes the discussion',
+     /Just a line about a storm/.test(r.prose)
+       && r.prose.indexOf('Just a line') > r.prose.indexOf('DISCUSSION'),
+     r.prose.slice(0, 240));
   ok('and an empty paste produces nothing rather than an empty banner',
      r.empty === '');
 }

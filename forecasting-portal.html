@@ -5604,6 +5604,371 @@ function _scDeleteCone(id) {
 const AD_KEY = 'gwcfc_alertdesk';
 const AD_SIM_LINE = 'SIMULATED PRODUCT. NOT ISSUED BY THE NATIONAL WEATHER SERVICE.';
 
+// ══════════════════════════════════════════════════════════════════════════
+// ── GWCFC PRODUCT TEMPLATES ───────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// The office's own product format: 18 hazards, each issuable as a Watch, a
+// Warning or an Emergency, each of those at a Base, Severe or Extreme tier.
+// 162 products.
+//
+// Held as the handful of things that actually differ rather than as 162
+// files. Every one of them shares the same header, the same six-row HAZARDS
+// block and the same signature; what changes is the product name, one
+// call-to-action line, the tier word, and the DATA field list for the hazard.
+// So that is what is stored, and the rest is assembled.
+//
+// Generated from GWCFC_Product_Templates and checked against it: the builder
+// reproduces all 162 files byte for byte, which is what makes this a
+// compression of the format rather than a second version of it liable to
+// drift from the one people wrote.
+
+const GWCFC_TPL_HAZARDS = {
+  'blizzard': { name: 'BLIZZARD',
+    data: ['SNOWFALL RATE', 'TOTAL ACCUMULATION', 'SUSTAINED WIND', 'PEAK GUST', 'VISIBILITY', 'WIND CHILL', 'DURATION'] },
+  'earthquake': { name: 'EARTHQUAKE',
+    data: ['MAGNITUDE', 'DEPTH', 'EPICENTER', 'MAX INTENSITY (MMI)', 'AFTERSHOCK PROBABILITY', 'TSUNAMI THREAT'] },
+  'fire-wildfire': { name: 'FIRE / WILDFIRE',
+    data: ['FIRE WEATHER INDEX', 'RELATIVE HUMIDITY', 'SUSTAINED WIND', 'PEAK GUST', 'FUEL MOISTURE', 'ACRES INVOLVED', 'CONTAINMENT'] },
+  'flood': { name: 'FLOOD',
+    data: ['RIVER / BASIN', 'CURRENT STAGE', 'FLOOD STAGE', 'FORECAST CREST', 'CREST TIME', 'RAINFALL TOTAL'] },
+  'fog': { name: 'FOG',
+    data: ['VISIBILITY', 'DENSITY', 'ONSET TIME', 'EXPECTED DISSIPATION', 'AFFECTED CORRIDORS'] },
+  'freeze': { name: 'FREEZE',
+    data: ['MINIMUM TEMPERATURE', 'DURATION BELOW FREEZING', 'ONSET TIME', 'END TIME', 'AGRICULTURAL IMPACT'] },
+  'frost': { name: 'FROST',
+    data: ['MINIMUM TEMPERATURE', 'DEW POINT', 'WIND SPEED', 'SKY COVER', 'ONSET TIME'] },
+  // Hailstorm is the hail product. The Alert Desk used to carry a separate
+  // "Hail" hazard slider alongside the others; this replaces it, and it says
+  // far more: swath, accumulation depth and average size as well as the
+  // maximum, which is the only number the slider ever produced.
+  'hailstorm': { name: 'HAILSTORM',
+    data: ['MAX HAIL SIZE', 'AVERAGE HAIL SIZE', 'STORM MOTION', 'SWATH LENGTH', 'SWATH WIDTH', 'ACCUMULATION DEPTH', 'PEAK WIND GUST', 'LIGHTNING DENSITY', 'DURATION'] },
+  'heat': { name: 'HEAT',
+    data: ['MAX TEMPERATURE', 'PEAK HEAT INDEX', 'OVERNIGHT LOW', 'DURATION', 'CONSECUTIVE DAYS'] },
+  'hurricane': { name: 'HURRICANE',
+    data: ['CATEGORY', 'MAX SUSTAINED WIND', 'PEAK GUST', 'MINIMUM PRESSURE', 'MOVEMENT', 'LOCATION', 'EYE DIAMETER', 'RADIUS OF HURRICANE FORCE WINDS', 'RADIUS OF TROPICAL STORM FORCE WINDS'] },
+  'surge': { name: 'SURGE',
+    data: ['SURGE HEIGHT', 'INUNDATION DEPTH', 'ONSET TIME', 'PEAK TIDAL CYCLE', 'COASTAL SEGMENT'] },
+  'thunderstorm': { name: 'THUNDERSTORM',
+    data: ['STORM MOTION', 'MAX WIND GUST', 'MAX HAIL SIZE', 'TORNADO POTENTIAL', 'LIGHTNING DENSITY', 'RAINFALL RATE'] },
+  'tropical-storm': { name: 'TROPICAL STORM',
+    data: ['MAX SUSTAINED WIND', 'PEAK GUST', 'MINIMUM PRESSURE', 'MOVEMENT', 'LOCATION', 'RADIUS OF TROPICAL STORM FORCE WINDS'] },
+  'tsunami': { name: 'TSUNAMI',
+    data: ['SOURCE EVENT', 'SOURCE MAGNITUDE', 'EPICENTER', 'ESTIMATED WAVE HEIGHT', 'FIRST ARRIVAL TIME', 'AFFECTED COASTLINE'] },
+  'waterspout': { name: 'WATERSPOUT',
+    data: ['TYPE', 'LOCATION', 'MOVEMENT', 'WATER TEMPERATURE', 'PARENT CLOUD', 'MARINE ZONES'] },
+  'wave': { name: 'WAVE',
+    data: ['SIGNIFICANT WAVE HEIGHT', 'MAX WAVE HEIGHT', 'DOMINANT PERIOD', 'SWELL DIRECTION', 'RIP CURRENT RISK', 'SURF ZONE'] },
+  'wind': { name: 'WIND',
+    data: ['SUSTAINED WIND', 'PEAK GUST', 'WIND DIRECTION', 'DURATION'] },
+  'winter-storm': { name: 'WINTER STORM',
+    data: ['SNOW ACCUMULATION', 'ICE ACCUMULATION', 'SLEET ACCUMULATION', 'SUSTAINED WIND', 'PEAK GUST', 'VISIBILITY', 'STORM TIMING'] },
+};
+
+// What the product is for, and the standing line that goes under the tier.
+// The call to action belongs to the KIND, not to the tier: an Extreme Watch
+// still says monitor, because a watch is a watch however bad the ceiling.
+const GWCFC_TPL_KINDS = {
+  watch:     { name: 'WATCH',
+               cta: 'CONDITIONS ARE FAVORABLE FOR THIS HAZARD. MONITOR LATER STATEMENTS.' },
+  warning:   { name: 'WARNING',
+               cta: 'THIS HAZARD IS OCCURRING OR IMMINENT. TAKE PROTECTIVE ACTION NOW.' },
+  emergency: { name: 'EMERGENCY',
+               cta: 'A CATASTROPHIC THREAT TO LIFE IS UNDERWAY. ACT IMMEDIATELY.' },
+};
+
+// How bad, within the kind. Base carries no word in the product name.
+const GWCFC_TPL_TIERS = {
+  base:    { tier: 'BASE',    prefix: '' },
+  severe:  { tier: 'SEVERE',  prefix: 'SEVERE ' },
+  extreme: { tier: 'EXTREME', prefix: 'EXTREME ' },
+};
+
+const GWCFC_TPL_CENTER = 'Guta Weather and Climate Forecasting Center Miami FL';
+
+// The field offices. The code goes in the header and again in the signature,
+// so it is one list rather than two.
+const GWCFC_TPL_OFFICES = [
+  { code: 'CHFO',  city: 'Chicago IL' },
+  { code: 'MIFO',  city: 'Miami FL' },
+  { code: 'TFO',   city: 'Tampa FL' },
+  { code: 'SCFO',  city: 'Southern California' },
+  { code: 'OFO',   city: 'Omaha NE' },
+  { code: 'MLFO',  city: 'Milwaukee WI' },
+  { code: 'SCFFO', city: 'South Central Florida' },
+  { code: 'SFFO',  city: 'South Florida' },
+];
+
+// The six standing rows. Always present, always answered, the same on every
+// product, which is the point of them: a reader learns one shape.
+const GWCFC_TPL_HAZARD_ROWS = ['TORNADOES', 'STORM SURGE/FLOODING', 'WIND',
+                               'RAIN', 'SNOW/HAIL/SLEET', 'OTHER'];
+
+const GWCFC_TPL_DISCLAIMER = 'This product is not issued by any official agency.';
+
+// One product, assembled.
+//
+// `v` fills the blanks. Anything missing is left as the placeholder the blank
+// template carries, so a half-filled product is still a readable template
+// rather than a page of empty colons, and a forecaster can always see which
+// slots they have not answered yet.
+function gwcfcBuildProduct(hazId, kind, tier, v) {
+  const H = GWCFC_TPL_HAZARDS[hazId];
+  const K = GWCFC_TPL_KINDS[kind] || GWCFC_TPL_KINDS.warning;
+  const T = GWCFC_TPL_TIERS[tier] || GWCFC_TPL_TIERS.base;
+  if (!H) return '';
+  v = v || {};
+  const val = (k, dflt) => {
+    const s = v[k] == null ? '' : String(v[k]).trim();
+    return s || dflt;
+  };
+  const office = v.office
+    || 'Issued by (OFFICE CODE) Guta Weather and Climate Forecasting Office (City)';
+
+  const L = [];
+  L.push(`${T.prefix}${H.name} ${K.name} ${val('event', '(EVENT NAME/ID)')} `
+       + `ADVISORY ${val('advisory', '(#NUMBER)')}`);
+  L.push(GWCFC_TPL_CENTER);
+  L.push(office);
+  L.push(val('issued', '(HHMM AM/PM TZ DAY MON DD YYYY)'));
+  L.push('');
+  L.push(GWCFC_TPL_DISCLAIMER);
+  L.push('');
+  L.push('SEVERITY TIER: ' + T.tier);
+  L.push(K.cta);
+  L.push('');
+  L.push('');
+  L.push('DISCUSSION & OUTLOOK');
+  L.push('--------------------');
+  L.push(val('discussion', '(Text wall)'));
+  L.push('');
+  L.push('');
+  L.push('DATA');
+  L.push('--------------------');
+  H.data.forEach(f => {
+    L.push(`${f}: ${val('data.' + f, '(value or N/A)')}`);
+    L.push('');
+  });
+  L.push(`AREAS AFFECTED: ${val('areas', '(zones/counties/region)')}`);
+  L.push('');
+  L.push(`VALID: ${val('valid', '(start) - (end)')}`);
+  L.push('');
+  L.push('');
+  L.push('HAZARDS');
+  L.push('--------------------');
+  GWCFC_TPL_HAZARD_ROWS.forEach((r, i) => {
+    L.push(`${r}: ${val('haz.' + r, '(level)')}`);
+    if (i < GWCFC_TPL_HAZARD_ROWS.length - 1) L.push('');
+  });
+  L.push('');
+  L.push('');
+  L.push("FORECASTER'S NOTES");
+  L.push('--------------------');
+  L.push(val('notes', '(Notes)'));
+  L.push('');
+  L.push('');
+  L.push('$$');
+  L.push('');
+  L.push(`Forecaster: ${val('forecaster', '(person)')}`);
+  L.push(`Office: ${val('officeCode', '(OFFICE CODE)')}`);
+  L.push('&&');
+  return L.join('\n') + '\n';
+}
+
+// Every product this office can issue, as one flat list for a menu.
+// 18 hazards x 3 kinds x 3 tiers, in the order the printed index uses.
+function gwcfcTemplateList() {
+  const out = [];
+  Object.keys(GWCFC_TPL_HAZARDS).forEach(h => {
+    ['watch', 'warning', 'emergency'].forEach(k => {
+      ['base', 'severe', 'extreme'].forEach(t => {
+        const T = GWCFC_TPL_TIERS[t], K = GWCFC_TPL_KINDS[k];
+        out.push({ haz: h, kind: k, tier: t,
+                   label: `${T.prefix}${GWCFC_TPL_HAZARDS[h].name} ${K.name}` });
+      });
+    });
+  });
+  return out;
+}
+
+// The 'Issued by' line for an office code, ready to drop into the header.
+function gwcfcOfficeLine(code) {
+  const o = GWCFC_TPL_OFFICES.find(x => x.code === String(code || '').toUpperCase());
+  if (!o) return null;
+  return `Issued by ${o.code} Guta Weather and Climate Forecasting Office ${o.city}`;
+}
+
+// Which hazard a piece of text is about.
+//
+// Two passes, and the split is the whole trick. A Severe Thunderstorm Warning
+// almost always mentions hail, so a single list with the bare word "hail" in
+// it files every thunderstorm warning as a hailstorm. Phrases that NAME a
+// product are tried first; a bare hazard word only decides it when nothing
+// named the product at all.
+const GWCFC_TPL_NAMED = [
+  ['winter-storm',   /winter storm|ice storm|freezing rain|sleet/i],
+  ['blizzard',       /blizzard/i],
+  ['hailstorm',      /hail ?storm/i],
+  ['tropical-storm', /tropical storm/i],
+  ['hurricane',      /hurricane|typhoon/i],
+  ['surge',          /storm surge|inundation/i],
+  ['waterspout',     /waterspout/i],
+  ['tsunami',        /tsunami/i],
+  ['earthquake',     /earthquake|seismic|aftershock/i],
+  ['fire-wildfire',  /wildfire|fire weather|red flag/i],
+  ['flood',          /flash flood|flood warning|flood watch|river crest/i],
+  ['heat',           /excessive heat|heat index|heat warning|heat watch/i],
+  ['freeze',         /hard freeze|freeze warning|freeze watch/i],
+  ['frost',          /frost advisory|frost warning|frost watch/i],
+  ['fog',            /dense fog/i],
+  ['wave',           /high surf|rip current|small craft/i],
+  ['thunderstorm',   /thunderstorm|tornado/i],
+  ['wind',           /high wind|wind advisory/i],
+];
+
+// Only reached when nothing above named a product.
+const GWCFC_TPL_BARE = [
+  ['thunderstorm',   /lightning/i],
+  ['hailstorm',      /\bhail\b/i],
+  ['flood',          /\bflood(ing)?\b/i],
+  ['heat',           /\bheat\b/i],
+  ['freeze',         /\bfreeze\b|\bfreezing\b/i],
+  ['frost',          /\bfrost\b/i],
+  ['fog',            /\bfog\b/i],
+  ['wave',           /\bseas\b|\bswell\b|\bsurf\b/i],
+  ['wind',           /\bwind\b|\bgust/i],
+  ['thunderstorm',   /\bstorm\b/i],
+];
+
+function gwcfcGuessHazard(text) {
+  const t = String(text || '');
+  for (const [id, re] of GWCFC_TPL_NAMED) if (re.test(t)) return id;
+  for (const [id, re] of GWCFC_TPL_BARE) if (re.test(t)) return id;
+  return 'thunderstorm';
+}
+
+function gwcfcGuessKind(text) {
+  const t = String(text || '');
+  if (/emergency/i.test(t)) return 'emergency';
+  if (/\bwatch\b/i.test(t)) return 'watch';
+  return 'warning';
+}
+
+function gwcfcGuessTier(text) {
+  const t = String(text || '');
+  if (/\bextreme\b|catastrophic|particularly dangerous/i.test(t)) return 'extreme';
+  if (/\bsevere\b|considerable/i.test(t)) return 'severe';
+  return 'base';
+}
+
+// ── Somebody else's text, in our format ───────────────────────────────────
+// The reformatter used to emit the Weather Service's own bullet layout, which
+// was the right answer when this office had no format of its own. It has one
+// now, so pasted text is read for what it says and written out as a GWCFC
+// product instead.
+//
+// What it pulls out of the paste:
+//   the bullets            WHAT, WHERE, WHEN, IMPACTS, SOURCE
+//   the tag block          HAIL...1.75 IN, WIND...70 MPH, and the rest
+//   anything else          kept, never dropped
+//
+// and where each goes:
+//   WHAT + IMPACTS + loose prose   DISCUSSION & OUTLOOK
+//   the tags                       the matching DATA rows, by meaning
+//   WHERE                          AREAS AFFECTED
+//   WHEN                           VALID
+//   SOURCE                         FORECASTER'S NOTES
+//
+// Nothing is thrown away. A field this format has no row for lands in the
+// notes rather than vanishing, because a forecaster pasting a product is
+// entitled to get all of it back.
+
+// Which DATA row a tag from a pasted product belongs in. Keyed by the tag
+// name people actually write, valued by the row names used across the
+// hazards; the first row the chosen hazard actually has wins.
+const GWCFC_TAG_ROWS = {
+  'HAIL': ['MAX HAIL SIZE'],
+  'MAX HAIL SIZE': ['MAX HAIL SIZE'],
+  'WIND': ['MAX WIND GUST', 'PEAK GUST', 'PEAK WIND GUST', 'SUSTAINED WIND'],
+  'MAX WIND GUST': ['MAX WIND GUST', 'PEAK GUST', 'PEAK WIND GUST'],
+  'TORNADO': ['TORNADO POTENTIAL'],
+  'TORNADO DAMAGE THREAT': ['TORNADO POTENTIAL'],
+  'THUNDERSTORM DAMAGE THREAT': ['TORNADO POTENTIAL'],
+  'FLASH FLOOD DAMAGE THREAT': ['RAINFALL RATE', 'RAINFALL TOTAL'],
+};
+
+function gwcfcReformat(raw, opts) {
+  const lines = String(raw == null ? '' : raw).replace(/\r/g, '').split('\n');
+  const FIELD = /^[*\-•]?\s*(WHAT|WHERE|WHEN|IMPACTS?|SOURCE|ADDITIONAL DETAILS)\s*(?:\.{2,}|:)\s*(.*)$/i;
+  const TAG = /^([A-Z][A-Z /]{2,40}?)\s*(?:\.{2,}|:)\s*(.+)$/;
+  const fields = {}, tags = {}, loose = [];
+  let cur = null;
+
+  lines.forEach(ln => {
+    const t = ln.trim();
+    if (!t) { cur = null; return; }
+    // Drop a simulation banner the text already carries, ours or another
+    // desk's, so reformatting twice does not stack banners.
+    if (t === AD_SIM_LINE || (/^\*{3,}/.test(t) && /SIMULAT/i.test(t))) return;
+    if (t === GWCFC_TPL_DISCLAIMER) return;
+    const f = FIELD.exec(t);
+    if (f) {
+      let name = f[1].toUpperCase();
+      if (name === 'IMPACT') name = 'IMPACTS';
+      if (name === 'ADDITIONAL DETAILS') name = 'EXTRA';
+      cur = name;
+      fields[name] = (f[2] || '').trim();
+      return;
+    }
+    const g = TAG.exec(t);
+    if (g) { tags[g[1].trim().toUpperCase()] = g[2].trim(); cur = null; return; }
+    if (cur) fields[cur] = (fields[cur] ? fields[cur] + ' ' : '') + t;
+    else loose.push(t);
+  });
+
+  if (!Object.keys(fields).length && !Object.keys(tags).length && !loose.length) {
+    return '';
+  }
+
+  opts = opts || {};
+  const all = raw + ' ' + Object.values(fields).join(' ');
+  const haz  = opts.haz  || gwcfcGuessHazard(all);
+  const kind = opts.kind || gwcfcGuessKind(all);
+  const tier = opts.tier || gwcfcGuessTier(all);
+  const H = GWCFC_TPL_HAZARDS[haz] || GWCFC_TPL_HAZARDS.thunderstorm;
+
+  const v = {};
+  const discussion = [fields.WHAT, fields.IMPACTS, loose.join(' ')]
+    .filter(Boolean).join(' ');
+  if (discussion) v.discussion = discussion;
+  if (fields.WHERE) v.areas = fields.WHERE;
+  if (fields.WHEN) v.valid = fields.WHEN;
+
+  // Tags into DATA rows, and anything with nowhere to go into the notes.
+  const spare = [];
+  Object.keys(tags).forEach(name => {
+    const wants = GWCFC_TAG_ROWS[name] || [name];
+    const row = wants.find(r => H.data.indexOf(r) >= 0);
+    if (row && !v['data.' + row]) v['data.' + row] = tags[name];
+    else spare.push(name + ': ' + tags[name]);
+  });
+
+  const notes = [];
+  if (fields.SOURCE) notes.push('Source: ' + fields.SOURCE);
+  if (fields.EXTRA) notes.push(fields.EXTRA);
+  if (spare.length) notes.push(spare.join('  '));
+  if (notes.length) v.notes = notes.join('\n');
+
+  const body = gwcfcBuildProduct(haz, kind, tier, v);
+  // The Alert Desk is explicitly a practice desk, so what leaves it keeps the
+  // simulation banner regardless of format. The format's own disclaimer says
+  // it is not from an official agency, which is a different claim: this one
+  // says the product itself is not real.
+  return opts.simulated === false ? body
+    : AD_SIM_LINE + '\n\n' + body + '\n' + AD_SIM_LINE + '\n';
+}
+
+
 // ── The intensity scale ───────────────────────────────────────────────────
 // Five stops, shared by every hazard. Level 0 means the hazard is not part of
 // this product and writes nothing at all. Everything below hangs off this one
@@ -5623,15 +5988,10 @@ const AD_HAZARDS = {
                    'Complete destruction of entire neighborhoods is likely. This is a life threatening situation.'],
     amt:    [null, 'EF0', 'EF1', 'EF2', 'EF4'],
   },
-  hail: {
-    label: 'Hail', unit: 'in', ph: '1.75',
-    what:   [null, 'pea to dime size hail', 'quarter size hail', 'golf ball to tennis ball size hail', 'baseball size hail or larger'],
-    impact: [null, 'Minor damage to soft vegetation is possible.',
-                   'Damage to vehicles is expected.',
-                   'People and animals outdoors will be injured. Expect damage to roofs, siding, windows and vehicles.',
-                   'Severe damage to vehicles, homes and aircraft is expected. Anyone caught outside will be seriously injured.'],
-    amt:    [null, '0.50', '1.00', '1.75', '2.75'],
-  },
+  // The separate "Hail" hazard is gone: HAILSTORM is a product family of its
+  // own now, with nine DATA rows to this slider's single number, and every
+  // storm product that needs a hail figure carries MAX HAIL SIZE among its
+  // own fields.
   wind: {
     label: 'Wind', unit: 'mph', ph: '70',
     what:   [null, 'wind gusts to 40 mph', 'wind gusts to 60 mph', 'wind gusts to 80 mph', 'wind gusts over 100 mph'],
@@ -5703,21 +6063,21 @@ const AD_HAZARDS = {
 // desk paints the same red a real one does. `haz` lists which hazards the
 // composer offers, and `mins` the default valid time.
 const AD_PRODUCTS = [
-  { id: 'TOR', event: 'Tornado Warning',             kind: 'warning',   mins: 30,   haz: ['tornado', 'hail', 'wind'] },
-  { id: 'SVR', event: 'Severe Thunderstorm Warning', kind: 'warning',   mins: 45,   haz: ['hail', 'wind', 'rain', 'lightning', 'tornado'] },
+  { id: 'TOR', event: 'Tornado Warning',             kind: 'warning',   mins: 30,   haz: ['tornado', 'wind'] },
+  { id: 'SVR', event: 'Severe Thunderstorm Warning', kind: 'warning',   mins: 45,   haz: ['wind', 'rain', 'lightning', 'tornado'] },
   { id: 'FFW', event: 'Flash Flood Warning',         kind: 'warning',   mins: 180,  haz: ['rain', 'flooding'] },
   { id: 'EWW', event: 'Extreme Wind Warning',        kind: 'warning',   mins: 60,   haz: ['wind'] },
   { id: 'SQW', event: 'Snow Squall Warning',         kind: 'warning',   mins: 60,   haz: ['snow', 'wind'] },
   { id: 'HUW', event: 'Hurricane Warning',           kind: 'warning',   mins: 1440, haz: ['wind', 'surge', 'waves', 'rain', 'flooding', 'tornado'] },
   { id: 'TRW', event: 'Tropical Storm Warning',      kind: 'warning',   mins: 1440, haz: ['wind', 'surge', 'waves', 'rain', 'flooding'] },
   { id: 'SSW', event: 'Storm Surge Warning',         kind: 'warning',   mins: 1440, haz: ['surge', 'waves', 'flooding'] },
-  { id: 'TOA', event: 'Tornado Watch',               kind: 'watch',     mins: 360,  haz: ['tornado', 'hail', 'wind'] },
-  { id: 'SVA', event: 'Severe Thunderstorm Watch',   kind: 'watch',     mins: 360,  haz: ['hail', 'wind'] },
+  { id: 'TOA', event: 'Tornado Watch',               kind: 'watch',     mins: 360,  haz: ['tornado', 'wind'] },
+  { id: 'SVA', event: 'Severe Thunderstorm Watch',   kind: 'watch',     mins: 360,  haz: ['wind'] },
   { id: 'FFA', event: 'Flash Flood Watch',           kind: 'watch',     mins: 720,  haz: ['rain', 'flooding'] },
   { id: 'HUA', event: 'Hurricane Watch',             kind: 'watch',     mins: 1440, haz: ['wind', 'surge', 'waves'] },
   { id: 'TRA', event: 'Tropical Storm Watch',        kind: 'watch',     mins: 1440, haz: ['wind', 'surge', 'waves'] },
   { id: 'SSA', event: 'Storm Surge Watch',           kind: 'watch',     mins: 1440, haz: ['surge', 'waves'] },
-  { id: 'SPS', event: 'Special Weather Statement',   kind: 'statement', mins: 60,   haz: ['wind', 'hail', 'rain', 'lightning', 'snow'] },
+  { id: 'SPS', event: 'Special Weather Statement',   kind: 'statement', mins: 60,   haz: ['wind', 'rain', 'lightning', 'snow'] },
 ];
 
 // Where the information came from. Anything that is not radar reads as a
@@ -6551,7 +6911,7 @@ function _adRenderCompose() {
 
     <div class="ad-grp">
       <div class="ad-h">Reformat your own text</div>
-      <div class="ad-empty">Paste a product you wrote yourself and this rewrites it in our format: our banner, our bullet order, your words. Nothing is thrown away - anything that is not a recognised bullet is kept at the end.</div>
+      <div class="ad-empty">Paste a product you wrote yourself and this rewrites it as a GWCFC product: our header, our DATA rows, your words. Nothing is thrown away - anything with no row to go in is kept in the forecaster's notes.</div>
       <div class="ad-row">
         <textarea class="ad-text" id="ad-import" rows="5" spellcheck="false"
                   placeholder="Paste your own warning text here"></textarea>
@@ -6559,6 +6919,24 @@ function _adRenderCompose() {
       <div class="ad-row">
         <button type="button" class="ad-btn" onclick="_adImportText()">Reformat into our format</button>
         <span class="ad-empty" id="ad-import-note"></span>
+      </div>
+    </div>
+    <div class="ad-grp">
+      <div class="ad-h">Product templates</div>
+      <div class="ad-empty">All ${gwcfcTemplateList().length} GWCFC products: ${Object.keys(GWCFC_TPL_HAZARDS).length} hazards, each as a Watch, Warning or Emergency, each at Base, Severe or Extreme. Loading one puts the blank template in the text box below to fill in.</div>
+      <div class="ad-row">
+        <select id="ad-tpl-haz">${Object.entries(GWCFC_TPL_HAZARDS).map(([k, h]) =>
+          `<option value="${k}">${_adEsc(h.name)}</option>`).join('')}</select>
+        <select id="ad-tpl-kind">${Object.entries(GWCFC_TPL_KINDS).map(([k, x]) =>
+          `<option value="${k}"${k === 'warning' ? ' selected' : ''}>${_adEsc(x.name)}</option>`).join('')}</select>
+        <select id="ad-tpl-tier">${Object.entries(GWCFC_TPL_TIERS).map(([k, x]) =>
+          `<option value="${k}">${_adEsc(x.tier)}</option>`).join('')}</select>
+        <select id="ad-tpl-office"><option value="">No office</option>${GWCFC_TPL_OFFICES.map(o =>
+          `<option value="${o.code}">${_adEsc(o.code)} ${_adEsc(o.city)}</option>`).join('')}</select>
+      </div>
+      <div class="ad-row">
+        <button type="button" class="ad-btn" onclick="_adLoadTemplate()">Load this template</button>
+        <span class="ad-empty" id="ad-tpl-note"></span>
       </div>
     </div>`;
 
@@ -6672,58 +7050,58 @@ function _adSyncBodyUi() {
 // silently deleting a sentence from a warning would be the worst possible
 // behaviour for this button.
 function _adReformat(raw) {
-  const lines = String(raw == null ? '' : raw).replace(/\r/g, '').split('\n');
-  const FIELD = /^[*\-\u2022]?\s*(WHAT|WHERE|WHEN|IMPACTS?|SOURCE|ADDITIONAL DETAILS)\s*(?:\.{2,}|:)\s*(.*)$/i;
-  const TAG = /^(HAIL|WIND|TORNADO|MAX HAIL SIZE|MAX WIND GUST|THUNDERSTORM DAMAGE THREAT|TORNADO DAMAGE THREAT|FLASH FLOOD DAMAGE THREAT)\s*(?:\.{2,}|:)\s*(.+)$/i;
-  const fields = {};
-  const tags = [];
-  const loose = [];
-  let cur = null;
-
-  lines.forEach(ln => {
-    const t = ln.trim();
-    if (!t) { cur = null; return; }
-    // Drop any simulation banner the text already carries, ours or another
-    // desk's, so reformatting twice does not stack banners.
-    if (t === AD_SIM_LINE || (/^\*{3,}/.test(t) && /SIMULAT/i.test(t))) return;
-    const tag = TAG.exec(t);
-    if (tag) { tags.push(tag[1].toUpperCase() + '...' + tag[2].trim()); cur = null; return; }
-    const f = FIELD.exec(t);
-    if (f) {
-      let name = f[1].toUpperCase();
-      if (name === 'IMPACT') name = 'IMPACTS';
-      if (name === 'ADDITIONAL DETAILS') name = 'EXTRA';
-      cur = name;
-      fields[name] = (f[2] || '').trim();
-      return;
-    }
-    if (cur) fields[cur] = (fields[cur] ? fields[cur] + ' ' : '') + t;
-    else loose.push(t);
-  });
-
-  const hasAny = Object.keys(fields).length || tags.length || loose.length;
-  if (!hasAny) return '';
-
-  const out = [AD_SIM_LINE, ''];
-  // Prose with no bullets at all becomes the WHAT, which is where a reader
-  // looks first; prose alongside bullets rides at the end instead.
-  const bulleted = ['WHAT', 'WHERE', 'WHEN', 'IMPACTS', 'SOURCE']
-    .some(k => fields[k]);
-  if (fields.WHAT) out.push('* WHAT...' + fields.WHAT);
-  else if (!bulleted && loose.length) out.push('* WHAT...' + loose.join(' '));
-  if (fields.WHERE) out.push('* WHERE...' + fields.WHERE);
-  if (fields.WHEN) out.push('* WHEN...' + fields.WHEN);
-  if (fields.IMPACTS) out.push('* IMPACTS...' + fields.IMPACTS);
-  if (fields.SOURCE) out.push('* SOURCE...' + fields.SOURCE);
-
-  const trailing = [];
-  if (fields.EXTRA) trailing.push(fields.EXTRA);
-  if (loose.length && (bulleted || fields.WHAT)) trailing.push(loose.join(' '));
-  if (trailing.length) { out.push(''); out.push(trailing.join('\n')); }
-  if (tags.length) { out.push(''); tags.forEach(t => out.push(t)); }
-  out.push('');
-  out.push(AD_SIM_LINE);
-  return out.join('\n');
+  // The office has its own product format now, so this hands the parsing and
+  // the writing to gwcfcReformat and only supplies what the desk knows that a
+  // pasted string does not: which product is being composed. Guessing the
+  // hazard from words is the fallback, not the first choice, because the
+  // composer already has the answer sitting in the draft.
+  const hint = _adDraft && _adDraft.code ? _adProduct(_adDraft.code) : null;
+  const opts = {};
+  if (hint && hint.event) {
+    opts.haz = gwcfcGuessHazard(hint.event);
+    opts.kind = hint.kind === 'watch' ? 'watch'
+              : hint.kind === 'statement' ? 'watch' : 'warning';
+  }
+  if (_adDraft && /pds|emergency/i.test(_adDraft.tag || '')) {
+    opts.kind = 'emergency';
+  }
+  return gwcfcReformat(raw, opts);
+}
+// Put a blank GWCFC template in the text box, ready to fill in.
+//
+// The office code is applied to both places it appears, the header line and
+// the signature, because they are the same fact and a product that disagrees
+// with itself about which office wrote it is worse than one that says neither.
+function _adLoadTemplate() {
+  const pick = (id) => {
+    const el = document.getElementById(id);
+    return el ? el.value : '';
+  };
+  const haz = pick('ad-tpl-haz') || 'thunderstorm';
+  const kind = pick('ad-tpl-kind') || 'warning';
+  const tier = pick('ad-tpl-tier') || 'base';
+  const code = pick('ad-tpl-office');
+  const v = {};
+  if (code) {
+    v.office = gwcfcOfficeLine(code);
+    v.officeCode = code;
+  }
+  // The desk is a practice desk, so its templates carry the banner too.
+  const body = AD_SIM_LINE + '\n\n' + gwcfcBuildProduct(haz, kind, tier, v)
+             + '\n' + AD_SIM_LINE + '\n';
+  _adDraft.body = body;
+  const row = document.getElementById('ad-body-row');
+  if (row) row.style.display = '';
+  const ta = document.getElementById('ad-body');
+  if (ta) { ta.value = body; ta.focus(); }
+  const note = document.getElementById('ad-tpl-note');
+  if (note) {
+    const T = GWCFC_TPL_TIERS[tier], K = GWCFC_TPL_KINDS[kind];
+    note.textContent = `Loaded ${T.prefix}${GWCFC_TPL_HAZARDS[haz].name} `
+      + `${K.name}. Fill in the bracketed slots below.`;
+  }
+  if (typeof _adSyncBodyUi === 'function') _adSyncBodyUi();
+  if (typeof _adSyncDraftUi === 'function') _adSyncDraftUi();
 }
 
 function _adImportText() {
