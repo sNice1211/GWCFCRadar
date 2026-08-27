@@ -251,26 +251,33 @@ console.log('\n2. only current storms draw, until the chip says otherwise');
      === 'GABRIELLE');
 }
 
-console.log('\n3. every name tag is pinned to its line by a stem');
+console.log('\n3. every name tag rides on its own line');
 {
+  // The name used to hang off an angled stalk with a knob on the track. It
+  // answered "which line is this?", but it put the name out in open space
+  // where forty of them competed with each other. Now the label sits
+  // directly ON its track, which answers the same question with nothing
+  // extra drawn. The wrap survives as the anchor; the stalk does not.
   const s = await page.evaluate(() => {
     const wraps = [...document.querySelectorAll('.tag-stemwrap')];
+    const pill = wraps.length ? wraps[0].querySelector('.spag-tag') : null;
     return {
       n: wraps.length,
       tags: document.querySelectorAll('.spag-tag').length,
-      allStemmed: wraps.every(w => w.querySelector('.tag-stem')),
-      knob: wraps.length ? getComputedStyle(
-        wraps[0].querySelector('.tag-stem'), '::before').borderRadius : '',
-      angled: wraps.length ? getComputedStyle(
-        wraps[0].querySelector('.tag-stem')).transform : '',
+      stemHidden: wraps.length
+        ? getComputedStyle(wraps[0].querySelector('.tag-stem')).display : '',
+      pillPos: pill ? getComputedStyle(pill).position : '',
+      pillShift: pill ? getComputedStyle(pill).transform : '',
+      pillLeft: pill ? getComputedStyle(pill).left : '',
     };
   });
-  ok('every tag sits in a stem wrap', s.n > 0 && s.n === s.tags,
+  ok('every tag still sits in an anchor wrap', s.n > 0 && s.n === s.tags,
      `${s.n} wraps, ${s.tags} tags`);
-  ok('each wrap carries a stem', s.allStemmed);
-  ok('the stem is angled, not a floating label',
-     s.angled && s.angled !== 'none', s.angled);
-  ok('with a round knob sitting on the line end', /50%/.test(s.knob), s.knob);
+  ok('the stalk and its knob are gone', s.stemHidden === 'none', s.stemHidden);
+  ok('and the label is centred on the track point itself',
+     s.pillPos === 'absolute' && s.pillLeft === '0px'
+       && /matrix/.test(s.pillShift),
+     JSON.stringify(s));
 }
 
 console.log('\n4. the GWCFC Outlook overlay draws what the portal published');
