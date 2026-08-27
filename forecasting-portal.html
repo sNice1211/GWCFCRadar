@@ -861,6 +861,9 @@ body, button, input, select, textarea, table, code, kbd, pre,
     <button class="tbtn" id="btn-desk" onclick="_adOpen()" title="The app's Alert Desk">
       <svg class="ic"><use href="#ic-siren"></use></svg>
       Alert Desk</button>
+    <button class="tbtn" id="btn-radar" onclick="openOnRadar()" title="Issue the same products from the radar app, over live radar, satellite and model data">
+      <svg class="ic"><use href="#ic-signal"></use></svg>
+      On the Radar</button>
     <button class="tbtn pub" id="btn-publish" onclick="publishOutlook()">
       <svg class="ic"><use href="#ic-megaphone"></use></svg>
       Publish</button>
@@ -1666,6 +1669,31 @@ function friendlyAuthError(e) {
   if (/popup-closed/.test(c)) return 'The Google window was closed.';
   return (e && e.message) || 'Sign in failed.';
 }
+// ══ THE SAME JOB, OVER THE REAL DATA ════════════════════════════════════
+// This portal composes over a plain basemap. The radar app composes over
+// radar, satellite, models and the live alert feed, which is a different job:
+// a warning polygon drawn around the storm you are looking at is not the same
+// thing as one drawn from memory. So the whole issuing desk exists there too,
+// and this hands over to it.
+//
+// Nothing is passed in the URL. Both pages are the same site and the same
+// Firebase project, and Firebase keeps the signed-in account in this
+// browser's storage per site, so the account is already waiting on the other
+// side. A token in an address bar is a token in history, in a screenshot and
+// in any link that gets shared.
+function openOnRadar() {
+  if (!isForecaster(PROFILE)) {
+    toast('Only approved forecasters can issue products.');
+    return;
+  }
+  if (!USER) {
+    gateShowSignIn('Issuing needs a signed-in account. Sign in, then press '
+      + 'On the Radar again.');
+    return;
+  }
+  location.href = 'index.html#forecaster-desk';
+}
+
 async function portalSignOut() {
   try { await _fbAuth.signOut(); } catch (e) {}
   location.reload();
@@ -1715,7 +1743,7 @@ async function onUser(u) {
 // A viewer who is not a forecaster still sees the published outlook; they
 // just cannot arm a tool or publish over it.
 function setEditable(on) {
-  ['btn-tools', 'btn-cone', 'btn-publish'].forEach(id => {
+  ['btn-tools', 'btn-cone', 'btn-radar', 'btn-publish'].forEach(id => {
     const b = document.getElementById(id);
     if (b) b.disabled = !on;
   });
