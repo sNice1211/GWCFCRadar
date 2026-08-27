@@ -24411,7 +24411,7 @@ function _satRegionRow(wrap) {
 // sub-panels). Shown in the same ⓘ tooltip used for the overlay pills.
 const LAYER_DESCRIPTIONS = {
   soundings:      'A vertical slice of the atmosphere above the middle of your map, drawn as a Skew-T. The red line is temperature and the green line is dew point: the closer they sit together, the more humid that layer is. CAPE is how much fuel a storm has, CIN is the lid holding it down, and a negative Lifted Index means the air wants to rise on its own.',
-  mrms:           'NOAA MRMS, a 1 km national mosaic built by blending every radar in the network and quality-controlling the result. Sharper than the standard mosaic and much cleaner around ground clutter and beam blockage. Covers the lower 48.',
+  mrms:           'MRMS composite reflectivity: a 1 km national mosaic built by blending every radar in the network and quality-controlling the result. Composite means the strongest echo found anywhere in the column above each point, so a storm shows its full strength whatever height it is at. Sharper than the standard mosaic and much cleaner around ground clutter and beam blockage. Covers the lower 48.',
   geocolor:       'Full-colour satellite imagery, the kind you see on TV weather. By day it looks close to true colour, and at night it switches to infrared cloud shading with city lights, so it stays readable around the clock rather than going dark like the plain visible channels. One image built from several ABI bands, from NASA GIBS, updated about every 10 minutes. Detail stops sharpening past roughly zoom 7, where it scales the last real imagery up rather than going blank.',
   waves:          'Ocean conditions - wave height, period, direction, swell, and sea surface temperature - shown as a smooth color map over the water. Tap a product below to pick which one.',
   air:            'Air quality - overall AQI, PM2.5, PM10, and ozone - shown as a smooth color map. Tap a product below to pick which one.',
@@ -26584,6 +26584,13 @@ async function toggleMrmsSub() {
     renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
   });
 
+  // Composite goes in first, before the manifest is even asked for, because it
+  // is the only thing in this menu that does not come from the Pi: it is
+  // NOAA's own 1 km reflectivity mosaic off their WMS, with its own scan times
+  // and its own playback. So it still works on a day the Pi is down, and it
+  // must not sit behind a loading note that is waiting on the Pi.
+  _mrmsCompositeBubble(wrap);
+
   const note = document.createElement('div');
   // sb-note, not a bare sub-bubble: this is a status line rather than a
   // layer, so it must not pick up the info and drag buttons every real
@@ -26625,6 +26632,48 @@ async function toggleMrmsSub() {
     el.onclick = () => _mrmsGroupSub(g, gkeys, man);
     wrap.appendChild(el);
   });
+}
+
+// The national mosaic itself, at the top of the MRMS menu above the groups.
+//
+// Everything below it in this menu is a field the Pi renders and lays over the
+// map. This one replaces the radar picture instead, so it behaves like a
+// product rather than an overlay: switching it on turns the standard mosaic
+// off, and switching it off puts the standard mosaic back.
+//
+// It keeps the id sub-mrms so the description already written for it, and any
+// order the user has dragged it into, both still find it after the move.
+function _mrmsCompositeBubble(wrap) {
+  const el = document.createElement('div');
+  el.className = 'sub-bubble' + (_mrmsActive ? ' active' : '');
+  el.id = 'sub-mrms';
+  el.innerHTML = '<span class="sb-icon"><svg class=svgi width=1em height=1em '
+               + 'style=vertical-align:-.15em><use href=#ic-signal></use></svg>'
+               + '</span><span class="sb-label">Composite</span>';
+  el.onclick = () => {
+    if (_mrmsActive) {
+      _clearMrms(); _disableRadar();
+    } else {
+      // Coming in from Level 2 or Level 3 leaves a decoder running and the
+      // source still set to it. This is a mosaic, so put the source back to
+      // normal and stop the decoder, or the station pills stay up offering to
+      // switch a station this picture does not have.
+      _radarSource = 'normal';
+      if (typeof _prDisable === 'function') _prDisable();
+      _clearSingleSiteRef(); _disableSatellite();
+      activeLayers.nexrad = true; currentProduct = 'mrms';
+      _loadMrmsComposite();
+    }
+    // Stay in the MRMS menu either way. Re-rendering the whole row would close
+    // it, which read as the button doing nothing, so only the mark moves.
+    el.classList.toggle('active', !!_mrmsActive);
+    // The parent RADAR bubble reads activeLayers.nexrad, which the other
+    // products update through selectProduct(). This one sets it directly, so
+    // it has to sync the parent itself or the bubble stays looking off.
+    _syncParentBubble('radar');
+    if (typeof _syncNexradSites === 'function') try { _syncNexradSites(); } catch (e) {}
+  };
+  wrap.appendChild(el);
 }
 
 // One group's products. Back returns to the group list rather than to the
@@ -26705,31 +26754,12 @@ const RADAR_PI_BUBBLES = Object.entries(PR_PRODUCTS).map(([k, v]) => ({
       + `<use href=#${_PR_ICONS[k] || 'ic-antenna'}></use></svg>`,
 }));
 
+// The Normal row is now only the tile products. The 1 km national mosaic that
+// used to sit at the top of it has moved into the MRMS menu, where the rest of
+// the MRMS products already were, and is called Composite there: inside a menu
+// that is entirely MRMS, "MRMS 1km" was saying the word MRMS twice and never
+// saying which field it is.
 const RADAR_SUB_BUBBLES = [
-  { id:'mrms', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>', label:'MRMS 1km', action: () => {
-    if (_mrmsActive) {
-      // Turning off returns to the main bubbles, same as the other products.
-      _clearMrms(); _disableRadar();
-      _syncParentBubble('radar');
-      renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular');
-    } else {
-      // Turning on must NOT call renderSubBubbles: that swaps the radar
-      // sub-row back to the main bubbles and closes the menu, which read as
-      // the button doing nothing. Re-render the radar row instead so MRMS
-      // shows as active and the row stays open.
-      _clearSingleSiteRef(); _disableSatellite();
-      activeLayers.nexrad = true; currentProduct = 'mrms';
-      _loadMrmsComposite();
-      // The parent RADAR bubble reads activeLayers.nexrad, which the other
-      // products update through selectProduct(). MRMS sets it directly, so it
-      // has to sync the parent itself or the bubble stays looking switched off.
-      _syncParentBubble('radar');
-      // The Normal row, not the source row above it: MRMS is one of the
-      // Normal products, so re-rendering the row it lives on is what keeps it
-      // open with MRMS marked active.
-      toggleRadarNormalSub();
-    }
-  } },
   { id:'reflectivity', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-cloud-rain></use></svg>', label:'Reflectivity', action: () => { if (activeLayers.nexrad && currentProduct === 'ref') { _clearSingleSiteRef(); _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _clearSingleSiteRef(); _disableSatellite(); activeLayers.nexrad=true; selectProduct('ref'); } } },
   { id:'velocity',     icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-wind></use></svg>', label:'Velocity',     action: () => { if (currentProduct === 'vel') { _disableRadar(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); activeLayers.nexrad=true; selectProduct('vel'); } } },
   { id:'hc',    icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-rainbow></use></svg>', label:'Hydro. Class.', action: () => { if (currentProduct === 'hc')    { _disableDualPol(); renderSubBubbles(TAB_BUBBLES[currentTab] ? currentTab : 'regular'); } else { _disableSatellite(); _disableRadar(); _clearSingleSiteRef(); activeLayers.nexrad=false; selectProduct('hc'); } } },
@@ -27070,7 +27100,6 @@ function toggleRadarNormalSub() {
   _radarBackBubble(wrap, () => toggleRadarSub());
   RADAR_SUB_BUBBLES.forEach(b => {
     const isActiveProd =
-      (b.id === 'mrms'         && _mrmsActive) ||
       (b.id === 'reflectivity' && activeLayers.nexrad && currentProduct === 'ref') ||
       (b.id === 'velocity'     && currentProduct === 'vel') ||
       (b.id === 'hc'           && currentProduct === 'hc') ||
@@ -27085,7 +27114,7 @@ function toggleRadarNormalSub() {
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
-      document.querySelectorAll('#sub-mrms,#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr,#sub-kdp,#sub-sw').forEach(s=>s.classList.remove('active'));
+      document.querySelectorAll('#sub-reflectivity,#sub-velocity,#sub-hc,#sub-accum,#sub-boha,#sub-cc,#sub-zdr,#sub-kdp,#sub-sw').forEach(s=>s.classList.remove('active'));
       el.classList.add('active');
       b.action();
     };
@@ -43522,7 +43551,7 @@ ${allAlertsText || 'none'}
 
 === APP LAYERS (all available, on or off) ===
 NEXRAD radar: reflectivity, velocity, hydrometeor classification, storm
-  accumulation, one hour accumulation, plus the MRMS 1km national mosaic.
+  accumulation, one hour accumulation, plus the MRMS composite national mosaic.
   Dual-pol (ZDR/KDP/CC) is NOT available, do not offer it.
 NWS alert polygons: tornado warnings, severe thunderstorm warnings, flood warnings, watches, advisories
 METAR stations: surface wind and temperature observations at airports/stations
@@ -47654,7 +47683,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'NWRchive now calls the network by its real name, Guta Weather &amp; Climate Forecasting Center, and its Home and footer links go to the website instead of landing on the radar.';
+const APP_LATEST_UPDATE = 'The 1 km national mosaic has moved out of Radar &gt; Normal and into Radar &gt; MRMS, where it now sits at the top of the list as Composite, next to the rest of the MRMS products.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -51429,7 +51458,7 @@ function _ovLoadOrder(){
           <div class="credit-name">NOAA NCEP</div>
           <div class="credit-full">National Centers for Environmental Prediction</div>
           <div class="credit-desc">Single-site NEXRAD Level III products served as WMS: base reflectivity, base velocity, hydrometeor classification, storm total accumulation and one-hour accumulation. Also serves the MRMS national mosaic, the 1 km quality-controlled blend of every radar in the network.</div>
-          <div class="credit-uses"><span class="credit-use">MRMS 1km</span><span class="credit-use">Single-Site Radar</span><span class="credit-use">Velocity</span><span class="credit-use">Hydro. Class.</span><span class="credit-use">Storm Accum.</span><span class="credit-use">1-Hr Accum.</span></div>
+          <div class="credit-uses"><span class="credit-use">MRMS Composite</span><span class="credit-use">Single-Site Radar</span><span class="credit-use">Velocity</span><span class="credit-use">Hydro. Class.</span><span class="credit-use">Storm Accum.</span><span class="credit-use">1-Hr Accum.</span></div>
           <a class="credit-link" href="https://opengeo.ncep.noaa.gov/" target="_blank" rel="noopener">opengeo.ncep.noaa.gov</a>
         </div>
       </div>

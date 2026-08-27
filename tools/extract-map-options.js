@@ -89,7 +89,7 @@ families.radar = families.radar
 // MRMS is a radar product on the page but is loaded by its own path rather
 // than through selectProduct, so it is not in that row. The URL accepts it.
 if (!families.radar.some(p => p.value === 'mrms')) {
-  families.radar.push({ value: 'mrms', name: 'MRMS 1km Composite' });
+  families.radar.push({ value: 'mrms', name: 'MRMS Composite' });
 }
 
 // ── Satellite bands ────────────────────────────────────────────────────────

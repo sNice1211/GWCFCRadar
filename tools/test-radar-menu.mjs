@@ -187,12 +187,59 @@ ok('and the chosen station is remembered', viaPill.site === 'kdyx',
 ok('the source stays Level 2 rather than falling back to Normal',
    viaPill.source === 'l2', viaPill.source);
 
-console.log('\n8. the Normal products are untouched');
+console.log('\n8. the Normal products are the tile products, and only those');
 await page.evaluate(() => toggleRadarNormalSub());
 const normal = await row();
-['MRMS 1km', 'Reflectivity', 'Velocity', 'Hydro. Class.',
+['Reflectivity', 'Velocity', 'Hydro. Class.',
  'Storm Accum.', '1-Hr Accum.'].forEach(p =>
   ok('still offers ' + p, normal.includes(p), normal.join(',')));
+ok('the national mosaic is no longer wedged in among them',
+   !normal.some(l => /MRMS/i.test(l)), normal.join(','));
+
+// It moved into the MRMS menu, where it is called Composite, so this is the
+// half of the move that can actually break: the row above only proves it is
+// gone, not that it arrived. The MRMS menu reads the Pi's manifest, which is
+// not reachable here, so the check is that Composite is drawn WITHOUT it,
+// which is also the behaviour that matters on a day the Pi is down.
+console.log('\n8a. the mosaic is in the MRMS menu, called Composite');
+{
+  const mrms = await page.evaluate(() => {
+    // Deliberately not awaited. toggleMrmsSub goes to the Pi for the product
+    // list, which is not reachable from here, and Composite is drawn before
+    // that request is even made. Reading the row now is what proves it.
+    toggleMrmsSub();
+    return [...document.querySelectorAll('#sub-bubbles .sub-bubble')]
+      .map(e => ((e.querySelector('.sb-label') || e).textContent || '').trim());
+  });
+  ok('the MRMS menu offers Composite', mrms.includes('Composite'), mrms.join(','));
+  ok('and does not still call it MRMS 1km',
+     !mrms.includes('MRMS 1km'), mrms.join(','));
+  ok('it is drawn even with no manifest to read',
+     mrms.indexOf('Composite') === 1, mrms.join(','));
+
+  const t = await page.evaluate(() => {
+    const el = document.getElementById('sub-mrms');
+    if (!el) return { missing: true };
+    el.onclick();
+    const on = { active: _mrmsActive, marked: el.classList.contains('active'),
+                 product: currentProduct, source: _radarSource,
+                 stillOpen: document.getElementById('sub-bubbles').dataset.mode };
+    el.onclick();
+    return { on, off: { active: _mrmsActive,
+                        marked: el.classList.contains('active') } };
+  });
+  ok('clicking it turns the mosaic on', t.on && t.on.active === true,
+     JSON.stringify(t));
+  ok('and marks itself so, rather than looking dead',
+     t.on && t.on.marked === true, JSON.stringify(t));
+  ok('it is a product, so it claims the radar rather than overlaying it',
+     t.on && t.on.product === 'mrms' && t.on.source === 'normal',
+     JSON.stringify(t));
+  ok('and the menu stays open instead of snapping shut',
+     t.on && t.on.stillOpen === 'mrms', JSON.stringify(t));
+  ok('clicking again turns it back off', t.off && t.off.active === false,
+     JSON.stringify(t));
+}
 
 console.log('\n8b. every bubble in every row has words behind its little i');
 {
