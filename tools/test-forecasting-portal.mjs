@@ -736,7 +736,35 @@ console.log('\n7. publishing');
      /UTC/.test(r.stamped), r.stamped);
 }
 
-console.log('\n8. nothing threw');
+console.log('\n8. the shared tools exist twice and must not drift apart');
+{
+  // The Storm Cone tool and the Alert Desk live in BOTH the radar app and
+  // this portal, as copies of the same code. That duplication has a failure
+  // mode with teeth: a control added to one copy is simply absent from the
+  // other, and nothing complains - which is exactly how the cone's WIDTH box
+  // shipped to the portal while the radar app kept a hardcoded swath. These
+  // compare the two copies so the next such change cannot land half-done.
+  const app = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const inputs = (s) => [...new Set(
+    [...s.matchAll(/id="(sc-[a-z-]+-input)"/g)].map(m => m[1]))].sort();
+  const portalIn = inputs(html), appIn = inputs(app);
+  ok('both copies of the cone toolbar offer the same controls',
+     portalIn.join(',') === appIn.join(','),
+     `portal ${portalIn.join(',')} vs app ${appIn.join(',')}`);
+  ok('WIDTH is one of them, in both', portalIn.includes('sc-width-input')
+     && appIn.includes('sc-width-input'));
+  ok('neither copy still hardcodes the old fixed swath',
+     !/distanceMiles \* 0\.22/.test(html) && !/distanceMiles \* 0\.22/.test(app));
+  ok('and both read the width through the same clamped getter',
+     /function _scGetWidth/.test(html) && /function _scGetWidth/.test(app));
+  // The desk's text tools, same reasoning.
+  ['_adReformat', '_adSetBody', '_adResetBody', '_adBodyIsManual'].forEach(fn => {
+    ok(`both copies of the Alert Desk have ${fn}`,
+       html.includes(fn) && app.includes(fn));
+  });
+}
+
+console.log('\n9. nothing threw');
 ok('the portal never signs in anonymously (that replaced real sessions)',
    !html.includes('signInAnonymously'));
 ok('no uncaught page errors', errors.length === 0, errors.join(' | '));
