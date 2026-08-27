@@ -1290,6 +1290,27 @@ RETRIES = 3
 # are untouched.
 MAX_EDGE_PX = 1600
 
+# How small a picture is allowed to be before it gets interpolated up.
+#
+# One pixel per grid cell is exact, but it is not what anybody sees. A global
+# model at 0.25 degrees is about 240 cells across a continental box, and the
+# browser stretches those 240 pixels over a screen more than a thousand wide,
+# so every cell arrives as a visible square. That is the blockiness: not a
+# lack of smoothing, a lack of pixels to smooth.
+#
+# So a coarse field is resampled up to this long edge before it is coloured.
+# The interpolation happens on the VALUES, not on the finished colours, which
+# matters: blending two colours from opposite ends of a ramp produces a colour
+# from the middle of the ramp, which would paint a temperature that nothing
+# forecast. Interpolating the numbers first and colouring afterwards gives the
+# colour each interpolated value actually earns.
+#
+# 1000 rather than the 1600 cap because this is generated detail, not measured
+# detail: past about four times the model's own resolution the picture is
+# larger without being truer, and every one of those pixels costs Pi time,
+# card space and download.
+SMOOTH_MIN_EDGE_PX = 1000
+
 
 # How long a standard build may spend before it stops starting new models.
 # With twenty of them a bad afternoon at NOAA could otherwise run past the
@@ -3814,6 +3835,65 @@ def open_fields(grib_path, regrid_box=None):
     return found
 
 
+def smooth_upsample(data, min_edge=None, max_edge=None):
+    """Interpolate a coarse field up so it does not arrive as visible squares.
+
+    Bicubic on the values themselves. See SMOOTH_MIN_EDGE_PX for why this
+    happens before the colour ramp rather than after it.
+
+    Two things it is careful about:
+
+    Missing data does not survive interpolation. A NaN dragged through a
+    bicubic kernel poisons every pixel it touches, so the holes are filled
+    with a neutral value for the resize and then punched back out afterwards
+    using a separately resampled mask. Without that, one missing cell at the
+    edge of a domain eats a growing bite out of the picture.
+
+    A field that is already fine enough is returned untouched. This only ever
+    adds pixels; thinning a too-large grid is the caller's job, and doing both
+    would mean resampling a field twice for no gain.
+    """
+    min_edge = SMOOTH_MIN_EDGE_PX if min_edge is None else int(min_edge)
+    max_edge = MAX_EDGE_PX if max_edge is None else int(max_edge)
+    data = np.asarray(data, dtype=np.float32)
+    if data.ndim != 2 or data.size == 0:
+        return data
+    h, w = data.shape
+    if h < 2 or w < 2:
+        return data
+    long_edge = max(h, w)
+    if long_edge >= min_edge:
+        return data
+
+    scale = min(min_edge, max_edge) / float(long_edge)
+    nw, nh = int(round(w * scale)), int(round(h * scale))
+    if nw <= w and nh <= h:
+        return data
+
+    bad = ~np.isfinite(data)
+    if bad.all():
+        return data
+    fill = float(np.nanmean(data[~bad])) if bad.any() else 0.0
+    filled = np.where(bad, fill, data).astype(np.float32)
+
+    # np.array, not np.asarray: PIL hands back a read-only view, and the
+    # mask step below writes into this.
+    out = np.array(
+        Image.fromarray(filled, mode="F").resize((nw, nh), Image.BICUBIC),
+        dtype=np.float32)
+
+    if bad.any():
+        # Resampled as "how much of this pixel was real data", then cut at a
+        # half. Bilinear rather than bicubic on purpose: a bicubic kernel
+        # overshoots past 0 and 1 and would carve holes in solid data.
+        keep = np.asarray(
+            Image.fromarray((~bad).astype(np.float32), mode="F")
+                 .resize((nw, nh), Image.BILINEAR),
+            dtype=np.float32)
+        out[keep < 0.5] = np.nan
+    return out
+
+
 def render_png(values, lats, spec, out_path):
     """
     Turn one field into an RGBA PNG the size of the grid.
@@ -3853,6 +3933,8 @@ def render_png(values, lats, spec, out_path):
     # is also north, so the array only needs flipping when it does not.
     if lats is not None and len(lats) > 1 and lats[0] < lats[-1]:
         data = np.flipud(data)
+
+    data = smooth_upsample(data)
 
     lo, hi = spec["range"]
     norm = (data - lo) / float(hi - lo)

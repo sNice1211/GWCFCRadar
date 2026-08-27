@@ -564,6 +564,14 @@ console.log('\n7. house rules');
        && /if \(_fbAuth && !hadAccount\)/.test(html));
   ok('the sign-in button says so when the system has not loaded',
      (html.match(/has not finished loading/g) || []).length >= 2);
+  // Model fields are continuous, radar is banded. They share a pane, so the
+  // pane's deliberately crisp rendering was making model charts look like
+  // tiles. The class is what separates them.
+  ok('model overlays ask for smoothing rather than the radar pane\'s crisp',
+     /className: 'wx-model-smooth'/.test(html)
+       && /img\.wx-model-smooth/.test(html));
+  ok('and radar itself is still crisp, which is the whole reason they differ',
+     /\.leaflet-radar-pane img,[\s\S]{0,400}image-rendering: pixelated/.test(html));
   ok('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 }
 

@@ -2404,6 +2404,20 @@ body.wx-smooth-radar .leaflet-radarPane-pane img,
 body.wx-smooth-radar .leaflet-radarPane-pane canvas {
   image-rendering: auto;
 }
+/* Model charts share the radar pane, but they are NOT radar. Temperature,
+   wind, pressure and moisture are continuous fields: there is no meaningful
+   edge between 71 and 72 degrees, and a real value exists everywhere in
+   between. The crisp rule above is right for radar and wrong for these, and
+   it was making a 0.25 degree model look like tiles. Naming the class as
+   well as the pane beats the pane-only rule on specificity, so this wins
+   without touching how radar draws. */
+.leaflet-radar-pane img.wx-model-smooth,
+.leaflet-radarPane-pane img.wx-model-smooth,
+img.wx-model-smooth {
+  image-rendering: auto;
+  image-rendering: smooth;
+  image-rendering: high-quality;
+}
 
 
 /* ── GRAPHIC MAKER ───────────────────────────────────────────────────────
@@ -16063,6 +16077,10 @@ async function _hdShow() {
   // picture is already a same-origin data: URL and needs no such asking.
   const next = L.imageOverlay(src, _hdManifest.bounds,
     { opacity: modelOpacity, interactive: false, pane: 'radarPane',
+      // Model fields are continuous, so they are smoothed as they stretch
+      // rather than taking the radar pane's deliberately crisp rendering.
+      // See .wx-model-smooth in the stylesheet for why the two differ.
+      className: 'wx-model-smooth',
       crossOrigin: src === url ? 'anonymous' : undefined });
   // Swap only once the replacement is actually up, so scrubbing does not
   // flash the basemap between frames. Both outcomes have to drop the old one:
@@ -47612,7 +47630,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The cone WIDTH box is now in the radar app too, not just the Forecasting Portal. The Storm Cone tool exists in both places and only the portal got it last time; a test now compares the two copies so a control cannot ship to one and not the other.';
+const APP_LATEST_UPDATE = 'Model charts are much smoother. They were drawn one pixel per model grid cell and then stretched, which is why they looked like tiles: the Pi now interpolates each field up before colouring it, and the map smooths model layers instead of treating them like radar.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
