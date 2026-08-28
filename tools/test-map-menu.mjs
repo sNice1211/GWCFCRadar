@@ -474,6 +474,190 @@ console.log('\n8h. the performance pass: canvas alerts, warmed connections');
      r.hasJsdelivr && r.hasFirestore, JSON.stringify(r));
 }
 
+console.log('\n8i. model sounding from the right-click menu');
+{
+  // The row exists only while a Pi model is on the map, names the model and
+  // the hour on screen, and clicking it asks the Pi for exactly that: a
+  // column through that run at that hour, not whatever the panel last showed.
+  let sndCalls = [];
+  let sourcesMode = 'list';
+  await page.route('**pi.test/**', route => {
+    const url = route.request().url();
+    if (url.includes('/sounding/sources')) {
+      if (sourcesMode === 'gone') {
+        return route.fulfill({ status: 404,
+          contentType: 'application/json', body: '{}' });
+      }
+      return route.fulfill({ contentType: 'application/json',
+        body: JSON.stringify({ analysis: [], models: [{
+          id: 'model:gfs', key: 'gfs', label: 'GFS', res: '13 km',
+          out: 384, step: 3, upper: true }] }) });
+    }
+    if (url.includes('/sounding?')) {
+      sndCalls.push(url);
+      // The shape the Pi's model door really answers with: profile as
+      // parallel arrays, `levels` as a COUNT. The panel must convert it,
+      // which is the bug this body is here to catch.
+      return route.fulfill({ contentType: 'application/json',
+        body: JSON.stringify({
+          profile: {
+            p:  [1000, 925, 850, 700, 500, 400, 300, 250, 200, 150],
+            T:  [25, 20, 14, 4, -10, -20, -34, -44, -54, -60],
+            Td: [18, 14, 8, -4, -24, -34, -50, -60, -70, -75],
+            u:  [5, 10, 15, 20, 30, 40, 50, 55, 60, 65],
+            v:  [5, 8, 10, 12, 15, 18, 20, 22, 25, 28],
+            z:  [110, 780, 1500, 3100, 5800, 7500, 9600, 10900, 12400, 14200],
+          },
+          source: 'model:gfs', label: 'GFS f012', model: 'GFS',
+          valid: '2026-08-28T12:00Z', run: '20260828/00', fhr: 12,
+          levels: 10, via: 'model', lat: 35.3, lon: -97.3,
+        }) });
+    }
+    return route.abort();
+  });
+
+  // With no Pi model on the map, the row must be absent, not greyed.
+  await page.evaluate(() => { _cmClose(); _hdOn = false; });
+  await rclick(35.3, -97.3);
+  const t0 = await menuText();
+  ok('without a Pi model on the map there is no model sounding row',
+     !/Model sounding/.test(t0) && /Sounding here/.test(t0), t0);
+
+  // Put the GFS on, at slider stop 2 of hours [0, 6, 12, 18]: hour 12.
+  //
+  // The base is set FIRST, then the model state: _hdSetBase re-points the Pi
+  // features, which includes switching the model layer off, so setting _hdOn
+  // before it meant setting it twice and keeping neither. The address watcher
+  // from 8e is also re-stubbed to hand out this same base, or its next poll
+  // quietly drags _hdBase back to that section's address mid-scenario.
+  await page.evaluate(() => {
+    _cmClose();
+    _hdFetchPublished = async () => 'https://pi.test';
+    _hdAnswers = async () => true;
+    _hdSetBase('https://pi.test');
+    _hdOn = true; _hdModel = 'gfs'; _hdFromPicker = true;
+    _hdIndex = { models: { gfs: { label: 'GFS' } } };
+    _hdManifest = { fields: { refc: { hours: [0, 6, 12, 18] } } };
+    _hdField = 'refc'; _hdHourIdx = 2;
+    _sndPiSources = null; _sndPiSourcesPr = null; _sndPiDown = false;
+    try { localStorage.removeItem('gwcfc_snd_source'); } catch (e) {}
+  });
+  await rclick(35.3, -97.3);
+  const t1 = await menuText();
+  ok('with the GFS up the row appears, naming the model and its hour',
+     /Model sounding: GFS/.test(t1) && /F\+012/.test(t1), t1);
+
+  await page.evaluate(() => { _cmModelSoundingHere(); });
+  for (let i = 0; i < 120 && !sndCalls.length; i++) await page.waitForTimeout(100);
+  ok('clicking it asks the Pi for that model at that hour',
+     sndCalls.length > 0 && /source=model%3Agfs/.test(sndCalls[0])
+     && /fhr=12/.test(sndCalls[0]), sndCalls[0] || 'no request went out');
+
+  await page.waitForFunction(() => {
+    const el = document.getElementById('snd-panel');
+    return el && el.classList.contains('open')
+      && /forecast hour/.test(el.querySelector('.snd-note').textContent);
+  }, { timeout: 20000 }).catch(() => {});
+  const r1 = await page.evaluate(() => {
+    const el = document.getElementById('snd-panel');
+    return {
+      src: _sndSource,
+      picker: el.querySelector('.snd-src').value,
+      hour: el.querySelector('.snd-hour-lbl').textContent,
+      note: el.querySelector('.snd-note').textContent,
+      saved: localStorage.getItem('gwcfc_snd_source'),
+      sliderAt: el._modelHours
+        ? el._modelHours[+el.querySelector('.snd-hour').value] : null,
+      rows: el._snd ? el._snd.rows.length : 0,
+    };
+  });
+  ok('the panel is pointed at the model source, picker and state agreeing',
+     r1.src === 'model:gfs' && r1.picker === 'model:gfs'
+     && r1.saved === 'model:gfs', JSON.stringify(r1));
+  ok('the slider sits on the forecast hour that was on screen',
+     r1.hour === 'F+012' && r1.sliderAt === 12, JSON.stringify(r1));
+  ok('the profile was converted and drawn, not thrown away',
+     r1.rows === 10, String(r1.rows));
+  ok('and the note says which run and which hour this forecast is',
+     /GFS run 20260828\/00/.test(r1.note) && /forecast hour 12/.test(r1.note),
+     r1.note);
+
+  // An older Pi without /sounding/sources: the map still knows the model, so
+  // the click must still target it, with an entry built from the map's own
+  // hours rather than silently answering from the default source.
+  await page.evaluate(() => {
+    document.getElementById('snd-panel').classList.remove('open');
+    _sndPiSources = null; _sndPiSourcesPr = null; _sndPiDown = false;
+    try { localStorage.removeItem('gwcfc_snd_source'); } catch (e) {}
+  });
+  sourcesMode = 'gone'; sndCalls = [];
+  await rclick(35.3, -97.3);
+  await page.evaluate(() => { _cmModelSoundingHere(); });
+  for (let i = 0; i < 120 && !sndCalls.length; i++) await page.waitForTimeout(100);
+  ok('an older Pi with no source list still gets asked for the model',
+     sndCalls.length > 0 && /source=model%3Agfs/.test(sndCalls[0]),
+     sndCalls[0] || 'no request went out');
+  const r2 = await page.evaluate(() => {
+    const s = _sndFind('model:gfs');
+    return s ? { label: s.label, out: s.out, step: s.step } : null;
+  });
+  ok('with a source entry built from the map\'s own hours',
+     r2 && r2.label === 'GFS (model)' && r2.out === 18 && r2.step === 6,
+     JSON.stringify(r2));
+
+  // Leave the map the way this section found it.
+  await page.evaluate(() => {
+    document.getElementById('snd-panel').classList.remove('open');
+    _hdOn = false; _cmClose();
+  });
+  await page.unroute('**pi.test/**');
+}
+
+console.log('\n8j. timeline tick labels fit the strip instead of overlapping');
+{
+  // The mobile screenshot bug: floor(8 frames / 5) is a step of ONE, so a
+  // short loop got a label per frame, and the crowd ran on out of the strip
+  // underneath the time display beside it. The builder now measures the
+  // strip and ceil-thins to what fits.
+  const r = await page.evaluate(() => {
+    const wrap = document.getElementById('timeline-labels');
+    const times = [];
+    for (let i = 0; i < 8; i++) times.push(new Date(Date.UTC(2026, 7, 28, 13, 20 + i * 5)));
+
+    // A wide strip: never more than five, even for a short loop.
+    wrap.style.width = '300px';
+    buildTimelineLabels({ times, first: 0 });
+    const wide = wrap.querySelectorAll('span').length;
+
+    // A phone-width strip: fewer still, because fewer fit.
+    wrap.style.width = '120px';
+    buildTimelineLabels({ times, first: 0 });
+    const narrow = wrap.querySelectorAll('span').length;
+
+    wrap.style.width = '';
+    const cs = getComputedStyle(wrap);
+    return { wide, narrow, overflow: cs.overflow, wrapMode: cs.whiteSpace };
+  });
+  ok('a short loop no longer gets a label per frame',
+     r.wide >= 3 && r.wide <= 5, String(r.wide));
+  ok('a phone-width strip thins further, to what fits',
+     r.narrow >= 2 && r.narrow < r.wide, `${r.narrow} vs ${r.wide}`);
+  ok('and the strip clips instead of running under its neighbour',
+     r.overflow === 'hidden' && r.wrapMode === 'nowrap', JSON.stringify(r));
+
+  // On a phone the visible time display must be allowed to shrink: its
+  // desktop 100px floor plus flex-shrink 0 is what squeezed the timeline.
+  await page.setViewportSize({ width: 390, height: 720 });
+  await page.waitForTimeout(150);
+  const m = await page.evaluate(() => {
+    const cs = getComputedStyle(document.getElementById('anim-time-display'));
+    return { minW: cs.minWidth, size: cs.fontSize };
+  });
+  ok('the time display gives up its 100px floor on a phone',
+     m.minW === '0px', JSON.stringify(m));
+  await page.setViewportSize({ width: 1280, height: 720 });
+}
+
 console.log('\n9. nothing threw along the way');
 ok('no uncaught errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 

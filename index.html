@@ -586,6 +586,12 @@ body {
 #timeline-labels {
   display: flex; justify-content: space-between;
   font-family: var(--display); font-weight: 700; font-size: 9px; color: #000;
+  /* Clipped, and never wrapped. Labels that do not fit used to run on out of
+     the strip and print themselves under the big time display next to it,
+     which on a phone read as two clocks stamped over each other. The label
+     builder measures how many fit; this is the backstop for the moment
+     between a resize and the next rebuild. */
+  overflow: hidden; white-space: nowrap;
 }
 /* Said plainly, and dimmed, so an empty bar reads as empty rather than as a
    loop whose labels failed to draw. */
@@ -1382,6 +1388,11 @@ body {
   #speed-unit { font-size: 9px; padding: 0 5px 0 0; }
   #anim-time { min-width: 64px; font-size: 10px; }
   #timeline-labels { font-size: 8px; }
+  /* The one that is actually visible. Its desktop 100px floor plus
+     flex-shrink: 0 meant "01:55 PM EDT FRI" could never give an inch on a
+     phone, so the timeline beside it was squeezed until its tick labels
+     spilled underneath this very element. */
+  #anim-time-display { min-width: 0; font-size: 10px; padding: 0 6px; }
 
 
   /* Alerts panel , keep within bounds */
@@ -1428,6 +1439,7 @@ body {
   #animbar { bottom: 26px; gap: 4px; }
   #speed-wrap { display: none; }
   #anim-time { min-width: 58px; }
+  #anim-time-display { font-size: 9px; padding: 0 4px; }
 
   /* Sub bubbles and right menu , tighter vertical stack */
   #sub-bubbles { gap: 4px; }
@@ -17573,8 +17585,17 @@ async function _sndPiModelSounding(lat, lon, modelKey, fhr) {
       || `the Pi answered HTTP ${r.status} for the model sounding`);
   }
   if (!body || !body.profile) throw new Error('the Pi sent no profile back');
-  body.via = 'model';
-  return body;
+  // Through the same converter every other Pi profile goes through. The body
+  // carries `profile` as parallel arrays and `levels` as a COUNT; the panel
+  // reads `levels` as an array of rows. Returned raw, the body sailed past
+  // "no profile" and then broke inside the derive, so picking a model source
+  // always showed an error even when the Pi had answered perfectly.
+  const prof = _sndFromPi(body);
+  prof.via = 'model';
+  prof.model = body.model || body.label || modelKey;
+  prof.run = body.run || body.valid || '';
+  prof.fhr = (body.fhr == null ? Math.max(0, fhr | 0) : body.fhr);
+  return prof;
 }
 
 async function _sndPiSounding(lat, lon, source, hoursBack) {
@@ -18521,7 +18542,7 @@ function _piStatusLine(st) {
   return out;
 }
 
-async function openSounding(lat, lon) {
+async function openSounding(lat, lon, opts) {
   // The reader needs the Pi's address, which is only looked up once something
   // Pi-backed is used. A sounding may be the first such thing this session.
   if (!_hdBase) _hdBase = await _hdResolveBase();
@@ -18693,6 +18714,47 @@ async function openSounding(lat, lon) {
       _sndSource = saved;
     }
   } catch (e) {}
+  // A targeted open. The map menu's "Model sounding" row names the exact
+  // source and hour it wants, and that outranks whatever was remembered:
+  // the person just pointed at a model chart and asked about it, and being
+  // answered from a saved preference instead would be the panel ignoring
+  // the question that was actually put to it.
+  let wantFhr = null;
+  if (opts && opts.source) {
+    _sndSource = String(opts.source);
+    try { localStorage.setItem('gwcfc_snd_source', _sndSource); } catch (e) {}
+    if (typeof opts.fhr === 'number' && isFinite(opts.fhr)) {
+      wantFhr = Math.max(0, opts.fhr | 0);
+    }
+    if (_sndSource.startsWith('model:') && !_sndFind(_sndSource)) {
+      // The Pi's own list is the real one, so it is waited for HERE, the one
+      // place a model source is about to be fetched from. Everywhere else it
+      // loads in the background; here, not waiting means the first fetch
+      // dispatches on a source the panel does not know yet and quietly goes
+      // to the default door instead of the model that was clicked.
+      try { await _sndLoadPiSources(); } catch (e) {}
+      if (!_sndFind(_sndSource)) {
+        // Still unknown: an older serve.py without /sounding/sources, or a
+        // Pi slow to answer. The map itself still knows the model, so the
+        // entry is built from the map's own hours and the fetch is allowed
+        // to try; if the door truly is not there, the panel says so in its
+        // own words rather than answering from the wrong source.
+        const key = _sndSource.slice('model:'.length);
+        const mdl = (typeof _hdIndex !== 'undefined' && _hdIndex
+                     && _hdIndex.models && _hdIndex.models[key]) || {};
+        let hrs = [];
+        try { hrs = _hdHoursFor(_hdField) || []; } catch (e) {}
+        _sndPiSources = (_sndPiSources || []).concat([{
+          id: _sndSource, pi: _sndSource, model: key,
+          label: `${mdl.label || key.toUpperCase()} (model)`,
+          out: hrs.length ? +hrs[hrs.length - 1] : 48,
+          step: hrs.length > 1 ? Math.max(1, hrs[1] - hrs[0]) : 3,
+          isModel: true,
+        }]);
+      }
+      _sndSyncSourceMenu(el);
+    }
+  }
   const _srcSel = el.querySelector('.snd-src');
   _srcSel.value = _sndSource;
   // A hidden source can still be selected from code, and then the picker has
@@ -18708,12 +18770,23 @@ async function openSounding(lat, lon) {
     _sndSyncHourScale(el);
   }).catch(() => {});
   _sndSyncHourScale(el);
+  // The slider shows the hour being fetched from the first moment, not after
+  // the fetch lands. The model door can take tens of seconds, and a thumb
+  // sitting on F+000 while F+036 is on its way reads as the wrong question
+  // being asked.
+  if (wantFhr != null && el._modelHours && el._modelHours.length) {
+    const sl = el.querySelector('.snd-hour');
+    sl.value = el._modelHours.reduce((b, h, i) =>
+      Math.abs(h - wantFhr) < Math.abs(el._modelHours[b] - wantFhr) ? i : b, 0);
+    const lbl = el.querySelector('.snd-hour-lbl');
+    if (lbl) lbl.textContent = 'F+' + String(wantFhr).padStart(3, '0');
+  }
   el.querySelector('.snd-where').textContent =
     `${lat.toFixed(2)}, ${lon.toFixed(2)}`;
   el.querySelector('.snd-note').textContent = 'Asking the Pi...';
   el.querySelector('.snd-tables').innerHTML =
     '<div class="snd-err">Building the sounding...</div>';
-  await _sndRefresh(el, null);
+  await _sndRefresh(el, wantFhr);
 }
 
 // Draw whichever view is up, and only that one. A canvas in a hidden pane
@@ -19096,10 +19169,16 @@ async function _sndRefresh(el, hr) {
       el._modelHours = (el._modelHours && el._modelHours.length)
         ? el._modelHours : _sndModelHours(_pickNow);
       sl.max = Math.max(0, el._modelHours.length - 1);
-      const at = el._modelHours.indexOf(prof.fhr == null ? (hr || 0) : prof.fhr);
-      sl.value = at < 0 ? 0 : at;
+      // The hour that came back may not be one of the slider's thinned stops:
+      // the map menu passes the chart's own hour through, and the chart's
+      // hours are denser than the slider's. Nearest stop, not indexOf, which
+      // returned -1 and flung the thumb to the far left while the label said
+      // otherwise.
+      const wantHr = prof.fhr == null ? (hr || 0) : prof.fhr;
+      sl.value = el._modelHours.reduce((b, h, i) =>
+        Math.abs(h - wantHr) < Math.abs(el._modelHours[b] - wantHr) ? i : b, 0);
       el.querySelector('.snd-hour-lbl').textContent =
-        'F+' + String(prof.fhr == null ? (hr || 0) : prof.fhr).padStart(3, '0');
+        'F+' + String(wantHr).padStart(3, '0');
     } else if (el._piMode) {
       sl.max = SND_BACK_HOURS.length - 1;
       const back = Math.max(0, SND_BACK_HOURS.indexOf(hr || 0));
@@ -35093,6 +35172,18 @@ function _cmOpen(e) {
   const st = _cmNearestStation(e.latlng.lat, e.latlng.lng);
   const nc = _cmNearestCity(e.latlng.lat, e.latlng.lng);
   _cmAlertList = _cmAlertsAt(e.latlng.lat, e.latlng.lng);
+  // Only while a Pi model is actually on the map. The row names the model
+  // and the hour being looked at, because that is the whole question it
+  // answers: what does THIS run say about the air above THIS spot at THIS
+  // hour. With no model up the row would be a promise with nothing behind
+  // it, so it is absent rather than greyed.
+  const pm = _cmPiModel();
+  // Warm the Pi's source list now, so it has usually answered by the time
+  // the row is clicked rather than being asked for at that moment.
+  if (pm && typeof _sndLoadPiSources === 'function') {
+    try { _sndLoadPiSources().catch(() => {}); } catch (err) {}
+  }
+  const esc = (s) => (typeof _ccEsc === 'function' ? _ccEsc(s) : String(s));
   const ic = (name) => `<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-${name}></use></svg>`;
   _cmEl.innerHTML = `
     <div class="cm-title">${lat}, ${lng}</div>
@@ -35102,6 +35193,7 @@ function _cmOpen(e) {
     <div class="cm-item${_cmAlertList.length ? '' : ' cm-dim'}" onclick="_cmShowAlerts()">${ic('siren')} Alerts here (${_cmAlertList.length})</div>
     <div class="cm-item" onclick="_cmInspectHere()">${ic('search')} Inspect values here</div>
     <div class="cm-item" onclick="_cmSoundingHere()">${ic('chart-up')} Sounding here</div>
+    ${pm ? `<div class="cm-item" onclick="_cmModelSoundingHere()">${ic('chart-up')} Model sounding: ${esc(pm.label)} &middot; F+${String(pm.fhr).padStart(3, '0')}</div>` : ''}
     <div class="cm-item" onclick="_cmRadiusHere()">${ic('target')} 50 mi radius here</div>
     <div class="cm-item" onclick="_cmSetRecenter()">${ic('compass')} Set as recenter</div>
     <div class="cm-item" onclick="_cmSetLoadSpot()">${ic('flag')} Set as load spot</div>
@@ -35124,6 +35216,42 @@ function _cmSoundingHere() {
   const lat = _cmLatLng.lat, lng = _cmLatLng.lng;
   _cmClose();
   if (typeof openSounding === 'function') openSounding(lat, lng);
+}
+
+// The Pi model on the map right now, if there is one: which model, what to
+// call it, and the forecast hour its picture is showing. Null is the signal
+// that the menu row has no business appearing.
+function _cmPiModel() {
+  if (typeof _hdOn === 'undefined' || !_hdOn) return null;
+  if (typeof _hdModel === 'undefined' || !_hdModel) return null;
+  const entry = (typeof _hdIndex !== 'undefined' && _hdIndex
+                 && _hdIndex.models && _hdIndex.models[_hdModel]) || {};
+  // The hour the chart on screen is showing, read the same way _hdShow reads
+  // it, so the sounding and the picture beside it are cuts through the same
+  // moment rather than through two different ones.
+  let fhr = 0;
+  try {
+    const hours = _hdHoursFor(_hdField);
+    if (hours.length) fhr = +hours[Math.min(_hdHourIdx, hours.length - 1)] || 0;
+  } catch (err) {}
+  return { key: _hdModel, label: entry.label || String(_hdModel).toUpperCase(), fhr };
+}
+
+// A sounding cut from the model that is on the map, at the hour it is
+// showing. "Sounding here" above answers with the best ANALYSIS it can find:
+// what the air is doing. This one answers with the FORECAST being looked at:
+// what this run says the air will be doing, above this spot, at the hour on
+// screen. Different questions, so they are different rows.
+function _cmModelSoundingHere() {
+  const ll = _cmLatLng;
+  const pm = _cmPiModel();
+  _cmClose();
+  if (!ll || typeof openSounding !== 'function') return;
+  // The model could have been switched off between the menu opening and the
+  // click. Falling back to the plain sounding answers the click honestly
+  // rather than doing nothing.
+  if (!pm) { openSounding(ll.lat, ll.lng); return; }
+  openSounding(ll.lat, ll.lng, { source: 'model:' + pm.key, fhr: pm.fhr });
 }
 
 function _cmCopyCoords() {
@@ -37150,13 +37278,10 @@ async function loadVelocityData() {
 function buildVelLabels() {
   const wrap = document.getElementById('timeline-labels');
   if (!wrap) return;
-  const step = Math.max(1, Math.floor(velFrames.length / 5));
-  let html = '';
-  for (let i = 0; i < velFrames.length; i += step) {
-    const d = new Date(velFrames[i].time * 1000);
-    html += `<span>${_fmtHHMMshort(d)}</span>`;
-  }
-  wrap.innerHTML = html;
+  // Through the shared measured builder: the old floor(n/5) step here put a
+  // label on every frame of a short loop, which is the mobile overlap bug.
+  wrap.innerHTML = _tlTickHTML(
+    velFrames.map(f => new Date(f.time * 1000)), _fmtHHMMshort);
 }
 
 function showVelFrame(idx) {
@@ -39024,13 +39149,10 @@ async function loadDualPolData(product, stationOverride = null) {
 function _buildDpLabels() {
   const wrap = document.getElementById('timeline-labels');
   if (!wrap) return;
-  const step = Math.max(1, Math.floor(_dpFrames.length / 5));
-  let html = '';
-  for (let i = 0; i < _dpFrames.length; i += step) {
-    const d = new Date(_dpFrames[i].time * 1000);
-    html += `<span>${_fmtHHMM(d)}</span>`;
-  }
-  wrap.innerHTML = html;
+  // Through the shared measured builder: the old floor(n/5) step here put a
+  // label on every frame of a short loop, which is the mobile overlap bug.
+  wrap.innerHTML = _tlTickHTML(
+    _dpFrames.map(f => new Date(f.time * 1000)), _fmtHHMM);
 }
 
 function showDpFrame(idx) {
@@ -39710,14 +39832,12 @@ async function _loadSingleSiteRef(stationId) {
     currentFrame = last;
     const wrap = document.getElementById('timeline-labels');
     if (wrap) {
-      const step = Math.max(1, Math.floor(frames.length / 5));
-      let html = '';
-      for (let k = 0; k < frames.length; k += step) {
-        const d = new Date(frames[k].time * 1000);
-        html += `<span>${d.getUTCHours().toString().padStart(2,'0')}:`
-              + `${d.getUTCMinutes().toString().padStart(2,'0')}</span>`;
-      }
-      wrap.innerHTML = html;
+      // Through the shared measured builder: the old floor(n/5) step put a
+      // label on every frame of a short loop, the mobile overlap bug.
+      wrap.innerHTML = _tlTickHTML(
+        frames.map(f => new Date(f.time * 1000)),
+        d => `${d.getUTCHours().toString().padStart(2, '0')}:`
+           + `${d.getUTCMinutes().toString().padStart(2, '0')}`);
     }
     _refreshNexradSiteStyles();
     _showSingleSiteRefFrame(last);
@@ -49674,7 +49794,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The Asturio assistant page has a background now, and you pick it. Eight drawn scenes come with it: a hurricane, a ballpark, red and gold geometry, a radar sweep, a circuit board, terrain contours, embers, or plain. Or upload your own picture, which is kept on your device and comes back next visit. A dimmer slides the whole thing back so text stays readable over a busy image, and the falling code behind it has an off switch.';
+const APP_LATEST_UPDATE = 'Two things. Right-click or double-tap the map while a Pi model is showing and the menu now has a Model Sounding button: it cuts a vertical profile out of that exact model run, at the forecast hour on screen, at the spot you clicked. And the playback bar no longer piles its times on top of each other on phones: short loops printed a time stamp for every frame and ran them under the clock, now only as many stamps as fit are drawn.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -51688,20 +51808,39 @@ function buildTimelineLabels(src) {
   if (!wrap) return;
   src = src || (typeof _animSource === 'function'
                 ? _animSource() : { times: [], first: 0 });
-  const times = src.times || [];
-  const start = src.first || 0;
-  if (times.length - start < 2) {
+  const times = (src.times || []).slice(src.first || 0)
+    .filter(d => d instanceof Date && isFinite(d.getTime()));
+  if (times.length < 2) {
     wrap.innerHTML = '<span class="tl-empty">No loop loaded</span>';
     return;
   }
-  const cnt = 5; // fixed number of timeline labels
-  const step = Math.max(1, Math.floor((times.length - start) / cnt));
+  wrap.innerHTML = _tlTickHTML(times, _fmtHHMMshort)
+    || '<span class="tl-empty">No loop loaded</span>';
+}
+
+// The tick labels under the slider, as many as actually fit, measured.
+//
+// Shared by every loop kind because each had its own copy of the same
+// mistake: `floor(frames / 5)` as the step. Floor of anything under ten is
+// one, so a loop of six to nine frames got a label for EVERY frame - the
+// screenshot case was eight stamps of "13:20" crowding a phone-width strip
+// with room for three, running on underneath the time display beside it.
+// The count comes from the strip's real width instead, and the step from
+// ceil, which can only ever thin labels, never multiply them.
+function _tlTickHTML(times, fmt) {
+  const n = times.length;
+  if (!n) return '';
+  const wrap = document.getElementById('timeline-labels');
+  // Each label needs about 44px: five characters of "13:20" at this size
+  // plus the breathing room that keeps neighbours from reading as one
+  // number. A strip that has not been laid out yet measures 0 and falls
+  // back to the desktop-familiar five.
+  const w = (wrap && wrap.clientWidth) || 0;
+  const fit = w ? Math.max(2, Math.min(5, Math.floor(w / 44))) : 5;
+  const step = Math.max(1, Math.ceil(n / fit));
   let html = '';
-  for (let i = start; i < times.length; i += step) {
-    const d = times[i];
-    if (d instanceof Date && isFinite(d.getTime())) html += `<span>${_fmtHHMMshort(d)}</span>`;
-  }
-  wrap.innerHTML = html || '<span class="tl-empty">No loop loaded</span>';
+  for (let i = 0; i < n; i += step) html += `<span>${fmt(times[i])}</span>`;
+  return html;
 }
 </script>
 <!-- ── SPC OUTLOOK DAY/HAZARD SWITCHER (floating, shared by models + overlays) ── -->
