@@ -10493,6 +10493,101 @@ function _abortSignal(ms) {
 // iOS detection - used to tune keepBuffer and avoid canvas CORS crashes
 const _isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
+// ══════════════════════════════════════════════════════════════════════════
+// ── SCROLL AND PINCH ZOOM ─────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// Two fingers on a trackpad barely zoomed at all, and that is not a matter of
+// taste; it is arithmetic, and it comes from combining two settings that do
+// not get along.
+//
+// zoomSnap: 0 is set above so the map can sit between whole levels. Leaflet's
+// own wheel handler computes its step as
+//
+//     d3 = 4 * log2( 2 / (1 + e^-|delta / 240|) )
+//
+// then, when zoomSnap is nonzero, ROUNDS THAT UP to the nearest snap. That
+// rounding is what normally makes a wheel usable: any flick at all clears a
+// whole level, because ceil() drags it up to 1. With zoomSnap 0 there is no
+// rounding, so the raw curve is what you get, and the raw curve is brutal at
+// the small end. A trackpad sends a stream of two to four pixel deltas, and
+// Leaflet chops that stream into 40 ms buckets and runs each bucket through
+// the curve separately. A bucket holding 30 px of scroll yields
+//
+//     4 * log2(2 / (1 + e^-0.125)) = 0.35 of a zoom level
+//
+// and a whole second of steady two-finger scrolling is maybe twenty of those
+// buckets, most of them smaller. A mouse wheel escapes because one notch is
+// 100 to 120 px in a single event, but on a trackpad the map crawls.
+//
+// So the wheel is handled here instead, on three rules:
+//
+//   1. Scrolling distance maps to zoom LINEARLY. No saturating curve, no
+//      per-burst damping. Scroll twice as far, zoom twice as much, which is
+//      the only behaviour a hand can predict.
+//   2. Every event counts. Deltas accumulate into a target and are applied
+//      once per animation frame, so nothing is thrown away between buckets
+//      and the work is still capped at one zoom per frame.
+//   3. The point under the cursor stays under the cursor.
+const WZ_PX_PER_ZOOM       = 120;   // trackpad and wheel: about one notch
+const WZ_PX_PER_ZOOM_PINCH = 40;    // a trackpad pinch, which wants to be quicker
+const WZ_LINE_PX           = 16;    // one "line" of scroll, for deltaMode 1
+const WZ_MAX_STEP          = 2;     // levels per event, so a flick cannot fly
+
+function _wireWheelZoom(m) {
+  const el = m.getContainer && m.getContainer();
+  if (!el) return;
+  // Leaflet's own handler is switched off rather than tuned, because the
+  // rounding it relies on is exactly what zoomSnap 0 removes.
+  try { m.scrollWheelZoom.disable(); } catch (e) {}
+
+  let pending = 0;          // zoom levels accumulated but not yet applied
+  let anchor = null;        // where the cursor was, in container pixels
+  let frame = 0;
+
+  const apply = () => {
+    frame = 0;
+    const step = pending;
+    pending = 0;
+    if (!step) return;
+    try {
+      const want = m._limitZoom(m.getZoom() + step);
+      if (want === m.getZoom()) return;
+      // setZoomAround keeps the anchor point fixed, which is what makes
+      // zooming feel like it is aimed rather than centred. animate:false
+      // because the events are already arriving at screen rate; animating
+      // each one would queue easings on top of each other and lag behind
+      // the fingers.
+      if (anchor) m.setZoomAround(anchor, want, { animate: false });
+      else m.setZoom(want, { animate: false });
+    } catch (e) {}
+  };
+
+  el.addEventListener('wheel', (e) => {
+    // Some panels sit over the map and scroll on their own. A wheel inside
+    // one of those belongs to it, not to the map.
+    if (e.target && e.target.closest &&
+        e.target.closest('.lqm-panel, .lqm-settings, #lqm-ai-body, .leaflet-popup')) return;
+    e.preventDefault();
+
+    let dy = e.deltaY;
+    if (e.deltaMode === 1) dy *= WZ_LINE_PX;               // lines, mostly Firefox
+    else if (e.deltaMode === 2) dy *= el.clientHeight || 800;   // pages
+
+    // A trackpad pinch arrives as a wheel event with ctrlKey set. It is a
+    // deliberate zoom gesture rather than a scroll, so it gets a shorter
+    // scale: the same finger travel should cover more ground.
+    const perZoom = e.ctrlKey ? WZ_PX_PER_ZOOM_PINCH : WZ_PX_PER_ZOOM;
+    let step = -dy / perZoom;
+    // One violent flick should not cross the whole scale.
+    if (step >  WZ_MAX_STEP) step =  WZ_MAX_STEP;
+    if (step < -WZ_MAX_STEP) step = -WZ_MAX_STEP;
+
+    pending += step;
+    try { anchor = m.mouseEventToContainerPoint(e); } catch (err) { anchor = null; }
+    if (!frame) frame = requestAnimationFrame(apply);
+  }, { passive: false });
+}
+
 // ── INIT MAP ──
 function initMap() {
   map = L.map('map', {
@@ -10502,8 +10597,15 @@ function initMap() {
     attributionControl: true,
     maxBounds: [[-90, -180], [90, 180]],
     maxBoundsViscosity: 1.0,
-    zoomSnap: 0
+    // Fractional zoom, so the map can sit between whole levels and a scroll
+    // feels continuous rather than stepping. This is also what made the
+    // trackpad almost useless until _wireWheelZoom below took the wheel over.
+    zoomSnap: 0,
+    // Keyboard +/- and double click still move a whole level each.
+    zoomDelta: 1
   });
+
+  _wireWheelZoom(map);
 
   // The attribution folds to a small copyright chip. The credit is required
   // by the map data licenses, so it stays in the page; tapping the chip
@@ -12343,6 +12445,9 @@ function loadAlerts(forceRender) {
   _alertDebounceTimer = setTimeout(() => _doLoadAlerts(forceRender), 120);
 }
 
+// The alerts currently drawn on the map, and whether the last read succeeded.
+let _alertsLive = { at: 0, ok: false, features: [] };
+
 async function _doLoadAlerts(forceRender) {
   updateLoadStatus('Intercepting severe weather alerts…');
   try {
@@ -12377,6 +12482,14 @@ async function _doLoadAlerts(forceRender) {
       const duration = (onset && expires > onset) ? (expires - onset) : 3600000;
       return now < expires + duration;
     });
+
+    // Keep what was actually drawn, so anything else that wants to talk about
+    // the alerts (the AI, above all) describes the same set the map is showing
+    // rather than going and asking for its own, differently filtered, answer.
+    // ok:true is the important field: it is how a reader tells "there are none"
+    // apart from "the feed did not answer", which are not the same statement
+    // and must never be reported as if they were.
+    _alertsLive = { at: Date.now(), ok: true, features: activeFeatures };
 
     if (!unchanged || forceRender) {
       renderAlerts(activeFeatures);
@@ -44513,26 +44626,114 @@ function _aiAddMsg(role, text, extra='') {
 // Fetch NWS forecast for a lat/lon
 
 // Fetch all active NWS alerts
+// The warning-class events, most dangerous first. These are the ones a person
+// asking "is anything happening" means, and the ones that must never be
+// summarised away, so they are listed in full while the long tail of
+// advisories and statements is only counted.
+const AI_ALERT_PRIORITY = [
+  'Tornado Warning', 'Extreme Wind Warning', 'Severe Thunderstorm Warning',
+  'Flash Flood Warning', 'Snow Squall Warning', 'Dust Storm Warning',
+  'Hurricane Warning', 'Tropical Storm Warning', 'Storm Surge Warning',
+  'Blizzard Warning', 'Ice Storm Warning', 'Tsunami Warning',
+  'Special Marine Warning', 'Tornado Watch', 'Severe Thunderstorm Watch',
+  'Flood Warning', 'Hurricane Watch', 'Storm Surge Watch',
+];
+
+// Every active NWS alert, described honestly.
+//
+// The old version of this got the answer wrong in four separate ways, and
+// together they made the assistant say there were no severe thunderstorm
+// warnings in the country on an afternoon when there were plenty.
+//
+//   1. message_type=alert. NWS marks a warning "alert" when first issued and
+//      "update" when it is revised, and warnings get revised constantly. So
+//      this filter threw away a large share of exactly the live warnings
+//      being asked about.
+//   2. limit=100 against a feed that routinely carries well over a thousand
+//      active products. The hundred that came back were whatever was newest,
+//      dominated by marine and hydrological statements, and the SUMMARY was
+//      computed only over those hundred. Anything outside them did not exist
+//      as far as the assistant could tell.
+//   3. Then only the first 20 of those were listed, in feed order, so even a
+//      tornado warning inside the hundred could go unmentioned.
+//   4. Worst: on any failure it returned null, and the prompt rendered null
+//      as "none". A timeout was therefore presented to the model as the
+//      positive fact that nothing was active, which is how you get a
+//      confident, specific, completely wrong answer.
+//
+// Now: the map's own alert set is preferred, so the assistant and the screen
+// cannot disagree. Failure is reported AS failure. Counts are over everything.
+// And the dangerous events are listed in full, before anything else.
 async function _aiFetchAllAlerts() {
-  try {
-    const r = await fetch('https://api.weather.gov/alerts/active?status=actual&message_type=alert&limit=100', { signal: AbortSignal.timeout(5000) });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const feats = j.features || [];
-    if (!feats.length) return 'No active NWS alerts nationwide.';
-    // Group by event type
-    const grouped = {};
-    feats.forEach(f => {
-      const ev = f.properties.event || 'Alert';
-      grouped[ev] = (grouped[ev] || 0) + 1;
-    });
-    const summary = Object.entries(grouped).map(([k,v]) => `${v}x ${k}`).join(', ');
-    const details = feats.slice(0, 20).map(f => {
-      const p = f.properties;
-      return `• ${p.event} - ${(p.areaDesc||'').substring(0,70)}`;
-    }).join('\n');
-    return `Summary: ${summary}\n${details}`;
-  } catch { return null; }
+  let feats = null;
+
+  // What the map is drawing, if it has been read in the last few minutes.
+  if (typeof _alertsLive !== 'undefined' && _alertsLive && _alertsLive.ok
+      && Date.now() - _alertsLive.at < 300000) {
+    feats = _alertsLive.features || [];
+  }
+
+  if (!feats) {
+    try {
+      // No message_type filter, so revised warnings are included, and a limit
+      // high enough to hold the whole active set rather than a recent slice.
+      const r = await fetch(
+        'https://api.weather.gov/alerts/active?status=actual&limit=500',
+        { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return 'FEED ERROR: the NWS alerts feed answered HTTP '
+                      + r.status + '. The alert picture is UNKNOWN right now.';
+      const j = await r.json();
+      feats = j.features || [];
+    } catch (e) {
+      return 'FEED ERROR: could not reach the NWS alerts feed ('
+           + ((e && e.message) || 'network') + '). The alert picture is '
+           + 'UNKNOWN right now, which is NOT the same as nothing being active.';
+    }
+  }
+
+  if (!feats.length) return 'Feed read successfully and returned zero active alerts nationwide.';
+
+  const grouped = {};
+  feats.forEach(f => {
+    const ev = (f.properties && f.properties.event) || 'Alert';
+    grouped[ev] = (grouped[ev] || 0) + 1;
+  });
+  // Counted over every alert, then ordered by how many there are, so the
+  // summary line says what is actually going on rather than what happened to
+  // arrive first.
+  const summary = Object.entries(grouped)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${v}x ${k}`).join(', ');
+
+  const rank = (ev) => {
+    const i = AI_ALERT_PRIORITY.indexOf(ev);
+    return i === -1 ? AI_ALERT_PRIORITY.length : i;
+  };
+  const urgent = feats
+    .filter(f => rank((f.properties || {}).event) < AI_ALERT_PRIORITY.length)
+    .sort((a, b) => rank(a.properties.event) - rank(b.properties.event));
+
+  const line = (f) => {
+    const p = f.properties || {};
+    const ends = p.expires || p.ends;
+    const mins = ends ? Math.round((new Date(ends) - Date.now()) / 60000) : null;
+    return `• ${p.event} - ${(p.areaDesc || '').substring(0, 90)}`
+         + (mins != null ? ` (expires in ${mins} min)` : '');
+  };
+
+  const parts = [`Total active alerts: ${feats.length}`, `Counts: ${summary}`];
+  if (urgent.length) {
+    // Capped, but at a number that holds a real severe-weather afternoon, and
+    // the cap is stated so the model knows the list was trimmed rather than
+    // assuming it is complete.
+    const shown = urgent.slice(0, 80);
+    parts.push(`\nWARNINGS AND WATCHES IN FORCE (${urgent.length} total`
+             + (urgent.length > shown.length ? `, first ${shown.length} listed` : '')
+             + `):\n${shown.map(line).join('\n')}`);
+  } else {
+    parts.push('\nNo warning-class or watch-class products are active. Everything above is advisory or statement level.');
+  }
+  return parts.join('\n');
 }
 
 // Fetch today's SPC storm reports
@@ -44551,9 +44752,82 @@ async function _aiFetchStormReports() {
       return Math.max(0, t.trim().split('\n').length - 1);
     };
     const [torCount, hailCount, windCount] = await Promise.all([parseCount(torRes), parseCount(hailRes), parseCount(windRes)]);
-    if (!torCount && !hailCount && !windCount) return 'No storm reports today.';
+    // SPC publishes the day's file only once the first report lands, so three
+    // 404s early in the day mean "nothing yet", which is a real answer. A
+    // thrown error is not, and is reported as one below.
+    if (!torRes.ok && !hailRes.ok && !windRes.ok) {
+      return 'No SPC report files published yet for today (normal before the '
+           + 'first report of the day).';
+    }
+    if (!torCount && !hailCount && !windCount) return 'Files published, zero reports so far today.';
     return `Today: ${torCount} tornado, ${hailCount} hail, ${windCount} wind reports`;
-  } catch { return null; }
+  } catch (e) {
+    return 'FEED ERROR: could not reach SPC storm reports ('
+         + ((e && e.message) || 'network') + '). Report counts are UNKNOWN, not zero.';
+  }
+}
+
+// Everything the app is currently doing, in the app's own words.
+//
+// The assistant was being told the map centre, a list of layer ids and one
+// station name, and nothing else, so it could not answer a question about the
+// thing the person was actually looking at. This reads the real state out of
+// the same variables the UI reads.
+function _aiLiveState() {
+  const L = [];
+  const put = (k, v) => { if (v !== undefined && v !== null && v !== '') L.push(k + ': ' + v); };
+  const yn = (v) => v ? 'on' : 'off';
+
+  try {
+    const src = typeof _radarSource !== 'undefined' ? _radarSource : 'normal';
+    const srcName = { normal: 'Normal (tile mosaic)', l2: 'Level 2 (single site, decoded here)',
+                      l3: 'Level 3 (single site, from the Pi)' }[src] || src;
+    put('Radar source', srcName);
+    if (src === 'l2' || src === 'l3') {
+      put('Radar station', (typeof _l3Station !== 'undefined' && _l3Station)
+        ? String(_l3Station).toUpperCase() : 'none selected');
+      put('Radar product', typeof _l3Product !== 'undefined' ? _l3Product : 'none');
+      if (typeof _l2Tilt !== 'undefined' && _l2Tilt) put('Elevation cut', _l2Tilt);
+      if (typeof _l2TiltList !== 'undefined' && (_l2TiltList || []).length)
+        put('Cuts available', _l2TiltList.join(', '));
+    } else {
+      put('Radar product', typeof currentProduct !== 'undefined' ? currentProduct : 'ref');
+    }
+    if (typeof _mrmsActive !== 'undefined') put('MRMS 1 km composite', yn(_mrmsActive));
+    if (typeof _mrmsOn !== 'undefined' && _mrmsOn) {
+      const on = Object.keys(_mrmsOn).filter(k => _mrmsOn[k]);
+      if (on.length) put('MRMS fields drawn', on.join(', '));
+    }
+    if (typeof radarOpacity !== 'undefined') put('Radar opacity', Math.round(radarOpacity * 100) + '%');
+  } catch (e) {}
+
+  try {
+    if (typeof _goesProduct === 'function') {
+      const g = _goesProduct();
+      if (g) put('Satellite', (g.label || g.id || 'on'));
+    }
+    if (typeof _hdOn !== 'undefined' && _hdOn && typeof _hdModel !== 'undefined')
+      put('Model layer', _hdModel + (typeof _hdField !== 'undefined' && _hdField ? ' / ' + _hdField : ''));
+  } catch (e) {}
+
+  try {
+    if (typeof _l2Loop !== 'undefined' && _l2Loop && (_l2Loop.frames || []).length > 1)
+      put('Playback', _l2Loop.frames.length + ' frames loaded, at frame ' + (_l2Loop.idx + 1));
+  } catch (e) {}
+
+  try {
+    if (typeof _ssOn !== 'undefined') put('StormStream mode', yn(_ssOn));
+    if (typeof _gpsWatchId !== 'undefined') put('GPS tracking', yn(_gpsWatchId != null));
+    if (typeof _gwcfcLayers !== 'undefined' && (_gwcfcLayers || []).length)
+      put('GWCFC published products drawn', _gwcfcLayers.length);
+  } catch (e) {}
+
+  try {
+    const on = Object.entries(activeLayers || {}).filter(([, v]) => v).map(([k]) => k);
+    put('Overlays on', on.length ? on.join(', ') : 'none');
+  } catch (e) {}
+
+  return L.join('\n');
 }
 
 // Detect if the question needs a map visual
@@ -44600,16 +44874,38 @@ MAP: center ${mapCenter} | layers on: ${activeLyrs} | radar: ${radarSite}
 TIME: ${new Date().toUTCString()}
 ${userLocLine}
 
+=== WHAT THE APP IS SHOWING RIGHT NOW ===
+${_aiLiveState() || 'nothing readable'}
+
 === STORM REPORTS TODAY (SPC) ===
-${stormRpts || 'unavailable'}
+${stormRpts || 'FEED ERROR: storm reports could not be read. UNKNOWN, not zero.'}
 
 === ACTIVE NWS ALERTS (nationwide) ===
-${allAlertsText || 'none'}
+${allAlertsText || 'FEED ERROR: the alert feed could not be read. The alert picture is UNKNOWN, not empty.'}
+
+READING THE TWO BLOCKS ABOVE, AND THIS IS NOT OPTIONAL:
+A block that starts with "FEED ERROR" means the data could not be read. It does
+NOT mean there is no weather. If you are asked whether something is active and
+the block says FEED ERROR, say you could not read the feed and cannot confirm
+either way. Never turn a failed read into "there are none", and never reason
+from an empty list you did not actually receive.
+When the alert block IS present, it is complete: the counts cover every active
+product nationwide, and every warning and watch is listed. So if a warning type
+does not appear in that list, you may say there are none of that type. Quote the
+count from the "Counts:" line rather than counting the bullets, because the
+bullet list is capped and the counts are not.
 
 === APP LAYERS (all available, on or off) ===
-NEXRAD radar: reflectivity, velocity, hydrometeor classification, storm
-  accumulation, one hour accumulation, plus the MRMS composite national mosaic.
-  Dual-pol (ZDR/KDP/CC) is NOT available, do not offer it.
+Radar comes in three sources, and they are different things, not settings:
+  Normal is the tile mosaic: reflectivity, velocity, hydrometeor
+    classification, storm total accumulation and one hour accumulation.
+  Level 2 decodes one station's own volume in the browser. This is where the
+    dual-pol products live: correlation coefficient, differential
+    reflectivity, specific differential phase and spectrum width, alongside
+    reflectivity and velocity, at any elevation cut the radar flew.
+  Level 3 serves one station's products prebuilt from the Pi.
+  Composite is the mosaic source, holding the MRMS 1 km national composite
+    plus the Pi's MRMS fields grouped as winter, severe, precip and more.
 NWS alert polygons: tornado warnings, severe thunderstorm warnings, flood warnings, watches, advisories
 METAR stations: surface wind and temperature observations at airports/stations
 Waves, wind, temperature, pressure and air quality: world overlays, each with its own products
@@ -44652,6 +44948,19 @@ Available actions:
 - selectProduct {"product":"ref"} -- switch radar product. Options: ref (reflectivity), vel (velocity), hc (hydrometeor class), accum (storm total), boha (one hour). MRMS is its own bubble, not a selectProduct value.
 - openRadar {"site":"KFWS"} or {"place":"Dallas"} -- open single-site NEXRAD. For "nearest"/"my radar" use the user GPS nearest station above.
 - openForecast {"place":"Miami"} or {"lat":25.7,"lon":-80.2,"name":"My Location"} -- open in-app forecast panel. Use GPS coords for "my forecast".
+- openLevel2 {"site":"KFWS","product":"cc"} -- decode one station's own volume in
+  the browser. This is the ONLY way to reach the dual-pol products: cc
+  (correlation coefficient), zdr (differential reflectivity), kdp (specific
+  differential phase), sw (spectrum width), as well as ref and vel. Use this,
+  not selectProduct, whenever someone asks for any of those four. Omit site to
+  take the nearest station to the user.
+- openComposite {} -- turn on the MRMS 1 km national composite.
+- setOpacity {"percent":60} -- how strongly the radar paints over the map.
+- playback {} -- start or stop the animation of whatever loop is loaded.
+- openSounding {"place":"Norman, OK"} or {"lat":35.2,"lon":-97.4} -- open the
+  full skew-T sounding panel for a point. Omit both to use the user's GPS.
+- openPanel {"panel":"alerts"} -- open one of the app's panels. Names: alerts,
+  eas, models, spaghetti, cyclones, settings, export, stormstream.
 
 CRITICAL RULES:
 - ALWAYS do the full sequence when opening radar: toggleLayer nexrad, then selectProduct, then openRadar, then panTo. All in one reply.
@@ -44831,6 +45140,108 @@ async function _aiExecuteAction(action) {
     if (typeof _loadSingleSiteRef === 'function') _loadSingleSiteRef(st.id);
     map.flyTo([st.lat, st.lon], Math.max(map.getZoom(), 8), { duration: 1.2 });
     return `Opened ${st.id.toUpperCase()} radar.`;
+  }
+
+  // ── The rest of the app ─────────────────────────────────────────────────
+  // Everything below was reachable by a person clicking and not by the
+  // assistant, which is why it kept describing features it could not open.
+
+  // Level 2 decodes a station's own volume in the browser: the dual-pol
+  // products live here and nowhere else.
+  if (a === 'openLevel2') {
+    if (typeof toggleRadarL2Sub === 'function') {
+      _radarSource = 'l2';
+      const prod = p.product || 'ref';
+      let site = (p.site || '').toString().toLowerCase().trim();
+      if (!site) {
+        const gps = _userGPS();
+        const c = gps || { lat: map.getCenter().lat, lon: map.getCenter().lng };
+        const st = _aiNearestStation(c.lat, c.lon);
+        site = st ? st.id : (typeof _l2Site !== 'undefined' && _l2Site) || 'ktlx';
+      }
+      if (site[0] !== 'k' && site.length === 3) site = 'k' + site;
+      _l2Site = site;
+      if (typeof _disableSatellite === 'function') _disableSatellite();
+      if (typeof loadL3Data === 'function') loadL3Data(prod, site);
+      const st = NEXRAD_STATIONS.find(s => s.id === site);
+      if (st) map.flyTo([st.lat, st.lon], Math.max(map.getZoom(), 8), { duration: 1.2 });
+      return `Opened Level 2 ${prod.toUpperCase()} at ${site.toUpperCase()}.`;
+    }
+    return 'Level 2 is not available here.';
+  }
+
+  // The 1 km national mosaic, which is its own source rather than a product.
+  if (a === 'openComposite') {
+    const el = document.getElementById('sub-mrms');
+    if (typeof _loadMrmsComposite === 'function') {
+      _radarSource = 'normal';
+      if (typeof _prDisable === 'function') _prDisable();
+      if (typeof _clearSingleSiteRef === 'function') _clearSingleSiteRef();
+      if (typeof _disableSatellite === 'function') _disableSatellite();
+      activeLayers.nexrad = true; currentProduct = 'mrms';
+      _loadMrmsComposite();
+      if (el) el.classList.add('active');
+      return 'Turned on the MRMS 1 km composite.';
+    }
+    return 'The composite is not available here.';
+  }
+
+  if (a === 'setOpacity' && p.percent != null) {
+    const pct = Math.max(0, Math.min(100, Math.round(Number(p.percent))));
+    // Through the settings handler rather than the variable, so the slider,
+    // the stored preference and the layer already on screen all move together.
+    if (typeof lqmSetRadarOpacity === 'function') {
+      const sl = document.getElementById('lqm-opacity');
+      if (sl) sl.value = pct;
+      lqmSetRadarOpacity(pct);
+      return `Radar opacity set to ${pct}%.`;
+    }
+    return 'Opacity is not adjustable here.';
+  }
+
+  if (a === 'playback') {
+    if (typeof togglePlay === 'function') { togglePlay(); return 'Toggled playback.'; }
+    return 'Playback is not available for this layer.';
+  }
+
+  if (a === 'openSounding') {
+    let lat = p.lat, lon = p.lon;
+    if ((lat == null || lon == null) && p.place) {
+      const g = await _aiGeocode(p.place);
+      if (g) { lat = g.lat; lon = g.lon; }
+    }
+    if (lat == null || lon == null) {
+      const gps = _userGPS();
+      if (gps) { lat = gps.lat; lon = gps.lon; }
+      else { const c = map.getCenter(); lat = c.lat; lon = c.lng; }
+    }
+    if (typeof openSounding === 'function') {
+      openSounding(lat, lon);
+      return `Opened the sounding at ${lat.toFixed(2)}, ${lon.toFixed(2)}.`;
+    }
+    return 'Soundings are not available here.';
+  }
+
+  if (a === 'openPanel' && p.panel) {
+    // Every name here was checked against the source. An action that names a
+    // function which does not exist is worse than no action: it reports
+    // success and does nothing, and the assistant then talks about a panel
+    // the person is not looking at.
+    const panels = {
+      alerts:     () => toggleAlertsPanel(),
+      eas:        () => toggleEASPanel(),
+      models:     () => openRunModelsPanel(),
+      spaghetti:  () => openSpaghettiModelsPanel(),
+      cyclones:   () => openAiCyclonesPanel(),
+      settings:   () => lqmToggleSettingsPanel(),
+      export:     () => _expToggle(),
+      stormstream: () => _ssStart(),
+    };
+    const key = String(p.panel).toLowerCase();
+    const fn = panels[key];
+    if (!fn) return `There is no "${p.panel}" panel. Try: ${Object.keys(panels).join(', ')}.`;
+    try { fn(); } catch (e) { return `Could not open ${p.panel}.`; }
+    return `Opened ${p.panel}.`;
   }
 
   return `Hmm, I don't know how to "${a}".`;
@@ -48764,7 +49175,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Clicking a radar station really is instant now. The last change kept finished radar pictures so a station you had already viewed came back at once, but clicking a pill quietly asked for the picture under a different name than the one it was filed under, so it missed every time and reloaded from scratch. Fixed: clicking back to a station now takes about a millisecond. Tapping a station also starts its download the moment you touch it, which never happened on phones and tablets before, since they have no hover.';
+const APP_LATEST_UPDATE = 'Trackpad zoom works properly now. Two-finger scrolling barely moved the map before, because smooth fractional zoom and Leaflet own wheel maths do not get along; scrolling now maps straight to zoom, so twice the swipe is twice the zoom, and a pinch is quicker still. Asturio AI also stopped saying there are no warnings when there are: it was filtering out every revised warning, only reading the newest hundred alerts out of a thousand, and worst of all reporting a failed download as if it meant nothing was happening. It now reads the same alerts the map is drawing, counts all of them, lists every warning and watch, and says plainly when a feed did not answer. It can also open Level 2 dual-pol, the composite, soundings and the app panels itself.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
