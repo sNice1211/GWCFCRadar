@@ -332,7 +332,88 @@ console.log('\n8. the cache cannot grow without limit');
   ok('and the least recent is the one dropped', r.oldestDropped);
 }
 
-console.log('\n9. nothing threw along the way');
+console.log('\n9. the real pill click, tilt reset and all');
+{
+  // The check that was missing, and its absence let a dead cache ship.
+  //
+  // Sections 3 and 5 call loadL3Data directly. The station pill does not: it
+  // resets _l2Tilt to null first, because a cut number from the last radar
+  // means nothing on this one. So the click asks an open question, "give me
+  // the default cut", while the picture was filed under the numbered answer
+  // the decoder gave. Every pill click missed, and the entire cache did
+  // nothing at all on the one path a person actually uses.
+  //
+  // Anything that tests the fast path without that reset is testing a path
+  // nobody takes.
+  const r = await page.evaluate(async () => {
+    const pillClick = async (site) => {
+      // Exactly what the marker's click handler does before loading.
+      if (_l2Site !== site) { _l2Tilt = null; _l2TiltList = []; }
+      _l2Site = site;
+      await loadL3Data('ref', site);
+    };
+    _l3Pic.clear();
+    _radarSource = 'l2';
+    _l2Site = null;
+    _l2VolCache = { station: null, at: 0, buf: null };
+
+    await pillClick('ktlx');
+    const filedUnder = [..._l3Pic.keys()];
+    _l2VolCache = { station: null, at: 0, buf: null };
+    await pillClick('kfws');
+
+    window.__cost = { fetch: 0, decode: 0, draw: 0 };
+    const t0 = performance.now();
+    await pillClick('ktlx');
+    return { ms: Math.round((performance.now() - t0) * 100) / 100,
+             cost: window.__cost, filedUnder,
+             station: _l3Station, layers: window.__layers.length };
+  });
+  ok(`clicking back to a station took ${r.ms} ms`, r.ms < 50,
+     r.ms + ' ms, filed under ' + r.filedUnder.join(' '));
+  ok('with nothing decoded or drawn again',
+     r.cost.decode === 0 && r.cost.draw === 0, JSON.stringify(r.cost));
+  ok('and it is that station on screen', r.station === 'ktlx', r.station);
+  ok('with one layer on the map', r.layers === 1, r.layers);
+}
+
+console.log('\n10. asking for a numbered cut is never answered with another');
+{
+  const r = await page.evaluate(async () => {
+    _l3Pic.clear();
+    _l2VolCache = { station: null, at: 0, buf: null };
+    _l2Tilt = null;
+    await loadL3Data('ref', 'kict');          // default cut, comes back as 1
+    _l2Tilt = 3;                              // now ask for cut 3 explicitly
+    window.__cost = { fetch: 0, decode: 0, draw: 0 };
+    await loadL3Data('ref', 'kict');
+    const askedThree = JSON.parse(JSON.stringify(window.__cost));
+    _l2Tilt = null;                           // and back to the open question
+    window.__cost = { fetch: 0, decode: 0, draw: 0 };
+    await loadL3Data('ref', 'kict');
+    return { askedThree, askedDefault: window.__cost };
+  });
+  // A picture of cut 1 must not be handed over to someone who asked for 3.
+  ok('a specific cut is decoded rather than served the default',
+     r.askedThree.decode === 1, JSON.stringify(r.askedThree));
+  ok('while the open question still hits the cache',
+     r.askedDefault.decode === 0, JSON.stringify(r.askedDefault));
+}
+
+console.log('\n11. a touch screen warms too, since it has no hover');
+{
+  const r = await page.evaluate(() => {
+    const src = String(_buildNexradSiteMarkers);
+    return { hover: /'mouseover'/.test(src),
+             down: /pointerdown/.test(src),
+             bound: /getElement/.test(src) };
+  });
+  ok('a pointer still warms on hover', r.hover);
+  ok('and a tap warms on the way down, before the click lands', r.down);
+  ok('bound on the pill element itself', r.bound);
+}
+
+console.log('\n12. nothing threw along the way');
 ok('no uncaught errors at all', errors.length === 0, errors.join(' | '));
 
 await browser.close();

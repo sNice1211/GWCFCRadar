@@ -36101,7 +36101,7 @@ function _l3PicKey(station, product, tilt) {
        + (tilt == null ? '' : tilt);
 }
 
-function _l3PicPut(station, product, tilt, img, result) {
+function _l3PicPut(station, product, tilt, img, result, reqTilt) {
   if (!img || !img.url) return;
   const key = _l3PicKey(station, product, tilt);
   // Delete first so re-storing moves it to the end. A Map iterates in
@@ -36109,6 +36109,13 @@ function _l3PicPut(station, product, tilt, img, result) {
   // the one to drop.
   _l3Pic.delete(key);
   _l3Pic.set(key, { at: Date.now(), img: img, result: result,
+                    station: String(station || '').toLowerCase(),
+                    product: String(product || '').toLowerCase(),
+                    // What was ASKED for, as opposed to what came back. Null
+                    // means "the default cut, whatever that is on this radar",
+                    // and that is what makes this entry findable again by the
+                    // next person who asks the same open question. See below.
+                    reqTilt: (reqTilt === undefined ? tilt : reqTilt),
                     box: _meshBox && _meshBox.bounds });
   while (_l3Pic.size > L3_PIC_MAX) {
     const oldest = _l3Pic.keys().next().value;
@@ -36117,22 +36124,45 @@ function _l3PicPut(station, product, tilt, img, result) {
   }
 }
 
+// Find a cached picture, allowing for the fact that a tilt can be asked for in
+// two different ways that mean the same thing.
+//
+// This is the bug that made the cache useless on the one path that matters.
+// Clicking a station pill resets _l2Tilt to null, because a cut number from
+// the last radar means nothing on this one. Null means "give me the default".
+// The decoder then answers with the cut it actually used, cut 1, and the
+// picture is filed under 1. The next click on that same pill resets the tilt to
+// null again and looks for a picture filed under null, which does not exist. So
+// every single pill click was a full download, parse and repaint, and the whole
+// cache did nothing at all on the one path a person actually uses.
+//
+// An exact match still wins, because asking for cut 3 must never be answered
+// with cut 1. Only an open question falls back, and only to a picture that was
+// itself the answer to the same open question.
 function _l3PicGet(station, product, tilt) {
-  return _l3Pic.get(_l3PicKey(station, product, tilt)) || null;
+  const exact = _l3Pic.get(_l3PicKey(station, product, tilt));
+  if (exact) return exact;
+  if (tilt != null) return null;
+  const st = String(station || '').toLowerCase();
+  const pr = String(product || '').toLowerCase();
+  for (const e of _l3Pic.values()) {
+    if (e.station === st && e.product === pr && e.reqTilt == null) return e;
+  }
+  return null;
 }
 
 // Which tilt a finished picture should be filed under.
 //
-// Not simply _l2Tilt, and this is the whole reason the cache missed every
-// time on the first attempt. _l2Tilt starts null, meaning "whatever the radar
-// gives me". The decoder answers with the cut it actually used, and only then
-// is _l2Tilt set from it. File the picture under the null and every later
-// lookup, which now reads 1, asks for a key that does not exist and pays for
-// the whole decode again. So file it under the cut the picture IS, which is
-// exactly what the next lookup will ask for.
-function _l3TiltKeyOf(result) {
+// If a specific cut was asked for, that is the answer, because that is the
+// name the next request for it will use. Only an open request falls through to
+// the cut the decoder actually chose, so that an open request and an explicit
+// one for the same cut do not overwrite each other under one key. The pair
+// (key, reqTilt) is what keeps "give me cut 3" and "give me whatever you have"
+// apart even when both come back as the same sweep.
+function _l3TiltKeyOf(result, reqTilt) {
+  if (reqTilt != null) return reqTilt;
   const meta = result && result.metadata;
-  return (meta && meta.elevationNumber) || _l2Tilt;
+  return (meta && meta.elevationNumber) || null;
 }
 
 // Everything _renderMesh does once the picture exists: put it on the map,
@@ -36916,6 +36946,11 @@ async function _loadL3DataInner(product, stationOverride, retried, gen, signal, 
   // Warming: decode into the cache and draw nothing. A hover is a guess, and a
   // guess must never move what is on screen.
   const warmOnly = !!(opts && opts.warm);
+  // The cut being asked for, taken once at the start. _l2Tilt is rewritten
+  // from the decoder's answer partway through this function, so reading it
+  // later would be reading what came back rather than what was requested, and
+  // those are the two things the cache has to tell apart.
+  const reqTilt = _l2Tilt;
   _l3Product = product;
 
   var station = stationOverride;
@@ -36938,7 +36973,7 @@ async function _loadL3DataInner(product, stationOverride, retried, gen, signal, 
   // Show it now. This is the whole difference between a click that answers in
   // milliseconds and one that answers in seconds, and it is checked before the
   // old picture is touched so a hit is a straight swap.
-  const hit = _l3PicGet(station, product, _l2Tilt);
+  const hit = _l3PicGet(station, product, reqTilt);
   if (hit && hit.img && !warmOnly) {
     // Restore the box this picture was drawn in, or the next live frame for
     // the same site would be pinned to a different one and the overlay would
@@ -36953,7 +36988,10 @@ async function _loadL3DataInner(product, stationOverride, retried, gen, signal, 
     // behind it. Seeing the right station instantly and correcting a few
     // seconds later beats staring at nothing while it downloads.
     if (Date.now() - hit.at >= L3_PIC_FRESH_MS) {
-      _l3Pic.delete(_l3PicKey(station, product, _l2Tilt));
+      // Drop the entry that was actually found, by identity. Rebuilding a key
+      // here would delete the wrong one, or nothing at all, whenever the open
+      // request above was answered by a picture filed under a cut number.
+      for (const [k, v] of _l3Pic) { if (v === hit) { _l3Pic.delete(k); break; } }
       setTimeout(() => {
         if (stale()) return;
         _loadL3DataInner(product, station, retried, gen, signal).catch(() => {});
@@ -37052,14 +37090,13 @@ async function _loadL3DataInner(product, stationOverride, retried, gen, signal, 
       const wbox = _meshStableBox(result, station);
       const wimg = _meshToImage(result, product, wbox);
       if (wimg) {
-        const key = _l3PicKey(station, product, _l3TiltKeyOf(result));
-        _l3Pic.delete(key);
-        _l3Pic.set(key, { at: Date.now(), img: wimg, result: result, box: wbox });
-        while (_l3Pic.size > L3_PIC_MAX) {
-          const oldest = _l3Pic.keys().next().value;
-          if (oldest === undefined) break;
-          _l3Pic.delete(oldest);
-        }
+        // Through the same door as a real load, so a warmed picture is filed
+        // and found by exactly the same rules. Its box is passed explicitly
+        // because _l3PicPut otherwise reads _meshBox, which belongs to the
+        // picture on screen and not to this one.
+        _l3PicPut(station, product, _l3TiltKeyOf(result, reqTilt), wimg, result, reqTilt);
+        const e = _l3Pic.get(_l3PicKey(station, product, _l3TiltKeyOf(result, reqTilt)));
+        if (e) e.box = wbox;
       }
     } catch (e) {}
     return;
@@ -37501,7 +37538,9 @@ function _renderMesh(result, product, station) {
   // Keep the finished picture and the mesh it came from, so coming back to
   // this station and product is an overlay swap rather than a download, a
   // parse and a repaint.
-  _l3PicPut(station, product, _l3TiltKeyOf(result), img, result);
+  // Filed under the cut it IS, and remembering the cut that was ASKED for, so
+  // an open request finds it again even though the answer had a number.
+  _l3PicPut(station, product, _l3TiltKeyOf(result, _l2Tilt), img, result, _l2Tilt);
 
   // The Inspector reads real dBZ/velocity values out of the mesh rather than
   // sampling the drawn colour, and a filter or palette change repaints from
@@ -38606,9 +38645,24 @@ function _buildNexradSiteMarkers() {
     // means the click usually has its answer already. Costs one small request
     // for a station the pointer paused over, and nothing at all on a touch
     // screen, where there is no hover to fire it.
-    label.on('mouseover', () => {
+    const warmBoth = () => {
       try { _rsWarm(s.id); } catch (e) {}
       try { _rsWarmSite(s.id); } catch (e) {}
+    };
+    label.on('mouseover', warmBoth);
+
+    // And on the way down, which is the only one of these a touch screen ever
+    // gets. There is no hover on a tablet, so the line above fired for nobody
+    // holding one, and the whole prefetch was quietly desktop-only. pointerdown
+    // lands on the first contact, well before the tap completes and the click
+    // is delivered, so the head start is real rather than theoretical. Attached
+    // natively on the pill element, because a Leaflet marker does not forward
+    // pointer events by name.
+    label.on('add', () => {
+      const el = label.getElement && label.getElement();
+      if (!el || el.dataset.warmBound) return;
+      el.dataset.warmBound = '1';
+      el.addEventListener('pointerdown', warmBoth, { passive: true });
     });
 
     // Click on pill , single-site only activates in REF mode
@@ -48710,7 +48764,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The radar source bubble that said MRMS is now called Composite, and the national mosaic inside it is called MRMS 1 km. Level 2 and Level 3 also got much faster: the finished picture is kept for the last few stations and products, so going back to one you have already looked at puts it up in well under a tenth of a second with nothing downloaded, parsed or redrawn. Hovering a station decodes it before you click, and the previous radar now stays on screen while a new one loads instead of going blank.';
+const APP_LATEST_UPDATE = 'Clicking a radar station really is instant now. The last change kept finished radar pictures so a station you had already viewed came back at once, but clicking a pill quietly asked for the picture under a different name than the one it was filed under, so it missed every time and reloaded from scratch. Fixed: clicking back to a station now takes about a millisecond. Tapping a station also starts its download the moment you touch it, which never happened on phones and tablets before, since they have no hover.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
