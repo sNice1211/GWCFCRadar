@@ -26,7 +26,7 @@
  * uses, which is the only reason it can be opened from anywhere.
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -384,7 +384,133 @@ console.log('\n13. it wears the house style');
      /--red:\s*#aa0000/.test(src) && /--gold:\s*#e8b800/.test(src));
 }
 
-console.log('\n14. nothing threw along the way');
+console.log('\n14. the background can be changed');
+{
+  const src = readFileSync(PAGE, 'utf8');
+  const BG = join(ROOT, 'assets', 'bg');
+  const ids = ['hurricane', 'diamond', 'geometric', 'sweep',
+               'circuit', 'contours', 'embers'];
+
+  // The scenes are drawn by a script rather than downloaded, because a photo
+  // off the web carries a licence this repo cannot honour, and because the
+  // image hosts worth taking one from are not reachable from here anyway.
+  ids.forEach(id => {
+    const f = join(BG, id + '.svg');
+    const s = existsSync(f) ? statSync(f).size : 0;
+    ok(`there is a ${id} scene, and it has something in it`,
+       s > 1500, s + ' bytes');
+  });
+
+  // Same reason the avatar generator is checked this way: a generator whose
+  // output moves on every run cannot live in a repository, because every
+  // rebuild shows as a diff and a real change is then indistinguishable
+  // from noise.
+  const gen = readFileSync(join(ROOT, 'tools', 'make-backgrounds.mjs'), 'utf8');
+  ok('the generator seeds itself rather than reading the clock',
+     !/Math\.random/.test(gen) && /mulberry32|function rnd|seed/i.test(gen));
+
+  const r = await page.evaluate(async () => {
+    const bg = document.getElementById('bg');
+    const out = {};
+
+    // Picking a scene has to do two things: paint it, and be remembered.
+    bgSet('hurricane');
+    out.painted = bg.style.backgroundImage;
+    out.saved   = localStorage.getItem('asturio_bg_v1');
+
+    // And PLAIN has to clear it, not paint a file called none.svg.
+    bgSet('none');
+    out.cleared = bg.style.backgroundImage;
+
+    // The dimmer is a single custom property the veil reads, held as a
+    // fraction, and clamped so nobody can slide the page to fully black.
+    bgVeil(70);
+    out.veil = getComputedStyle(document.documentElement)
+                 .getPropertyValue('--veil').trim();
+    out.veilSaved = localStorage.getItem('asturio_bg_veil_v1');
+    bgVeil(999);
+    out.veilMax = Number(getComputedStyle(document.documentElement)
+                    .getPropertyValue('--veil'));
+    bgVeil(55);
+
+    // The rain is the one piece of motion behind the text, so it gets an off
+    // switch, and the switch has to survive a reload.
+    const wasRain = getComputedStyle(document.getElementById('rain')).display;
+    bgRain();
+    out.rainHidden = document.getElementById('rain').style.display === 'none';
+    out.rainSaved  = localStorage.getItem('asturio_bg_rain_v1');
+    bgRain();
+    out.rainBack = document.getElementById('rain').style.display !== 'none' && !!wasRain;
+
+    // The picker itself.
+    bgOpen();
+    out.open  = document.getElementById('bgpick').classList.contains('open');
+    out.cells = document.querySelectorAll('.bgcell').length;
+    const first = document.querySelector('.bgcell[data-bg="hurricane"]');
+    const cs = getComputedStyle(first);
+    // The bug this is here for: `background:` is a shorthand, and it resets
+    // background-size along with everything else. Declared before it, cover
+    // was silently dropped and every thumbnail rendered at its natural
+    // 1600 by 1000 cropped to the top left.
+    out.size = cs.backgroundSize;
+    out.pos  = cs.backgroundPosition;
+    first.click();
+    out.onCell = document.querySelectorAll('.bgcell.on').length;
+    const onSize = getComputedStyle(
+      document.querySelector('.bgcell.on')).backgroundSize;
+    out.onSize = onSize;
+    bgSet('none');
+    return out;
+  });
+  ok('choosing a scene paints it', /hurricane\.svg/.test(r.painted), r.painted);
+  ok('and remembers the choice', r.saved === 'hurricane', r.saved);
+  ok('PLAIN clears the layer rather than loading a file',
+     r.cleared === '' || r.cleared === 'none', r.cleared);
+  ok('the dimmer is a fraction on the root', r.veil === '0.70', r.veil);
+  ok('and it is remembered', r.veilSaved === '70', r.veilSaved);
+  ok('it cannot be slid all the way to black', r.veilMax <= 0.95, String(r.veilMax));
+  ok('the rain can be turned off', r.rainHidden);
+  ok('and off is remembered', r.rainSaved === '0', r.rainSaved);
+  ok('and it comes back on', r.rainBack);
+  ok('the picker opens', r.open);
+  ok('with every scene in it plus an upload cell',
+     r.cells === 8 + 1, String(r.cells));
+  ok('the thumbnails are covered, not cropped to a corner',
+     r.size === 'cover', r.size);
+  ok('and centred', /center|50%/.test(r.pos), r.pos);
+  ok('clicking one marks exactly it as chosen', r.onCell === 1, String(r.onCell));
+  ok('and the gold ring does not undo the cover',
+     r.onSize === 'cover', r.onSize);
+
+  // Escape closes it, which is what every dialog on the web does.
+  await page.evaluate(() => bgOpen());
+  await page.keyboard.press('Escape');
+  ok('Escape closes the picker',
+     !(await page.evaluate(() =>
+       document.getElementById('bgpick').classList.contains('open'))));
+
+  // A photograph is a blob, and a blob wants IndexedDB. A data URL in
+  // localStorage is about a third bigger than the file and the whole budget
+  // there is roughly five megabytes of text, so one holiday snap fills it.
+  ok('the uploaded picture goes to IndexedDB, not localStorage',
+     /indexedDB\.open\(BG_DB/.test(src) && !/BG_KEY[\s\S]{0,80}dataURL/.test(src));
+  ok('there is a size limit on it', /12 \* 1024 \* 1024/.test(src));
+  ok('and a check that it is an image at all',
+     /\^image\\\//.test(src) || /\/\^image\\\//.test(src) || src.includes('^image\\/'));
+
+  // The state this recovers from: someone clears site data, the stored
+  // picture goes, the preference stays, and the page loads with nothing on
+  // it and no obvious way back.
+  ok('a saved choice of "custom" with nothing stored falls back to plain',
+     /if \(bgChoice === 'custom' && !bgCustom\) bgChoice = 'none';/.test(src));
+
+  const EM = String.fromCharCode(0x2014);
+  ok('no em dash in the generator or the scenes',
+     !gen.includes(EM) && !ids.some(id =>
+       readFileSync(join(BG, id + '.svg'), 'utf8').includes(EM)));
+}
+
+console.log('\n15. nothing threw along the way');
 ok('no uncaught errors at all', errors.length === 0, errors.join(' | '));
 
 await browser.close();

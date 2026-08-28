@@ -291,13 +291,109 @@ body.busy #state { color: var(--gold-hi); opacity: 1; }
   color: #2a1a00; }
 #send:hover:not(:disabled) { filter: brightness(1.15); }
 
+/* ══ THE BACKGROUND, AND WHAT KEEPS THE WORDS ON TOP OF IT READABLE ══════
+   #bg carries the picture. #veil sits between it and everything else, and
+   it is not decoration: an arbitrary photograph behind text is unreadable,
+   and no amount of care with the text can fix a busy picture underneath. So
+   the veil is adjustable and the slider is right there in the picker, rather
+   than a number I guessed once for a picture I have not seen. */
+#bg {
+  background-size: cover; background-position: center;
+  background-repeat: no-repeat;
+  transition: opacity .35s ease;
+}
+#veil {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background: linear-gradient(160deg, rgba(11,5,3,0.55), rgba(11,5,3,0.8));
+  opacity: var(--veil, 0.55);
+}
+
+#bgpick {
+  position: fixed; inset: 0; z-index: 40; display: none;
+  align-items: center; justify-content: center; padding: 18px;
+  background: rgba(4,2,1,0.72); backdrop-filter: blur(5px);
+}
+#bgpick.open { display: flex; }
+#bgpick-box {
+  width: min(760px, 100%); max-height: 88vh; overflow-y: auto;
+  border: 1px solid transparent; border-radius: 16px; padding: 20px;
+  background: var(--g-panel) padding-box, var(--g-edge) border-box;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.7);
+}
+#bgpick h2 {
+  margin: 0 0 3px; font-size: 15px; letter-spacing: 3px; font-weight: 700;
+  background: var(--g-text); -webkit-background-clip: text;
+  background-clip: text; color: transparent;
+}
+#bgpick .sub {
+  margin: 0 0 15px; font-size: 12px; color: rgba(240,223,198,0.55);
+  font-weight: 500;
+}
+#bggrid {
+  display: grid; gap: 10px; margin-bottom: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+.bgcell {
+  position: relative; aspect-ratio: 16 / 10; cursor: pointer;
+  border: 2px solid transparent; border-radius: 11px; overflow: hidden;
+  background: var(--ink2) padding-box, var(--g-edge) border-box;
+  /* AFTER the shorthand, not before. `background:` resets size and position
+     along with everything else, so declaring them first left every thumbnail
+     at its natural 1600 by 1000 cropped to the top left corner. Most scenes
+     have something up there and looked fine; the hurricane has its dark outer
+     edge, so it alone came out black and the bug read as one bad picture. */
+  background-size: cover; background-position: center;
+  background-repeat: no-repeat;
+  transition: transform .14s ease, filter .18s ease;
+  padding: 0; font-family: var(--sans);
+}
+.bgcell:hover { transform: translateY(-2px); filter: brightness(1.25); }
+.bgcell span {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 5px 7px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 1px; color: var(--pale);
+  background: linear-gradient(0deg, rgba(0,0,0,0.85), transparent);
+  text-align: left;
+}
+/* The chosen one is ringed in gold, which is the only state this needs. */
+/* The chosen cell re-declares the shorthand for its gold edge, which would
+   reset the size and position again, so they are restated with it. */
+.bgcell.on {
+  background: var(--ink2) padding-box, var(--g-gold) border-box;
+  background-size: cover; background-position: center;
+  background-repeat: no-repeat;
+  box-shadow: 0 0 0 2px rgba(232,184,0,0.3), 0 0 20px rgba(232,184,0,0.35);
+}
+.bgcell.up {
+  display: grid; place-items: center; gap: 2px;
+  color: var(--gold-hi); font-size: 11px; font-weight: 700;
+  letter-spacing: 1px; text-align: center;
+  background: linear-gradient(150deg, rgba(60,14,8,0.9), rgba(18,7,5,0.95))
+              padding-box, var(--g-edge) border-box;
+}
+.bgcell.up:hover { filter: brightness(1.6); }
+#bgrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+#bgrow label {
+  font-size: 11px; letter-spacing: 1.5px; font-weight: 700; color: var(--gold);
+}
+#veilrange {
+  flex: 1 1 150px; min-width: 120px; height: 6px; appearance: none;
+  -webkit-appearance: none; border-radius: 3px; background: var(--g-gold);
+  cursor: pointer; }
+#veilrange::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 17px; height: 17px; border-radius: 50%;
+  background: var(--pale); box-shadow: 0 0 6px rgba(0,0,0,0.6); cursor: pointer; }
+#veilrange::-moz-range-thumb {
+  width: 17px; height: 17px; border: none; border-radius: 50%;
+  background: var(--pale); box-shadow: 0 0 6px rgba(0,0,0,0.6); cursor: pointer; }
+
 @media (max-width: 620px) {
   body { font-size: 14px; }
   #shell { padding: 0 11px; }
   #core { width: 46px; height: 46px; }
   #title h1 { font-size: 16px; letter-spacing: 4px; }
   .msg { max-width: 100%; }
-  .hbtn { padding: 7px 9px; font-size: 10px; letter-spacing: 1px; }
+  .hbtn { padding: 7px 8px; font-size: 9.5px; letter-spacing: .5px; }
+  #bggrid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
 }
 /* Someone who has asked their system to stop moving things means it. Nothing
    is lost but the motion. */
@@ -309,6 +405,7 @@ body.busy #state { color: var(--gold-hi); opacity: 1; }
 </head>
 <body>
 <div id="bg" aria-hidden="true"></div>
+<div id="veil" aria-hidden="true"></div>
 <canvas id="rain" aria-hidden="true"></canvas>
 <div id="glass" aria-hidden="true"></div>
 
@@ -322,6 +419,7 @@ body.busy #state { color: var(--gold-hi); opacity: 1; }
     </div>
     <button class="hbtn" id="voice" onclick="toggleVoice()"
             title="Read replies aloud">VOICE</button>
+    <button class="hbtn" onclick="bgOpen()" title="Change the background">SCENE</button>
     <button class="hbtn" onclick="wipe()" title="Start a new conversation">NEW</button>
   </header>
 
@@ -348,8 +446,237 @@ body.busy #state { color: var(--gold-hi); opacity: 1; }
   </div>
 </div>
 
+<div id="bgpick" role="dialog" aria-modal="true" aria-label="Background"
+     onclick="if(event.target===this)bgClose()">
+  <div id="bgpick-box">
+    <h2>SCENE</h2>
+    <p class="sub">Pick a background, or bring your own picture. Yours stays on
+       this device and is never uploaded anywhere.</p>
+    <div id="bggrid"></div>
+    <div id="bgrow">
+      <label for="veilrange">DIM</label>
+      <input type="range" id="veilrange" min="0" max="95" value="55"
+             oninput="bgVeil(this.value)" aria-label="How much to dim the background">
+      <button class="hbtn" id="rainbtn" onclick="bgRain()">CODE RAIN</button>
+      <button class="hbtn" onclick="bgClose()">DONE</button>
+    </div>
+    <input type="file" id="bgfile" accept="image/*" style="display:none"
+           onchange="bgUpload(this)">
+  </div>
+</div>
+
 <script>
 'use strict';
+/* ══════════════════════════════════════════════════════════════════════════
+   THE BACKGROUND
+
+   Seven drawn scenes, plus whatever picture you care to hand it.
+
+   The drawn ones are SVG and a few kilobytes each, so one file covers a phone
+   and a 5K display without the blur a photograph gets when it is stretched.
+   They are drawn rather than found because a picture found online has an
+   owner, and committing one into a public repository publishes it again.
+
+   Your own picture is the part that answers "any image": it is read in the
+   browser, kept on this device, and never sent anywhere.
+
+   TWO THINGS THAT ARE EASY TO GET WRONG HERE
+
+   Where an uploaded photo is kept. localStorage holds about five megabytes of
+   TEXT, and a photo turned into a data URL is a third bigger again than the
+   file. A four megabyte holiday snap therefore throws on save, and the throw
+   arrives at some unrelated later moment when the conversation is being
+   written. IndexedDB has no such ceiling and takes the blob as it is.
+
+   And the veil. An arbitrary photograph behind text is unreadable, and no
+   amount of care with the text fixes a busy picture underneath. So there is a
+   dimmer, set by the person who can see both, rather than a number I guessed
+   once for a picture I have never seen.
+   ══════════════════════════════════════════════════════════════════════════ */
+const BG_KEY   = 'asturio_bg_v1';        // which scene
+const BG_VEIL  = 'asturio_bg_veil_v1';   // how much to dim it
+const BG_RAIN  = 'asturio_bg_rain_v1';   // is the code rain on
+const BG_DB    = 'asturio_bg_db';        // where a custom picture lives
+
+const SCENES = [
+  { id: 'none',      name: 'PLAIN' },
+  { id: 'hurricane', name: 'HURRICANE' },
+  { id: 'diamond',   name: 'BALLPARK' },
+  { id: 'geometric', name: 'GEOMETRIC' },
+  { id: 'sweep',     name: 'RADAR' },
+  { id: 'circuit',   name: 'CIRCUIT' },
+  { id: 'contours',  name: 'CONTOURS' },
+  { id: 'embers',    name: 'EMBERS' },
+];
+const sceneUrl = (id) => 'assets/bg/' + id + '.svg';
+
+let bgChoice = 'none';
+let bgCustom = null;      // an object URL for the uploaded picture, if any
+let rainOn = true;
+
+/* A picture is a blob, and a blob wants IndexedDB. Wrapped small: one record,
+   one key, and every failure resolves rather than rejects, because a browser
+   in private mode refusing to store a wallpaper must not take the assistant
+   down with it. */
+function bgStore(blob) {
+  return new Promise((resolve) => {
+    try {
+      const rq = indexedDB.open(BG_DB, 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore('img');
+      rq.onerror = () => resolve(false);
+      rq.onsuccess = () => {
+        const db = rq.result;
+        const tx = db.transaction('img', 'readwrite');
+        tx.objectStore('img').put(blob, 'custom');
+        tx.oncomplete = () => { db.close(); resolve(true); };
+        tx.onerror = () => { db.close(); resolve(false); };
+      };
+    } catch (e) { resolve(false); }
+  });
+}
+function bgLoadStored() {
+  return new Promise((resolve) => {
+    try {
+      const rq = indexedDB.open(BG_DB, 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore('img');
+      rq.onerror = () => resolve(null);
+      rq.onsuccess = () => {
+        const db = rq.result;
+        let get;
+        try { get = db.transaction('img', 'readonly').objectStore('img').get('custom'); }
+        catch (e) { db.close(); return resolve(null); }
+        get.onsuccess = () => { db.close(); resolve(get.result || null); };
+        get.onerror = () => { db.close(); resolve(null); };
+      };
+    } catch (e) { resolve(null); }
+  });
+}
+
+function bgApply() {
+  const el = $('bg');
+  if (bgChoice === 'custom' && bgCustom) {
+    el.style.backgroundImage = 'url("' + bgCustom + '")';
+  } else if (bgChoice !== 'none') {
+    el.style.backgroundImage = 'url("' + sceneUrl(bgChoice) + '")';
+  } else {
+    // Plain is not blank: the page's own warm gradient is what shows through,
+    // which is where this started.
+    el.style.backgroundImage = '';
+  }
+  document.querySelectorAll('.bgcell').forEach(c =>
+    c.classList.toggle('on', c.dataset.bg === bgChoice));
+}
+
+function bgSet(id) {
+  bgChoice = id;
+  try { localStorage.setItem(BG_KEY, id); } catch (e) {}
+  bgApply();
+}
+
+function bgVeil(v) {
+  const pct = Math.max(0, Math.min(95, Number(v) || 0));
+  document.documentElement.style.setProperty('--veil', (pct / 100).toFixed(2));
+  const r = $('veilrange'); if (r && r.value != pct) r.value = pct;
+  try { localStorage.setItem(BG_VEIL, String(pct)); } catch (e) {}
+}
+
+function bgRain() {
+  rainOn = !rainOn;
+  try { localStorage.setItem(BG_RAIN, rainOn ? '1' : '0'); } catch (e) {}
+  bgSyncRain();
+}
+function bgSyncRain() {
+  const c = $('rain');
+  if (c) c.style.display = rainOn ? '' : 'none';
+  const b = $('rainbtn');
+  if (b) b.classList.toggle('on', rainOn);
+}
+
+async function bgUpload(input) {
+  const f = input.files && input.files[0];
+  input.value = '';            // so choosing the same file twice still fires
+  if (!f) return;
+  if (!/^image\//.test(f.type)) {
+    setState('THAT IS NOT AN IMAGE', false);
+    return;
+  }
+  // Generous, but not unbounded: a 40 MB raw photo would be stored, decoded
+  // and held in memory on a phone for no visible gain over a 4 MB one.
+  if (f.size > 12 * 1024 * 1024) {
+    setState('THAT PICTURE IS OVER 12 MB, PICK A SMALLER ONE', false);
+    return;
+  }
+  if (bgCustom) { try { URL.revokeObjectURL(bgCustom); } catch (e) {} }
+  bgCustom = URL.createObjectURL(f);
+  bgSet('custom');
+  bgBuildGrid();
+  const kept = await bgStore(f);
+  setState(kept ? 'BACKGROUND SET' : 'SET FOR NOW, BUT COULD NOT BE SAVED', false);
+}
+
+function bgBuildGrid() {
+  const grid = $('bggrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  SCENES.forEach(sc => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'bgcell' + (bgChoice === sc.id ? ' on' : '');
+    b.dataset.bg = sc.id;
+    if (sc.id !== 'none') b.style.backgroundImage = 'url("' + sceneUrl(sc.id) + '")';
+    b.innerHTML = '<span></span>';
+    b.querySelector('span').textContent = sc.name;
+    b.onclick = () => bgSet(sc.id);
+    grid.appendChild(b);
+  });
+  // The uploaded one, if there is one, sits with the rest rather than in a
+  // separate place: it is a scene like any other once it is chosen.
+  if (bgCustom) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'bgcell' + (bgChoice === 'custom' ? ' on' : '');
+    b.dataset.bg = 'custom';
+    b.style.backgroundImage = 'url("' + bgCustom + '")';
+    b.innerHTML = '<span></span>';
+    b.querySelector('span').textContent = 'YOURS';
+    b.onclick = () => bgSet('custom');
+    grid.appendChild(b);
+  }
+  const up = document.createElement('button');
+  up.type = 'button';
+  up.className = 'bgcell up';
+  up.innerHTML = '<div style="font-size:21px;line-height:1">+</div>'
+               + '<div>' + (bgCustom ? 'REPLACE' : 'YOUR IMAGE') + '</div>';
+  up.onclick = () => $('bgfile').click();
+  grid.appendChild(up);
+}
+
+function bgOpen()  { bgBuildGrid(); $('bgpick').classList.add('open'); }
+function bgClose() { $('bgpick').classList.remove('open'); }
+
+async function bgInit() {
+  try { bgChoice = localStorage.getItem(BG_KEY) || 'none'; } catch (e) {}
+  let v = 55;
+  try { const raw = localStorage.getItem(BG_VEIL); if (raw != null) v = Number(raw); }
+  catch (e) {}
+  bgVeil(v);
+  try { rainOn = localStorage.getItem(BG_RAIN) !== '0'; } catch (e) {}
+  bgSyncRain();
+  // The stored picture is fetched whatever the choice is, so the thumbnail is
+  // there the moment the picker opens rather than appearing a beat later.
+  const blob = await bgLoadStored();
+  if (blob) bgCustom = URL.createObjectURL(blob);
+  // A choice of "custom" with nothing stored would leave a blank page. That
+  // happens after clearing site data with the preference left behind.
+  if (bgChoice === 'custom' && !bgCustom) bgChoice = 'none';
+  bgApply();
+}
+
+// Escape closes the picker, which is what every dialog on the web does.
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('bgpick').classList.contains('open')) bgClose();
+});
+
 /* ══════════════════════════════════════════════════════════════════════════
    THE RAIN
 
@@ -739,6 +1066,7 @@ $('voice').classList.toggle('on', speak);
 // The boot sequence belongs to an empty room. Printing it under a restored
 // conversation would announce the core coming online below three days of
 // messages, which reads as the page having lost its place.
+bgInit();
 if (!load()) greet();
 else {
   const back = document.createElement('div');
