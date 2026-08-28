@@ -27000,12 +27000,20 @@ const RADAR_SOURCE_BUBBLES = [
     label:'Level 2', action: () => toggleRadarL2Sub() },
   { id:'radar-l3', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-signal></use></svg>',
     label:'Level 3', action: () => toggleRadarPiSub('l3') },
-  // MRMS is its own source, not two loose overlay pills off in the corner:
-  // it is a national mosaic the Pi builds, with its own long product list,
-  // so it belongs beside the other radar sources rather than beside
-  // lightning and traffic cameras.
+  // Composite is its own source, not two loose overlay pills off in the
+  // corner: it is a national mosaic, with its own long product list, so it
+  // belongs beside the other radar sources rather than beside lightning and
+  // traffic cameras.
+  //
+  // The bubble is called Composite rather than MRMS because that is what a
+  // person is choosing. Normal, Level 2 and Level 3 all name what the picture
+  // IS; MRMS named the programme that produces it, which is a fact about the
+  // supplier and not about the radar. Everything inside it is composited from
+  // the whole network rather than swept by one dish, and that is the choice
+  // being made at this level. The id stays radar-mrms so a remembered order
+  // and the description already written for it both still find it.
   { id:'radar-mrms', icon:'<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-hex></use></svg>',
-    label:'MRMS', action: () => toggleMrmsSub() },
+    label:'Composite', action: () => toggleMrmsSub() },
 ];
 
 // ── MRMS product menu ──────────────────────────────────────────────────────
@@ -27134,7 +27142,10 @@ async function toggleMrmsSub() {
   });
 }
 
-// The national mosaic itself, at the top of the MRMS menu above the groups.
+// The national mosaic itself, at the top of the Composite menu above the
+// groups. It is named for the field it shows, MRMS 1 km, because the menu it
+// sits in is already called Composite and a second thing called Composite
+// inside it would say nothing about which of the two you are picking.
 //
 // Everything below it in this menu is a field the Pi renders and lays over the
 // map. This one replaces the radar picture instead, so it behaves like a
@@ -27149,7 +27160,7 @@ function _mrmsCompositeBubble(wrap) {
   el.id = 'sub-mrms';
   el.innerHTML = '<span class="sb-icon"><svg class=svgi width=1em height=1em '
                + 'style=vertical-align:-.15em><use href=#ic-signal></use></svg>'
-               + '</span><span class="sb-label">Composite</span>';
+               + '</span><span class="sb-label">MRMS 1 km</span>';
   el.onclick = () => {
     if (_mrmsActive) {
       _clearMrms(); _disableRadar();
@@ -36050,6 +36061,107 @@ let _l3Product  = null;
 let _l3Station  = null;
 let _l3Overlay  = null;   // L.imageOverlay on the map
 let _l3Canvas   = null;   // offscreen HTMLCanvasElement
+
+// ── THE FINISHED-PICTURE CACHE ────────────────────────────────────────────
+// _l2VolCache below already keeps the downloaded volume, which saves the 5 MB
+// download on a product switch. It does not save the expensive half. Turning
+// that volume into something on screen is two more steps, both of them work:
+// the worker parses megabytes of sweeps into a value mesh, and _meshToImage
+// draws up to a couple of million polygons onto a canvas and encodes a PNG.
+// Together they are most of a second on a laptop and several on a phone, and
+// they were paid again every single time, including for a station and product
+// that had been on screen a moment earlier and had not changed.
+//
+// So this keeps the finished article: the rendered image and the mesh it came
+// from, per station, product and tilt. On a hit there is nothing to download,
+// nothing to parse and nothing to draw. The image is already encoded, so
+// showing it is adding one overlay to the map, which is a handful of
+// milliseconds rather than a handful of seconds.
+//
+// The mesh is kept alongside it because the Inspector reads real values out of
+// it, and a repaint after a colour or filter change re-renders from it. A
+// picture without its mesh would be a faster screen and a broken tool.
+//
+// Bounded by count, not by bytes: each entry holds one canvas and one PNG data
+// URL, tens of megabytes for a large sweep, and this page already crashed iOS
+// once by letting radar frames pile up. Six is two or three stations' worth of
+// products, which covers going back and forth, and the oldest is dropped.
+const L3_PIC_MAX = 6;
+// How long a cached picture is still the LIVE picture. A radar completes a
+// volume every four to six minutes, so inside three minutes the cached frame
+// is almost always still the newest one. Past that it is still shown instantly,
+// because seeing the right station at once beats seeing nothing, but a fresh
+// one is fetched behind it and swapped in when it lands.
+const L3_PIC_FRESH_MS = 180000;
+const _l3Pic = new Map();          // key -> { at, img, result, box }
+
+function _l3PicKey(station, product, tilt) {
+  return String(station || '').toLowerCase() + '|'
+       + String(product || '').toLowerCase() + '|'
+       + (tilt == null ? '' : tilt);
+}
+
+function _l3PicPut(station, product, tilt, img, result) {
+  if (!img || !img.url) return;
+  const key = _l3PicKey(station, product, tilt);
+  // Delete first so re-storing moves it to the end. A Map iterates in
+  // insertion order, so the first key is the least recently stored, which is
+  // the one to drop.
+  _l3Pic.delete(key);
+  _l3Pic.set(key, { at: Date.now(), img: img, result: result,
+                    box: _meshBox && _meshBox.bounds });
+  while (_l3Pic.size > L3_PIC_MAX) {
+    const oldest = _l3Pic.keys().next().value;
+    if (oldest === undefined) break;
+    _l3Pic.delete(oldest);
+  }
+}
+
+function _l3PicGet(station, product, tilt) {
+  return _l3Pic.get(_l3PicKey(station, product, tilt)) || null;
+}
+
+// Which tilt a finished picture should be filed under.
+//
+// Not simply _l2Tilt, and this is the whole reason the cache missed every
+// time on the first attempt. _l2Tilt starts null, meaning "whatever the radar
+// gives me". The decoder answers with the cut it actually used, and only then
+// is _l2Tilt set from it. File the picture under the null and every later
+// lookup, which now reads 1, asks for a key that does not exist and pays for
+// the whole decode again. So file it under the cut the picture IS, which is
+// exactly what the next lookup will ask for.
+function _l3TiltKeyOf(result) {
+  const meta = result && result.metadata;
+  return (meta && meta.elevationNumber) || _l2Tilt;
+}
+
+// Everything _renderMesh does once the picture exists: put it on the map,
+// point the Inspector at its mesh, and label it. Split out so a cached
+// picture can be shown without going anywhere near a decoder.
+function _l3Attach(img, result, product, station) {
+  _lastMeshData    = result && result.meshData;
+  _lastMeshBounds  = result && result.bounds;
+  _lastMeshProduct = product;
+  _lastMeshResult  = result;
+  _lastMeshStation = station;
+  _l3Canvas   = img.canvas || null;
+  _l3Product  = product;
+  _l3Station  = station;
+
+  const old = _l3Overlay;
+  _l3Overlay = L.imageOverlay(img.url, img.leafletBounds,
+    { opacity: radarOpacity, zIndex: 10, pane: 'radarPane' }).addTo(map);
+  // Remove the previous one only after the new one is added, so the two swap
+  // rather than leaving a gap where the map has no radar on it at all.
+  if (old) { try { map.removeLayer(old); } catch (e) {} }
+
+  const d = img.timeIso ? new Date(img.timeIso) : new Date();
+  const at = document.getElementById('anim-time');
+  if (at) at.textContent = _fmtHHMM(d) + ' · ' + String(station).toUpperCase()
+                         + ' ' + (_MESH_LABELS[product] || product);
+  _refreshNexradSiteStyles();
+  return img;
+}
 let _lastMeshData = null, _lastMeshBounds = null, _lastMeshProduct = null;
 let _lastMeshResult = null, _lastMeshStation = null;
 
@@ -36798,10 +36910,12 @@ async function loadL3Data(product, stationOverride) {
   }
 }
 
-async function _loadL3DataInner(product, stationOverride, retried, gen, signal) {
+async function _loadL3DataInner(product, stationOverride, retried, gen, signal, opts) {
   // A switch that has been superseded stops here rather than at the end.
   const stale = () => gen != null && !_rsLive(gen);
-  _disableL3();
+  // Warming: decode into the cache and draw nothing. A hover is a guess, and a
+  // guess must never move what is on screen.
+  const warmOnly = !!(opts && opts.warm);
   _l3Product = product;
 
   var station = stationOverride;
@@ -36818,8 +36932,43 @@ async function _loadL3DataInner(product, stationOverride, retried, gen, signal) 
   }
   _l3Station  = station;
 
-  var at = document.getElementById('anim-time');
-  if (at) at.textContent = 'Loading ' + product.toUpperCase() + '…';
+  // ── The fast path ───────────────────────────────────────────────────────
+  // If this station and product have already been drawn, or were warmed by a
+  // hover, the finished picture is in hand and there is nothing to wait for.
+  // Show it now. This is the whole difference between a click that answers in
+  // milliseconds and one that answers in seconds, and it is checked before the
+  // old picture is touched so a hit is a straight swap.
+  const hit = _l3PicGet(station, product, _l2Tilt);
+  if (hit && hit.img && !warmOnly) {
+    // Restore the box this picture was drawn in, or the next live frame for
+    // the same site would be pinned to a different one and the overlay would
+    // jump between the cached frame and the fresh one.
+    if (hit.box) _meshBox = { key: String(station).toLowerCase() + '|'
+                                 + String(product).toLowerCase(),
+                              bounds: hit.box };
+    _l2LoopReset();
+    _l3Attach(hit.img, hit.result, product, station);
+    if (typeof _l2LoopBuild === 'function') _l2LoopBuild(product, station, hit.img);
+    // Older than one volume: keep it on screen, but go and get the current one
+    // behind it. Seeing the right station instantly and correcting a few
+    // seconds later beats staring at nothing while it downloads.
+    if (Date.now() - hit.at >= L3_PIC_FRESH_MS) {
+      _l3Pic.delete(_l3PicKey(station, product, _l2Tilt));
+      setTimeout(() => {
+        if (stale()) return;
+        _loadL3DataInner(product, station, retried, gen, signal).catch(() => {});
+      }, 0);
+    }
+    return;
+  }
+
+  // Nothing cached, so this will take as long as the network takes. Say so,
+  // and leave the previous radar up while it does: _l3Attach swaps the overlay
+  // only once the new one exists, so the map is never blank mid-switch.
+  if (!warmOnly) {
+    var at = document.getElementById('anim-time');
+    if (at) at.textContent = 'Loading ' + product.toUpperCase() + '…';
+  }
 
   // The same station's volume is good for a couple of minutes, and it is a
   // 5 MB download. Re-fetching it for every product switch made each click
@@ -36854,6 +37003,9 @@ async function _loadL3DataInner(product, stationOverride, retried, gen, signal) 
     if (stale()) return;
   } catch(e) {
     if (!e || !e.cached) {
+      // A warm nobody asked for must fail in silence. Reporting it would put a
+      // popup about a station on screen because the pointer passed over it.
+      if (warmOnly) return;
       console.error('[L2] Fetch failed:', e);
       _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> <b>' + product.toUpperCase() + ' fetch failed</b><br>' + e.message);
       return;
@@ -36880,14 +37032,41 @@ async function _loadL3DataInner(product, stationOverride, retried, gen, signal) 
       console.log('[L2] empty volume, retrying one back');
       _l2VolCache = { station: null, at: 0, buf: null };
       _l2SkipNewest = station.toUpperCase();
-      return _loadL3DataInner(product, station, true, gen, signal);
+      return _loadL3DataInner(product, station, true, gen, signal, opts);
     }
+    if (warmOnly) return;
     console.error('[L2] Parse failed:', e);
     _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> <b>Parse failed</b><br>' + e.message);
     return;
   }
 
   if (stale()) return;
+
+  // A warm renders the picture and banks it, and stops there. The click that
+  // follows finds it and is an overlay swap.
+  if (warmOnly) {
+    try {
+      // Its own box, deliberately not touching _meshBox: that global pins the
+      // picture currently on screen to one set of bounds, and a warm for a
+      // different station must not move it.
+      const wbox = _meshStableBox(result, station);
+      const wimg = _meshToImage(result, product, wbox);
+      if (wimg) {
+        const key = _l3PicKey(station, product, _l3TiltKeyOf(result));
+        _l3Pic.delete(key);
+        _l3Pic.set(key, { at: Date.now(), img: wimg, result: result, box: wbox });
+        while (_l3Pic.size > L3_PIC_MAX) {
+          const oldest = _l3Pic.keys().next().value;
+          if (oldest === undefined) break;
+          _l3Pic.delete(oldest);
+        }
+      }
+    } catch (e) {}
+    return;
+  }
+
+  // The loop belongs to the picture about to go up, not the one coming down.
+  _l2LoopReset();
   var img = _renderMesh(result, product, station);
   var meta = result && result.metadata;
   if (meta && Array.isArray(meta.availableElevations)) {
@@ -37319,26 +37498,15 @@ function _renderMesh(result, product, station) {
     return;
   }
 
-  // Keep the raw value mesh around so the Inspector tool can read real
-  // dBZ/velocity/etc values at a point, not just the rendered color, and the
-  // whole result so a settings change (filter, custom colors) can repaint
-  // this same data without downloading or decoding anything again.
-  _lastMeshData = result.meshData;
-  _lastMeshBounds = result.bounds;
-  _lastMeshProduct = product;
-  _lastMeshResult = result;
-  _lastMeshStation = station;
-  _l3Canvas = img.canvas;
+  // Keep the finished picture and the mesh it came from, so coming back to
+  // this station and product is an overlay swap rather than a download, a
+  // parse and a repaint.
+  _l3PicPut(station, product, _l3TiltKeyOf(result), img, result);
 
-  if (_l3Overlay) { try { map.removeLayer(_l3Overlay); } catch(_){} }
-  _l3Overlay = L.imageOverlay(img.url, img.leafletBounds, { opacity: radarOpacity, zIndex: 10, pane: 'radarPane' }).addTo(map);
-
-  var d = img.timeIso ? new Date(img.timeIso) : new Date();
-  var at = document.getElementById('anim-time');
-  if (at) at.textContent = _fmtHHMM(d) + ' · ' + station.toUpperCase() + ' ' + (_MESH_LABELS[product] || product);
-
-  _refreshNexradSiteStyles();
-  return img;
+  // The Inspector reads real dBZ/velocity values out of the mesh rather than
+  // sampling the drawn colour, and a filter or palette change repaints from
+  // the same result without fetching anything, so both are held on to.
+  return _l3Attach(img, result, product, station);
 }
 
 // ── PRODUCT FAMILIES, THE VALUE FILTER, AND CUSTOM COLORS ─────────────────
@@ -37765,6 +37933,13 @@ function _fxWantsRaw(lvl) {
 // decode as the rules now require. Cheap on purpose - the mesh is repainted
 // from memory, nothing is downloaded again.
 function _radarFxApply() {
+  // Every cached picture was drawn under the old colours and the old filter,
+  // so all of them are now wrong. Throwing them away is the point of keeping
+  // the mesh beside each one: the station on screen repaints from memory
+  // immediately, and the rest are re-decoded only if they are asked for again.
+  // Keeping them would make a palette change look like it had not applied
+  // until you clicked away and back.
+  try { _l3Pic.clear(); } catch (e) {}
   if (_lastMeshResult && _l3Overlay && typeof map !== 'undefined'
       && map.hasLayer(_l3Overlay)) {
     _renderMesh(_lastMeshResult, _lastMeshProduct, _lastMeshStation || '');
@@ -38374,6 +38549,35 @@ function _rsWarm(station) {
     .catch(() => { _rsCaps.delete(station); });
 }
 
+// Warming the single-site decoders is the same idea one layer deeper.
+//
+// For the mosaic, the slow part is asking what scan times exist, and _rsWarm
+// above covers it. For Level 2 and Level 3 the slow part is the volume: a few
+// megabytes to download, then parsed and drawn. Doing that on a hover means
+// the click that follows finds a finished picture and is an overlay swap.
+//
+// Only while a single-site source is actually selected, because decoding a
+// volume for someone looking at the national mosaic is megabytes spent on a
+// product they are not in. One at a time, so running the pointer along a row
+// of pills does not start twenty downloads.
+let _rsWarmingL2 = null;
+function _rsWarmSite(station) {
+  if (!station) return;
+  if (_radarSource !== 'l2' && _radarSource !== 'l3') return;
+  if (typeof _l3Product !== 'string' || !_l3Product) return;
+  station = String(station).toLowerCase();
+  if (_l3PicGet(station, _l3Product, _l2Tilt)) return;   // already in hand
+  if (_rsWarmingL2) return;
+  _rsWarmingL2 = station;
+  // No generation and no signal: a warm is nobody's switch, so a click must
+  // not cancel it. It either finishes into the cache or it is discarded.
+  Promise.resolve()
+    .then(() => _loadL3DataInner(_l3Product, station, false, null, undefined,
+                                 { warm: true }))
+    .catch(() => {})
+    .then(() => { _rsWarmingL2 = null; });
+}
+
 // ── NEXRAD SITE MARKERS ──
 // Shows a dot + label for every NEXRAD station when radar is active.
 // In VEL mode, clicking a site loads that station's velocity data.
@@ -38402,7 +38606,10 @@ function _buildNexradSiteMarkers() {
     // means the click usually has its answer already. Costs one small request
     // for a station the pointer paused over, and nothing at all on a touch
     // screen, where there is no hover to fire it.
-    label.on('mouseover', () => { try { _rsWarm(s.id); } catch (e) {} });
+    label.on('mouseover', () => {
+      try { _rsWarm(s.id); } catch (e) {}
+      try { _rsWarmSite(s.id); } catch (e) {}
+    });
 
     // Click on pill , single-site only activates in REF mode
     label.on('click', async () => {
@@ -48503,7 +48710,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Switching radar sites is now fast. Clicking a station paints within about a second even when the scan-time lookup is slow, the previous radar stays up until the new one is ready instead of going blank, and clicking through several stations quickly cancels the ones you skipped so the last click is not stuck behind them. Stations you visit are remembered for 90 seconds, so going back is instant, and hovering a station starts its lookup early. Switching products does the same: the old volume is dropped rather than painted late over the new one.';
+const APP_LATEST_UPDATE = 'The radar source bubble that said MRMS is now called Composite, and the national mosaic inside it is called MRMS 1 km. Level 2 and Level 3 also got much faster: the finished picture is kept for the last few stations and products, so going back to one you have already looked at puts it up in well under a tenth of a second with nothing downloaded, parsed or redrawn. Hovering a station decodes it before you click, and the previous radar now stays on screen while a new one loads instead of going blank.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -48657,7 +48864,8 @@ function _srchBuildCatalog() {
   // ── The menus, each opening the one it names ──────────────────────────
   [['Radar Menu', 'toggleRadarSub', 'antenna', ['radar', 'nexrad', 'level 2', 'level 3']],
    ['Satellite', 'toggleSatelliteSub', 'satellite', ['goes', 'ir', 'visible', 'water vapor']],
-   ['MRMS Products', 'toggleMrmsSub', 'storm', ['mrms', 'rotation', 'hail', 'mesh', 'qpe']],
+   ['Composite Radar', 'toggleMrmsSub', 'storm',
+    ['composite', 'mosaic', 'mrms', 'rotation', 'hail', 'mesh', 'qpe']],
    ['Models', 'toggleModelsSub', 'chart-up', ['gfs', 'hrrr', 'nam', 'ecmwf', 'forecast model']],
    ['Wind', 'toggleWindSub', 'wind', ['gusts', 'streamlines']],
    ['Waves', 'toggleWavesSub', 'wave', ['swell', 'sea state', 'marine']],

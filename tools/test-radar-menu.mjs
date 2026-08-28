@@ -196,26 +196,42 @@ const normal = await row();
 ok('the national mosaic is no longer wedged in among them',
    !normal.some(l => /MRMS/i.test(l)), normal.join(','));
 
-// It moved into the MRMS menu, where it is called Composite, so this is the
-// half of the move that can actually break: the row above only proves it is
-// gone, not that it arrived. The MRMS menu reads the Pi's manifest, which is
-// not reachable here, so the check is that Composite is drawn WITHOUT it,
-// which is also the behaviour that matters on a day the Pi is down.
-console.log('\n8a. the mosaic is in the MRMS menu, called Composite');
+// It moved into the Composite menu, so this is the half of the move that can
+// actually break: the row above only proves it is gone, not that it arrived.
+// That menu reads the Pi's manifest, which is not reachable here, so the check
+// is that the mosaic is drawn WITHOUT it, which is also the behaviour that
+// matters on a day the Pi is down.
+//
+// The two names are checked together on purpose, because getting one right and
+// the other wrong is exactly what happened. The SOURCE bubble is Composite:
+// that is the choice being made, alongside Normal, Level 2 and Level 3. The
+// item inside it is MRMS 1 km: that is which composite. Naming both Composite
+// says nothing about which one you are picking, and naming the source MRMS
+// names the programme that supplies it rather than the picture it draws.
+console.log('\n8a. the source bubble is Composite, and holds MRMS 1 km');
 {
+  const src = await page.evaluate(() => {
+    const b = (typeof RADAR_SOURCE_BUBBLES !== 'undefined' ? RADAR_SOURCE_BUBBLES : [])
+      .find(x => x.id === 'radar-mrms');
+    return b ? b.label : null;
+  });
+  ok('the radar source bubble is called Composite', src === 'Composite', src);
+  ok('and no longer calls itself MRMS', !/MRMS/i.test(src || ''), src);
+
   const mrms = await page.evaluate(() => {
     // Deliberately not awaited. toggleMrmsSub goes to the Pi for the product
-    // list, which is not reachable from here, and Composite is drawn before
+    // list, which is not reachable from here, and the mosaic is drawn before
     // that request is even made. Reading the row now is what proves it.
     toggleMrmsSub();
     return [...document.querySelectorAll('#sub-bubbles .sub-bubble')]
       .map(e => ((e.querySelector('.sb-label') || e).textContent || '').trim());
   });
-  ok('the MRMS menu offers Composite', mrms.includes('Composite'), mrms.join(','));
-  ok('and does not still call it MRMS 1km',
-     !mrms.includes('MRMS 1km'), mrms.join(','));
+  ok('the Composite menu offers MRMS 1 km',
+     mrms.includes('MRMS 1 km'), mrms.join(','));
+  ok('and nothing inside it repeats the menu name',
+     !mrms.includes('Composite'), mrms.join(','));
   ok('it is drawn even with no manifest to read',
-     mrms.indexOf('Composite') === 1, mrms.join(','));
+     mrms.indexOf('MRMS 1 km') === 1, mrms.join(','));
 
   const t = await page.evaluate(() => {
     const el = document.getElementById('sub-mrms');

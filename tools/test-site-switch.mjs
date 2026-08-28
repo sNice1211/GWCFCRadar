@@ -271,7 +271,7 @@ console.log('\n8. switching product cancels the volume the last one was fetching
       begins: /_rsBegin\(\)/.test(src),
       guards: (src.match(/stale\(\)/g) || []).length,
       signal: /_rsSignal\(signal, 30000\)/.test(src),
-      retryCarries: /_loadL3DataInner\(product, station, true, gen, signal\)/.test(src),
+      retryCarries: /_loadL3DataInner\(product, station, true, gen, signal, opts\)/.test(src),
     };
   });
   ok('a product switch starts a new generation', r.begins);
