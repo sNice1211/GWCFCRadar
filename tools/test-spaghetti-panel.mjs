@@ -164,10 +164,13 @@ console.log('\n1. the metered pressure-tracing hack is gone, root and branch');
      await page.evaluate(() => !!document.getElementById('spag-btn')
        && !!document.getElementById('spag-groups')
        && !!document.getElementById('spag-legend')));
+  // The transport is now the shared Run Models playbar: the range input and
+  // the speed dropdown were replaced by a track with a fill and a thumb, and
+  // a speed button that cycles multiples.
   ok('and the animation transport',
      await page.evaluate(() => !!document.getElementById('tanim-play')
-       && !!document.getElementById('tanim-scrub')
-       && !!document.getElementById('tanim-speed')));
+       && !!document.getElementById('tanim-playbar-track')
+       && !!document.getElementById('tanim-speed-btn')));
   ok('all inside the Spaghetti Models panel',
      await page.evaluate(() =>
        !!document.querySelector('#spaghetti-models-panel #spag-btn')

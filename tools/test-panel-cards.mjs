@@ -112,79 +112,43 @@ await page.waitForTimeout(4200);
 await page.evaluate(() => { if (typeof closeTutorial === 'function') closeTutorial(); });
 await page.evaluate(() => { _hdBase = 'https://example.invalid/wx'; });
 
-console.log('\n1. the panel is four cards, not one long scroll');
+console.log('\n1. both tropical panels are flat, and hold their own controls');
 {
+  // The cards are gone. Both panels were folding cards, and in both cases the
+  // fold could hide a control from the thing it controls: the AI Cyclones
+  // panel split the DeepMind tracks from the GEFS centres with a paragraph of
+  // prose between them, and the Spaghetti panel could fold the play button
+  // away from the lines it plays. They are laid out like Run Models now, so
+  // what is worth checking here is that nothing was LOST in the flattening.
+  // The layouts themselves are covered in depth by test-spag-playbar and
+  // test-cyclone-playbar.
   const s = await page.evaluate(() => ({
-    ids: [...document.querySelectorAll('#spaghetti-models-panel .spanel-card')]
-      .map(c => c.id),
-    heads: [...document.querySelectorAll('#spaghetti-models-panel .spanel-head')]
-      .map(h => h.textContent.trim().replace(/\s+/g, ' ')),
-    aiHeads: [...document.querySelectorAll('#ai-cyclones-panel .spanel-head')]
-      .map(h => h.textContent.trim().replace(/\s+/g, ' ')),
-    bodies: document.querySelectorAll(
-      '#spaghetti-models-panel .spanel-body').length,
-  }));
-  // The Active Storms card is gone by request: it duplicated what the NHC
-  // Outlook overlay already draws on the map, so the panel is now just the
-  // guidance and the animation.
-  ok('two cards in the spaghetti panel: guidance and animation',
-     s.ids.join(',') === 'spcard-guidance,spcard-anim',
-     s.ids.join(','));
-  ok('each has a clickable head and a body', s.bodies === 2);
-  ok('the heads say what each card is',
-     /Model Guidance/.test(s.heads[0])
-     && /Track Animation/.test(s.heads[1]), s.heads.join(' | '));
-  const inside = await page.evaluate(() => ({
+    cards: document.querySelectorAll('.spanel-card').length,
+    heads: document.querySelectorAll('.spanel-head').length,
+    fold: typeof window._spCardToggle,
+    // The Active Storms card went earlier, by request: it duplicated what the
+    // NHC Outlook overlay already draws on the map.
     storms: !document.querySelector('#spcard-storms')
        && !document.getElementById('trop-storm-sel'),
-    spag: !!document.querySelector('#spcard-guidance #spag-btn')
-       && !!document.querySelector('#spcard-guidance #spag-groups'),
-    // The AI Cyclones panel no longer holds a card at all. It was one, wrapping
-    // two halves split by a paragraph of prose, and it is now laid out flat
-    // like Run Models: dropdowns, a run row, a playbar, then one grid of
-    // switches. So the check is that the CONTROLS are in that panel, not that
-    // a card containing them is.
-    cyc: !!document.querySelector('#ai-cyclones-panel #cyc-layer-row #cyc-lab-btn')
-       && !!document.querySelector('#ai-cyclones-panel #cyc-layer-row #cyc-ens-centres-btn'),
-    cycNoCard: !document.querySelector('#ai-cyclones-panel .spanel-card'),
-    cycFlat: !!document.querySelector('#ai-cyclones-panel .sev-playbar-row'),
-    anim: !!document.querySelector('#spcard-anim #tanim-play'),
+    spagChips: !!document.querySelector('#spaghetti-models-panel #spag-groups'),
+    spagBtn: !!document.querySelector('#spaghetti-models-panel #spag-btn'),
+    spagPlay: !!document.querySelector('#spaghetti-models-panel #tanim-play'),
+    spagBar: !!document.querySelector('#spaghetti-models-panel .sev-playbar-row'),
+    cycTracks: !!document.querySelector('#ai-cyclones-panel #cyc-layer-row #cyc-lab-btn'),
+    cycEns: !!document.querySelector('#ai-cyclones-panel #cyc-layer-row #cyc-ens-centres-btn'),
+    cycMean: !!document.querySelector('#ai-cyclones-panel #cyc-layer-row #cyc-mean-btn'),
+    cycBar: !!document.querySelector('#ai-cyclones-panel .sev-playbar-row'),
   }));
-  ok('the Active Storms card and its picker are fully gone', inside.storms);
-  ok('the guidance controls live in the guidance card', inside.spag);
-  ok('DeepMind and the GEFS centres share one switch row in their own panel',
-     inside.cyc);
-  ok('and that panel holds no card, being laid out like Run Models instead',
-     inside.cycNoCard && inside.cycFlat);
-  ok('the transport lives in the animation card', inside.anim);
-}
-
-console.log('\n2. cards fold, and the fold is remembered');
-{
-  // Folding is checked on the guidance card. It used to be checked on the
-  // cyclones card, which no longer exists: that panel is flat now, so there is
-  // nothing there to fold.
-  await page.evaluate(() => _spCardToggle('guidance'));
-  let s = await page.evaluate(() => ({
-    closed: document.getElementById('spcard-guidance')
-      .classList.contains('closed'),
-    bodyHidden: getComputedStyle(document.querySelector(
-      '#spcard-guidance .spanel-body')).display === 'none',
-    saved: localStorage.getItem('gwcfc_spanel_closed'),
-  }));
-  ok('a click folds the card', s.closed && s.bodyHidden);
-  ok('and the choice is written down', s.saved === '["guidance"]', s.saved);
-  await page.evaluate(() => {
-    document.getElementById('spcard-guidance').classList.remove('closed');
-    _spCardRestore();
-  });
-  ok('restore reapplies it, so reopening the panel keeps the fold',
-     await page.evaluate(() => document.getElementById('spcard-guidance')
-       .classList.contains('closed')));
-  await page.evaluate(() => _spCardToggle('guidance'));
-  ok('and a second click opens it again',
-     await page.evaluate(() => !document.getElementById('spcard-guidance')
-       .classList.contains('closed')));
+  ok('no cards are left anywhere', s.cards === 0 && s.heads === 0,
+     s.cards + ' cards, ' + s.heads + ' heads');
+  ok('and the fold machinery went with them', s.fold === 'undefined', s.fold);
+  ok('the Active Storms card and its picker are still gone', s.storms);
+  ok('the spaghetti panel kept its chips, its guidance switch and its clock',
+     s.spagChips && s.spagBtn && s.spagPlay && s.spagBar,
+     JSON.stringify(s));
+  ok('the cyclones panel kept all three layer switches',
+     s.cycTracks && s.cycEns && s.cycMean, JSON.stringify(s));
+  ok('and both wear the same playbar', s.spagBar && s.cycBar);
 }
 
 console.log('\n3. the Google models draw from the fixed manifest');
