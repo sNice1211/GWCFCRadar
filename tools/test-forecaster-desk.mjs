@@ -135,12 +135,56 @@ await page.evaluate(() => {
 
 console.log('\n1. the page boots with the desk in it');
 ok('no uncaught errors while starting', errors.length === 0, errors[0]);
-ok('the issuing button exists at all',
-   await page.evaluate(() => !!document.getElementById('tool-forecaster')));
-ok('and it is hidden before anybody signs in', await page.evaluate(() => {
-  const b = document.getElementById('tool-forecaster');
-  return b.style.display === 'none';
-}));
+// The desk moved out of the tool rail on the right of the map and into
+// Settings, under its own heading. That rail is for things you do TO the map:
+// draw, measure, drop a cone. Issuing an official product is not one of
+// those, and a hidden button between the pencil and the ruler was easy to
+// miss and easy to hit by accident.
+ok('the way in lives in Settings now',
+   await page.evaluate(() =>
+     !!document.querySelector('#lqm-settings-overlay #fd-settings-group')
+     && !!document.querySelector('#fd-settings-group #fd-settings-btn')));
+ok('and no longer in the map tool rail',
+   await page.evaluate(() => !document.getElementById('tool-forecaster')));
+ok('the whole section is hidden before anybody signs in',
+   await page.evaluate(() =>
+     document.getElementById('fd-settings-group').style.display === 'none'));
+
+console.log('\n1b. the Settings rail does not advertise it either');
+{
+  const r = await page.evaluate(() => {
+    window.__setAccount(null, null);
+    const rail = document.getElementById('lqm-set-rail');
+    if (rail) delete rail.dataset.built;
+    _lqmSetBuildRail();
+    const tabs = [...document.querySelectorAll('#lqm-set-rail .lqm-set-tab')]
+      .map(t => t.textContent.trim());
+    return { tabs, gated: document.getElementById('fd-settings-group').dataset.gated };
+  });
+  // Hiding the section but leaving its tab would announce the feature to
+  // exactly the people who cannot use it, which is the thing the whole
+  // absent-not-disabled rule is for.
+  ok('the section is marked as gated', r.gated === 'forecaster', r.gated);
+  ok('and no Forecaster Desk tab is offered to a stranger',
+     !r.tabs.some(t => /Forecaster/i.test(t)), r.tabs.join(' | '));
+}
+
+console.log('\n1c. and the rail gains the tab once the gate opens');
+{
+  const r = await page.evaluate(async () => {
+    window.__setAccount({ uid: 'u9', email: 'fc9@example.com', isAnonymous: false },
+                        { displayName: 'Fern', forecaster: true });
+    await _fdSyncButton();
+    const tabs = [...document.querySelectorAll('#lqm-set-rail .lqm-set-tab')]
+      .map(t => t.textContent.trim());
+    return { tabs, shown: document.getElementById('fd-settings-group').style.display };
+  });
+  // The rail is built once, on the first open, and signing in happens long
+  // after that. Without a rebuild the section would exist with no way in.
+  ok('the section is revealed', r.shown !== 'none', r.shown);
+  ok('and the rail rebuilt itself to reach it',
+     r.tabs.some(t => /Forecaster/i.test(t)), r.tabs.join(' | '));
+}
 
 console.log('\n2. a signed-out visitor cannot get in');
 {
@@ -182,13 +226,13 @@ console.log('\n4. signed in is not the same as approved');
     await _fdOpen();
     await _fdSyncButton();
     return { opened: !!document.getElementById('fd-modal'),
-             btn: document.getElementById('tool-forecaster').style.display,
+             btn: document.getElementById('fd-settings-group').style.display,
              toasts: window.__toasts.slice(),
              may: _fdIsForecaster(window.__profile) };
   });
   ok('a self-chosen role word does not grant issuing', r.may === false);
   ok('the desk refuses to open', !r.opened, JSON.stringify(r));
-  ok('the button stays hidden for them', r.btn === 'none', r.btn);
+  ok('the whole section stays hidden for them', r.btn === 'none', r.btn);
   ok('and the refusal names who can grant it',
      /owner|Manage Members/i.test(r.toasts.join(' ')), r.toasts.join(' | '));
 }
@@ -202,12 +246,12 @@ console.log('\n5. the owner-granted flag is what opens it');
     await _fdSyncButton();
     await _fdOpen();
     const el = document.getElementById('fd-modal');
-    return { btn: document.getElementById('tool-forecaster').style.display,
+    return { btn: document.getElementById('fd-settings-group').style.display,
              open: !!el && el.style.display === 'flex',
              active: _fdActive,
              body: (document.getElementById('fd-body') || {}).textContent || '' };
   });
-  ok('the button appears for a granted account', r.btn !== 'none', r.btn);
+  ok('the section appears for a granted account', r.btn !== 'none', r.btn);
   ok('the desk opens', r.open, JSON.stringify({ open: r.open, active: r.active }));
   ok('it offers storm marks', /Storm marks/.test(r.body));
   ok('it offers development chances', /Development chance/.test(r.body));

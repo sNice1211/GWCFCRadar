@@ -4780,6 +4780,12 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
   border:2px solid rgba(255,255,255,0.85); background:rgba(255,255,255,0.08);
   box-shadow:0 0 0 1px rgba(0,0,0,0.55); transform:translate(-50%,-50%);
 }
+#dtb-shape {
+  flex-shrink: 0; font-family: 'Comfortaa', sans-serif; font-size: 10px;
+  font-weight: 700; padding: 4px 6px; cursor: pointer; max-width: 104px;
+  background: rgba(0,140,186,0.12); color: #4fc3f7;
+  border: 1px solid rgba(0,140,186,0.35); border-radius: 6px;
+}
 #dtb-color-swatch {
   width:26px; height:26px;
   border-radius:6px;
@@ -4808,6 +4814,25 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
   box-shadow:0 6px 24px rgba(0,0,0,0.8);
 }
 #dtb-palette.open { display:flex !important; }
+/* The polygon tool's swatch and palette are the draw tool's, in a gold
+   border to match the bar they sit in. Sharing the rules rather than
+   copying them means one place decides what a colour picker looks like. */
+#ptb-color-swatch {
+  width:26px; height:26px; border-radius:6px;
+  border:2px solid rgba(255,255,255,0.3); cursor:pointer; flex-shrink:0;
+  transition:border-color 0.15s, transform 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+#ptb-color-swatch:active { transform:scale(0.92); }
+#ptb-palette {
+  display:none; position:absolute; bottom:calc(100% + 8px);
+  left:50%; transform:translateX(-50%);
+  background:rgb(14,18,24); border:1px solid rgba(255,204,0,0.3);
+  border-radius:12px; padding:8px; gap:6px; flex-wrap:wrap; width:172px;
+  z-index:1200; backdrop-filter:blur(6px);
+  box-shadow:0 6px 24px rgba(0,0,0,0.8);
+}
+#ptb-palette.open { display:flex !important; }
 .dtb-pal-swatch {
   width:28px; height:28px;
   border-radius:6px;
@@ -9895,6 +9920,21 @@ body.clean-mode #clean-hint { opacity: 1; }
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><path d="M20 20H7L3 16l10-10 7 7-3.5 3.5"/><path d="M6 11l7 7"/></svg>
   </button>
   <div class="dtb-sep"></div>
+  <!-- Shapes. Freehand answers "draw roughly here"; a shape answers "draw
+       exactly this", which is what a box round a county or a circle round a
+       storm needs. Drag from one corner to the other. -->
+  <select id="dtb-shape" onchange="_dtbSetShape(this.value)" title="Draw freehand, or drag out a shape">
+    <option value="free">Freehand</option>
+    <option value="line">Line</option>
+    <option value="arrow">Arrow</option>
+    <option value="rect">Rectangle</option>
+    <option value="circle">Circle</option>
+    <option value="ellipse">Ellipse</option>
+    <option value="triangle">Triangle</option>
+    <option value="diamond">Diamond</option>
+    <option value="star">Star</option>
+  </select>
+  <div class="dtb-sep"></div>
   <!-- Color swatch + palette trigger -->
   <div style="position:relative;flex-shrink:0;">
     <div id="dtb-color-swatch" onclick="_dtbTogglePalette(event)" title="Pick color"></div>
@@ -10047,6 +10087,17 @@ body.clean-mode #clean-hint { opacity: 1; }
     POLYGON
   </span>
   <div class="dtb-sep"></div>
+  <!-- Colour. The polygon used to be gold and nothing else, which is fine
+       until you want two of them on one map, or one that does not fight the
+       radar underneath it. Same swatch and palette the draw tool uses. -->
+  <div style="position:relative;flex-shrink:0;">
+    <div id="ptb-color-swatch" onclick="_polyTogglePalette(event)" title="Polygon colour"></div>
+    <input type="color" id="ptb-native-color" value="#ffcc00"
+      style="position:absolute;opacity:0;width:0;height:0;top:0;left:0;pointer-events:none;"
+      oninput="_polyPickColor(this.value)">
+  </div>
+  <div id="ptb-palette"><!-- swatches injected by JS --></div>
+  <div class="dtb-sep"></div>
   <!-- Undo last vertex -->
   <button class="ptb-btn" id="ptb-undo" onclick="_polyUndo()" title="Undo last vertex">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="17" height="17"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>
@@ -10181,19 +10232,10 @@ body.clean-mode #clean-hint { opacity: 1; }
     </svg>
   </button>
 
-  <!-- Forecaster Desk , issue GWCFC products from here instead of the portal.
-       Starts hidden and is only revealed once the account signed in has been
-       marked as a forecaster by the owner. A disabled button reading "issue
-       products" is an invitation to ask why, and there is nothing useful to
-       answer somebody who is not one. -->
-  <button class="tool-btn" id="tool-forecaster" style="display:none" onclick="_fdOpen()" title="Forecaster Desk , issue GWCFC outlooks, zones, alerts and cones">
-    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M4 4h11l5 5v11H4z"/>
-      <path d="M15 4v5h5"/>
-      <path d="M8 13h8"/>
-      <path d="M8 16.5h5"/>
-    </svg>
-  </button>
+  <!-- The Forecaster Desk used to sit here, hidden between the pencil and
+       the ruler. It moved into Settings, under its own heading: this rail is
+       for things you do TO the map, and issuing an official product is not
+       one of those. See #fd-settings-group. -->
 
   <!-- Inspector , shows the radar value at the center of the map, updates as you pan -->
   <button class="tool-btn" id="tool-inspector" onclick="toggleInspector()" title="Inspector , shows the radar value at the center of the map">
@@ -32430,7 +32472,10 @@ function _dtbSetMode(mode) {
     if (_eraserHoverActive) { map.off('mousemove', _dtbEraserHover); _eraserHoverActive = false; }
     _hideEraserCursor();
     map.getContainer().style.cursor = '';
-    _dtbSetStatus(mode === 'highlighter' ? 'Highlighter mode' : 'Pencil mode');
+    _dtbSetStatus(
+      (typeof _dtbShape !== 'undefined' && _dtbShape !== 'free')
+        ? 'Drag to draw a ' + _dtbShape
+        : (mode === 'highlighter' ? 'Highlighter mode' : 'Pencil mode'));
   }
 }
 function _dtbUndo() {
@@ -32459,8 +32504,122 @@ function _dtbSetStatus(msg) {
   if (st) st.textContent = msg;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// ── SHAPES IN THE DRAW TOOL ───────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// Freehand answers "draw roughly here". A shape answers "draw exactly this",
+// which is what a box round a county or a circle round a storm actually
+// needs, and no amount of care with a finger gets you a straight line.
+//
+// Every shape is a list of points, exactly like a freehand stroke, so all of
+// it rides the machinery that already exists: the same style, the same undo
+// stack, the same eraser (which walks getLatLngs and splits a line where you
+// rub it out), the same export. Nothing here is a new kind of layer.
+//
+// Closed shapes end where they started rather than being L.polygon, for that
+// reason: a polygon is a different class with different vertex nesting, and
+// the eraser would have had to learn about it. A ring drawn as a polyline is
+// the same thing to look at and the same thing to rub out.
+//
+// The geometry is worked out in SCREEN PIXELS and converted back to
+// coordinates, not computed in latitude and longitude. A circle drawn in
+// degrees is an egg: a degree of longitude is a fraction of a degree of
+// latitude in width once you are away from the equator, so a "circle" round a
+// storm in Michigan would come out visibly squashed. Pixels are what the eye
+// is judging, so pixels are where the shape is built.
+let _dtbShape = 'free';
+const DTB_SHAPE_STEPS = 64;      // points round a curve: smooth without being heavy
+
+function _dtbSetShape(v) {
+  _dtbShape = v || 'free';
+  const sel = document.getElementById('dtb-shape');
+  if (sel && sel.value !== _dtbShape) sel.value = _dtbShape;
+  _dtbSetStatus(_dtbShape === 'free'
+    ? (_dtbMode === 'highlighter' ? 'Highlighter mode' : 'Pencil mode')
+    : 'Drag to draw a ' + _dtbShape);
+}
+
+// The points of one shape, from the corner it was started at to where the
+// pointer is now. Both arguments are container points; the return is too.
+function _dtbShapePoints(a, b, shape) {
+  const x0 = a.x, y0 = a.y, x1 = b.x, y1 = b.y;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const rx = Math.abs(x1 - x0) / 2, ry = Math.abs(y1 - y0) / 2;
+  const pt = (x, y) => ({ x, y });
+  const ring = (fn, n) => {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(fn(i / n * Math.PI * 2));
+    out.push(out[0]);           // close it
+    return out;
+  };
+
+  switch (shape) {
+    case 'line':
+      return [pt(x0, y0), pt(x1, y1)];
+
+    case 'arrow': {
+      // One polyline that doubles back on itself to draw the head, so the
+      // whole arrow is a single stroke and undoes in one press.
+      const ang = Math.atan2(y1 - y0, x1 - x0);
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      const head = Math.max(8, Math.min(len * 0.28, 40));
+      const wing = Math.PI / 7;
+      return [
+        pt(x0, y0), pt(x1, y1),
+        pt(x1 - head * Math.cos(ang - wing), y1 - head * Math.sin(ang - wing)),
+        pt(x1, y1),
+        pt(x1 - head * Math.cos(ang + wing), y1 - head * Math.sin(ang + wing)),
+      ];
+    }
+
+    case 'rect':
+      return [pt(x0, y0), pt(x1, y0), pt(x1, y1), pt(x0, y1), pt(x0, y0)];
+
+    case 'diamond':
+      return [pt(cx, y0), pt(x1, cy), pt(cx, y1), pt(x0, cy), pt(cx, y0)];
+
+    case 'triangle':
+      return [pt(cx, y0), pt(x1, y1), pt(x0, y1), pt(cx, y0)];
+
+    case 'circle': {
+      // A true circle: the radius is the drag distance, so dragging from the
+      // middle of a storm to its edge gives the circle you meant. The ellipse
+      // below is the one that fills a box.
+      const r = Math.hypot(x1 - x0, y1 - y0);
+      return ring(t => pt(x0 + r * Math.cos(t), y0 + r * Math.sin(t)),
+                  DTB_SHAPE_STEPS);
+    }
+
+    case 'ellipse':
+      return ring(t => pt(cx + rx * Math.cos(t), cy + ry * Math.sin(t)),
+                  DTB_SHAPE_STEPS);
+
+    case 'star': {
+      const R = Math.max(rx, ry), r = R * 0.42;
+      const out = [];
+      for (let i = 0; i < 10; i++) {
+        const t = -Math.PI / 2 + i * Math.PI / 5;
+        const rad = (i % 2 === 0) ? R : r;
+        out.push(pt(cx + rad * Math.cos(t), cy + rad * Math.sin(t)));
+      }
+      out.push(out[0]);
+      return out;
+    }
+  }
+  return [pt(x0, y0), pt(x1, y1)];
+}
+
+// The same, as coordinates the map can draw.
+function _dtbShapeLatLngs(anchorLatLng, currentLatLng, shape) {
+  const a = map.latLngToContainerPoint(anchorLatLng);
+  const b = map.latLngToContainerPoint(currentLatLng);
+  return _dtbShapePoints(a, b, shape)
+    .map(p => map.containerPointToLatLng([p.x, p.y]));
+}
+
 // ── DRAW ──
 let _drawing = false, _drawStroke = null, _drawPts = [];
+let _drawAnchor = null;          // where a shape drag started
 
 function toggleDrawTool() {
   if (activeTool === 'draw') { deactivateTool(); return; }
@@ -32545,11 +32704,12 @@ function _onDrawTouchStart(e) {
   }
   const latlng = map.containerPointToLatLng(containerPt);
   _drawing = true; _drawPts = [latlng];
+  _drawAnchor = _dtbShape === 'free' ? null : latlng;
   _drawStroke = L.polyline(_drawPts, _getDrawStyle()).addTo(map);
   _allToolLayers.push(_drawStroke);
   _dtbRedoStack.length = 0; // new stroke clears redo history
   document.getElementById('dtb-redo-btn')?.classList.remove('active');
-  _dtbSetStatus('Drawing…');
+  _dtbSetStatus(_dtbShape === 'free' ? 'Drawing…' : 'Drawing a ' + _dtbShape + '…');
   map.getContainer().addEventListener('touchmove',  _onDrawTouchMove, { passive: false });
   map.getContainer().addEventListener('touchend',   _onDrawTouchEnd,  { passive: false });
 }
@@ -32564,7 +32724,11 @@ function _onDrawTouchMove(e) {
   }
   if (!_drawing || !_drawStroke) return;
   const latlng = map.containerPointToLatLng(containerPt);
-  _drawPts.push(latlng);
+  if (_drawAnchor) {
+    _drawPts = _dtbShapeLatLngs(_drawAnchor, latlng, _dtbShape);
+  } else {
+    _drawPts.push(latlng);
+  }
   _drawStroke.setLatLngs(_drawPts);
 }
 function _onDrawTouchEnd(e) {
@@ -32574,7 +32738,7 @@ function _onDrawTouchEnd(e) {
     _hideEraserCursor();
     _dtbSetStatus('Eraser mode – drag to erase strokes');
   } else {
-    _drawing = false; _drawStroke = null; _drawPts = [];
+    _drawing = false; _drawStroke = null; _drawPts = []; _drawAnchor = null;
     _dtbSetStatus('Drawing mode active');
   }
   map.getContainer().removeEventListener('touchmove', _onDrawTouchMove);
@@ -32591,11 +32755,14 @@ function _onDrawDown(e) {
     return;
   }
   _drawing = true; _drawPts = [e.latlng];
+  // A shape keeps the corner it started from; every move recomputes the whole
+  // outline from that anchor rather than appending to a trail.
+  _drawAnchor = _dtbShape === 'free' ? null : e.latlng;
   _drawStroke = L.polyline(_drawPts, _getDrawStyle()).addTo(map);
   _allToolLayers.push(_drawStroke);
   _dtbRedoStack.length = 0; // new stroke clears redo history
   document.getElementById('dtb-redo-btn')?.classList.remove('active');
-  _dtbSetStatus('Drawing…');
+  _dtbSetStatus(_dtbShape === 'free' ? 'Drawing…' : 'Drawing a ' + _dtbShape + '…');
   map.on('mousemove', _onDrawMove);
   map.on('mouseup',   _onDrawUp);
 }
@@ -32607,7 +32774,11 @@ function _onDrawMove(e) {
     return;
   }
   if (!_drawing || !_drawStroke) return;
-  _drawPts.push(e.latlng);
+  if (_drawAnchor) {
+    _drawPts = _dtbShapeLatLngs(_drawAnchor, e.latlng, _dtbShape);
+  } else {
+    _drawPts.push(e.latlng);
+  }
   _drawStroke.setLatLngs(_drawPts);
 }
 function _onDrawUp() {
@@ -32618,8 +32789,9 @@ function _onDrawUp() {
     _dtbSetStatus('Eraser mode – drag to erase strokes');
     return;
   }
-  _drawing = false; _drawStroke = null; _drawPts = [];
-  _dtbSetStatus('Drawing mode active');
+  _drawing = false; _drawStroke = null; _drawPts = []; _drawAnchor = null;
+  _dtbSetStatus(_dtbShape === 'free' ? 'Drawing mode active'
+                                     : 'Drag to draw a ' + _dtbShape);
   map.off('mousemove', _onDrawMove);
   map.off('mouseup',   _onDrawUp);
 }
@@ -35473,8 +35645,113 @@ let _polyPts = [], _polyFinal = null, _polyPreview = null, _polyMarkers = [];
 const _polyRedoStack = [];
 let   _polyEraseMode = false;
 
+// The polygon's colour, remembered between sessions.
+//
+// It was #ffcc00 in four separate places and nowhere else, which is fine
+// until you want two polygons on one map that mean different things, or one
+// that does not disappear into the reflectivity underneath it. Gold over a
+// gold-and-orange storm core is a polygon you cannot see.
+let _polyColor = '#ffcc00';
+try {
+  const c = localStorage.getItem('gwcfc_poly_color');
+  if (c && /^#[0-9a-f]{6}$/i.test(c)) _polyColor = c;
+} catch (e) {}
+let _polyPaletteOpen = false;
+
+// One place decides what a polygon looks like, so a colour change reaches the
+// shape, its vertex dots and the rubber-band preview together.
+function _polyFillStyle() {
+  return { color: _polyColor, weight: 2,
+           fillColor: _polyColor, fillOpacity: 0.15 };
+}
+function _polyVertexStyle() {
+  return { radius: 5, color: _polyColor, fillColor: _polyColor,
+           fillOpacity: 1, weight: 1.5 };
+}
+function _polyPreviewStyle() {
+  return { color: _polyColor, weight: 1.5, dashArray: '5,5', opacity: 0.55 };
+}
+
+function _polyInitPalette() {
+  const sw = document.getElementById('ptb-color-swatch');
+  if (sw) sw.style.background = _polyColor;
+  const nc = document.getElementById('ptb-native-color');
+  if (nc) nc.value = _polyColor;
+  const pal = document.getElementById('ptb-palette');
+  if (!pal || pal.dataset.built) return;
+  pal.dataset.built = '1';
+  DTB_COLORS.forEach(c => {
+    const s = document.createElement('div');
+    s.className = 'dtb-pal-swatch' + (c === _polyColor ? ' selected' : '');
+    s.style.background = c;
+    s.title = c;
+    s.dataset.color = c;
+    s.onclick = (ev) => { ev.stopPropagation(); _polyPickColor(c); };
+    s.ontouchend = (ev) => { ev.preventDefault(); ev.stopPropagation(); _polyPickColor(c); };
+    pal.appendChild(s);
+  });
+  const custom = document.createElement('div');
+  custom.className = 'dtb-pal-swatch';
+  custom.style.cssText = 'background:conic-gradient(red,orange,yellow,green,cyan,blue,violet,red);border-color:rgba(255,255,255,0.2);';
+  custom.title = 'Custom colour';
+  custom.dataset.color = '__custom__';
+  const open = (ev) => {
+    ev.stopPropagation();
+    const inp = document.getElementById('ptb-native-color');
+    if (inp) { inp.style.pointerEvents = 'auto'; inp.click(); inp.style.pointerEvents = 'none'; }
+  };
+  custom.onclick = open;
+  custom.ontouchend = (ev) => { ev.preventDefault(); open(ev); };
+  pal.appendChild(custom);
+}
+
+function _polyTogglePalette(ev) {
+  if (ev) ev.stopPropagation();
+  _polyInitPalette();
+  const pal = document.getElementById('ptb-palette');
+  if (!pal) return;
+  _polyPaletteOpen = !_polyPaletteOpen;
+  pal.classList.toggle('open', _polyPaletteOpen);
+}
+
+function _polyPickColor(c) {
+  _polyColor = c;
+  try { localStorage.setItem('gwcfc_poly_color', c); } catch (e) {}
+  const sw = document.getElementById('ptb-color-swatch');
+  if (sw) sw.style.background = c;
+  const nc = document.getElementById('ptb-native-color');
+  if (nc) nc.value = c;
+  const pal = document.getElementById('ptb-palette');
+  if (pal) {
+    pal.querySelectorAll('.dtb-pal-swatch').forEach(s =>
+      s.classList.toggle('selected', s.dataset.color === c));
+    pal.classList.remove('open');
+  }
+  _polyPaletteOpen = false;
+  // Recolour what is already on screen. Picking a colour that only applies to
+  // the NEXT polygon would read as the picker not working, since the one you
+  // are looking at is the one you were trying to change.
+  _polyRecolour();
+}
+
+// Every polygon this tool has drawn, not only the one being drawn. A finished
+// polygon is still the thing on the map that the colour is about.
+function _polyRecolour() {
+  try { if (_polyFinal) _polyFinal.setStyle(_polyFillStyle()); } catch (e) {}
+  _polyMarkers.forEach(m => { try { m.setStyle(_polyVertexStyle()); } catch (e) {} });
+  try { if (_polyPreview) _polyPreview.setStyle(_polyPreviewStyle()); } catch (e) {}
+  (_allToolLayers || []).forEach(l => {
+    try {
+      if (l instanceof L.Polygon) l.setStyle(_polyFillStyle());
+      else if (l instanceof L.CircleMarker && !(l instanceof L.Circle))
+        l.setStyle(_polyVertexStyle());
+    } catch (e) {}
+  });
+}
+
 function _polyShowToolbar(show) {
   document.getElementById('poly-toolbar')?.classList.toggle('visible', show);
+  if (show) _polyInitPalette();
 }
 
 function _polyRebuildFinal() {
@@ -35486,7 +35763,7 @@ function _polyRebuildFinal() {
     _polyFinal = null;
   }
   if (_polyPts.length >= 2) {
-    _polyFinal = L.polygon(_polyPts, { color:'#ffcc00', weight:2, fillColor:'#ffcc00', fillOpacity:0.15 }).addTo(map);
+    _polyFinal = L.polygon(_polyPts, _polyFillStyle()).addTo(map);
     _allToolLayers.push(_polyFinal); // track so filter popup + toolbar button can find it
   }
 }
@@ -35617,14 +35894,14 @@ function _onPolyClick(e) {
   document.getElementById('ptb-redo')?.classList.remove('active');
 
   _polyPts.push(e.latlng);
-  const m = L.circleMarker(e.latlng, { radius:5, color:'#ffcc00', fillColor:'#ffcc00', fillOpacity:1, weight:1.5 }).addTo(map);
+  const m = L.circleMarker(e.latlng, _polyVertexStyle()).addTo(map);
   _polyMarkers.push(m);
   _polyRebuildFinal();
 }
 function _onPolyMove(e) {
   if (activeTool !== 'polygon' || !_polyPts.length) return;
   if (_polyPreview) map.removeLayer(_polyPreview);
-  _polyPreview = L.polyline([..._polyPts, e.latlng], { color:'#ffcc00', weight:1.5, dashArray:'5,5', opacity:0.55 }).addTo(map);
+  _polyPreview = L.polyline([..._polyPts, e.latlng], _polyPreviewStyle()).addTo(map);
 }
 function _onPolyDbl(e) {
   if (activeTool !== 'polygon') return;
@@ -44282,6 +44559,26 @@ function selectProduct(p) {
     </div>
   </div>
 
+  <!-- ─── FORECASTER DESK ───
+       Moved here from the tool rail on the right of the map. That rail is for
+       things you do TO the map: draw, measure, drop a cone. Issuing an
+       official product is not one of those, and a hidden button living
+       between the pencil and the ruler was easy to miss and easy to hit by
+       accident.
+       The whole group is absent, not disabled, for anyone without the
+       forecaster role. A greyed-out row reading "issue products" is an
+       invitation to ask why, and there is nothing useful to answer someone
+       who is not a forecaster. _fdSyncButton is what reveals it. -->
+  <div class="lqm-settings-group" id="fd-settings-group" data-gated="forecaster" data-cat="general" style="display:none">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-siren></use></svg> Forecaster Desk</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Issue GWCFC outlooks, zones, alerts and cones without leaving the radar</span>
+    </div>
+    <div class="lqm-settings-row">
+      <button id="fd-settings-btn" class="lqm-settings-btn" onclick="_fdOpen()">Open the desk</button>
+    </div>
+  </div>
+
   <!-- ─── ABOUT ─── -->
 
     </div>
@@ -46184,6 +46481,10 @@ function _lqmSetBuildRail() {
   groups.forEach((g, i) => {
     const head = g.querySelector('.lqm-settings-category');
     if (!head) return;
+    // A gated section that is not currently permitted gets no tab. Skipping
+    // it here rather than hiding the tab afterwards means the rail never has
+    // to know what the gate is about, only that there is one.
+    if (g.dataset.gated && g.style.display === 'none') return;
     // The heading's own words and its own icon, kept as they are.
     const label = head.textContent.trim();
     const use = head.querySelector('use');
@@ -49373,7 +49674,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The Spaghetti Models panel now matches the other two: one flat section in the Run Models shape, with the same play button and slider instead of a bare range control tucked inside a folding card. The guidance and the clock are one row, so the play button can no longer be folded away from the lines it plays. The Mean track button in AI Cyclones is fixed: it was refusing to draw on any run whose feed did not name the storm, which is most of them, and answering that the tracks were off while they were plainly on. Ensemble stats was broken the same way and is fixed with it.';
+const APP_LATEST_UPDATE = 'The draw tool can make shapes now: line, arrow, rectangle, circle, ellipse, triangle, diamond and star, dragged out from one corner to the other, with freehand still the default. The polygon tool got a colour picker, so two polygons can mean two different things and one over a gold storm core is no longer invisible; changing the colour recolours the polygon you are looking at, not just the next one. The Forecaster Desk moved out of the tool rail beside the map and into Settings, under its own heading, still invisible to anyone without the forecaster role.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -57000,11 +57301,26 @@ async function _fdLoadProfile(force) {
 // disabled control that says "issue products" is an invitation to ask why,
 // and there is nothing useful to answer someone who is not a forecaster.
 async function _fdSyncButton() {
-  const b = document.getElementById('tool-forecaster');
-  if (!b) return;
+  const g = document.getElementById('fd-settings-group');
+  if (!g) return;
   let may = false;
   try { may = _fdIsForecaster(await _fdLoadProfile()); } catch (e) {}
-  b.style.display = may ? '' : 'none';
+  // The whole group, heading and all. Revealing only the button would leave a
+  // Forecaster Desk heading over an empty space for everyone else, which
+  // announces the feature to exactly the people who cannot use it.
+  const was = g.style.display;
+  g.style.display = may ? '' : 'none';
+  // The category rail is built once, on the first time Settings is opened,
+  // and signing in as a forecaster happens long after that. Without this the
+  // section would exist with no tab to reach it.
+  if (was !== g.style.display) {
+    const rail = document.getElementById('lqm-set-rail');
+    if (rail && rail.dataset.built) {
+      delete rail.dataset.built;
+      try { _lqmSetBuildRail(); } catch (e) {}
+      try { if (_lqmSetCat) lqmSettingsCat(_lqmSetCat); } catch (e) {}
+    }
+  }
 }
 
 // Called from _onSignedIn: a different account has different rights, so the

@@ -330,16 +330,25 @@ console.log('\n7. the Settings rail');
     // A tab that reveals nothing reads as something being broken.
     const everyTabHasContent = tabs.every(t =>
       document.querySelector(`#lqm-set-content [data-cat="${t}"]`));
+    // A gated card is deliberately unreachable until its gate opens: the
+    // Forecaster Desk has no tab for anyone who is not a forecaster, because
+    // a tab reading "Forecaster Desk" announces the feature to exactly the
+    // people who cannot use it. Everything ungated must still have a way in.
     const everyCardHasTab = Array.from(
       document.querySelectorAll('#lqm-set-content [data-cat]'))
+      .filter(g => !(g.dataset.gated && g.style.display === 'none'))
       .every(g => tabs.includes(g.dataset.cat));
+    const gatedHidden = Array.from(
+      document.querySelectorAll('#lqm-set-content [data-gated]'))
+      .filter(g => g.style.display === 'none')
+      .every(g => !tabs.includes(g.dataset.cat));
     lqmSettingsCat('nonsense-category');
     const afterJunk = shown();
     // Rebuilding must not duplicate the rail.
     lqmOpenSettings(); lqmOpenSettings();
     const tabsAfter = document.querySelectorAll('#lqm-set-rail .lqm-set-tab').length;
     return { tabs, onModels, litTab, litCount, onAlerts, everyTabHasContent,
-             everyCardHasTab, afterJunk, tabsAfter, labels };
+             everyCardHasTab, gatedHidden, afterJunk, tabsAfter, labels };
   });
   ok('there is a tab per section', r.tabs.length >= 14, String(r.tabs.length));
   ok('every tab id is unique, so one click lights one tab',
@@ -360,7 +369,8 @@ console.log('\n7. the Settings rail');
   ok('switching swaps the whole content',
      r.onAlerts.length === 1 && r.onAlerts[0] === 'alerts', r.onAlerts.join(','));
   ok('every tab reveals something', r.everyTabHasContent);
-  ok('and every card is reachable from some tab', r.everyCardHasTab);
+  ok('and every ungated card is reachable from some tab', r.everyCardHasTab);
+  ok('while a gated one is offered no tab at all', r.gatedHidden);
   ok('an unknown category falls back rather than showing an empty panel',
      r.afterJunk.length > 0, r.afterJunk.join(','));
   ok('opening twice does not build the rail twice',
