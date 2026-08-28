@@ -366,10 +366,21 @@ console.log('\n8. a phone gets a shorter reach than a computer, on purpose');
       return w.e - w.s + 1;
     })(),
   }));
+  // What a computer on this same machine gets, so the comparison is a real
+  // one. This used to be a hardcoded 24, which was the fixed iOS constant of
+  // the day; the reach follows the device's memory now, so the claim worth
+  // holding is that a phone gets LESS than a computer, not that it gets some
+  // particular number.
+  const desk = await page.evaluate(() => ({ l3: L3_LOOP_MAX, l2: L2_LOOP_MAX }));
   ok('the phone is recognised as one', r.ios === true, JSON.stringify(r));
   ok('it still gets a real loop, not a stub', r.sat >= 12 && r.l3 >= 12, JSON.stringify(r));
-  ok('but a smaller one than a computer gets', r.sat <= 36 && r.l2 <= 12 && r.l3 <= 24,
-     JSON.stringify(r));
+  ok('but a smaller one than a computer gets',
+     r.sat <= 36 && r.l2 <= 12 && r.l3 < desk.l3,
+     JSON.stringify({ phone: r.l3, computer: desk.l3, sat: r.sat, l2: r.l2 }));
+  // And it is still a long loop by the standard of what it replaced: the old
+  // fixed cap here was 24 frames, about two hours of scans.
+  ok('and it reaches much further back than the old fixed 24 frames',
+     r.l3 > 24, String(r.l3));
   ok('and its tile pool stays tight', r.pool <= 8, String(r.pool));
   await ctx.close();
 }

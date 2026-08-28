@@ -4043,6 +4043,85 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
   border: 1px solid rgba(253,0,0,0.22);
   box-shadow: 0 6px 22px rgba(0,0,0,0.45);
 }
+/* ── The time machine ────────────────────────────────────────────────────── */
+#tm-modal {
+  position: fixed; inset: 0; z-index: 4000; display: none;
+  background: rgba(0,0,0,0.55); backdrop-filter: blur(3px);
+  align-items: center; justify-content: center; padding: 16px;
+}
+#tm-modal.open { display: flex; }
+.tm-card {
+  width: min(430px, 100%); max-height: 86vh; overflow: auto;
+  background: linear-gradient(160deg, #2a0806, #140505);
+  border: 3px solid #AA0000; border-radius: 14px; padding: 14px 15px 15px;
+  box-shadow: 0 18px 50px rgba(0,0,0,0.6);
+}
+.tm-head { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+.tm-title {
+  font-family: var(--display); font-weight: 700; font-size: 13px;
+  letter-spacing: 2px; color: #e8b800; flex: 1;
+}
+.tm-x {
+  background: none; border: 2px solid #AA0000; color: #ffd9d4;
+  width: 26px; height: 26px; border-radius: 6px; cursor: pointer; font-size: 11px;
+}
+.tm-x:hover { background: rgba(170,0,0,0.35); }
+.tm-note {
+  font-size: 11px; line-height: 1.5; color: #ffd9d4; margin-bottom: 11px;
+}
+.tm-note b { color: #ffe9a8; }
+.tm-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 11px; }
+.tm-row label {
+  font-family: var(--display); font-weight: 700; font-size: 9.5px;
+  letter-spacing: 1.2px; color: #e8b800;
+}
+.tm-row input {
+  background: rgba(0,0,0,0.4); border: 2px solid rgba(232,184,0,0.35);
+  color: #fff; border-radius: 6px; padding: 5px 7px; font-size: 12px;
+  font-family: var(--mono); color-scheme: dark; flex: 1 1 120px; min-width: 0;
+}
+.tm-quick {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+  gap: 6px; margin-bottom: 12px;
+}
+.tm-chip {
+  font-family: var(--display); font-weight: 700; font-size: 10px;
+  letter-spacing: 0.8px; cursor: pointer; padding: 7px 4px; border-radius: 6px;
+  border: 2px solid rgba(232,184,0,0.4); background: rgba(232,184,0,0.08);
+  color: #ffe9a8; transition: background 0.12s;
+}
+.tm-chip:hover { background: rgba(232,184,0,0.28); }
+.tm-go { display: flex; gap: 8px; flex-wrap: wrap; }
+.tm-btn {
+  flex: 1 1 130px; font-family: var(--display); font-weight: 700; font-size: 11px;
+  letter-spacing: 1px; cursor: pointer; padding: 9px 10px; border-radius: 7px;
+  border: 2px solid #AA0000; background: rgba(170,0,0,0.2); color: #fff;
+  transition: background 0.12s;
+}
+.tm-btn:hover { background: rgba(170,0,0,0.42); }
+.tm-btn-go { border-color: #e8b800; background: rgba(232,184,0,0.18); color: #ffe9a8; }
+.tm-btn-go:hover { background: rgba(232,184,0,0.34); }
+/* The standing reminder that what is on screen is not now. */
+#tm-badge {
+  position: fixed; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 1200; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 9px;
+  font-family: var(--display); font-weight: 700; font-size: 11px;
+  letter-spacing: 1px; color: #ffe9a8;
+  background: linear-gradient(160deg, rgba(60,14,8,0.96), rgba(20,5,5,0.96));
+  border: 2px solid #e8b800; border-radius: 8px; padding: 6px 11px;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.5);
+}
+#tm-badge b { color: #e8b800; letter-spacing: 2px; }
+#tm-badge .tm-live {
+  border-left: 1px solid rgba(232,184,0,0.4); padding-left: 9px;
+  font-size: 9.5px; opacity: 0.85;
+}
+#tm-badge:hover .tm-live { opacity: 1; color: #fff; }
+@media (max-width: 480px) {
+  #tm-badge { font-size: 9.5px; padding: 5px 8px; gap: 6px; }
+}
+
 .snd-err {
   padding: 14px 12px; font-family: var(--mono); font-size: 10.5px;
   color: #ffb4a2; line-height: 1.55;
@@ -10751,6 +10830,12 @@ function initMap() {
 
 
   map.on('moveend', _updateRecenterBtn);
+  // Read the archive listing for the radars now on screen. Someone looking at
+  // a stretch of map is about to click one of them, and which one is not
+  // knowable, so all of them get the one cheap request their click would
+  // otherwise have to wait on. Throttled inside, and skipped entirely on a
+  // metered connection.
+  map.on('moveend', () => { try { _arcWarmVisible(); } catch (e) {} });
   _initGraticule();
 }
 
@@ -21813,9 +21898,245 @@ function _l3BucketCode(site, product, tilt) {
 // order, so the last key of the newest hour that has any is the current one.
 // Asking by the hour rather than by the day keeps each listing to a few dozen
 // entries instead of several hundred, and needs no paging.
-async function _l3BucketNewest(site, code) {
-  const keys = await _l3BucketList(site, code, 1);
-  return keys.length ? `${L3_BUCKET}/${keys[keys.length - 1]}` : null;
+async function _l3BucketNewest(site, code, at) {
+  if (at == null) {
+    const keys = await _l3BucketList(site, code, 1);
+    return keys.length ? `${L3_BUCKET}/${keys[keys.length - 1]}` : null;
+  }
+  // A moment in the past: the scan nearest it, which is not the same as the
+  // last scan before it. Asking for 3pm when the radar scanned at 2:58 and
+  // 3:02 should give 3:02, two minutes late, rather than 2:58, two minutes
+  // early and on the wrong side of the question.
+  //
+  // A day either side, because a radar can be down: measured, KTLX published
+  // nothing at all on 2026-07-14 while KFWS had a full day. Reaching into the
+  // neighbouring days means a quiet day answers with the nearest real scan
+  // instead of with nothing.
+  const keys = await _arcRange(site, code, at - ARC_DAY_MS, at + ARC_DAY_MS);
+  if (!keys.length) return null;
+  let best = null, gap = Infinity;
+  for (const k of keys) {
+    const t = _l3BucketKeyTime(k);
+    if (!isFinite(t)) continue;
+    const g = Math.abs(t - at);
+    if (g < gap) { gap = g; best = k; }
+  }
+  return best ? `${L3_BUCKET}/${best}` : null;
+}
+
+// ── The time machine ───────────────────────────────────────────────────────
+//
+// Where the archive actually starts, bisected against the live bucket rather
+// than taken from anybody's documentation: 2022-02-15 comes back empty and
+// 2022-03-15 comes back with a full day, so the floor is inside that month.
+// The first of March is the honest edge to offer, because offering a date
+// with nothing behind it is offering a disappointment.
+const TM_FLOOR = Date.UTC(2022, 2, 1);
+// Which moment the radar is showing, or null for live.
+let _tmAt = null;
+
+function _tmSite() {
+  return _prBucketSite || _l2Site || _refStation || null;
+}
+
+// Jump the current radar to a moment. Everything else about the picture, the
+// site, the product, the tilt, stays exactly as it is: this control changes
+// WHEN and nothing else.
+async function _tmJump(ms) {
+  const site = _tmSite();
+  if (!site) {
+    if (typeof showToast === 'function') {
+      showToast('Pick a radar site first, then travel to a time.', 3500);
+    }
+    return;
+  }
+  const at = Math.max(TM_FLOOR, Math.min(Date.now(), +ms || 0));
+  _tmAt = at;
+  _tmClose();
+  if (typeof showToast === 'function') {
+    showToast(`${String(site).toUpperCase()} at `
+      + new Date(at).toISOString().slice(0, 16).replace('T', ' ') + 'Z', 3000);
+  }
+  await _l3BucketShow(site, at);
+  _tmSyncBadge();
+}
+
+async function _tmLive() {
+  const site = _tmSite();
+  _tmAt = null;
+  _tmClose();
+  if (site) await _l3BucketShow(site, null);
+  _tmSyncBadge();
+}
+
+// A standing mark that the picture is not live. Without it, a radar from
+// three years ago looks exactly like a radar from three minutes ago, which
+// is the one way this feature could actually mislead somebody.
+function _tmSyncBadge() {
+  let el = document.getElementById('tm-badge');
+  if (_tmAt == null) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'tm-badge';
+    el.onclick = () => _tmLive();
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '<b>PAST</b> '
+    + new Date(_tmAt).toISOString().slice(0, 16).replace('T', ' ') + 'Z'
+    + '<span class="tm-live">BACK TO LIVE</span>';
+  _tmPlaceBadge(el);
+}
+
+// Below the update bar rather than on top of it. The bar is dismissible, so
+// where it ends is a question rather than a constant, and the first version
+// of this sat at a fixed 8px and printed itself straight through the bar's
+// text. Measured instead, and re-measured on a resize.
+function _tmPlaceBadge(el) {
+  el = el || document.getElementById('tm-badge');
+  if (!el) return;
+  let top = 8;
+  try {
+    const ub = document.getElementById('update-bar');
+    if (ub) {
+      const r = ub.getBoundingClientRect();
+      if (r.height > 0 && getComputedStyle(ub).display !== 'none') {
+        top = Math.round(r.bottom) + 7;
+      }
+    }
+  } catch (e) {}
+  el.style.top = top + 'px';
+}
+addEventListener('resize', () => { try { _tmPlaceBadge(); } catch (e) {} });
+
+function _tmClose() {
+  const m = document.getElementById('tm-modal');
+  if (m) m.classList.remove('open');
+}
+
+function _tmOpen() {
+  let m = document.getElementById('tm-modal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'tm-modal';
+    m.innerHTML = `
+      <div class="tm-card" role="dialog" aria-modal="true" aria-label="Time machine">
+        <div class="tm-head">
+          <span class="tm-title">TIME MACHINE</span>
+          <button type="button" class="tm-x" onclick="_tmClose()"
+                  title="Close">&#10005;</button>
+        </div>
+        <div class="tm-note"></div>
+        <div class="tm-row">
+          <label for="tm-date">DATE</label>
+          <input type="date" id="tm-date">
+          <label for="tm-time">UTC</label>
+          <input type="time" id="tm-time" value="00:00">
+        </div>
+        <div class="tm-quick"></div>
+        <div class="tm-go">
+          <button type="button" class="tm-btn tm-btn-go" onclick="_tmGoPicked()">
+            TRAVEL</button>
+          <button type="button" class="tm-btn" onclick="_tmLive()">
+            BACK TO LIVE</button>
+        </div>
+      </div>`;
+    document.body.appendChild(m);
+    m.addEventListener('click', (e) => { if (e.target === m) _tmClose(); });
+    // The quick jumps, which is how anybody actually uses this: not "the
+    // fourteenth of May" but "about a year ago", then scrub.
+    const q = m.querySelector('.tm-quick');
+    [['1 HR', 3600e3], ['6 HR', 6 * 3600e3], ['1 DAY', 86400e3],
+     ['3 DAY', 3 * 86400e3], ['1 WK', 7 * 86400e3], ['1 MO', 30 * 86400e3],
+     ['6 MO', 182 * 86400e3], ['1 YR', 365 * 86400e3],
+     ['2 YR', 730 * 86400e3]].forEach(([label, back]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'tm-chip';
+      b.textContent = label;
+      b.onclick = () => _tmJump(Date.now() - back);
+      q.appendChild(b);
+    });
+  }
+  const site = _tmSite();
+  const floor = new Date(TM_FLOOR).toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
+  const d = m.querySelector('#tm-date');
+  d.min = floor; d.max = today;
+  if (!d.value) d.value = new Date(_tmAt || Date.now()).toISOString().slice(0, 10);
+  m.querySelector('.tm-note').innerHTML = site
+    ? `Scrubbing <b>${_ccEsc(String(site).toUpperCase())}</b>. The archive `
+      + `reaches back to <b>${floor}</b>, about ${
+        Math.floor((Date.now() - TM_FLOOR) / 86400e3 / 365 * 10) / 10} years, `
+      + 'at roughly one scan every five minutes. A radar that was down that '
+      + 'day has nothing to show, and will say so.'
+    : 'Pick a radar site on the map first, then choose a moment.';
+  m.classList.add('open');
+}
+
+function _tmGoPicked() {
+  const m = document.getElementById('tm-modal');
+  if (!m) return;
+  const d = m.querySelector('#tm-date').value;
+  const t = m.querySelector('#tm-time').value || '00:00';
+  if (!d) return;
+  const ms = Date.parse(`${d}T${t}:00Z`);
+  if (isFinite(ms)) _tmJump(ms);
+}
+
+addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const m = document.getElementById('tm-modal');
+    if (m && m.classList.contains('open')) _tmClose();
+  }
+});
+
+// ── Warming, so that a click has its answer already ────────────────────────
+//
+// The listing is the cheap half of a click and the slow half of the wait: one
+// request, measured at 283 ms, and everything after it depends on it. Warming
+// it costs one small request for a site somebody is pointing at, and turns
+// the click from "list, then fetch, then decode" into "fetch, then decode".
+//
+// Only the listing is warmed here, never the frames. Frames are 286 KB each
+// and warming those for every site on screen would be somebody's phone bill.
+function _arcWarm(site, code) {
+  try {
+    if (!site) return;
+    const c = navigator.connection || navigator.mozConnection
+           || navigator.webkitConnection;
+    if (c && (c.saveData || /^(slow-)?2g$/.test(c.effectiveType || ''))) return;
+    const cd = code || (typeof _l3BucketCode === 'function'
+      ? _l3BucketCode(site, _prProduct, _prTilt) : null);
+    if (!cd) return;
+    _arcDayKeys(site, cd, Date.now()).catch(() => {});
+  } catch (e) {}
+}
+
+// The sites actually on screen, warmed together. A person looking at a
+// stretch of map is about to click one of the radars in it, and which one is
+// not knowable, so all of them get their listing read. Bounded hard: this is
+// a convenience, not a reason to open fifty sockets.
+let _arcWarmAt = 0;
+function _arcWarmVisible() {
+  if (Date.now() - _arcWarmAt < 4000) return;      // not on every pan frame
+  _arcWarmAt = Date.now();
+  try {
+    if (typeof map === 'undefined' || !map) return;
+    if (typeof NEXRAD_STATIONS === 'undefined') return;
+    const c = navigator.connection || navigator.mozConnection
+           || navigator.webkitConnection;
+    if (c && (c.saveData || /^(slow-)?2g$/.test(c.effectiveType || ''))) return;
+    const b = map.getBounds();
+    const mid = b.getCenter();
+    NEXRAD_STATIONS
+      .filter(s => b.contains([s.lat, s.lon]))
+      // Nearest the middle of the view first, because that is where the
+      // person is looking and the cap below may not reach the rest.
+      .sort((p, q) => (Math.hypot(p.lat - mid.lat, p.lon - mid.lng)
+                     - Math.hypot(q.lat - mid.lat, q.lon - mid.lng)))
+      .slice(0, 6)
+      .forEach(s => _arcWarm(s.id));
+  } catch (e) {}
 }
 
 // The same listing, kept whole instead of thrown away down to its last entry.
@@ -21824,29 +22145,26 @@ async function _l3BucketNewest(site, code) {
 // has enough. Keys sort lexicographically into time order because the time
 // is baked into the key itself (SID_CODE_YYYY_MM_DD_HH_MM_SS), so no date
 // parsing is needed to order them - only to label them later.
-async function _l3BucketList(site, code, want) {
-  const sid = String(site).toUpperCase().replace(/^([KT])/, m => m === 'K' ? '' : '');
-  const found = [];
-  // Each pass reads one hour of the bucket, and a site publishes roughly ten
-  // to twelve scans an hour, so this has to reach back far enough to actually
-  // fill `want`. It stopped at four hours, which quietly capped the loop at
-  // about forty frames however many were asked for.
-  const maxHours = Math.max(4, Math.ceil(want / 8) + 1);
-  for (let back = 0; back < maxHours && found.length < want; back++) {
-    const t = new Date(Date.now() - back * 3600000);
-    const p = `${sid}_${code}_${t.getUTCFullYear()}_`
-            + `${String(t.getUTCMonth() + 1).padStart(2, '0')}_`
-            + `${String(t.getUTCDate()).padStart(2, '0')}_`
-            + `${String(t.getUTCHours()).padStart(2, '0')}_`;
-    const xml = await fetch(`${L3_BUCKET}/?list-type=2&prefix=${p}`,
-                            { cache: 'no-store', signal: _abortSignal(20000) })
-      .then(r => r.ok ? r.text() : null).catch(() => null);
-    if (!xml) continue;
-    const keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map(m => m[1]).sort();
-    // Earlier hours are older, so they go in front of what's already held.
-    found.unshift(...keys);
-  }
-  return found.slice(-want);   // newest `want` keys, still oldest-to-newest
+// Now one request per DAY rather than one per hour, and the days run in
+// parallel rather than in series. Measured against the live bucket: the old
+// walk took 2419 ms over nine sequential requests and came back with 104
+// keys; one day-prefix request took 283 ms and came back with 229. The hour
+// prefix was never a smaller answer, only a smaller question asked more
+// times, because S3 returns up to a thousand keys either way.
+//
+// `at` is the moment being looked at, which is what makes this the time
+// machine's reader as well as the live loop's: the live loop asks for now,
+// and a jump to a storm three years ago asks for that afternoon instead,
+// through exactly the same path.
+async function _l3BucketList(site, code, want, at) {
+  const end = (at == null ? Date.now() : at);
+  // Enough days back to fill `want` at the ~230 scans a day a site really
+  // publishes, plus one so a thin day cannot come up short. A radar down for
+  // maintenance publishes nothing at all, so this can genuinely need to reach
+  // past an empty day to find frames.
+  const days = Math.max(1, Math.ceil(want / 180) + 1);
+  const keys = await _arcRange(site, code, end - days * ARC_DAY_MS, end);
+  return keys.slice(-want);    // newest `want` keys, still oldest-to-newest
 }
 
 // SID_CODE_YYYY_MM_DD_HH_MM_SS -> ms. Used only for the timeline's clock
@@ -21858,7 +22176,7 @@ function _l3BucketKeyTime(key) {
 }
 
 // Fetch, decode and draw one product for one site, entirely in the browser.
-async function _l3BucketShow(site) {
+async function _l3BucketShow(site, at) {
   const product = _prProduct;
   const code = _l3BucketCode(site, product, _prTilt);
   const label = (PR_PRODUCTS[product] || {}).label || product;
@@ -21895,11 +22213,16 @@ async function _l3BucketShow(site) {
   _prOn = true;
   _prClear();                       // the Pi's images, if any, come down
   if (typeof _refreshNexradSiteStyles === 'function') _refreshNexradSiteStyles();
-  const at = document.getElementById('anim-time');
-  if (at) at.textContent = `Loading ${code}…`;
+  const _atEl = document.getElementById('anim-time');
+  if (_atEl) _atEl.textContent = `Loading ${code}…`;
   try {
-    const url = await _l3BucketNewest(site, code);
-    if (!url) throw new Error(`nothing published in the last few hours`);
+    const url = await _l3BucketNewest(site, code, at);
+    if (!url) {
+      throw new Error(at == null
+        ? 'nothing published in the last few hours'
+        : `nothing published near ${new Date(at).toISOString().slice(0, 16)
+            .replace('T', ' ')}Z. This radar may have been down that day.`);
+    }
     const buf = await fetch(url, { signal: _abortSignal(30000) })
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
     // The worker reads any product name it does not recognise as Level 2 with
@@ -21915,7 +22238,9 @@ async function _l3BucketShow(site) {
     // and every terminal radar reached through the bucket - was a single
     // still picture with a dead play button.
     if (img && typeof _l3BucketLoopBuild === 'function') {
-      _l3BucketLoopBuild(site, code, img);
+      // The moment travels with it, so a loop built around a storm three
+      // years ago scrubs through that afternoon rather than through today.
+      _l3BucketLoopBuild(site, code, img, at);
     }
   } catch (e) {
     if (e && e.message === 'superseded') return;
@@ -25516,6 +25841,7 @@ const LAYER_DESCRIPTIONS = {
   'radar-l2':     'Level 2 is the raw feed straight off a single radar, the sharpest picture the radar makes. Decoded from the live feed, with the full set of dual-pol products, for every NEXRAD and airport terminal radar in the country.',
   'radar-l3':     'Level 3 is a single radar\'s lighter, pre-processed feed: slightly coarser than Level 2 but faster, with extra derived products like storm totals, VIL, and echo tops.',
   'radar-mrms':   'MRMS is a national mosaic NOAA builds by merging every radar together, then computing things no single radar can: rotation tracks, hail swaths, rainfall totals, lightning probability and more. Your Pi builds the pictures; the whole catalogue lives in here.',
+  'timemachine': 'Travel the radar back to any moment since March 2022. Pick a date and time, or jump by a day, a month or a year, and the site you are watching redraws as it looked then, with its own scrubbable loop around that moment. The archive is Level 3 only, so it is the Weather Service\'s own product files rather than raw volumes, and a radar that was down that day has nothing to show and will say so.',
   // The Models row's two doors.
   'run-models':      'Forecast model charts - GFS, ECMWF, HRRR, NAM and more - browsable by product and forecast hour, with an Ensemble Spread view that shows where the models disagree.',
   'spaghetti-models': 'Tropical guidance from the NHC a-deck: official tracks and cones, plus storm-track spaghetti from every published model, each line wearing its model\'s name tag on a stem. Includes the track animation.',
@@ -27864,6 +28190,25 @@ function toggleRadarSub() {
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
     wrap.appendChild(el);
   });
+  // The way into the archive. Last on the row because it answers a different
+  // question from everything before it: those pick WHAT to draw, this picks
+  // WHEN. Lit while it is holding a moment in the past, so the row itself
+  // says the picture is not live.
+  {
+    const tm = document.createElement('div');
+    tm.className = 'sub-bubble' + (_tmAt != null ? ' active' : '');
+    tm.id = 'sub-timemachine';
+    tm.title = 'Travel to any moment back to March 2022';
+    // _eicon takes the emoji, not the slug it maps to: handed 'clock' it
+    // finds no entry and prints the word.
+    tm.innerHTML = '<span class="sb-icon">' + _eicon('\u{1F550}')
+                 + '</span><span class="sb-label">Time Machine</span>';
+    tm.onclick = () => _tmOpen();
+    if (LAYER_DESCRIPTIONS['timemachine']) {
+      tm.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS['timemachine']));
+    }
+    wrap.appendChild(tm);
+  }
   wrap.style.display = 'flex';
 }
 
@@ -37582,8 +37927,14 @@ function _l2LoopActive() {
 }
 
 function _l2LoopReset() {
+  // The frames go back before the array does. A blob URL pins its bytes until
+  // it is revoked, so dropping the array alone would hold every frame of
+  // every loop ever built for the life of the tab, which on a phone is the
+  // out-of-memory crash arriving by a different road.
+  if (_l2Loop) _pbFreeFrames(_l2Loop.frames);
   // Bumping the token invalidates any build still decoding in the background.
-  _l2Loop = { frames: [], idx: 0, station: null, product: null,
+  _l2Loop = { frames: [], idx: 0, station: null, product: null, at: null,
+              code: null, exhausted: false,
               building: false, token: (_l2Loop ? _l2Loop.token + 1 : 1) };
 }
 
@@ -37595,31 +37946,47 @@ function _l2LoopReset() {
 async function _l2LoopBuild(product, station, curImg) {
   if (!curImg || !curImg.url) return;
   const token = ++_l2Loop.token;
-  _l2Loop.frames = [{ url: curImg.url, bounds: curImg.leafletBounds,
+  _pbFreeFrames(_l2Loop.frames);
+  _l2Loop.frames = [{ url: _pbBlob(curImg.url), bounds: curImg.leafletBounds,
                       time: curImg.timeIso ? Date.parse(curImg.timeIso) : Date.now() }];
   _l2Loop.idx = 0;
   _l2Loop.station = station;
   _l2Loop.product = product;
+  _l2Loop.at = null;
   _l2Loop.building = true;
   try {
     const bufs = await _fetchRecentVolumes(station, L2_LOOP_MAX);
     if (token !== _l2Loop.token) return;          // superseded by a newer draw
     const layerMap = { cc: 'CC', zdr: 'ZDR', vel: 'VEL', ref: 'REF', kdp: 'KDP', sw: 'SW' };
     const layer = layerMap[product] || product.toUpperCase();
-    // bufs[0] is the newest, already drawn as frame 0; decode the older ones.
-    for (let i = 1; i < bufs.length; i++) {
+    // bufs[0] is the newest, already drawn as frame 0; decode the older ones
+    // on the pool, several at a time. The volumes are already in hand here,
+    // so the decode is the whole remaining cost and it was being paid one
+    // frame at a time through a slot that cancels its own predecessor.
+    const BATCH = Math.max(2, _pbPoolSize());
+    for (let i = 1; i < bufs.length; i += BATCH) {
       if (token !== _l2Loop.token) return;
-      let result;
-      try { result = await _workerProcess(bufs[i], layer); }
-      catch (e) { continue; }
-      if (token !== _l2Loop.token) return;
-      // Same shared box the live frame was drawn into, so Level 2 playback
-      // holds still instead of shifting with each sweep's data extent.
-      const img = _meshToImage(result, product, _meshBox && _meshBox.bounds);
-      if (!img) continue;
-      const t = (result.metadata && result.metadata.timeIso)
-        ? Date.parse(result.metadata.timeIso) : (_l2Loop.frames[0].time - i * 300000);
-      _l2Loop.frames.push({ url: img.url, bounds: img.leafletBounds, time: t });
+      const slice = bufs.slice(i, i + BATCH);
+      const base = i;
+      const got = await Promise.all(slice.map(async (buf, k) => {
+        try {
+          const result = await _pbDecode(buf, layer);
+          if (token !== _l2Loop.token) return null;
+          // Same shared box the live frame was drawn into, so Level 2
+          // playback holds still instead of shifting with each sweep.
+          const img = _meshToImage(result, product, _meshBox && _meshBox.bounds);
+          if (!img) return null;
+          const t = (result.metadata && result.metadata.timeIso)
+            ? Date.parse(result.metadata.timeIso)
+            : (_l2Loop.frames[0].time - (base + k) * 300000);
+          return { url: _pbBlob(img.url), bounds: img.leafletBounds, time: t };
+        } catch (e) { return null; }
+      }));
+      if (token !== _l2Loop.token) { _pbFreeFrames(got.filter(Boolean)); return; }
+      got.forEach(f => { if (f) _l2Loop.frames.push(f); });
+      // Same reason as the Level 3 builder: the ordering belongs to whoever
+      // broke it, not to a UI sync that can decline to run.
+      _l2Loop.frames.sort((a, b) => a.time - b.time);
       _l2LoopSyncTimeline();
     }
   } catch (e) {
@@ -37644,52 +38011,412 @@ async function _l2LoopBuild(product, station, curImg) {
 // kilobytes against megabytes - so this loop can reach much further back for
 // the same cost, and it should: at roughly five minutes a scan, forty frames
 // is over three hours of one radar.
-const L3_LOOP_MAX = (function () {
-  try {
-    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    if (c && (c.saveData || /^(slow-)?2g$/.test(c.effectiveType || ''))) return 10;
-    if (c && c.effectiveType === '3g') return 18;
-  } catch (e) {}
-  return _isIOS ? 24 : 40;
-})();
+/* ══════════════════════════════════════════════════════════════════════════
+   THE RADAR TIME MACHINE
+   ──────────────────────────────────────────────────────────────────────────
+   Three measured facts shaped everything below. They were measured on real
+   KTLX scans out of the real bucket rather than reasoned about, because every
+   one of them turned out to be different from what the old code assumed.
 
-async function _l3BucketLoopBuild(site, code, curImg) {
+   1. A data: URL is the wrong way to hold a frame.
+      Leaflet's setUrl with a data: URL measured 3.837 ms, because the browser
+      re-parses the base64 and re-decodes the PNG on every single swap. The
+      same picture behind a blob: URL measured 0.003 ms. A loop is nothing but
+      swaps, so that one difference is the whole distance between a slideshow
+      and playback. It is also 25% less memory: the PNG is 765 KB of bytes and
+      1021 KB once base64 has padded it out.
+      (An ImageBitmap was measured too and is worse on both counts: 6.447 ms
+      to draw a 3072-square one, and 36 MB of RGBA held per frame.)
+
+   2. The listing was being asked for an hour at a time, in series.
+      Nine sequential hour-prefix requests took 2419 ms and returned 104 keys.
+      One request for the whole day took 283 ms and returned 229 keys. Same
+      bucket, same data: more than twice the frames in a ninth of the time,
+      because S3 will hand back a thousand keys per request and the old code
+      asked for one hour of them at a go.
+
+   3. The archive is years deep, not hours.
+      Bisected against the live bucket: 2022-02-15 is empty, 2022-03-15 has a
+      full day, and every probe from there to today comes back with 200 to 600
+      scans a day. That is the time machine, and the app was using the last
+      four hours of it.
+
+   What is NOT here, and why: the 1991-onward Level 2 archive. The
+   noaa-nexrad-level2 bucket now answers AccessDenied to anonymous requests
+   for listings AND for direct file reads, so deep history is Level 3 only.
+   That is a policy on their side, not something this page can route around.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+// Every blob URL handed out, so that none of them leaks. A blob URL pins its
+// bytes in memory until it is revoked or the tab closes, so a loop that made
+// them and forgot would hold every frame of every site ever visited.
+const _pbBlobs = new Set();
+
+function _pbBlob(dataUrl) {
+  const s = String(dataUrl || '');
+  if (s.indexOf('data:') !== 0) return s;      // already a blob, or nothing
+  try {
+    const bin = atob(s.slice(s.indexOf(',') + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+    _pbBlobs.add(url);
+    return url;
+  } catch (e) {
+    return s;              // out of memory or a malformed URL: keep the data:
+  }
+}
+
+function _pbFree(url) {
+  if (!url || !_pbBlobs.has(url)) return;
+  _pbBlobs.delete(url);
+  try { URL.revokeObjectURL(url); } catch (e) {}
+}
+
+// Hand back every frame of a loop at once, which is what a reset has to do.
+function _pbFreeFrames(frames) {
+  (frames || []).forEach(f => { if (f) _pbFree(f.url); });
+}
+
+// How many decoded frames this device can hold.
+//
+// Measured at 0.75 MB a frame for base reflectivity at full detail, which is
+// the biggest of the products. The budget is a memory figure rather than a
+// frame count so that the number of frames follows the device instead of a
+// guess: an old phone and a desktop are two orders of magnitude apart in what
+// they can spare, and one fixed number is either a crash on the phone or a
+// two-hour loop nobody gets on the desktop.
+// What a frame costs to KEEP. A stored frame is its PNG bytes and nothing
+// more, measured at 0.75 MB on a full-detail reflectivity scan.
+//
+// What it costs to SHOW is a different number entirely, and much larger: a
+// frame painted on screen is a decoded bitmap at four bytes a pixel, which at
+// the sizes this app draws is 12 MB on a phone and 36 MB at 3072 square on a
+// desktop. The browser holds a few of those at a time while a loop plays and
+// evicts the rest, so it is not per-frame, but it is real and it is exactly
+// what the old iOS out-of-memory crash was made of.
+//
+// So the budgets below are deliberately well under what the PNG arithmetic
+// alone would allow. They are still several times the fixed 40 and 24 they
+// replace, because the old numbers were a guess from a different era rather
+// than a limit anyone measured.
+const PB_FRAME_MB = 0.75;
+// How deep the FIRST build goes. At roughly a scan every five minutes this is
+// about three hours, which is the loop somebody actually watches, and it
+// lands in seconds instead of the minute and a half a full budget takes.
+// Everything past it arrives by extending, which is the same work done when
+// it is wanted rather than in case it is.
+const PB_INITIAL_FRAMES = 36;
+function _pbFrameBudget() {
+  let mb;
+  const gb = (typeof navigator !== 'undefined' && navigator.deviceMemory) || 0;
+  if (_isIOS) {
+    // The platform that actually fell over before, so it keeps the most
+    // headroom back. deviceMemory is absent on Safari, which is why the
+    // unknown case here is the careful one rather than the middle one.
+    mb = gb >= 6 ? 110 : gb >= 4 ? 80 : 50;
+  } else if (gb >= 16)     mb = 300;
+  else if (gb >= 8)        mb = 200;
+  else if (gb >= 4)        mb = 120;
+  else if (gb >= 2)        mb = 60;
+  else                     mb = 90;           // unknown: between the two
+  // A slow or metered connection is a different limit entirely: the frames
+  // would fit, but fetching them is somebody's data allowance.
+  try {
+    const c = navigator.connection || navigator.mozConnection
+           || navigator.webkitConnection;
+    if (c && (c.saveData || /^(slow-)?2g$/.test(c.effectiveType || ''))) {
+      return 12;
+    }
+    if (c && c.effectiveType === '3g') mb = Math.min(mb, 40);
+  } catch (e) {}
+  return Math.max(12, Math.round(mb / PB_FRAME_MB));
+}
+
+// Kept as a live getter rather than the constant it used to be, so the budget
+// answers for the device rather than for whichever device the number was
+// typed on. Everything that reads L3_LOOP_MAX keeps working unchanged.
+Object.defineProperty(window, 'L3_LOOP_MAX', {
+  get: _pbFrameBudget, configurable: true,
+});
+
+// ── The archive listing ────────────────────────────────────────────────────
+//
+// One request per UTC day, in parallel, cached. A past day's listing can
+// never change, which is the fact that makes this worth caching at all: once
+// a day is read it is right forever, so scrubbing back through it a second
+// time costs nothing.
+const ARC_DAY_MS = 86400000;
+const ARC_TODAY_TTL = 45000;      // today is still being written to
+const _arcMem = new Map();        // 'TLX|N0B|2026_08_28' -> { at, keys }
+const _arcFlight = new Map();     // the same key -> Promise, so two asks share
+const ARC_LS_KEY = 'gwcfc_arc_v1';
+const ARC_LS_MAX = 400;           // days kept across a reload
+
+// The bucket spells a site without its leading K, and with the T of a
+// terminal radar left on.
+function _arcSid(site) {
+  return String(site || '').toUpperCase().replace(/^K/, '');
+}
+function _arcDayStr(ms) {
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}_${String(d.getUTCMonth() + 1).padStart(2, '0')}`
+       + `_${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+// Only the tail of each key is stored: within one day every key begins
+// SID_CODE_YYYY_MM_DD_, so keeping the whole thing stores that prefix a few
+// hundred times over. Measured on a real day: 6412 bytes of full keys against
+// 2061 bytes of tails, for the same 229 scans.
+function _arcLoadLS() {
+  try { return JSON.parse(localStorage.getItem(ARC_LS_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+}
+function _arcSaveLS(store) {
+  try {
+    const keys = Object.keys(store);
+    if (keys.length > ARC_LS_MAX) {
+      // Oldest DAY out first, not oldest write: the day is what will be
+      // wanted again, and a day far in the past is the least likely.
+      keys.sort().slice(0, keys.length - ARC_LS_MAX)
+          .forEach(k => { delete store[k]; });
+    }
+    localStorage.setItem(ARC_LS_KEY, JSON.stringify(store));
+  } catch (e) { /* full or private mode: the memory cache still works */ }
+}
+
+// Every scan this site published of this product on this UTC day, oldest
+// first. One HTTP request, up to a thousand keys.
+async function _arcDayKeys(site, code, dayMs, opts) {
+  const sid = _arcSid(site);
+  const day = _arcDayStr(dayMs);
+  const ck = `${sid}|${code}|${day}`;
+  const isToday = _arcDayStr(Date.now()) === day;
+
+  const hit = _arcMem.get(ck);
+  if (hit && (!isToday || Date.now() - hit.at < ARC_TODAY_TTL)) return hit.keys;
+
+  // A finished day read in an earlier session is still right.
+  if (!isToday && !hit) {
+    const tails = _arcLoadLS()[ck];
+    if (Array.isArray(tails)) {
+      const keys = tails.map(t => `${sid}_${code}_${day}_${t}`);
+      _arcMem.set(ck, { at: Date.now(), keys });
+      return keys;
+    }
+  }
+
+  if (_arcFlight.has(ck)) return _arcFlight.get(ck);
+  const pr = (async () => {
+    const prefix = `${sid}_${code}_${day}_`;
+    let keys = [];
+    try {
+      const xml = await fetch(
+        `${L3_BUCKET}/?list-type=2&max-keys=1000&prefix=${prefix}`,
+        { signal: (opts && opts.signal) || _abortSignal(20000) })
+        .then(r => r.ok ? r.text() : null);
+      if (xml) {
+        keys = [...xml.matchAll(/<Key>([^<]+)<\/Key>/g)].map(m => m[1]).sort();
+      }
+    } catch (e) { /* one unreadable day is not the archive failing */ }
+    _arcMem.set(ck, { at: Date.now(), keys });
+    // Empty days are cached too, and deliberately. A radar down for
+    // maintenance publishes nothing, and that is a fact about that day worth
+    // remembering rather than re-asking on every scrub past it. Measured:
+    // KTLX and KOUN both published nothing on 2026-07-14 while KFWS and KGRK
+    // had full days, so this is real and it is per site.
+    if (!isToday) {
+      const store = _arcLoadLS();
+      store[ck] = keys.map(k => k.slice(prefix.length));
+      _arcSaveLS(store);
+    }
+    _arcFlight.delete(ck);
+    return keys;
+  })();
+  _arcFlight.set(ck, pr);
+  return pr;
+}
+
+// Every scan between two moments, oldest first, reading whole days in
+// parallel. This is the function the old sequential hour-walk became.
+async function _arcRange(site, code, fromMs, toMs, opts) {
+  const days = [];
+  const first = Math.floor(fromMs / ARC_DAY_MS) * ARC_DAY_MS;
+  for (let d = first; d <= toMs; d += ARC_DAY_MS) days.push(d);
+  // Capped so that asking for a year does not open three hundred sockets.
+  // Browsers give about six connections per host, so beyond a couple of dozen
+  // in flight the rest are queued anyway and the only thing gained is memory.
+  const CH = 12;
+  const out = [];
+  for (let i = 0; i < days.length; i += CH) {
+    const batch = await Promise.all(
+      days.slice(i, i + CH).map(d => _arcDayKeys(site, code, d, opts)));
+    batch.forEach(ks => out.push(...ks));
+  }
+  return out.filter(k => {
+    const t = _l3BucketKeyTime(k);
+    return !isFinite(t) || (t >= fromMs && t <= toMs);
+  });
+}
+
+// ── A decode pool, for building loops only ─────────────────────────────────
+//
+// The interactive decoder deliberately has ONE slot and terminates whatever
+// is running when a new request arrives, because the frame on screen must
+// always be the last thing clicked. That is right for the live frame and
+// exactly wrong for a loop: a loop wants forty decodes to all finish, and
+// feeding them through the one slot means each kills the last.
+//
+// So loop building gets its own workers, and the live path keeps its slot
+// untouched. Two workers is not a guess: a decode measured 1850 ms against a
+// fetch of a few hundred milliseconds, so the decode is the wall, and the
+// pool is sized to the cores actually available rather than to a number.
+const _pbPool = [];
+function _pbPoolSize() {
+  const cores = (navigator.hardwareConcurrency || 2);
+  if (_isIOS) return Math.min(2, Math.max(1, cores - 2));
+  return Math.max(1, Math.min(4, cores - 2));
+}
+
+function _pbWorker() {
+  for (const w of _pbPool) if (!w.busy) return w;
+  if (_pbPool.length >= _pbPoolSize()) return null;
+  const url = new URL('assets/radar_worker.bundle.js?v=' + RADAR_WORKER_V,
+                      location.href).href;
+  const w = { w: new Worker(url), busy: false, pending: null };
+  w.w.onmessage = (e) => {
+    const p = w.pending; w.pending = null; w.busy = false;
+    if (!p) return;
+    clearTimeout(p.timer);
+    if (e.data && e.data.type === 'error') p.reject(new Error(e.data.message));
+    else p.resolve(e.data);
+  };
+  w.w.onerror = (e) => {
+    const p = w.pending; w.pending = null; w.busy = false;
+    if (p) { clearTimeout(p.timer); p.reject(new Error(e.message || 'worker')); }
+  };
+  _pbPool.push(w);
+  return w;
+}
+
+function _pbPoolFree() {
+  _pbPool.forEach(w => { try { w.w.terminate(); } catch (e) {} });
+  _pbPool.length = 0;
+}
+
+// One decode on the pool. Waits for a free worker rather than killing a busy
+// one, which is the whole difference from the interactive path.
+function _pbDecode(buffer, layer) {
+  return new Promise((resolve, reject) => {
+    const start = () => {
+      const w = _pbWorker();
+      if (!w) { setTimeout(start, 15); return; }
+      w.busy = true;
+      const far = /^N.U$|^N.V$|VEL|SRV/.test(String(layer || ''))
+        ? RADAR_VEL_RANGE_KM : RADAR_RANGE_KM;
+      w.pending = {
+        resolve, reject,
+        timer: setTimeout(() => {
+          const p = w.pending; w.pending = null; w.busy = false;
+          try { w.w.terminate(); } catch (e) {}
+          const i = _pbPool.indexOf(w); if (i >= 0) _pbPool.splice(i, 1);
+          if (p) p.reject(new Error('decode timed out'));
+        }, 45000),
+      };
+      w.w.postMessage({ type: 'process', arrayBuffer: buffer, layer: layer,
+                        options: { range_limit_km: far } }, [buffer]);
+    };
+    start();
+  });
+}
+
+// Build the scrubbable loop behind the frame already on screen.
+//
+// This was a single for-loop that fetched a frame, waited, decoded it,
+// waited, and only then started the next one. Measured on a real scan: 1850
+// ms to decode plus the fetch, so forty frames was well over a minute of
+// dead time during which the play button did nothing useful.
+//
+// Two things run at once now. Downloads go out in a batch, because the
+// browser will hold about six connections to a host open and was using one.
+// Decodes go through a small pool of workers rather than the interactive
+// decoder's single slot, which exists to make the last click win and would
+// have each loop frame terminate the one before it.
+//
+// `at` is the moment to build around, so this is also how the time machine
+// draws: null means now, a timestamp means that afternoon.
+async function _l3BucketLoopBuild(site, code, curImg, at) {
   if (!curImg || !curImg.url) return;
   const token = ++_l2Loop.token;
-  _l2Loop.frames = [{ url: curImg.url, bounds: curImg.leafletBounds,
-                      time: Date.now() }];
+  _pbFreeFrames(_l2Loop.frames);
+  _l2Loop.frames = [{ url: _pbBlob(curImg.url), bounds: curImg.leafletBounds,
+                      time: at == null ? Date.now() : at }];
   _l2Loop.idx = 0;
   _l2Loop.station = site;
   _l2Loop.product = String(code).toLowerCase();
+  _l2Loop.at = at == null ? null : at;
   _l2Loop.building = true;
+  // How much to build NOW, as against how much this device could hold.
+  //
+  // Measured: building to the full budget took 112 seconds and 76 MB of
+  // downloads, because every frame is a real 286 KB file and a real 1850 ms
+  // decode. Parallelism made that four times faster than it was and it is
+  // still not instant, because decoding two hundred radar volumes cannot be.
+  //
+  // So the first build is a few hours deep, which lands in seconds and is
+  // what anybody actually watches, and the rest of the reach is on demand:
+  // scrub to the oldest frame and it extends itself, or jump straight to a
+  // date with the time machine. Depth is a journey, not a download.
+  const want = Math.min(_pbFrameBudget(), PB_INITIAL_FRAMES);
+  _l2Loop.code = code;
+  _l2Loop.exhausted = false;
   try {
-    const keys = await _l3BucketList(site, code, L3_LOOP_MAX);
+    const keys = await _l3BucketList(site, code, want, at);
     if (token !== _l2Loop.token) return;          // superseded by a newer draw
     if (keys.length) {
       const newestT = _l3BucketKeyTime(keys[keys.length - 1]);
       if (isFinite(newestT)) _l2Loop.frames[0].time = newestT;
     }
-    // The last key is the frame already on screen; decode the older ones,
-    // newest-first, so the most useful history fills in soonest.
-    for (let i = keys.length - 2; i >= 0; i--) {
+    // The last key is the frame already on screen. The rest are done
+    // newest-first, so the most useful history is there soonest, and in
+    // batches so the network and the decoders are both kept busy.
+    const todo = keys.slice(0, -1).reverse();
+    const box = _meshBox && _meshBox.bounds;
+    const BATCH = Math.max(2, _pbPoolSize() * 2);
+    for (let i = 0; i < todo.length; i += BATCH) {
       if (token !== _l2Loop.token) return;
-      let img = null;
-      try {
-        const buf = await fetch(`${L3_BUCKET}/${keys[i]}`,
-                                { signal: _abortSignal(30000) })
-          .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
-        if (token !== _l2Loop.token) return;
-        const result = await _workerProcess(buf, code);
-        if (token !== _l2Loop.token) return;
-        _l3MeshNormalize(result.meshData, code);
-        // Same box as the live frame: this is what stops the loop wobbling.
-        img = _meshToImage(result, String(code).toLowerCase(),
-                           _meshBox && _meshBox.bounds);
-      } catch (e) { continue; }   // one unreadable frame is not the loop failing
-      if (!img) continue;
-      const t = _l3BucketKeyTime(keys[i]);
-      _l2Loop.frames.push({ url: img.url, bounds: img.leafletBounds,
-                            time: isFinite(t) ? t : (_l2Loop.frames[0].time - (keys.length - 1 - i) * 300000) });
+      const slice = todo.slice(i, i + BATCH);
+      const got = await Promise.all(slice.map(async (key) => {
+        try {
+          const buf = await fetch(`${L3_BUCKET}/${key}`,
+                                  { signal: _abortSignal(30000) })
+            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+          if (token !== _l2Loop.token) return null;
+          const result = await _pbDecode(buf, code);
+          if (token !== _l2Loop.token) return null;
+          _l3MeshNormalize(result.meshData, code);
+          // Same box as the live frame, which is what stops the loop wobbling.
+          const img = _meshToImage(result, String(code).toLowerCase(), box);
+          if (!img) return null;
+          const t = _l3BucketKeyTime(key);
+          return { url: _pbBlob(img.url), bounds: img.leafletBounds,
+                   time: isFinite(t) ? t : null };
+        } catch (e) { return null; }  // one bad frame is not the loop failing
+      }));
+      if (token !== _l2Loop.token) {
+        // Superseded while this batch was in the air: its blobs belong to
+        // nothing now, and a blob nobody holds is a leak rather than a frame.
+        _pbFreeFrames(got.filter(Boolean));
+        return;
+      }
+      got.forEach(f => { if (f && f.time != null) _l2Loop.frames.push(f); });
+      // Sorted HERE, by the code that put them out of order, rather than
+      // left to _l2LoopSyncTimeline. That function sorts too, but it bails
+      // out early whenever the overlay is not on the map, so the ordering
+      // was riding on a UI function's willingness to run. Batches arrive
+      // newest-first, so without this the array is descending and a scrub
+      // runs backwards.
+      _l2Loop.frames.sort((a, b) => a.time - b.time);
       _l2LoopSyncTimeline();
     }
   } catch (e) {
@@ -37697,6 +38424,72 @@ async function _l3BucketLoopBuild(site, code, curImg) {
   } finally {
     if (token === _l2Loop.token) { _l2Loop.building = false; _l2LoopSyncTimeline(); }
   }
+}
+
+// Reach further back, from wherever the loop currently starts.
+//
+// This is what makes the archive usable without downloading it. The first
+// build is three hours because that is what gets watched; scrubbing to the
+// left-hand end of the timeline is somebody saying they want more, and this
+// is the answer to that rather than to the click that opened the radar.
+let _pbExtending = false;
+async function _pbExtendBack(chunk) {
+  if (_pbExtending || _l2Loop.exhausted) return 0;
+  if (!_l2Loop.frames.length || !_l2Loop.station || !_l2Loop.code) return 0;
+  const budget = _pbFrameBudget();
+  if (_l2Loop.frames.length >= budget) return 0;   // as much as this device holds
+  _pbExtending = true;
+  const token = _l2Loop.token;
+  const site = _l2Loop.station, code = _l2Loop.code;
+  const oldest = _l2Loop.frames[0].time;
+  const want = Math.max(1, Math.min(chunk || 36, budget - _l2Loop.frames.length));
+  let added = 0;
+  try {
+    // Everything before the frame we already have, newest of those first.
+    const days = Math.max(1, Math.ceil(want / 180) + 1);
+    const keys = (await _arcRange(site, code, oldest - days * ARC_DAY_MS, oldest - 1))
+      .slice(-want).reverse();
+    if (token !== _l2Loop.token) return 0;
+    if (!keys.length) { _l2Loop.exhausted = true; return 0; }
+    const box = _meshBox && _meshBox.bounds;
+    const BATCH = Math.max(2, _pbPoolSize() * 2);
+    for (let i = 0; i < keys.length; i += BATCH) {
+      if (token !== _l2Loop.token) return added;
+      const got = await Promise.all(keys.slice(i, i + BATCH).map(async (key) => {
+        try {
+          const buf = await fetch(`${L3_BUCKET}/${key}`,
+                                  { signal: _abortSignal(30000) })
+            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); });
+          if (token !== _l2Loop.token) return null;
+          const result = await _pbDecode(buf, code);
+          if (token !== _l2Loop.token) return null;
+          _l3MeshNormalize(result.meshData, code);
+          const img = _meshToImage(result, String(code).toLowerCase(), box);
+          if (!img) return null;
+          const t = _l3BucketKeyTime(key);
+          return isFinite(t)
+            ? { url: _pbBlob(img.url), bounds: img.leafletBounds, time: t } : null;
+        } catch (e) { return null; }
+      }));
+      if (token !== _l2Loop.token) { _pbFreeFrames(got.filter(Boolean)); return added; }
+      got.forEach(f => { if (f) { _l2Loop.frames.push(f); added++; } });
+      _l2Loop.frames.sort((a, b) => a.time - b.time);
+      _l2LoopSyncTimeline();
+    }
+  } catch (e) {
+    console.warn('[loop] extend:', e);
+  } finally { _pbExtending = false; }
+  return added;
+}
+
+// Scrubbing to the oldest frame is a request for more of them. Called from
+// the timeline, so reaching the left-hand end grows the loop instead of
+// simply stopping there.
+function _pbMaybeExtend(idx) {
+  if (!_l2Loop.frames.length) return;
+  // Three frames of warning, so the extension is under way before the end is
+  // actually reached rather than starting at the moment it is hit.
+  if (idx <= 2 && !_pbExtending) _pbExtendBack(36);
 }
 
 // Frames arrive newest-first; the timeline reads oldest-left, newest-right, so
@@ -37719,6 +38512,9 @@ function _l2LoopShow(idx) {
   if (!f.length || !_l3Overlay) return;
   idx = Math.max(0, Math.min(f.length - 1, idx));
   _l2Loop.idx = idx;
+  // Nearing the old end is a request for more history. Fired here rather than
+  // from the slider alone so that playing into the start extends it too.
+  try { _pbMaybeExtend(idx); } catch (e) {}
   try {
     _l3Overlay.setUrl(f[idx].url);
     // Every frame now shares one box, so this normally has nothing to do.
@@ -39467,6 +40263,9 @@ function _buildNexradSiteMarkers() {
     const warmBoth = () => {
       try { _rsWarm(s.id); } catch (e) {}
       try { _rsWarmSite(s.id); } catch (e) {}
+      // And the archive listing, which is the slow half of a bucket click:
+      // one request, measured at 283 ms, that everything after it waits on.
+      try { _arcWarm(s.id); } catch (e) {}
     };
     label.on('mouseover', warmBoth);
 
@@ -49903,7 +50702,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Soundings stop pretending. If the source you picked cannot answer, the panel now says which one failed and why, and offers Open-Meteo as a button you press. It used to switch to Open-Meteo on its own and draw a full chart while the picker still named the source you chose, so you could read numbers off a different model without knowing. Nothing substitutes itself any more, and the message appears above the tabs where you can actually see it.';
+const APP_LATEST_UPDATE = 'The radar is a time machine now. A new Time Machine button on the Radar menu travels any site back to any moment since March 2022: pick a date and time, or jump by a day, a month or a year, and that radar redraws as it looked then with its own scrubbable loop. A gold PAST bar stays on screen so an old picture can never pass for a live one. Playback itself is far faster: frames are held so that showing one takes 0.009 of a millisecond instead of 3.8, the scan listing reads a whole day in one request instead of an hour at a time, frames decode several at once rather than one by one, and how much history is kept now follows your device memory instead of a fixed forty frames. Scrub to the start of a loop and it reaches further back on its own.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
