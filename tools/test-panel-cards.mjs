@@ -134,45 +134,56 @@ console.log('\n1. the panel is four cards, not one long scroll');
   ok('the heads say what each card is',
      /Model Guidance/.test(s.heads[0])
      && /Track Animation/.test(s.heads[1]), s.heads.join(' | '));
-  ok('the cyclones card lives in the AI Cyclones panel now',
-     s.aiHeads.some(h => /AI Cyclones/.test(h)), s.aiHeads.join(' | '));
   const inside = await page.evaluate(() => ({
     storms: !document.querySelector('#spcard-storms')
        && !document.getElementById('trop-storm-sel'),
     spag: !!document.querySelector('#spcard-guidance #spag-btn')
        && !!document.querySelector('#spcard-guidance #spag-groups'),
-    cyc: !!document.querySelector('#ai-cyclones-panel #spcard-cyclones #cyc-lab-btn')
-       && !!document.querySelector('#ai-cyclones-panel #cyc-ens-centres-btn'),
+    // The AI Cyclones panel no longer holds a card at all. It was one, wrapping
+    // two halves split by a paragraph of prose, and it is now laid out flat
+    // like Run Models: dropdowns, a run row, a playbar, then one grid of
+    // switches. So the check is that the CONTROLS are in that panel, not that
+    // a card containing them is.
+    cyc: !!document.querySelector('#ai-cyclones-panel #cyc-layer-row #cyc-lab-btn')
+       && !!document.querySelector('#ai-cyclones-panel #cyc-layer-row #cyc-ens-centres-btn'),
+    cycNoCard: !document.querySelector('#ai-cyclones-panel .spanel-card'),
+    cycFlat: !!document.querySelector('#ai-cyclones-panel .sev-playbar-row'),
     anim: !!document.querySelector('#spcard-anim #tanim-play'),
   }));
   ok('the Active Storms card and its picker are fully gone', inside.storms);
   ok('the guidance controls live in the guidance card', inside.spag);
-  ok('DeepMind and the GEFS centres share the cyclones card, in its own panel', inside.cyc);
+  ok('DeepMind and the GEFS centres share one switch row in their own panel',
+     inside.cyc);
+  ok('and that panel holds no card, being laid out like Run Models instead',
+     inside.cycNoCard && inside.cycFlat);
   ok('the transport lives in the animation card', inside.anim);
 }
 
 console.log('\n2. cards fold, and the fold is remembered');
 {
-  await page.evaluate(() => _spCardToggle('cyclones'));
+  // Folding is checked on the guidance card. It used to be checked on the
+  // cyclones card, which no longer exists: that panel is flat now, so there is
+  // nothing there to fold.
+  await page.evaluate(() => _spCardToggle('guidance'));
   let s = await page.evaluate(() => ({
-    closed: document.getElementById('spcard-cyclones')
+    closed: document.getElementById('spcard-guidance')
       .classList.contains('closed'),
     bodyHidden: getComputedStyle(document.querySelector(
-      '#spcard-cyclones .spanel-body')).display === 'none',
+      '#spcard-guidance .spanel-body')).display === 'none',
     saved: localStorage.getItem('gwcfc_spanel_closed'),
   }));
   ok('a click folds the card', s.closed && s.bodyHidden);
-  ok('and the choice is written down', s.saved === '["cyclones"]', s.saved);
+  ok('and the choice is written down', s.saved === '["guidance"]', s.saved);
   await page.evaluate(() => {
-    document.getElementById('spcard-cyclones').classList.remove('closed');
+    document.getElementById('spcard-guidance').classList.remove('closed');
     _spCardRestore();
   });
   ok('restore reapplies it, so reopening the panel keeps the fold',
-     await page.evaluate(() => document.getElementById('spcard-cyclones')
+     await page.evaluate(() => document.getElementById('spcard-guidance')
        .classList.contains('closed')));
-  await page.evaluate(() => _spCardToggle('cyclones'));
+  await page.evaluate(() => _spCardToggle('guidance'));
   ok('and a second click opens it again',
-     await page.evaluate(() => !document.getElementById('spcard-cyclones')
+     await page.evaluate(() => !document.getElementById('spcard-guidance')
        .classList.contains('closed')));
 }
 

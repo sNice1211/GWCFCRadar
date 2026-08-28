@@ -131,7 +131,10 @@ console.log('\n1. the control is on the panel, next to the models it sits beside
 {
   const seen = await page.evaluate(() => ({
     btn: !!document.getElementById('cyc-ens-centres-btn'),
-    head: (document.getElementById('cyc-ens-head') || {}).textContent || '',
+    // The panel is one merged section now, so there is no GEFS sub-head to
+    // read. The button itself is what names the ensemble, which is where a
+    // person looks anyway.
+    label: (document.getElementById('cyc-ens-centres-btn') || {}).textContent || '',
     status: !!document.getElementById('cyc-ens-status'),
     // The DeepMind controls are still where they were. This layer is an
     // addition to that panel, not a replacement for it.
@@ -141,7 +144,7 @@ console.log('\n1. the control is on the panel, next to the models it sits beside
   ok('there is a GEFS centres button', seen.btn);
   ok('it is inside the AI Cyclones panel, beside the DeepMind tracks',
      seen.inPanel);
-  ok('the section says which ensemble this is', /GEFS/.test(seen.head), seen.head);
+  ok('the button says which ensemble this is', /GEFS/.test(seen.label), seen.label);
   ok('there is a status line for it', seen.status);
   ok('and the DeepMind tracks button is untouched', seen.lab);
 }
