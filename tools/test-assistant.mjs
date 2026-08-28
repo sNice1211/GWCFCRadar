@@ -87,16 +87,21 @@ ok('no uncaught errors while starting', errors.length === 0, errors[0]);
     title: document.title,
     rain: !!document.getElementById('rain'),
     glass: !!document.getElementById('glass'),
-    core: document.querySelectorAll('#core .ring').length,
-    pupil: !!document.getElementById('pupil'),
+    // The logo is IMPORTED, not redrawn. A second version of a mark that
+    // already exists is two logos to keep in step, and one of them goes
+    // wrong eventually.
+    logo: (document.querySelector('#core img') || {}).getAttribute
+        ? document.querySelector('#core img').getAttribute('src') : null,
+    drawn: document.querySelectorAll('#core svg, #core .ring').length,
     input: !!document.getElementById('q'),
     send: !!document.getElementById('send'),
     mic: !!document.getElementById('mic'),
   }));
   ok('it is called Asturio', r.title === 'ASTURIO', r.title);
   ok('there is falling code and a screen over it', r.rain && r.glass);
-  ok('the core is the site logo, five rings', r.core === 5, String(r.core));
-  ok('with an eye at the middle', r.pupil);
+  ok('the core is the site logo file itself',
+     r.logo === 'assets/img/asturio-btn.png', String(r.logo));
+  ok('and is not redrawn in code beside it', r.drawn === 0, String(r.drawn));
   ok('and somewhere to type, send and speak', r.input && r.send && r.mic);
 }
 
@@ -329,11 +334,57 @@ console.log('\n12. house rules');
      !/AIza[0-9A-Za-z_-]{20,}/.test(src) && !/sk-[A-Za-z0-9]{20,}/.test(src));
   ok('it uses the shared worker, which is what keeps it keyless',
      /asturio-ai\.ralphies1005\.workers\.dev/.test(src));
-  ok('and it wears the same face as the bot',
-     /assets\/img\/asturio-ai-512\.png/.test(src));
+  // The same file the radar app's own AI button uses, so the assistant looks
+  // like itself in all three places rather than in two and a half.
+  ok('and it wears the app\'s real logo file',
+     /assets\/img\/asturio-btn\.png/.test(src));
 }
 
-console.log('\n13. nothing threw along the way');
+console.log('\n13. it wears the house style');
+{
+  const src = readFileSync(PAGE, 'utf8');
+  const r = await page.evaluate(() => {
+    // A pseudo-element cannot be selected, only read off the element it hangs
+    // from, so the helper takes it as a second argument.
+    const cs = (sel, prop, pseudo) =>
+      getComputedStyle(document.querySelector(sel), pseudo || null)
+        .getPropertyValue(prop);
+    const grads = [
+      cs('#bg', 'background-image'),
+      cs('.bubble', 'background-image'),
+      cs('#send', 'background-image'),
+      cs('#q', 'background-image'),
+      cs('#core', 'background-image', '::before'),
+      cs('header', 'background-image', '::after'),
+    ];
+    return {
+      font: cs('body', 'font-family'),
+      inputFont: cs('#q', 'font-family'),
+      grads,
+      // No cyan left anywhere in the computed styles of the main furniture.
+      cyan: [...document.querySelectorAll('*')].some(el => {
+        const c = getComputedStyle(el);
+        return /0,\s*140,\s*186|79,\s*214,\s*255/.test(c.color + c.backgroundColor);
+      }),
+    };
+  });
+  ok('Comfortaa, everywhere', /Comfortaa/.test(r.font), r.font);
+  ok('including the box you type in', /Comfortaa/.test(r.inputFont), r.inputFont);
+  ok('and the font is actually loaded',
+     /fonts\.googleapis\.com\/css2\?family=Comfortaa/.test(src));
+  // "Everything is a gradient" is a claim the computed styles can settle.
+  ok('the page, panels, buttons, field, halo and rules are all gradients',
+     r.grads.every(g => /gradient/.test(g)), r.grads.map(g => g.slice(0, 22)).join(' | '));
+  ok('nothing is left painted in the old cyan', !r.cyan);
+  // The scheme is named once and reused, so two ramps cannot drift apart.
+  ok('the ramps are named once in the palette',
+     (src.match(/--g-[a-z]+:/g) || []).length >= 6,
+     String((src.match(/--g-[a-z]+:/g) || []).length));
+  ok('and the palette is red and gold',
+     /--red:\s*#aa0000/.test(src) && /--gold:\s*#e8b800/.test(src));
+}
+
+console.log('\n14. nothing threw along the way');
 ok('no uncaught errors at all', errors.length === 0, errors.join(' | '));
 
 await browser.close();
