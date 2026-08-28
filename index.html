@@ -4051,6 +4051,27 @@ body.ss-live #ss-privacy-warn { display: flex !important; }
   margin: 0 10px 10px; border-radius: 0 8px 8px 0;
 }
 .snd-err b { color: #fff; }
+/* The always-visible failure slot, above the tabs. Same look as .snd-err so
+   a failure reads the same wherever it is shown. */
+.snd-alert { margin: 10px 10px 0; }
+.snd-alert:empty { display: none; }
+.snd-alert .snd-err { margin: 0; }
+/* The offer to switch. A message that says "use Open-Meteo instead" and then
+   makes you find it in a dropdown is a message that has only done half its
+   job, so the switch is a button in the sentence. */
+.snd-fix { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 9px; }
+.snd-fix button {
+  font-family: var(--display); font-weight: 700; font-size: 10px;
+  letter-spacing: 0.5px; cursor: pointer;
+  padding: 6px 10px; border-radius: 6px;
+  border: 2px solid var(--r-red); background: rgba(253,0,0,0.12); color: #fff;
+  transition: background 0.12s;
+}
+.snd-fix button:hover { background: rgba(253,0,0,0.28); }
+.snd-fix button.snd-fix-go {
+  border-color: #e8b800; background: rgba(232,184,0,0.16); color: #ffe9a8;
+}
+.snd-fix button.snd-fix-go:hover { background: rgba(232,184,0,0.3); }
 @media (max-width: 640px) {
   #snd-panel { right: 8px; bottom: 108px; width: calc(100vw - 16px); }
   #snd-skewt { height: 200px; }
@@ -18567,6 +18588,12 @@ async function openSounding(lat, lon, opts) {
         <button class="snd-x" title="Close">&#10005;</button>
       </div>
       <div class="snd-verdict"></div>
+      <!-- Where a failure is said out loud. OUTSIDE the panes, because the
+           error used to be written only into the numbers table, which lives
+           in a pane that is hidden unless the Numbers tab is up. The panel
+           opens on the chart, so a source that could not answer produced a
+           blank chart and a message nobody could reach. -->
+      <div class="snd-alert" role="status" aria-live="polite"></div>
       <nav class="snd-tabs" role="tablist" aria-label="Sounding views">
         ${SND_TABS.filter(t => !t.hidden).map((t, i) =>
           `<button type="button" role="tab" aria-selected="${i === 0}"
@@ -19036,42 +19063,48 @@ function _sndVerdictHTML(d) {
        + `<span class="snd-verdict-text">${esc(v.why)}</span>`;
 }
 
-// One profile, from wherever the picker says, with a fallback that is quiet
-// about succeeding and loud about why it had to.
+// One profile, from the source the picker names. From THAT source or from
+// none: this function no longer substitutes another one.
 //
-// Every branch below ends at Open-Meteo rather than at an error. That is the
-// whole rule of this function: the picker offers no choice that can leave the
-// panel with nothing on it. Naming a model is a preference about where the
-// numbers should come from, not an instruction to fail when that place is
-// unreachable, and a Pi that is off is the normal case rather than the
-// exceptional one.
+// It used to end every branch at Open-Meteo, on the reasoning that a panel
+// showing something beats a panel showing an error. That reasoning was wrong
+// in the way that matters. The picker went on reading "RAP analysis (Pi)"
+// while the chart underneath was Open-Meteo's global blend, the difference
+// announced only in a grey line of small print below the tables, and a
+// forecaster reading CAPE off that chart had no idea they were reading a
+// different model than the one they chose. A wrong answer that looks right
+// is worse than no answer, because no answer can be acted on.
+//
+// So a source that cannot answer now says so, by name, and offers the switch
+// to Open-Meteo as a button rather than taking it silently. The one step
+// kept is inside the Pi's own sounding source, which recovers from its
+// rendered images to its level images: same Pi, same data, and the note says
+// which of the two answered.
+//
+// The failure the panel reports instead of quietly substituting another
+// source. It carries the source that was actually asked for, so the message
+// can name it, and a flag the renderer keys the "use Open-Meteo instead"
+// offer off.
+function _sndDown(pick, why) {
+  const e = new Error(String(why || 'that source could not answer'));
+  e.sourceDown = true;
+  e.sourceId = pick && pick.id;
+  e.sourceLabel = (pick && pick.label) || 'that source';
+  return e;
+}
+
 async function _sndFetchFor(el, lat, lon, hr) {
   const pick = _sndFind(_sndSource)
     || _sndFind(_sndDefaultSource())
     || SND_SOURCES[0];
 
-  // A model, cut at a forecast hour. Falls back like everything else: naming
-  // a model is a preference about where the numbers come from, not an
-  // instruction to leave the panel empty when that model is unreachable.
+  // A model, cut at a forecast hour.
   if (pick.isModel) {
     try {
       return { prof: await _sndPiModelSounding(lat, lon, pick.model, hr || 0),
                fellBack: null };
     } catch (e) {
-      const why = String((e && e.message) || e);
-      try {
-        // Deliberately hour ZERO, not the forecast hour that was asked for.
-        // Open-Meteo's hour means hours BACK, so handing it 240 asks for ten
-        // days ago and draws it as though it were ten days ahead. Falling
-        // back to the current hour is honest; falling back to the same number
-        // is a chart that is wrong in a way nobody would spot.
-        const prof = await _sndOpenMeteo(lat, lon, 0, pick.id);
-        return { prof, fellBack: why + (hr ? ' Showing the current hour '
-          + `instead of F+${String(hr).padStart(3, '0')}.` : '') };
-      } catch (e2) {
-        throw new Error(why + ' (and Open-Meteo could not answer either: '
-          + String((e2 && e2.message) || e2) + ')');
-      }
+      throw _sndDown(pick, (e && e.message) || e);
     }
   }
 
@@ -19080,25 +19113,11 @@ async function _sndFetchFor(el, lat, lon, hr) {
              fellBack: null };
   }
 
-  // Everything else is a Pi path, and they all recover the same way, so the
-  // recovery is written once. The Pi's reason is the one worth reporting:
-  // the web source failing as well means the connection is out, which the
-  // person can already see, while the Pi's reason has something to do about
-  // it. Letting the last error win used to bury it.
-  const viaWeb = async (why) => {
-    try {
-      return { prof: await _sndOpenMeteo(lat, lon, hr || 0, pick.id),
-               fellBack: why };
-    } catch (e2) {
-      throw new Error(why + ' (and Open-Meteo could not answer either: '
-        + String((e2 && e2.message) || e2) + ')');
-    }
-  };
-
   if (pick.id === 'pisite') {
-    // The rendered images first, then the level images the same Pi builds,
-    // then the web. Two Pi paths before leaving the Pi, because a Pi that has
-    // not built a sounding run yet usually has model levels already.
+    // The rendered images first, then the level images. Both are the same
+    // Pi's own soundings, so this step stays: it is one source recovering
+    // inside itself rather than a different provider being substituted, and
+    // the note says which of the two answered.
     try {
       return { prof: await _sndPrebuilt(lat, lon, hr || 0), fellBack: null };
     } catch (e) {
@@ -19107,7 +19126,7 @@ async function _sndFetchFor(el, lat, lon, hr) {
         return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
                  fellBack: why };
       } catch (e2) {
-        return viaWeb(why + ' Then the level images: '
+        throw _sndDown(pick, why + ' Then the level images: '
           + String((e2 && e2.message) || e2));
       }
     }
@@ -19118,7 +19137,7 @@ async function _sndFetchFor(el, lat, lon, hr) {
       return { prof: await _sndProfile(lat, lon, hr == null ? 0 : hr),
                fellBack: null };
     } catch (e) {
-      return viaWeb(String((e && e.message) || e));
+      throw _sndDown(pick, (e && e.message) || e);
     }
   }
 
@@ -19127,8 +19146,43 @@ async function _sndFetchFor(el, lat, lon, hr) {
     return { prof: await _sndPiSounding(lat, lon, pick.pi, hr || 0),
              fellBack: null };
   } catch (e) {
-    return viaWeb(String((e && e.message) || e));
+    throw _sndDown(pick, (e && e.message) || e);
   }
+}
+
+// Switch the panel to Open-Meteo and draw it, from the button in the failure
+// message. The choice is saved like any other, because someone who has just
+// been told their Pi is down and chosen the web source means it.
+function _sndUseWeb() {
+  const el = document.getElementById('snd-panel');
+  if (!el) return;
+  _sndSource = 'web';
+  try { localStorage.setItem('gwcfc_snd_source', _sndSource); } catch (e) {}
+  const sel = el.querySelector('.snd-src');
+  if (sel) sel.value = _sndSource;
+  // The slider means hours BACK for Open-Meteo and forecast hours for a
+  // model, so it is rescaled before the fetch rather than after: a thumb left
+  // on F+036 would otherwise ask the web source for thirty-six hours ago.
+  _sndSyncHourScale(el);
+  _sndRefresh(el, 0);
+}
+
+// Ask the same source again. A Pi that was restarting, a run that was part
+// way through, a request that timed out on a slow link: all of those are
+// fixed by asking again a moment later, and none of them should need the
+// panel closed and reopened.
+function _sndRetry() {
+  const el = document.getElementById('snd-panel');
+  if (!el) return;
+  _sndPiDown = false;
+  const sl = el.querySelector('.snd-hour');
+  let hr = 0;
+  if (el._modelHours && el._modelHours.length) {
+    hr = el._modelHours[Math.min(+sl.value, el._modelHours.length - 1)];
+  } else if (el._piMode) {
+    hr = SND_BACK_HOURS[Math.min(+sl.value, SND_BACK_HOURS.length - 1)];
+  }
+  _sndRefresh(el, hr);
 }
 
 
@@ -19141,6 +19195,12 @@ async function _sndRefresh(el, hr) {
     // A slow fetch that finished after a newer one must not overwrite it.
     // The Pi's door takes seconds, and dragging the slider starts several.
     if (seq !== el._seq) return;
+
+    // Whatever failure was on screen belongs to the attempt that just
+    // succeeded's predecessor, so it goes now rather than sitting above a
+    // chart that contradicts it.
+    const alertOk = el.querySelector('.snd-alert');
+    if (alertOk) alertOk.innerHTML = '';
 
     let d = _sndDerive(prof);
     if (!d) throw new Error('not enough levels came back to build a sounding');
@@ -19220,12 +19280,34 @@ async function _sndRefresh(el, hr) {
     el.querySelector('.snd-quick').innerHTML = '';
     const vdx = el.querySelector('.snd-verdict');
     if (vdx) vdx.innerHTML = '';
-    el.querySelector('.snd-tables').innerHTML =
-      `<div class="snd-err">${_sndWhy(e)}</div>`;
+    const html = `<div class="snd-err">${_sndWhy(e)}</div>`;
+    // Both places. The tables copy is where it has always gone; the alert
+    // copy is the one that is actually on screen, since the tables live in a
+    // pane that is hidden unless the Numbers tab is up and the panel opens on
+    // the chart. Written only to the tables, this message reached nobody.
+    el.querySelector('.snd-tables').innerHTML = html;
+    const alert = el.querySelector('.snd-alert');
+    if (alert) alert.innerHTML = html;
+    // A stale chart under a failure message is the same lie in a quieter
+    // voice: it is the last source's numbers sitting under a headline saying
+    // this source could not answer. Cleared, so nothing can be read off it.
+    el._snd = null; el._prof = null;
+    _sndClearCanvases(el);
     note.textContent = '';
     const pimg = el.querySelector('.snd-pimg');
     if (pimg) pimg.innerHTML = '';
   }
+}
+
+// Wipe the drawn charts. Every canvas in the panel, by class rather than by
+// name, so a view added later cannot be left behind holding old numbers.
+function _sndClearCanvases(el) {
+  el.querySelectorAll('canvas').forEach(c => {
+    try {
+      const ctx = c.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+    } catch (err) {}
+  });
 }
 
 // What this sounding is, and what worked it out. Both matter: two panels that
@@ -19303,6 +19385,32 @@ function _sndNote(d, prof, fellBack) {
 // different fix and the message should name it.
 function _sndWhy(e) {
   const msg = String((e && e.message) || e || '');
+  // A source that could not answer says which source, why, and what to do.
+  // The offer to move to Open-Meteo is a button rather than an instruction to
+  // go hunting in the dropdown, and it is an OFFER: nothing switches until it
+  // is pressed, which is the whole point of this path.
+  if (e && e.sourceDown) {
+    const esc = s => (typeof _ssEsc === 'function' ? _ssEsc(String(s)) : String(s));
+    const inner = _sndWhyText(msg);
+    return `<b>${esc(e.sourceLabel)} could not answer.</b><br>${inner}`
+      + '<br><br>Nothing has been drawn from anywhere else, so what you are '
+      + 'looking at is not a different model wearing this one\'s name. '
+      + '<b>Open-Meteo</b> needs no Pi and can draw this point now, at the '
+      + 'cost of nineteen standard levels instead of the hundreds a real '
+      + 'profile carries.'
+      + '<div class="snd-fix">'
+      + '<button type="button" class="snd-fix-go" onclick="_sndUseWeb()">'
+      + 'Use Open-Meteo instead</button>'
+      + '<button type="button" onclick="_sndRetry()">Try '
+      + esc(e.sourceLabel) + ' again</button>'
+      + '</div>';
+  }
+  return _sndWhyText(msg);
+}
+
+// The explanation itself, without the source-down wrapper, so the same
+// sentences serve both a bare failure and one offering the switch.
+function _sndWhyText(msg) {
   if (/no address set for the Pi/i.test(msg)) {
     return '<b>The Pi has not been found yet.</b><br>Nothing here is coming '
          + 'from the Pi. Check it is switched on and that its address has '
@@ -19362,10 +19470,11 @@ function _sndWhy(e) {
   }
   if (/did not answer the sounding request/i.test(msg)) {
     const w = _hdWhyUnreachable();
-    return '<b>The Pi could not be reached.</b><br>' + w.text
-         + '<br>Everything else Pi-backed will be failing the same way. The '
-         + 'sounding itself can still be drawn: choose <b>Web (no Pi needed)</b> '
-         + 'in the source picker, which fetches the levels directly.';
+    // No Open-Meteo suggestion here any more: the source-down wrapper above
+    // makes that offer, with a button, and saying it twice in one message
+    // reads as two different pieces of advice.
+    return w.text + '<br>Everything else Pi-backed will be failing the '
+         + 'same way.';
   }
   if (/already working on other soundings/i.test(msg)) {
     return '<b>The Pi is busy.</b><br>It only builds two profiles at a time, '
@@ -49794,7 +49903,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Two things. Right-click or double-tap the map while a Pi model is showing and the menu now has a Model Sounding button: it cuts a vertical profile out of that exact model run, at the forecast hour on screen, at the spot you clicked. And the playback bar no longer piles its times on top of each other on phones: short loops printed a time stamp for every frame and ran them under the clock, now only as many stamps as fit are drawn.';
+const APP_LATEST_UPDATE = 'Soundings stop pretending. If the source you picked cannot answer, the panel now says which one failed and why, and offers Open-Meteo as a button you press. It used to switch to Open-Meteo on its own and draw a full chart while the picker still named the source you chose, so you could read numbers off a different model without knowing. Nothing substitutes itself any more, and the message appears above the tabs where you can actually see it.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

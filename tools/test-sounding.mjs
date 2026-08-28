@@ -614,7 +614,8 @@ console.log('\n12. SHARPpy\'s numbers replace the browser\'s, field by field');
      !r.plainHasEff && !r.plainHasShip);
 }
 
-console.log('\n13. a named model asks the Pi\'s door, and falls back rather than failing');
+console.log('\n13. a named model asks the Pi\'s door, and reports it when the '
+          + 'door is shut');
 {
   const r = await page.evaluate(async () => {
     const el = document.getElementById('snd-panel');
@@ -671,9 +672,10 @@ console.log('\n13. a named model asks the Pi\'s door, and falls back rather than
       fell: !!el.querySelector('.snd-note').querySelector('.snd-fell'),
     };
 
-    // Now the Pi's door is gone, the way an older serve.py answers. Naming a
-    // model is a preference about where the numbers come from, not an
-    // instruction to fail without them, so Open-Meteo has to answer instead.
+    // Now the Pi's door is gone, the way an older serve.py answers. This used
+    // to be served from Open-Meteo without asking, so the panel drew a full
+    // chart from a different provider while the picker still said RAP. It
+    // reports the failure by name instead, and offers the switch.
     const om = { hourly: { time: [] } };
     const now = new Date(); now.setUTCMinutes(0, 0, 0);
     for (let i = -48; i <= 48; i++) {
@@ -716,12 +718,14 @@ console.log('\n13. a named model asks the Pi\'s door, and falls back rather than
     _sndPiDown = false;
     await openSounding(35.4, -97.6);
     await new Promise(r => setTimeout(r, 350));
-    const fellBack = {
-      note: el.querySelector('.snd-note').innerHTML,
-      shown: getComputedStyle(el.querySelector('.snd-note')).display,
+    const alertEl = el.querySelector('.snd-alert');
+    const refused = {
+      alert: alertEl.textContent,
+      shown: getComputedStyle(alertEl).display,
+      onScreen: alertEl.getBoundingClientRect().height > 0,
+      offersWeb: !!alertEl.querySelector('button.snd-fix-go'),
+      picker: el.querySelector('.snd-src').value,
       tables: el.querySelector('.snd-tables').querySelectorAll('table').length,
-      err: el.querySelector('.snd-tables').textContent.slice(0, 60),
-      piMode: !!el._piMode,
       down: _sndPiDown,
     };
     // A second click must not knock on the door again now it is known shut.
@@ -731,7 +735,7 @@ console.log('\n13. a named model asks the Pi\'s door, and falls back rather than
     const noRetry = asked.length === before;
 
     window.fetch = realFetch;
-    return { good, fellBack, noRetry };
+    return { good, refused, noRetry };
   });
   ok('the named model asks the Pi\'s door', r.good.asked.length === 1,
      JSON.stringify(r.good.asked));
@@ -760,22 +764,28 @@ console.log('\n13. a named model asks the Pi\'s door, and falls back rather than
   ok('the slider now reads as time, not as a forecast hour',
      r.good.hourLbl === 'now' && r.good.piMode, r.good.hourLbl);
 
-  ok('a Pi with no such door still draws a sounding', r.fellBack.tables === 4,
-     `${r.fellBack.tables} tables, err: ${r.fellBack.err}`);
-  ok('rather than an error where the numbers should be',
-     !/cannot|could not/i.test(r.fellBack.err), r.fellBack.err);
-  ok('and it says plainly that it fell back, and why',
-     /Fell back/.test(r.fellBack.note) && /sounding service/.test(r.fellBack.note),
-     r.fellBack.note.slice(0, 160));
-  ok('and names Open-Meteo as what answered instead',
-     /Open-Meteo/i.test(r.fellBack.note), r.fellBack.note.slice(0, 200));
-  ok('the reason is visible at card size, not hidden until expanded',
-     r.fellBack.shown !== 'none', r.fellBack.shown);
-  // Open-Meteo answers in hours back through real times, the same as the
-  // door it stood in for, so the slider keeps meaning what it meant.
-  ok('and the slider still reads as time, not as a forecast hour',
-     r.fellBack.piMode);
-  ok('a door that answered 404 is remembered as shut', r.fellBack.down);
+  // A Pi with no such door: the panel says which source could not answer,
+  // rather than drawing Open-Meteo's numbers under that source's name.
+  ok('a Pi with no such door is reported, by the name of the source picked',
+     /RAP analysis \(Pi\) could not answer/.test(r.refused.alert),
+     r.refused.alert.slice(0, 120));
+  // The specific reason, translated into what to do about it, rather than a
+  // generic "that did not work": this Pi's serve.py has no such door.
+  ok('and the reason is the real one, not a generic failure',
+     /cannot fetch real profiles yet/.test(r.refused.alert)
+     && /install\.sh/.test(r.refused.alert), r.refused.alert.slice(0, 200));
+  ok('the offer to use Open-Meteo is a button, not a silent substitution',
+     r.refused.offersWeb, JSON.stringify(r.refused));
+  ok('the picker still shows what was actually asked for',
+     r.refused.picker === 'rap', r.refused.picker);
+  ok('and no tables are drawn from numbers nobody asked for',
+     r.refused.tables === 0, String(r.refused.tables));
+  // The old message went only into the tables, which live in a pane that is
+  // hidden unless the Numbers tab is up, so it reached nobody.
+  ok('the message is on screen at card size, not behind a tab',
+     r.refused.shown !== 'none' && r.refused.onScreen,
+     JSON.stringify(r.refused));
+  ok('a door that answered 404 is remembered as shut', r.refused.down);
   ok('so the next click does not wait on it all over again', r.noRetry);
 }
 
@@ -822,7 +832,8 @@ console.log('\n13b. the Pi sources are put away, not thrown out');
     await _sndRefresh(el, 0);
     await new Promise(r2 => setTimeout(r2, 300));
     const forced = { asked: asked.slice(),
-                     note: el.querySelector('.snd-note').textContent };
+                     note: el.querySelector('.snd-note').textContent,
+                     alert: el.querySelector('.snd-alert').textContent };
 
     // And the menu's own choice is still remembered.
     sel.value = 'web'; sel.dispatchEvent(new Event('change'));
@@ -847,9 +858,12 @@ console.log('\n13b. the Pi sources are put away, not thrown out');
      r.siteOnly.asked === 0, String(r.siteOnly.asked));
   ok('a named SounderPy source still asks for that one by name',
      /source=obs/.test(r.forced.asked.join(' ')), r.forced.asked.join(' '));
-  ok('and still admits in the note when it had to fall back',
-     /Fell back/.test(r.forced.note) && /no such hour yet/.test(r.forced.note),
-     r.forced.note.slice(0, 200));
+  // It used to answer this from Open-Meteo and mention it in the note. It
+  // reports the refusal by name now, carrying the Pi's own words for it.
+  ok('and says so by name when that source refuses, with the Pi\'s reason',
+     /Observed balloon \(Pi\) could not answer/.test(r.forced.alert)
+     && /no such hour yet/.test(r.forced.alert),
+     r.forced.alert.slice(0, 200));
   ok('the menu choice is still remembered for next time',
      r.saved === 'web', String(r.saved));
 }
@@ -905,6 +919,20 @@ console.log('\n13c. and there is a source that needs no Pi at all');
 
     await openSounding(35.4, -97.6);
     await new Promise(res => setTimeout(res, 400));
+    // A dead Pi with a Pi source picked. This used to fire the request below
+    // and draw its answer under the RAP label; now it must not ask at all.
+    const notAsked = {
+      url: askedUrl,
+      alert: el.querySelector('.snd-alert').textContent,
+      tables: el.querySelectorAll('table').length,
+    };
+
+    // And now when it is chosen outright, which is the only way it is
+    // reached. Everything after this checks the request itself.
+    _sndSource = 'web'; askedUrl = null;
+    localStorage.setItem('gwcfc_snd_source', 'web');
+    await openSounding(35.4, -97.6);
+    await new Promise(res => setTimeout(res, 400));
     const auto = {
       url: askedUrl,
       note: el.querySelector('.snd-note').innerHTML,
@@ -912,9 +940,8 @@ console.log('\n13c. and there is a source that needs no Pi at all');
       rows: (el.querySelector('.snd-note').textContent.match(/(\d+) standard/) || [])[1],
     };
 
-    // And when it is chosen outright.
-    _sndSource = 'web'; askedUrl = null;
-    localStorage.setItem('gwcfc_snd_source', 'web');
+    // Asked for a second time at the same point.
+    askedUrl = null;
     await openSounding(35.4, -97.6);
     await new Promise(res => setTimeout(res, 400));
     const forced = { url: askedUrl, tables: el.querySelectorAll('table').length };
@@ -922,21 +949,29 @@ console.log('\n13c. and there is a source that needs no Pi at all');
     // The profile itself, so the physics can be checked rather than the HTML.
     const prof = await _sndOpenMeteo(35.4, -97.6, 0, 'auto');
     window.fetch = realFetch;
-    return { auto, forced, prof, ids: SND_SOURCES.map(s => s.id) };
+    return { notAsked, auto, forced, prof, ids: SND_SOURCES.map(s => s.id) };
   });
 
   ok('the web source is offered in the picker', r.ids.includes('web'),
      r.ids.join(','));
-  ok('a dead Pi lands on Open-Meteo rather than on an error', !!r.auto.url,
+  // The rule this section now enforces: a dead Pi does not become a request
+  // to somebody else. Open-Meteo is a choice, not a substitution.
+  ok('a dead Pi does not reach for Open-Meteo on its own',
+     r.notAsked.url === null, String(r.notAsked.url).slice(0, 60));
+  ok('and nothing is drawn from a source that was not chosen',
+     r.notAsked.tables === 0, String(r.notAsked.tables));
+  ok('the panel says which source failed and offers the switch',
+     /could not answer/.test(r.notAsked.alert)
+     && /Open-Meteo/.test(r.notAsked.alert), r.notAsked.alert.slice(0, 120));
+  ok('choosing Open-Meteo outright does fetch it', !!r.auto.url,
      String(r.auto.url).slice(0, 60));
-  ok('and draws a real sounding rather than an error', r.auto.tables === 4,
-     String(r.auto.tables));
-  ok('saying plainly that it fell that far', /web source/.test(r.auto.note),
-     r.auto.note.slice(0, 140));
-  // No second request: `web` and the Pi paths ask Open-Meteo for the same
-  // blend at the same point, so the answer was already in hand. This is the
-  // rate limiting working, and it is worth asserting rather than tolerating.
-  ok('choosing it outright is served from the cache, without asking again',
+  ok('and draws a real sounding', r.auto.tables === 4, String(r.auto.tables));
+  ok('saying plainly that it came from the web source',
+     /without going through the Pi/.test(r.auto.note), r.auto.note.slice(0, 140));
+  // No second request for the same point: the cache is what keeps this source
+  // inside its free allowance, and it is worth asserting rather than
+  // tolerating.
+  ok('asking again for the same point is served from the cache',
      r.forced.url === null && r.forced.tables === 4,
      `${!!r.forced.url}, ${r.forced.tables}`);
   // The request has to actually ask for what the panel needs.
@@ -1682,6 +1717,166 @@ console.log('\n13h. a hanging Pi cannot hang the panel');
     });
   ok('every sounding fetch is bounded by a deadline',
      bounded.length === 0, bounded.join(', '));
+}
+
+console.log('\n13i. a source that cannot answer says so, instead of quietly '
+          + 'becoming Open-Meteo');
+{
+  // The behaviour this replaces: every branch of _sndFetchFor ended at
+  // Open-Meteo. Pick "RAP analysis (Pi)" with the Pi off and you got a full
+  // chart drawn from Open-Meteo's global blend, while the picker still read
+  // RAP and the only hint was a line of small print under a table in a pane
+  // that is hidden unless the Numbers tab is up. Reading CAPE off that chart
+  // meant reading a different model than the one chosen, with nothing on
+  // screen to say so.
+  const setup = async (mode) => page.evaluate((mode) => {
+    window.__om = 0;
+    // Counted rather than routed, so this measures the DECISION to reach for
+    // Open-Meteo and not whether a request happened to succeed.
+    _sndOpenMeteo = async (lat, lon, hr, id) => {
+      window.__om++;
+      return { via: 'openmeteo', label: 'Open-Meteo', valid: 'now', hour: 0,
+               levels: [{ p: 1000, t: 25, td: 20, u: 5, v: 5, zMSL: 100 },
+                        { p: 850, t: 14, td: 8, u: 10, v: 8, zMSL: 1500 },
+                        { p: 700, t: 4, td: -4, u: 15, v: 10, zMSL: 3100 },
+                        { p: 500, t: -10, td: -24, u: 30, v: 15, zMSL: 5800 },
+                        { p: 300, t: -34, td: -50, u: 50, v: 20, zMSL: 9600 }] };
+    };
+    const boom = async () => { throw new Error('the Pi is not answering'); };
+    _sndPiSounding = boom; _sndProfile = boom; _sndPrebuilt = boom;
+    _sndPiModelSounding = boom;
+    if (mode === 'pisite-recovers') {
+      _sndProfile = async () => ({ via: 'levels', run: 'x', hour: 0,
+        levels: [{ p: 1000, t: 25, rh: 70 }, { p: 850, t: 14, rh: 60 },
+                 { p: 700, t: 4, rh: 50 }, { p: 500, t: -10, rh: 40 }] });
+    }
+  }, mode);
+
+  const attempt = (src) => page.evaluate(async (src) => {
+    _sndSource = src;
+    const el = document.getElementById('snd-panel')
+      || Object.assign(document.createElement('div'), { id: 'tmp' });
+    try {
+      const r = await _sndFetchFor(el, 35.3, -97.3, 0);
+      return { threw: false, via: r.prof && r.prof.via, om: window.__om };
+    } catch (e) {
+      return { threw: true, om: window.__om, down: !!e.sourceDown,
+               label: e.sourceLabel || '', why: String(e.message || e) };
+    }
+  }, src);
+
+  await setup('all-fail');
+  for (const [src, label] of [['rap', 'RAP analysis (Pi)'],
+                              ['levels', 'Pi model levels'],
+                              ['pisite', 'Pi site images (SounderPy)']]) {
+    const r = await attempt(src);
+    ok(`${src} fails as itself rather than becoming Open-Meteo`,
+       r.threw === true && r.om === 0, JSON.stringify(r));
+    ok(`  and the failure names ${label}`,
+       r.down === true && r.label === label, JSON.stringify(r));
+  }
+
+  // A model source, which had its own copy of the fallback and additionally
+  // swapped the forecast hour for the current one on the way out.
+  await page.evaluate(() => {
+    _sndPiSources = [{ id: 'model:gfs', pi: 'model:gfs', model: 'gfs',
+                       label: 'GFS (model)', out: 48, step: 3, isModel: true }];
+  });
+  const rm = await attempt('model:gfs');
+  ok('a model source fails as itself too',
+     rm.threw === true && rm.om === 0 && rm.label === 'GFS (model)',
+     JSON.stringify(rm));
+
+  // Open-Meteo is still reachable. It was never the problem; being reached
+  // WITHOUT being asked for was.
+  const rw = await attempt('web');
+  ok('Open-Meteo still answers when it is the one picked',
+     rw.threw === false && rw.via === 'openmeteo' && rw.om === 1,
+     JSON.stringify(rw));
+
+  // The one recovery kept: inside the Pi's own sounding source, from its
+  // rendered images to its level images. Same Pi, same data, and it says so.
+  await setup('pisite-recovers');
+  const rp = await page.evaluate(async () => {
+    _sndSource = 'pisite';
+    const r = await _sndFetchFor(document.createElement('div'), 35.3, -97.3, 0);
+    return { via: r.prof.via, fellBack: r.fellBack, om: window.__om };
+  });
+  ok('the Pi still recovers from its images to its levels, and announces it',
+     rp.via === 'levels' && /not answering/.test(rp.fellBack || '')
+     && rp.om === 0, JSON.stringify(rp));
+
+  // Now the message itself, through the real panel.
+  await setup('all-fail');
+  const shown = await page.evaluate(async () => {
+    const el = document.getElementById('snd-panel');
+    _sndSource = 'rap';
+    // Something drawn first, so the "stale chart is cleared" check has a
+    // stale chart to clear.
+    el._snd = { rows: [1, 2, 3] };
+    // Recorded rather than assumed: earlier sections in this file leave the
+    // select on whatever they last chose, so the claim is that the FAILURE
+    // does not move it, not that it happens to read 'rap'.
+    const pickerBefore = el.querySelector('.snd-src').value;
+    await _sndRefresh(el, 0);
+    const a = el.querySelector('.snd-alert');
+    const box = a.getBoundingClientRect();
+    return {
+      // The bug that made every message unreachable: the only place an error
+      // was written lives inside a pane that is hidden on the tab the panel
+      // opens on.
+      insideHiddenPane: !!a.closest('.snd-pane'),
+      onScreen: box.width > 0 && box.height > 0,
+      namesSource: /RAP analysis \(Pi\) could not answer/.test(a.textContent),
+      saysNotSwapped: /not a different model wearing/.test(a.textContent),
+      offersWeb: !!a.querySelector('button.snd-fix-go'),
+      offersRetry: a.querySelectorAll('.snd-fix button').length === 2,
+      staleChartGone: el._snd === null,
+      pickerUnmoved: el.querySelector('.snd-src').value === pickerBefore,
+      pickerNow: el.querySelector('.snd-src').value,
+      om: window.__om,
+    };
+  });
+  ok('the failure is written where it can actually be seen',
+     shown.insideHiddenPane === false && shown.onScreen === true,
+     JSON.stringify(shown));
+  ok('it names the source that failed', shown.namesSource, JSON.stringify(shown));
+  ok('and says plainly that nothing was substituted', shown.saysNotSwapped);
+  ok('it offers Open-Meteo as a button, and a retry',
+     shown.offersWeb && shown.offersRetry, JSON.stringify(shown));
+  ok('the picker has not moved on its own',
+     shown.pickerUnmoved, shown.pickerNow);
+  ok('nothing was fetched from Open-Meteo to get here', shown.om === 0);
+  // A chart left under a failure message is the same lie in a quieter voice.
+  ok('and the previous chart is cleared rather than left to be read',
+     shown.staleChartGone, JSON.stringify(shown));
+
+  // Pressing the button is what moves the panel, and only then.
+  const after = await page.evaluate(async () => {
+    document.querySelector('#snd-panel .snd-fix-go').click();
+    await new Promise(r => setTimeout(r, 300));
+    const el = document.getElementById('snd-panel');
+    return { source: _sndSource, picker: el.querySelector('.snd-src').value,
+             via: el._prof && el._prof.via,
+             alertCleared: el.querySelector('.snd-alert').innerHTML === '',
+             saved: localStorage.getItem('gwcfc_snd_source'),
+             om: window.__om };
+  });
+  ok('pressing it switches to Open-Meteo and draws',
+     after.source === 'web' && after.via === 'openmeteo' && after.om === 1,
+     JSON.stringify(after));
+  ok('the picker follows, and the choice is remembered',
+     after.picker === 'web' && after.saved === 'web', JSON.stringify(after));
+  ok('and the failure message goes once there is an answer',
+     after.alertCleared, JSON.stringify(after));
+
+  // The source itself, so a future edit cannot quietly reinstate the old
+  // behaviour by adding one more catch.
+  const src = readFileSync(join(ROOT, 'index.html'), 'utf8');
+  const fn = /\nasync function _sndFetchFor\([\s\S]*?\n\}/.exec(src);
+  const omInFetch = (fn ? fn[0] : '').match(/_sndOpenMeteo\(/g) || [];
+  ok('_sndFetchFor reaches for Open-Meteo exactly once, on the web branch',
+     omInFetch.length === 1, String(omInFetch.length));
 }
 
 console.log('\n14. nothing above threw');
