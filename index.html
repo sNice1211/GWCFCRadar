@@ -36307,11 +36307,16 @@ function _nearestStation(lat, lon) {
 }
 
 // Fetch real timestamps from NWS GeoServer GetCapabilities XML
-async function _fetchVelTimestamps(station) {
+async function _fetchVelTimestamps(station, signal) {
   // Cache-bust + no-store so we always read the latest scan times (a cached
   // GetCapabilities is what makes radar show stale data on re-open).
   const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities&_=${Date.now()}`;
-  const res  = await fetch(url, { cache: 'no-store', signal: _abortSignal(8000) });
+  // The caller's signal when it has one, so the NEXT click can cancel this.
+  // Eight seconds was the only way out before, and an abandoned request still
+  // holds one of the handful of connections a browser allows to a single host,
+  // which every other station's lookup then has to queue behind.
+  const res  = await fetch(url, { cache: 'no-store',
+                                  signal: signal || _abortSignal(8000) });
   const text = await res.text();
   const parser = new DOMParser();
   const xml  = parser.parseFromString(text, 'text/xml');
@@ -36778,16 +36783,24 @@ function _l2LoopShow(idx) {
 }
 
 async function loadL3Data(product, stationOverride) {
+  // The last thing clicked wins. Switching product or station starts a new
+  // generation, and anything the previous one is still downloading is thrown
+  // away when it lands rather than being painted over the top of what was
+  // actually asked for. A Level 2 volume is megabytes, so on a quick change
+  // of mind two of them can easily be in the air at once.
+  const { gen, signal } = _rsBegin();
   _l2Loading = true;
   try {
-    return await _loadL3DataInner(product, stationOverride);
+    return await _loadL3DataInner(product, stationOverride, false, gen, signal);
   } finally {
     _l2Loading = false;
     if (typeof _syncNexradSites === 'function') try { _syncNexradSites(); } catch (e) {}
   }
 }
 
-async function _loadL3DataInner(product, stationOverride, retried) {
+async function _loadL3DataInner(product, stationOverride, retried, gen, signal) {
+  // A switch that has been superseded stops here rather than at the end.
+  const stale = () => gen != null && !_rsLive(gen);
   _disableL3();
   _l3Product = product;
 
@@ -36828,13 +36841,17 @@ async function _loadL3DataInner(product, stationOverride, retried) {
     } catch (direct) {
       console.log('[L2] direct fetch failed (' + direct.message + '), trying worker');
       var res = await fetch(RADAR_WORKER_URL + '?station=' + station.toUpperCase(),
-                            { signal: _abortSignal(30000) });
+                            { signal: _rsSignal(signal, 30000) });
       if (!res.ok) { var errJson = await res.json().catch(function(){ return {}; }); throw new Error(errJson.error || 'HTTP ' + res.status); }
       buffer = await res.arrayBuffer();
     }
     console.log('[L2] Fetched', buffer.byteLength, 'bytes for', station);
     // Keep a copy: the one handed to the worker is transferred away.
     _l2VolCache = { station: station, at: Date.now(), buf: buffer.slice(0) };
+    // Cached even when superseded, because the download is already paid for
+    // and clicking back to this station should then be instant. Only the
+    // DRAWING is abandoned.
+    if (stale()) return;
   } catch(e) {
     if (!e || !e.cached) {
       console.error('[L2] Fetch failed:', e);
@@ -36863,13 +36880,14 @@ async function _loadL3DataInner(product, stationOverride, retried) {
       console.log('[L2] empty volume, retrying one back');
       _l2VolCache = { station: null, at: 0, buf: null };
       _l2SkipNewest = station.toUpperCase();
-      return _loadL3DataInner(product, station, true);
+      return _loadL3DataInner(product, station, true, gen, signal);
     }
     console.error('[L2] Parse failed:', e);
     _dpAlert('<svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-close></use></svg> <b>Parse failed</b><br>' + e.message);
     return;
   }
 
+  if (stale()) return;
   var img = _renderMesh(result, product, station);
   var meta = result && result.metadata;
   if (meta && Array.isArray(meta.availableElevations)) {
@@ -38246,6 +38264,116 @@ function showDpFrame(idx) {
   if (at) at.textContent = `${_fmtHHMM(d)} · ${(_dpStation || '').toUpperCase()} ${label}`;
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// ── SWITCHING RADAR SITES AND PRODUCTS FAST ───────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════
+// Clicking a station used to mean: wipe the picture, then wait up to eight
+// seconds for NOAA's GetCapabilities to say what scan times exist, then build
+// fifteen tile layers at once and hope. Four separate things made that feel
+// slow, and only one of them was the network being slow.
+//
+//   1. The old picture was removed at the top, so the map was BLANK for the
+//      whole wait. Nothing was faster if the map stayed painted; it just felt
+//      like nothing was happening.
+//   2. Nothing was cancelled. Every station's capabilities call goes to the
+//      same host, and a browser allows about six connections to one host at a
+//      time, so clicking through seven stations left the seventh queued behind
+//      six requests whose answers nobody wanted any more. That is the exact
+//      shape of "switching quickly is not flawless": it gets WORSE the faster
+//      you click.
+//   3. Nothing was remembered. Clicking back to a station asked again, for an
+//      answer that changes once every five or six minutes.
+//   4. All fifteen frames were built at once, so the one frame actually on
+//      screen competed for connections with fourteen nobody was looking at.
+//
+// So: cancel the last switch, answer from a short cache when we can, draw
+// within a fixed budget whatever the network is doing, keep the old picture up
+// until the new one has something to show, and load the newest frame before
+// the history.
+
+// Draw SOMETHING by this deadline. If the scan times have not arrived, the
+// estimated five-minute grid is used, which is the fallback that already
+// existed for a failed lookup; here it is used for a slow one too, and
+// quietly replaced by the real list when that turns up.
+const RS_DRAW_BUDGET_MS = 1200;
+// Scan times change every five or six minutes, so a minute and a half of
+// cache is free accuracy and makes going back to a station instant.
+const RS_CAPS_TTL_MS = 90000;
+// How long to keep the previous station's picture up while the new one loads.
+// Long enough to cover a normal tile fetch, short enough that a dead station
+// does not leave the wrong radar on screen looking live.
+const RS_HANDOVER_MS = 2500;
+
+let _rsGen = 0;
+let _rsAbort = null;
+const _rsCaps = new Map();          // station -> { at, frames }
+
+// Start a switch: everything the last one was waiting for is now unwanted.
+function _rsBegin() {
+  if (_rsAbort) { try { _rsAbort.abort(); } catch (e) {} }
+  _rsAbort = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  return { gen: ++_rsGen, signal: _rsAbort ? _rsAbort.signal : undefined };
+}
+function _rsLive(gen) { return gen === _rsGen; }
+
+// A signal that gives up on its own AND when the next click arrives.
+// AbortSignal.any is not everywhere yet, so this is the hand-rolled version.
+function _rsSignal(outer, ms) {
+  if (typeof AbortController === 'undefined') return _abortSignal(ms);
+  const ac = new AbortController();
+  const bail = () => { try { ac.abort(); } catch (e) {} };
+  const t = setTimeout(bail, ms);
+  if (outer) {
+    if (outer.aborted) bail();
+    else outer.addEventListener('abort', bail, { once: true });
+  }
+  // Not a leak: the timer is the only thing holding this, and it fires.
+  ac.signal.addEventListener('abort', () => clearTimeout(t), { once: true });
+  return ac.signal;
+}
+
+// The estimated grid, twelve frames five minutes apart ending now. Exactly
+// what the failed-lookup path already built; named so it can be used as the
+// fast first answer as well as the last resort.
+function _rsEstimatedFrames(n) {
+  const out = [];
+  const now = new Date();
+  now.setUTCSeconds(0, 0);
+  now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
+  for (let i = (n || 12) - 1; i >= 0; i--) {
+    const t = new Date(now.getTime() - i * 5 * 60 * 1000);
+    out.push({ time: t.getTime() / 1000,
+               iso: t.toISOString().slice(0, 19) + 'Z', date: t, est: true });
+  }
+  return out;
+}
+
+// Scan times for a station, from the cache when it is fresh.
+async function _rsFrames(station, signal) {
+  const hit = _rsCaps.get(station);
+  if (hit && hit.frames && Date.now() - hit.at < RS_CAPS_TTL_MS) return hit.frames;
+  const frames = await _fetchRefTimestamps(station, signal);
+  _rsCaps.set(station, { at: Date.now(), frames });
+  return frames;
+}
+
+// Warm the cache for a station nobody has clicked yet.
+//
+// Pointing at a pill is a good guess that it is about to be clicked, and the
+// answer is the slow half of the click. Its own timeout, never cancelled by a
+// click, and every failure swallowed: a prefetch that reports errors is worse
+// than no prefetch, because the error is about something nobody asked for.
+function _rsWarm(station) {
+  if (!station) return;
+  station = String(station).toLowerCase();
+  const hit = _rsCaps.get(station);
+  if (hit && Date.now() - hit.at < RS_CAPS_TTL_MS) return;
+  _rsCaps.set(station, { at: Date.now(), frames: hit && hit.frames });
+  _fetchRefTimestamps(station, _abortSignal(6000))
+    .then(frames => _rsCaps.set(station, { at: Date.now(), frames }))
+    .catch(() => { _rsCaps.delete(station); });
+}
+
 // ── NEXRAD SITE MARKERS ──
 // Shows a dot + label for every NEXRAD station when radar is active.
 // In VEL mode, clicking a site loads that station's velocity data.
@@ -38268,6 +38396,13 @@ function _buildNexradSiteMarkers() {
       iconAnchor: [0, 0]   // 0×0 box at the station point; the pill self-centers via CSS transform
     });
     const label = L.marker([s.lat, s.lon], { icon: labelIcon, zIndexOffset: 300 });
+
+    // Pointing at a pill is a good guess that it is about to be clicked, and
+    // the scan-times lookup is the slow half of that click. Warming it here
+    // means the click usually has its answer already. Costs one small request
+    // for a station the pointer paused over, and nothing at all on a touch
+    // screen, where there is no hover to fire it.
+    label.on('mouseover', () => { try { _rsWarm(s.id); } catch (e) {} });
 
     // Click on pill , single-site only activates in REF mode
     label.on('click', async () => {
@@ -38558,11 +38693,16 @@ function _clearMrms() {
 // Uses Super Resolution Base Reflectivity with real scan timestamps from GetCapabilities.
 // Falls back to IEM ridge.cgi N0Q if opengeo is unavailable for this station.
 
-async function _fetchRefTimestamps(station) {
+async function _fetchRefTimestamps(station, signal) {
   // Cache-bust + no-store so we always read the latest scan times (a cached
   // GetCapabilities is what makes radar show stale data on re-open).
   const url = `https://opengeo.ncep.noaa.gov/geoserver/${station}/ows?service=wms&version=1.3.0&request=GetCapabilities&_=${Date.now()}`;
-  const res  = await fetch(url, { cache: 'no-store', signal: _abortSignal(8000) });
+  // The caller's signal when it has one, so the NEXT click can cancel this.
+  // Eight seconds was the only way out before, and an abandoned request still
+  // holds one of the handful of connections a browser allows to a single host,
+  // which every other station's lookup then has to queue behind.
+  const res  = await fetch(url, { cache: 'no-store',
+                                  signal: signal || _abortSignal(8000) });
   const xml  = new DOMParser().parseFromString(await res.text(), 'text/xml');
   let timeStr = '';
   for (const lyr of xml.querySelectorAll('Layer')) {
@@ -38581,16 +38721,29 @@ async function _fetchRefTimestamps(station) {
 // currently in play (NOAA GeoServer, or IEM's ridge.cgi as the fallback
 // when GeoServer's own capabilities lookup fails) using the already-fetched
 // _refSiteFrames.
-function _buildRefSitePool(stationId, useOpengeo) {
-  _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+function _buildRefSitePool(stationId, useOpengeo, opts) {
+  opts = opts || {};
+  // `keep` is the previous station's pool, handed in so it can stay on screen
+  // until this one has something to show. Without it the map goes blank for
+  // the whole lookup, which is most of what "slow" meant here.
+  if (!opts.keep) {
+    _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  }
   _refSitePool   = [];
   _refSiteLoaded = [];
+  // Which frames to build NOW. The frame on screen is the newest one, and it
+  // used to be created alongside fourteen others nobody was looking at, all
+  // asking the same host for tiles at once. Newest first, the history a tick
+  // later, so the picture being waited for is not queued behind the past.
+  const _only = opts.only;
+  const _want = (i) => _only == null || i === _only;
 
   if (useOpengeo) {
     // NOAA GeoServer Level III SR_BREF
     const wmsUrl  = `https://opengeo.ncep.noaa.gov/geoserver/${stationId}/ows`;
     const layerNm = `${stationId}_sr_bref`;
     _refSiteFrames.forEach((frame, i) => {
+      if (!_want(i)) return;
       const l = L.tileLayer.wms(wmsUrl, {
         layers: layerNm, format: 'image/png', transparent: true,
         version: '1.3.0', TIME: frame.iso,
@@ -38613,6 +38766,7 @@ function _buildRefSitePool(stationId, useOpengeo) {
     const sector = stationId.slice(1).toUpperCase();
     const prod   = 'N0Q';
     _refSiteFrames.forEach((frame, i) => {
+      if (!_want(i)) return;
       const d     = frame.date;
       const yr    = d.getUTCFullYear();
       const mo    = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -38642,57 +38796,103 @@ function _buildRefSitePool(stationId, useOpengeo) {
 
 async function _loadSingleSiteRef(stationId) {
   stationId = stationId.toLowerCase();
-  const gen = ++_refSiteGen;   // capture generation; stale calls bail out after await
+  // One switch at a time. This cancels whatever the previous click was still
+  // waiting for, which is what stops rapid clicking getting SLOWER: without
+  // it, the sixth abandoned lookup is still holding a connection when the
+  // seventh click needs one.
+  const { gen, signal } = _rsBegin();
+  _refSiteGen = gen;
   _refStation = stationId;
 
+  // The pills light up now, not when the network answers. Clicking a station
+  // and seeing nothing change for a second reads as a click that missed.
+  try { _refreshNexradSiteStyles(); } catch (e) {}
+
   _radarLayerPool.forEach(l => { if (l) l.setOpacity(0); });
-  _refSitePool.forEach(l => { try { map.removeLayer(l); } catch(e){} });
+  // The previous station stays on screen while this one loads, and is taken
+  // down when there is something to replace it with.
+  const oldPool = _refSitePool.slice();
   _refSitePool   = [];
   _refSiteLoaded = [];
   _refSiteFrames = [];
+  let handedOver = false;
+  const dropOld = () => {
+    if (handedOver) return;
+    handedOver = true;
+    oldPool.forEach(l => { try { map.removeLayer(l); } catch (e) {} });
+  };
+  // A backstop, so a station that never paints cannot leave the previous
+  // radar sitting there looking like the one that was asked for.
+  const handoverTimer = setTimeout(dropOld, RS_HANDOVER_MS);
 
   const animTimeEl = document.getElementById('anim-time');
-  if (animTimeEl) animTimeEl.textContent = 'Loading L3 REF…';
+  if (animTimeEl) animTimeEl.textContent = 'Loading ' + stationId.toUpperCase() + '…';
 
-  // Try NOAA Level III SR_BREF (real timestamps)
+  // The scan times, but never waited on for longer than the draw budget. The
+  // estimated five-minute grid already existed as the answer to a FAILED
+  // lookup; this uses it for a SLOW one too, then quietly upgrades when the
+  // real list arrives. Something is on screen either way.
   let useOpengeo = false;
-  try {
-    _refSiteFrames = await _fetchRefTimestamps(stationId);
+  const real = _rsFrames(stationId, _rsSignal(signal, 8000))
+    .then(f => ({ frames: f }), e => ({ err: e }));
+  const raced = await Promise.race([
+    real,
+    new Promise(r => setTimeout(() => r({ late: true }), RS_DRAW_BUDGET_MS)),
+  ]);
+  if (!_rsLive(gen)) { clearTimeout(handoverTimer); dropOld(); return; }
+
+  if (raced.frames) {
+    _refSiteFrames = raced.frames;
     useOpengeo = true;
-  } catch(e) {
-    // Fall back to IEM ridge.cgi with estimated 5-min interval timestamps
-    const now = new Date();
-    now.setUTCSeconds(0, 0);
-    now.setUTCMinutes(Math.floor(now.getUTCMinutes() / 5) * 5);
-    for (let i = 11; i >= 0; i--) {
-      const t = new Date(now.getTime() - i * 5 * 60 * 1000);
-      _refSiteFrames.push({ time: t.getTime() / 1000, iso: t.toISOString().slice(0,19)+'Z', date: t });
-    }
+  } else {
+    _refSiteFrames = _rsEstimatedFrames(12);
   }
 
-  // Bail if user switched away (race condition guard)
-  if (gen !== _refSiteGen) return;
-
-  _buildRefSitePool(stationId, useOpengeo);
-
-  // Update timeline
-  const tl = document.getElementById('timeline');
-  if (tl) { tl.max = _refSiteFrames.length - 1; tl.value = _refSiteFrames.length - 1; }
-  currentFrame = _refSiteFrames.length - 1;
-
-  const wrap = document.getElementById('timeline-labels');
-  if (wrap) {
-    const step = Math.max(1, Math.floor(_refSiteFrames.length / 5));
-    let html = '';
-    for (let i = 0; i < _refSiteFrames.length; i += step) {
-      const d = new Date(_refSiteFrames[i].time * 1000);
-      html += `<span>${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}</span>`;
+  const paint = (frames, viaOpengeo) => {
+    _refSiteFrames = frames;
+    const last = frames.length - 1;
+    // Newest frame alone first, so the one tile request that matters is not
+    // behind fourteen that do not.
+    _buildRefSitePool(stationId, viaOpengeo, { only: last, keep: !handedOver });
+    const newest = _refSitePool[last];
+    if (newest) newest.once('load', dropOld);
+    const tl = document.getElementById('timeline');
+    if (tl) { tl.max = last; tl.value = last; }
+    currentFrame = last;
+    const wrap = document.getElementById('timeline-labels');
+    if (wrap) {
+      const step = Math.max(1, Math.floor(frames.length / 5));
+      let html = '';
+      for (let k = 0; k < frames.length; k += step) {
+        const d = new Date(frames[k].time * 1000);
+        html += `<span>${d.getUTCHours().toString().padStart(2,'0')}:`
+              + `${d.getUTCMinutes().toString().padStart(2,'0')}</span>`;
+      }
+      wrap.innerHTML = html;
     }
-    wrap.innerHTML = html;
-  }
+    _refreshNexradSiteStyles();
+    _showSingleSiteRefFrame(last);
+    // The history, once the newest frame has had the connections to itself.
+    setTimeout(() => {
+      if (!_rsLive(gen)) return;
+      const shown = currentFrame;
+      _buildRefSitePool(stationId, viaOpengeo, { keep: true });
+      _showSingleSiteRefFrame(shown);
+    }, 120);
+  };
 
-  _refreshNexradSiteStyles();
-  _showSingleSiteRefFrame(_refSiteFrames.length - 1);
+  paint(_refSiteFrames, useOpengeo);
+
+  // If the estimate was drawn because the lookup was slow rather than broken,
+  // take the real times when they land and redraw on them. A guess that is
+  // never corrected is the worst of both.
+  if (raced.late) {
+    real.then(res => {
+      if (!_rsLive(gen) || !res || !res.frames) return;
+      paint(res.frames, true);
+      if (animTimeEl) animTimeEl.textContent = '';
+    });
+  }
 }
 
 function _showSingleSiteRefFrame(idx) {
@@ -48303,7 +48503,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The Alert Desk now writes in the GWCFC product format: the office header, the DATA rows for that hazard, the six standing HAZARDS rows and the signature block. All 162 templates are there to load and fill in, 18 hazards as Watch, Warning or Emergency at Base, Severe or Extreme. The separate Hail hazard is gone, since Hailstorm is now a product family of its own.';
+const APP_LATEST_UPDATE = 'Switching radar sites is now fast. Clicking a station paints within about a second even when the scan-time lookup is slow, the previous radar stays up until the new one is ready instead of going blank, and clicking through several stations quickly cancels the ones you skipped so the last click is not stuck behind them. Stations you visit are remembered for 90 seconds, so going back is instant, and hovering a station starts its lookup early. Switching products does the same: the old volume is dropped rather than painted late over the new one.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
