@@ -174,3 +174,34 @@ after the last comma and hands back everything before it untouched.
 Anything the site does not have is refused with a note saying so, rather than
 quietly producing a picture without it. Silently ignoring a name is how someone
 ends up believing a layer is on when it never was.
+
+## The bot's face
+
+It wears `assets/img/asturio-ai-512.png`: the site's own AI logo, the
+concentric rings, lit as an instrument with falling code behind it. The bot
+shares a brain and a name with the assistant in the app, so it shares a face
+rather than answering as the default grey circle with a letter in it.
+
+    node tools/make-asturio-avatar.mjs
+
+Rebuilds both the SVG and the PNG from `tools/make-asturio-avatar.mjs`. Run it
+if the site's logo or palette changes, then restart the bot. The generator is
+seeded, so re-running it with nothing changed produces the same bytes and shows
+no diff.
+
+The bot uploads the picture on start, but only when it differs from the one it
+last sent, which it records in `services/bot/.avatar-stamp` (ignored by git).
+That is not tidiness: Discord limits how often a bot may change its avatar, in
+the region of twice an hour, so a bot that re-uploads on every restart gets
+refused and then cannot change it when it matters.
+
+A refusal is logged and shrugged off. A weather bot that will not answer
+because it could not change its profile picture is worse than one with the
+wrong picture.
+
+    node tools/test-asturio-avatar.mjs
+
+Checks the picture is square, 512, and small enough to upload; that the
+generator is deterministic; that the mark uses the site's own palette, read out
+of `index.html` rather than repeated, so it cannot drift off-brand; and that
+the upload is skipped when nothing changed.

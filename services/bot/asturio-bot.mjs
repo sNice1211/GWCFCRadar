@@ -14,7 +14,7 @@ import {
   REST, Routes, SlashCommandBuilder, ActivityType,
 } from 'discord.js';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
 import { getLinkCode, claimLinkCode, getSyncHistory, appendSyncHistory,
          addChatMessage } from './firestore.mjs';
 
@@ -874,11 +874,58 @@ function loadStatus() {
   return { text: 'the radar', kind: 'watching', presence: 'online' };
 }
 
-client.once(Events.ClientReady, c => {
+// ── The face ──────────────────────────────────────────────────────────────
+// The bot answered as a default grey circle with a letter in it, which is
+// what an unconfigured bot looks like. It shares a brain and a name with the
+// assistant in the app, so it should share a face: assets/img/asturio-ai.png,
+// the app's own concentric rings lit as an instrument, built by
+// tools/make-asturio-avatar.mjs.
+//
+// Uploaded once, not on every start, and this is not tidiness. Discord rate
+// limits avatar changes hard, in the region of twice an hour, and a bot that
+// re-uploads on every restart will be refused and then cannot change it when
+// it matters. So a marker file records the picture that was sent, and the
+// upload only happens when that differs from the file on disk.
+//
+// Every failure here is swallowed. A weather bot that will not answer because
+// it could not change its profile picture is worse than one with the wrong
+// picture.
+const AVATAR_FILE  = new URL('../../assets/img/asturio-ai-512.png', import.meta.url);
+const AVATAR_STAMP = new URL('./.avatar-stamp', import.meta.url);
+
+async function applyAvatar(user) {
+  let png;
+  try { png = readFileSync(AVATAR_FILE); }
+  catch (e) {
+    console.warn('avatar: no picture to set (' + e.message + '), leaving it alone.');
+    return;
+  }
+  // The stamp is the picture's own size and a hash of its bytes, so replacing
+  // the art is what triggers a re-upload and a restart on its own is not.
+  const stamp = png.length + ':' + createHash('sha256').update(png).digest('hex').slice(0, 16);
+  let had = null;
+  try { if (existsSync(AVATAR_STAMP)) had = readFileSync(AVATAR_STAMP, 'utf8').trim(); }
+  catch (e) { /* an unreadable stamp is the same as no stamp */ }
+  if (had === stamp) return;
+  try {
+    await user.setAvatar(png);
+    writeFileSync(AVATAR_STAMP, stamp);
+    console.log('Avatar set from assets/img/asturio-ai-512.png');
+  } catch (e) {
+    // The usual cause is Discord's own rate limit, which is temporary and
+    // says so, so this is a note rather than a warning about broken config.
+    console.log('Avatar not changed this time (' + e.message + '). '
+              + 'Discord limits how often a bot may change it; it will try '
+              + 'again next start.');
+  }
+}
+
+client.once(Events.ClientReady, async c => {
   console.log(`Asturio online as ${c.user.tag}`);
   const s = loadStatus();
   applyStatus(c.user, s);
   console.log(`Status: ${s.kind} "${s.text}" (${s.presence || 'online'})`);
+  await applyAvatar(c.user);
 });
 
 client.on(Events.InteractionCreate, async (i) => {
