@@ -9,6 +9,7 @@
 #   gwcfc-models    builds the model images, hourly
 #   gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
 #   gwcfc-sat       builds the GOES RGB composites, every ten minutes
+#   gwcfc-sst       builds the ocean temperature and heat fields, 4x a day
 #   gwcfc-cyclones  fetches the DeepMind cyclone runs
 #   gwcfc-ens       finds cyclone centres in the raw GEFS ensemble itself
 #   gwcfc-serve     serves them with the header that makes them readable
@@ -477,6 +478,36 @@ Persistent=false
 WantedBy=timers.target
 EOF
 
+cat > "$UNITS/gwcfc-sst.service" <<EOF
+[Unit]
+Description=Build sea-surface temperature and ocean-heat fields
+
+[Service]
+Type=oneshot
+ExecStart=-$VENV/bin/python $REPO/pi/sst_pipeline.py
+# Longer than the others on purpose. The first run of any calendar day may
+# have to build that day's 1991-2020 climatology from scratch, which is a
+# real download; every run after it reads the cached one and takes seconds.
+TimeoutStartSec=5400
+Nice=19
+EOF
+
+cat > "$UNITS/gwcfc-sst.timer" <<'EOF'
+[Unit]
+Description=Ocean fields, a few times a day
+
+[Timer]
+# These products publish once a day, so building more often would just
+# re-check a file that has not changed. Four passes spread across the day
+# means a late-arriving OISST file is picked up the same day rather than
+# the next, and the pass budget stops any one of them running long.
+OnCalendar=*-*-* 01,07,13,19:20:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
 cat > "$UNITS/gwcfc-cyclones.service" <<EOF
 [Unit]
 Description=Fetch DeepMind cyclone tracks and genesis fields
@@ -755,6 +786,7 @@ systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
 systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
 systemctl --user enable --now gwcfc-sat.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-snd.timer      >/dev/null 2>&1
+systemctl --user enable --now gwcfc-sst.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-cyclones.timer >/dev/null 2>&1
 systemctl --user enable --now gwcfc-ens.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-spag.timer     >/dev/null 2>&1

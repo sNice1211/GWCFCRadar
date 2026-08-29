@@ -179,7 +179,13 @@ console.log('\n2. the settings rail');
   ok('the rail has a GPS tab', r.gps, JSON.stringify(r.tabs));
   ok('and a Units tab, with the old combined name gone',
      r.units && !r.oldUnits, JSON.stringify(r.tabs.map(t => t.label)));
-  ok('eleven tabs in all', r.tabs.length === 11,
+  // Not a count. This used to assert exactly eleven, which meant every new
+  // settings section broke a GPS test that has nothing to do with settings
+  // sections. What actually matters is that the rail is a real rail and that
+  // no tab is a duplicate, since a repeated id lights two tabs on one click.
+  ok('the rail is fully populated, with no repeated tab',
+     r.tabs.length >= 11
+     && new Set(r.tabs.map(t => t.id)).size === r.tabs.length,
      r.tabs.length + ': ' + r.tabs.map(t => t.label).join(', '));
   ok('clicking GPS shows its card', r.visible);
   ok('every location control lives there', r.hasControls);

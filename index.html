@@ -10789,6 +10789,15 @@ function initMap() {
   // radar pane, whose CSS forces pixelated rendering on every image in it -
   // the right call for banded radar data and the whole reason RGB satellite
   // looked like Lego. Their own pane sits just under the radar and smooths.
+  // Ocean fields sit UNDER everything weather, just above the basemap. That
+  // is the whole answer to "does turning SST on hide my radar": order, not
+  // exclusion. A hurricane drawn over the ocean heat feeding it is the
+  // reason anyone wants sea-surface temperature on a radar map, and it only
+  // works if the storm is on top.
+  const _sstPaneEl = map.createPane('sstPane');
+  _sstPaneEl.style.zIndex = 398;
+  _sstPaneEl.style.pointerEvents = 'none';
+
   const _satPaneEl = map.createPane('satPhotoPane');
   _satPaneEl.style.zIndex = 399;
   _satPaneEl.style.pointerEvents = 'none';
@@ -10796,6 +10805,13 @@ function initMap() {
   map.createPane('alertsPane');
   map.getPane('alertsPane').style.zIndex = 403;
   map.getPane('alertsPane').style.pointerEvents = 'auto';
+
+  // The four z-values just written above are the defaults. If a saved layer
+  // order exists, this overwrites them with it. It runs here rather than at
+  // boot because the panes have to exist before their z can be set, and it is
+  // safe to call before bordersPane is made: that one is created on demand and
+  // picks the saved order up the next time this runs.
+  try { if (typeof _stackApply === 'function') _stackApply(); } catch (e) {}
 
   try { map.getContainer().addEventListener('touchstart', ()=>{}, {passive:true}); } catch(e){}
   let _zoomTimer = null;
@@ -23479,6 +23495,402 @@ async function _paintWavesOverlay(grid, cols, rows, bounds, isAngle, colorFn, op
   return L.imageOverlay(canvas.toDataURL('image/png'), bounds, { opacity: opacity == null ? 1 : opacity, interactive: false });
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   SEA-SURFACE TEMPERATURE AND OCEAN HEAT, FROM THE PI
+   ──────────────────────────────────────────────────────────────────────────
+   Three open NOAA products the Pi builds into global fields: OISST v2.1 at
+   a quarter degree, Coral Reef Watch at 5 km, and AOML's cyclone heat
+   potential and 26 C isotherm depth. Product choices and the anomaly
+   conventions follow Triple-A Tropics, by Andrew Austin-Adler, with
+   permission; the fields themselves are built here rather than fetched from
+   his CDN, so this costs him nothing.
+
+   The one idea that makes all of this work: THE PI SENDS NUMBERS, NOT
+   PICTURES. Each PNG carries the measurement in its pixels rather than a
+   colour, high byte in red and low byte in green across a stated range,
+   the same encoding the sounding reader already uses. Three things fall out
+   of that which a coloured picture could not give:
+
+     the Inspector can report the real temperature under the cursor
+     the colours are a setting, changed here with nothing rebuilt on the Pi
+     one global field serves every zoom, because the map does the zooming
+
+   Colouring happens once per frame on a canvas and is held as a blob URL,
+   which is the same trick the radar loop uses: a data URL costs about 4 ms
+   to put on the map every time it is shown, a blob URL costs 0.003 ms.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+let _sstOn = false;
+let _sstSource = 'oisst';
+let _sstVariant = 'anomaly';
+let _sstIndex = null;
+let _sstIndexAt = 0;
+let _sstLayer = null;
+let _sstFrames = [];          // stamps this source and variant holds
+let _sstIdx = -1;             // which frame is showing
+let _sstMeta = null;          // the chosen variant's entry from the index
+let _sstGrid = null;          // decoded values, for the Inspector
+const SST_INDEX_TTL = 10 * 60 * 1000;
+const _sstBlobs = new Map();  // stamp -> blob URL of the coloured frame
+
+try {
+  const s = localStorage.getItem('gwcfc_sst_source');
+  const v = localStorage.getItem('gwcfc_sst_variant');
+  if (s) _sstSource = s;
+  if (v) _sstVariant = v;
+} catch (e) {}
+
+// The colour scales. Defaults are the conventions these products are read
+// in, because a forecaster comparing against anyone else's map needs the
+// same colours to mean the same thing. Settings can retune them, and a
+// custom ramp wins wherever one is set.
+const SST_RAMPS = {
+  // Absolute temperature: the cold end blue, the tropics red, 26 C sitting
+  // where the colour changes because that is the hurricane threshold.
+  actual: [[-2,[8,8,90]],[4,[20,70,180]],[12,[0,150,200]],[20,[70,200,140]],
+           [26,[250,240,120]],[29,[245,150,50]],[32,[200,30,30]],[36,[120,0,60]]],
+  // Anomaly: diverging, white at zero, because the sign is the whole point
+  // and a ramp with no neutral middle hides it.
+  anomaly: [[-8,[10,20,120]],[-4,[40,110,200]],[-1.5,[150,200,240]],
+            [0,[248,248,248]],[1.5,[250,200,150]],[4,[220,90,40]],
+            [8,[130,0,20]]],
+  tchp:    [[0,[10,20,80]],[30,[20,90,170]],[50,[240,230,120]],
+            [80,[240,150,50]],[120,[210,40,40]],[180,[110,0,50]]],
+  d26:     [[0,[15,15,70]],[40,[30,110,190]],[80,[60,190,180]],
+            [140,[240,220,110]],[200,[230,120,50]],[250,[160,10,40]]],
+};
+function _sstRampFor(source, variant) {
+  if (source === 'aoml') return SST_RAMPS[variant] || SST_RAMPS.tchp;
+  if (variant === 'actual') return SST_RAMPS.actual;
+  return SST_RAMPS.anomaly;              // every anomaly and change variant
+}
+// A ramp the person has edited in Settings, if there is one.
+function _sstActiveRamp(source, variant) {
+  const key = 'gwcfc_sst_ramp_' + (source === 'aoml' ? variant
+    : variant === 'actual' ? 'actual' : 'anomaly');
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      const r = JSON.parse(raw);
+      if (Array.isArray(r) && r.length >= 2) return r;
+    }
+  } catch (e) {}
+  return _sstRampFor(source, variant);
+}
+
+// Anomalies and changes are DIFFERENCES, so converting them is not the same
+// arithmetic as converting a temperature. Twenty degrees C is 68 F, but a
+// rise of twenty degrees C is a rise of thirty-six F, not sixty-eight. This
+// is the classic way a unit switch turns a correct number into a wrong one.
+function _sstToDisplay(v, source, variant) {
+  if (!isFinite(v)) return null;
+  if (source === 'aoml') return v;                        // kJ/cm2 and metres
+  const wantF = (typeof _units !== 'undefined' && _units.temp === 'F');
+  if (!wantF) return v;
+  return (variant === 'actual') ? (v * 9 / 5 + 32) : (v * 9 / 5);
+}
+function _sstUnitLabel(source, variant) {
+  if (source === 'aoml') return variant === 'tchp' ? 'kJ/cm²' : 'm';
+  const wantF = (typeof _units !== 'undefined' && _units.temp === 'F');
+  return wantF ? '°F' : '°C';
+}
+
+async function _sstFetchIndex(force) {
+  if (!force && _sstIndex && Date.now() - _sstIndexAt < SST_INDEX_TTL) return _sstIndex;
+  const base = _hdBase || (typeof _hdResolveBase === 'function'
+    ? await _hdResolveBase() : null);
+  if (!base) return null;
+  try {
+    const idx = await fetch(`${base}/sst/index.json?t=${Date.now()}`,
+      { cache: 'no-store', signal: _abortSignal(15000) })
+      .then(r => r.ok ? r.json() : null);
+    if (idx) { _sstIndex = idx; _sstIndexAt = Date.now(); }
+    return idx;
+  } catch (e) { return null; }
+}
+
+function _sstVariantMeta(source, variant) {
+  const s = _sstIndex && _sstIndex.sources && _sstIndex.sources[source];
+  return (s && s.variants && s.variants[variant]) || null;
+}
+
+// Decode one frame's PNG into real values, then colour it.
+//
+// Both halves come out of one read: the numbers stay for the Inspector, and
+// the colours become a blob URL for the map. Recolouring after a Settings
+// change re-runs only the colouring, because the numbers have not moved.
+async function _sstLoadFrame(stamp) {
+  const meta = _sstVariantMeta(_sstSource, _sstVariant);
+  if (!meta || !_hdBase) return null;
+  const url = `${_hdBase}/sst/${_sstSource}/${_sstVariant}/${stamp}.png`;
+  const img = await _sndLoadImage(url, 20000);
+  const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const px = ctx.getImageData(0, 0, w, h);
+  const d = px.data;
+  const [lo, hi] = meta.range || [-8, 8];
+  const span = (hi - lo) || 1;
+  const vals = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < vals.length; i++, p += 4) {
+    // Alpha 0 is water the analysis has nothing for, and land. NaN rather
+    // than a number, so nothing downstream reports a temperature for Kansas.
+    vals[i] = d[p + 3] === 0 ? NaN : lo + ((d[p] * 256 + d[p + 1]) / 65535) * span;
+  }
+  return { vals, w, h, lo, hi, bounds: meta.bounds };
+}
+
+function _sstColorize(frame) {
+  const ramp = _sstActiveRamp(_sstSource, _sstVariant);
+  const { vals, w, h } = frame;
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  const out = ctx.createImageData(w, h);
+  const o = out.data;
+  const records = _sstVariant === 'anomaly_records';
+  for (let i = 0, p = 0; i < vals.length; i++, p += 4) {
+    const v = vals[i];
+    if (!isFinite(v)) { o[p + 3] = 0; continue; }
+    // The Pi flags a day at its own record by pushing the value outside the
+    // normal range. Marked here in white so it reads as a stipple over the
+    // anomaly rather than as an absurd anomaly value.
+    if (records && v >= 90) { o[p] = 255; o[p+1] = 255; o[p+2] = 255; o[p+3] = 235; continue; }
+    if (records && v <= -90) { o[p] = 190; o[p+1] = 230; o[p+2] = 255; o[p+3] = 235; continue; }
+    const c = _colorScale(v, ramp);
+    o[p] = c[0]; o[p + 1] = c[1]; o[p + 2] = c[2]; o[p + 3] = 205;
+  }
+  ctx.putImageData(out, 0, 0);
+  return cv;
+}
+
+// Punch the land out, the same way the Waves layer does, so colour never
+// bleeds across a coast. Reused rather than reinvented: it is the same
+// problem and the same geometry.
+async function _sstCutLand(cv, bounds) {
+  try {
+    const geo = await _loadLandGeoJSON();
+    if (!geo) return cv;
+    const mask = _rasterizeLandMask(geo, bounds, cv.width, cv.height);
+    const ctx = cv.getContext('2d');
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.drawImage(mask, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+  } catch (e) { console.warn('[sst] land mask:', e); }
+  return cv;
+}
+
+function _sstFreeBlobs() {
+  _sstBlobs.forEach(u => { try { _pbFree(u); } catch (e) {} });
+  _sstBlobs.clear();
+}
+
+async function _sstShow(idx) {
+  if (!_sstFrames.length) return;
+  idx = Math.max(0, Math.min(_sstFrames.length - 1, idx));
+  _sstIdx = idx;
+  const stamp = _sstFrames[idx];
+  let url = _sstBlobs.get(stamp);
+  if (!url) {
+    let frame;
+    try { frame = await _sstLoadFrame(stamp); } catch (e) { frame = null; }
+    if (!frame) return;
+    _sstGrid = frame;
+    const cv = _sstColorize(frame);
+    await _sstCutLand(cv, frame.bounds);
+    url = _pbBlob(cv.toDataURL('image/png'));
+    _sstBlobs.set(stamp, url);
+    // A day is about a megabyte coloured. Holding a season of them is not
+    // worth it when re-colouring one costs a few milliseconds.
+    while (_sstBlobs.size > 20) {
+      const oldest = _sstBlobs.keys().next().value;
+      _pbFree(_sstBlobs.get(oldest));
+      _sstBlobs.delete(oldest);
+    }
+  } else if (!_sstGrid || _sstGrid.stamp !== stamp) {
+    // The picture is cached but the numbers are not, and the Inspector wants
+    // the numbers. Read them behind the picture rather than in front of it.
+    _sstLoadFrame(stamp).then(f => { if (f) { f.stamp = stamp; _sstGrid = f; } })
+      .catch(() => {});
+  }
+  const bounds = (_sstMeta && _sstMeta.bounds) || [[-90, -180], [90, 180]];
+  if (!_sstLayer) {
+    _sstLayer = L.imageOverlay(url, bounds, {
+      opacity: 0.85, interactive: false, pane: 'sstPane',
+      className: 'wx-model-smooth',
+    }).addTo(map);
+  } else {
+    _sstLayer.setUrl(url);
+  }
+  _sstSyncReadout(stamp);
+}
+
+function _sstSyncReadout(stamp) {
+  const el = document.getElementById('sst-readout');
+  if (!el) return;
+  const src = (_sstIndex && _sstIndex.sources && _sstIndex.sources[_sstSource]) || {};
+  const meta = _sstVariantMeta(_sstSource, _sstVariant) || {};
+  const d = stamp && stamp.length === 8
+    ? `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)}` : '';
+  el.innerHTML = `<b>${_ccEsc(src.label || _sstSource)}</b> `
+    + `${_ccEsc(meta.label || _sstVariant)}`
+    + (d ? ` <span class="sst-valid">valid ${d}</span>` : '');
+}
+
+// Turn it on, from the Waves row.
+async function _sstEnable(source, variant) {
+  if (source) _sstSource = source;
+  if (variant) _sstVariant = variant;
+  try {
+    localStorage.setItem('gwcfc_sst_source', _sstSource);
+    localStorage.setItem('gwcfc_sst_variant', _sstVariant);
+  } catch (e) {}
+  if (!_hdBase) _hdBase = await _hdResolveBase();
+  const idx = await _sstFetchIndex();
+  if (!idx) { _sstReportMissing('nopi'); return; }
+  const meta = _sstVariantMeta(_sstSource, _sstVariant);
+  if (!meta || !(meta.frames || []).length) { _sstReportMissing('nobuild'); return; }
+  _sstMeta = meta;
+  _sstFrames = (meta.frames || []).slice().sort();
+  _sstFreeBlobs();
+  _sstOn = true;
+  await _sstShow(_sstFrames.length - 1);
+  if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+}
+
+function _sstDisable() {
+  _sstOn = false;
+  if (_sstLayer) { try { map.removeLayer(_sstLayer); } catch (e) {} _sstLayer = null; }
+  _sstFreeBlobs();
+  _sstFrames = []; _sstIdx = -1; _sstGrid = null;
+  if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+}
+
+// Say what is missing and what still works, rather than showing nothing.
+// The live Open-Meteo layer needs no Pi at all, so it is always the offer.
+function _sstReportMissing(why) {
+  _sstOn = false;
+  if (typeof showToast !== 'function') return;
+  if (why === 'nopi') {
+    showToast('The Pi has not been found, so its ocean fields cannot be read. '
+      + 'Open-Meteo under Sea Surf. Temp needs no Pi and still works.', 6000);
+  } else {
+    const src = (_sstIndex && _sstIndex.sources && _sstIndex.sources[_sstSource]) || {};
+    showToast(`${src.label || _sstSource} has not built `
+      + `${_sstVariant} yet. It builds a few times a day, and the first run of `
+      + 'a calendar day has a climatology to compute. Open-Meteo works now.', 6500);
+  }
+}
+
+// Re-colour what is already downloaded. Called when the Settings ramp
+// changes: the numbers have not moved, so nothing is re-fetched.
+async function _sstRecolor() {
+  if (!_sstOn || !_sstFrames.length) return;
+  _sstFreeBlobs();
+  await _sstShow(_sstIdx < 0 ? _sstFrames.length - 1 : _sstIdx);
+}
+
+// ── The Settings panel for those colours ───────────────────────────────────
+const SST_RAMP_KEYS = { actual: 'actual', anomaly: 'anomaly',
+                        tchp: 'tchp', d26: 'd26' };
+function _sstRampKey() {
+  const el = document.getElementById('lqm-sst-which');
+  return (el && SST_RAMP_KEYS[el.value]) || 'actual';
+}
+function _sstRampRead(key) {
+  try {
+    const raw = localStorage.getItem('gwcfc_sst_ramp_' + key);
+    if (raw) {
+      const r = JSON.parse(raw);
+      if (Array.isArray(r) && r.length >= 2) return r;
+    }
+  } catch (e) {}
+  return SST_RAMPS[key].map(s => [s[0], s[1].slice()]);
+}
+function _sstRampWrite(key, ramp) {
+  try { localStorage.setItem('gwcfc_sst_ramp_' + key, JSON.stringify(ramp)); }
+  catch (e) {}
+  _sstRecolor();
+  _sstSettingsRender();
+}
+function _sstRampReset() {
+  try { localStorage.removeItem('gwcfc_sst_ramp_' + _sstRampKey()); } catch (e) {}
+  _sstRecolor();
+  _sstSettingsRender();
+}
+const _sstHex = (c) => '#' + c.map(v =>
+  Math.max(0, Math.min(255, v | 0)).toString(16).padStart(2, '0')).join('');
+function _sstFromHex(h) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(h || ''));
+  if (!m) return [0, 0, 0];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function _sstSettingsRender() {
+  const key = _sstRampKey();
+  const ramp = _sstRampRead(key);
+  const unitC = (typeof _units !== 'undefined' && _units.temp === 'F');
+  const isTemp = (key === 'actual' || key === 'anomaly');
+  const unit = key === 'tchp' ? 'kJ/cm²' : key === 'd26' ? 'm'
+             : (unitC ? '°F' : '°C');
+
+  // The legend, drawn from the ramp itself so it can never disagree with
+  // what is on the map. That is the point of a legend.
+  const leg = document.getElementById('lqm-sst-legend');
+  if (leg) {
+    const lo = ramp[0][0], hi = ramp[ramp.length - 1][0];
+    const stops = ramp.map(s =>
+      `rgb(${s[1].join(',')}) ${(((s[0] - lo) / ((hi - lo) || 1)) * 100).toFixed(1)}%`);
+    const show = (v) => {
+      if (!isTemp) return v.toFixed(0);
+      const d = key === 'actual' ? (unitC ? v * 9 / 5 + 32 : v)
+                                 : (unitC ? v * 9 / 5 : v);
+      return (key === 'anomaly' && d > 0 ? '+' : '') + d.toFixed(0);
+    };
+    leg.innerHTML =
+      `<div style="height:14px;border-radius:4px;margin:4px 0 3px;`
+      + `border:1px solid rgba(255,255,255,0.18);`
+      + `background:linear-gradient(90deg,${stops.join(',')})"></div>`
+      + `<div style="display:flex;justify-content:space-between;`
+      + `font-family:var(--mono);font-size:9px;color:var(--muted);">`
+      + `<span>${show(lo)} ${unit}</span><span>${show(hi)} ${unit}</span></div>`;
+  }
+
+  const wrap = document.getElementById('lqm-sst-stops');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  ramp.forEach((stop, i) => {
+    const row = document.createElement('div');
+    row.className = 'lqm-settings-row';
+    const val = isTemp
+      ? (key === 'actual' ? (unitC ? stop[0] * 9 / 5 + 32 : stop[0])
+                          : (unitC ? stop[0] * 9 / 5 : stop[0]))
+      : stop[0];
+    row.innerHTML = `<span class="lqm-settings-lbl" style="font-family:var(--mono);`
+      + `font-size:10px;">${(key === 'anomaly' && val > 0 ? '+' : '')}`
+      + `${val.toFixed(1)} ${unit}</span>`;
+    const inp = document.createElement('input');
+    inp.type = 'color';
+    inp.value = _sstHex(stop[1]);
+    inp.style.cssText = 'width:38px;height:24px;border:none;background:none;'
+                      + 'cursor:pointer;padding:0;';
+    inp.oninput = () => {
+      const next = _sstRampRead(key);
+      next[i] = [next[i][0], _sstFromHex(inp.value)];
+      // Written on input rather than on change so the map follows the
+      // colour picker live, which is the only way to judge a scale.
+      try { localStorage.setItem('gwcfc_sst_ramp_' + key, JSON.stringify(next)); }
+      catch (e) {}
+      _sstRecolor();
+    };
+    row.appendChild(inp);
+    wrap.appendChild(row);
+  });
+}
+
 // Splits a big point list into smaller batches and fetches them in parallel -
 // a single request with 900+ comma-separated lat/lon pairs risks hitting URL
 // length/rate limits, especially now that Waves/Air cover the whole world.
@@ -23670,6 +24082,11 @@ function toggleWavesSub() {
     el.id = 'sub-' + b.id;
     el.innerHTML = `<span class="sb-icon">${_eicon(b.icon)}</span><span class="sb-label">${b.label}</span>`;
     el.onclick = () => {
+      // Sea-surface temperature has more than one source now, so it opens a
+      // row to pick one rather than going straight to a layer. Open-Meteo is
+      // the live grid this button has always drawn and behaves exactly as it
+      // did; the rest are the Pi's own ocean fields.
+      if (b.id === 'sst') { toggleSstSourceSub(); return; }
       if (wavesActive && _wavesProduct === b.id) {
         wavesActive = false;
         clearInterval(_wavesRefreshTimer); _wavesRefreshTimer = null;
@@ -23688,6 +24105,116 @@ function toggleWavesSub() {
       _wavesRefreshTimer = setInterval(() => _loadWavesLayer(true), 10 * 60 * 1000);
     };
     if (LAYER_DESCRIPTIONS[b.id]) el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS[b.id]));
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
+}
+
+// ── Sea-surface temperature: which source, then which field ────────────────
+//
+// Open-Meteo is listed first and unchanged: it is a live global grid that
+// needs no Pi, which makes it the thing that still works when everything
+// else here does not. The Pi's three sources sit beside it.
+const SST_SOURCE_ROW = [
+  { id: 'openmeteo', label: 'Open-Meteo', pi: false,
+    note: 'Live global grid, no Pi needed.' },
+  { id: 'oisst', label: 'OISST 0.25°', pi: true,
+    note: 'NOAA OISST v2.1 daily analysis, 1982 to now.' },
+  { id: 'crw', label: 'Coral Reef Watch', pi: true,
+    note: 'NOAA Coral Reef Watch, 5 km daily.' },
+  { id: 'aoml', label: 'Ocean Heat', pi: true,
+    note: 'AOML cyclone heat potential and 26 C isotherm depth.' },
+];
+const SST_VARIANT_ROW = {
+  oisst: ['actual', 'anomaly', 'anomaly_gmr', 'anomaly_records',
+          'change7d', 'change15d', 'change30d'],
+  crw:   ['actual', 'anomaly', 'anomaly_gmr', 'anomaly_records',
+          'change7d', 'change15d', 'change30d'],
+  aoml:  ['tchp', 'd26'],
+};
+const SST_VARIANT_LABEL = {
+  actual: 'Actual', anomaly: 'Anomaly', anomaly_gmr: 'Anom - Global',
+  anomaly_records: 'Anomaly + Records', change7d: '7-Day Change',
+  change15d: '15-Day Change', change30d: '30-Day Change',
+  tchp: 'Cyclone Heat', d26: '26 °C Depth',
+};
+
+function toggleSstSourceSub() {
+  const wrap = document.getElementById('sub-bubbles');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  _radarBackBubble(wrap, () => toggleWavesSub());
+  SST_SOURCE_ROW.forEach(s => {
+    const el = document.createElement('div');
+    const on = s.pi ? (_sstOn && _sstSource === s.id)
+                    : (wavesActive && _wavesProduct === 'sst');
+    el.className = 'sub-bubble' + (on ? ' active' : '');
+    el.id = 'sub-sstsrc-' + s.id;
+    el.innerHTML = `<span class="sb-icon">${_eicon('\u{1F321}')}</span>`
+                 + `<span class="sb-label">${s.label}</span>`;
+    el.title = s.note;
+    el.onclick = () => {
+      if (!s.pi) {
+        // The original behaviour, untouched.
+        if (_sstOn) _sstDisable();
+        if (wavesActive && _wavesProduct === 'sst') {
+          wavesActive = false;
+          clearInterval(_wavesRefreshTimer); _wavesRefreshTimer = null;
+          if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch (e) {} _wavesLayer = null; }
+          _syncParentBubble('waves');
+          toggleSstSourceSub();
+          return;
+        }
+        wavesActive = true;
+        _wavesProduct = 'sst';
+        _syncParentBubble('waves');
+        _loadWavesLayer();
+        clearInterval(_wavesRefreshTimer);
+        _wavesRefreshTimer = setInterval(() => _loadWavesLayer(true), 10 * 60 * 1000);
+        toggleSstSourceSub();
+        return;
+      }
+      if (_sstOn && _sstSource === s.id) { _sstDisable(); toggleSstSourceSub(); return; }
+      // Leaving Open-Meteo behind when a Pi source is chosen: two SST fields
+      // stacked would be one painted over the other with no way to tell.
+      if (wavesActive && _wavesProduct === 'sst') {
+        wavesActive = false;
+        clearInterval(_wavesRefreshTimer); _wavesRefreshTimer = null;
+        if (_wavesLayer) { try { map.removeLayer(_wavesLayer); } catch (e) {} _wavesLayer = null; }
+      }
+      const vs = SST_VARIANT_ROW[s.id] || [];
+      const keep = vs.includes(_sstVariant) ? _sstVariant : vs[0];
+      _sstEnable(s.id, keep).then(() => toggleSstVariantSub(s.id));
+    };
+    if (LAYER_DESCRIPTIONS['sst-' + s.id]) {
+      el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS['sst-' + s.id]));
+    }
+    wrap.appendChild(el);
+  });
+  wrap.style.display = 'flex';
+}
+
+function toggleSstVariantSub(source) {
+  const wrap = document.getElementById('sub-bubbles');
+  if (!wrap) return;
+  source = source || _sstSource;
+  wrap.innerHTML = '';
+  _radarBackBubble(wrap, () => toggleSstSourceSub());
+  (SST_VARIANT_ROW[source] || []).forEach(v => {
+    const el = document.createElement('div');
+    el.className = 'sub-bubble' + (_sstOn && _sstVariant === v ? ' active' : '');
+    el.id = 'sub-sstvar-' + v;
+    el.innerHTML = `<span class="sb-icon">${_eicon('\u{1F321}')}</span>`
+                 + `<span class="sb-label">${SST_VARIANT_LABEL[v] || v}</span>`;
+    el.onclick = () => {
+      _sstEnable(source, v).then(() => {
+        wrap.querySelectorAll('.sub-bubble').forEach(x =>
+          x.classList.toggle('active', x.id === 'sub-sstvar-' + v));
+      });
+    };
+    if (LAYER_DESCRIPTIONS['sst-var-' + v]) {
+      el.appendChild(_makeInfoBtn(LAYER_DESCRIPTIONS['sst-var-' + v]));
+    }
     wrap.appendChild(el);
   });
   wrap.style.display = 'flex';
@@ -25851,7 +26378,23 @@ const LAYER_DESCRIPTIONS = {
   'wave-period':  'Time between wave crests. Short periods (red) mean choppy local wind waves; long periods (blue/purple) mean organized swell that traveled a long way.',
   'wave-dir':     'The compass direction waves are heading, shown as a color wheel since direction can\'t fit on a straight scale, hue = heading.',
   'swell-height': 'Height of the swell component alone, separate from local wind-driven waves. Same color scale as Wave Height.',
-  sst:            'Sea surface temperature. Blue/purple is cold, green is mild, yellow/orange/red is warm, key fuel for tropical systems.',
+  sst:            'Sea surface temperature. Blue/purple is cold, green is mild, yellow/orange/red is warm, key fuel for tropical systems. Tap again to pick where the numbers come from: the live Open-Meteo grid, or one of the analyses the Pi builds itself.',
+  // The SST source row. Open-Meteo is the one that needs no Pi, which is why
+  // it is listed first and why it is the honest answer when the Pi is down.
+  'sst-openmeteo': 'The live global sea-surface temperature grid from Open-Meteo. Needs nothing but the internet, so this is the source that still works when the Pi is off, but it is today\'s temperature only: no anomaly, no records, no history to compare against.',
+  'sst-oisst':     'NOAA\'s OISST v2.1: a quarter-degree daily analysis that blends satellite and ship and buoy measurements, running unbroken back to 1982. That length is the point. Because the Pi holds the whole record it can tell you not just how warm the water is but how warm it is for the date, and whether it has ever been this warm here before.',
+  'sst-crw':       'NOAA Coral Reef Watch at 5 km: the same idea as OISST but four times finer, built for watching individual reefs rather than ocean basins. Use this when you care about a specific patch of coast or a small sea, and OISST when you want the big picture.',
+  'sst-aoml':      'NOAA AOML\'s ocean heat fields, which measure depth rather than skin temperature. A hurricane stirs the ocean as it crosses, so warm water only a few metres deep gets churned away and the storm cools its own fuel supply. These two fields say how much warm water is actually down there.',
+  // The variant row: what is being drawn from the chosen source.
+  'sst-var-actual':          'The sea-surface temperature itself, in whatever unit the app is set to.',
+  'sst-var-anomaly':         'How far the water is from normal for this exact calendar day, measured against the 1991-2020 average. This is a difference, not a temperature: red means warmer than it should be, blue means cooler, and white means right on the mark.',
+  'sst-var-anomaly_gmr':     'The anomaly with the global average anomaly subtracted out. The whole ocean has warmed, so a plain anomaly map is red nearly everywhere and a genuinely unusual patch is hard to pick out. Removing the global number answers a different question: warm compared to the rest of the ocean right now, rather than warm compared to the past.',
+  'sst-var-anomaly_records': 'The anomaly, with any point currently at its warmest or coldest on record since 1982 flagged instead of shaded. Those flags are the headline: not just unusual, but never seen here before in the satellite era.',
+  'sst-var-change7d':        'How much the anomaly has moved in the last 7 days. It tracks the anomaly rather than the raw temperature on purpose: raw temperature changes every autumn and spring simply because the season turned, which is not news.',
+  'sst-var-change15d':       'The same 15 days back. A slower window, so it shows the ocean\'s general drift rather than the effect of one passing storm.',
+  'sst-var-change30d':       'The same 30 days back, which is long enough to show a marine heatwave building or breaking down.',
+  'sst-var-tchp':            'Tropical Cyclone Heat Potential, in kilojoules per square centimetre: the total heat stored between the surface and the 26 C depth, which is the layer a hurricane can actually reach. Above roughly 60 is enough to support a strong storm and above 100 is the kind of water rapid intensification happens over.',
+  'sst-var-d26':             'How deep you have to go before the water drops below 26 C, the temperature a tropical cyclone needs. A deep layer means the storm can churn the ocean and still find warm water underneath; a shallow one means it cools its own fuel and weakens.',
   'us-aqi':       'The overall US Air Quality Index (0-500), the worst score among all measured pollutants at that point. Green is Good, yellow/orange is Moderate/Unhealthy for sensitive groups, red and up is Unhealthy to Hazardous.',
   pm25:           'Fine particulate matter (PM2.5, µg/m³), particles small enough to get deep into lungs, colored using the EPA\'s PM2.5 health breakpoints. A major driver of wildfire smoke haze.',
   pm10:           'Coarse particulate matter (PM10, µg/m³): dust, pollen, and larger smoke/soot particles, colored using the EPA\'s PM10 health breakpoints.',
@@ -32437,6 +32980,13 @@ function _gwcfcDraw(out, into, paneKey) {
       const poly = L.polygon(pts, { pane, color: spec.color, weight: 3,
         opacity: 1, fillColor: spec.color, fillOpacity: 0.22,
         interactive: false });
+      // What this shape means, carried on the shape itself. These polygons
+      // are drawn straight from the outlook document rather than through
+      // L.geoJSON, so there is no .feature to read a name back out of, and
+      // the Inspector would otherwise be able to say a risk area is here but
+      // not which one.
+      poly._gwoLabel = spec.label;
+      poly._gwoColor = spec.color;
       poly.addTo(map);
       list.push(poly);
       drew++;
@@ -34705,6 +35255,207 @@ function _inspSevEnsRow(center) {
   return { label, value: v.toFixed(2), unit: units[varName] || '', color: `rgb(${r},${g},${b})` };
 }
 
+// ── The layers the Inspector used to walk past ─────────────────────────────
+//
+// It read ten and skipped the rest, which meant the products where a number
+// matters most were the ones you could only guess at from a colour. MESH in
+// inches is the whole point of MESH; "orange" is not an answer.
+
+// Sea-surface temperature, read out of the values the Pi encoded into the
+// pixels rather than sampled back off a colour. That is the difference
+// between a real measurement and a reverse-engineered one.
+function _inspSstRow(center) {
+  const g = _sstGrid;
+  const src = (_sstIndex && _sstIndex.sources && _sstIndex.sources[_sstSource]) || {};
+  const label = (_sstVariantMeta(_sstSource, _sstVariant) || {}).label || _sstVariant;
+  if (!g || !g.vals || !g.bounds) {
+    return { label: 'SST', value: 'loading', color: 'rgba(80,170,220,0.9)' };
+  }
+  const [[s, w], [n, e]] = g.bounds;
+  let lng = center.lng;
+  // The fields are global and stored from 0 to 360; a map centred on the
+  // Americas hands back negative longitudes, which would land off the left
+  // edge of the array and read as no data across the whole western half.
+  if (lng < w) lng += 360;
+  if (lng > e) lng -= 360;
+  if (center.lat < s || center.lat > n || lng < w || lng > e) {
+    return { label: 'SST', value: 'off grid', color: 'rgba(80,170,220,0.6)' };
+  }
+  const x = Math.min(g.w - 1, Math.max(0, Math.round((lng - w) / (e - w) * (g.w - 1))));
+  const y = Math.min(g.h - 1, Math.max(0, Math.round((n - center.lat) / (n - s) * (g.h - 1))));
+  const raw = g.vals[y * g.w + x];
+  if (!isFinite(raw)) {
+    return { label: label, value: 'land', color: 'rgba(80,170,220,0.6)' };
+  }
+  if (_sstVariant === 'anomaly_records' && Math.abs(raw) >= 90) {
+    return { label: label, value: raw > 0 ? 'RECORD HIGH' : 'record low',
+             color: 'rgba(255,255,255,0.95)' };
+  }
+  const v = _sstToDisplay(raw, _sstSource, _sstVariant);
+  const sign = (_sstSource !== 'aoml' && _sstVariant !== 'actual' && v > 0) ? '+' : '';
+  return {
+    label: `${src.label || _sstSource} ${label}`,
+    value: `${sign}${v.toFixed(1)}`,
+    unit: _sstUnitLabel(_sstSource, _sstVariant),
+    color: _colorScale(raw, _sstActiveRamp(_sstSource, _sstVariant)),
+  };
+}
+
+// MRMS, which is 129 products and was the biggest hole. The Pi encodes each
+// one over its own range, so the number and its unit both come from the
+// manifest rather than from a table that would drift the moment a product
+// was added.
+// Every MRMS product that is on, not just the first: more than one can be
+// up at once, and a reading for one of them with the others silent would be
+// the Inspector answering a question nobody asked.
+function _inspMrmsRows(cx, cy) {
+  return Object.keys(_mrmsOn).filter(k => _mrmsOn[k])
+    .map(k => _inspMrmsRow(k, cx, cy)).filter(Boolean);
+}
+function _inspMrmsRow(key, cx, cy) {
+  if (!key) return null;
+  const p = (_mrmsManifest && _mrmsManifest.products && _mrmsManifest.products[key]) || {};
+  const ov = _mrmsOv[key];
+  const s = ov && _inspReadOverlayPixel(ov._image || ov.getElement && ov.getElement(), cx, cy);
+  const name = p.label || key;
+  if (s && s.tainted) return { label: name, value: '(no CORS)', color: 'rgba(120,120,120,0.5)' };
+  if (!s) return { label: name, value: 'off screen', color: 'rgba(160,160,160,0.6)' };
+  if (s.transparent) {
+    // MRMS marks both "no coverage" and "below the product's own floor" by
+    // making the pixel clear, and for rain or reflectivity the second one is
+    // the common case and means nothing is falling, not that the map failed.
+    const none = p.ramp === 'precip' || p.ramp === 'radar';
+    return { label: name, value: none ? 'none' : 'no data',
+             color: 'rgba(120,120,120,0.35)' };
+  }
+  const color = `rgb(${s.r},${s.g},${s.b})`;
+  // MRMS ships finished pictures, not encoded values, so unlike SST there is
+  // no number hiding in the pixel. There is one hiding in the COLOUR though:
+  // the Pi painted it by looking a value up in a 256-step ramp, and the
+  // manifest now says which ramp and over what range, so matching the pixel
+  // back to its step recovers the reading. An older Pi that does not send a
+  // ramp name falls back to the honest swatch rather than a guess.
+  const ramp = p.ramp && HD_INSP_RAMPS[p.ramp] ? p.ramp : null;
+  if (!ramp || !isFinite(p.min) || !isFinite(p.max)) {
+    return { label: name, value: 'see scale', unit: p.unit || '', color };
+  }
+  const scale = { ramp, lo: p.min, hi: p.max };
+  const hit = _hdColorToValue(scale, s.r, s.g, s.b);
+  if (!hit) return { label: name, value: 'see scale', unit: p.unit || '', color };
+  const step = (scale.hi - scale.lo) / 255;
+  let value = hit.value.toFixed(step >= 1 ? 0 : 2);
+  // The two ends of a ramp are clamps rather than readings: the top colour is
+  // also the colour of everything above the top.
+  value = hit.idx === 255 ? '≥' + value : hit.idx === 0 ? '≤' + value : '≈' + value;
+  return { label: name, value, unit: p.unit || '', color };
+}
+
+// Lightning is points, not a field, so the useful answer is the nearest
+// strike and how long ago, which is what a person actually wants to know.
+function _inspLightningRow(center) {
+  // The placefile parser hands back { refreshSecs, features }, and the
+  // strikes are the features. The other two spellings are here because the
+  // Pi's own lightning feed and a bare array are both plausible shapes for
+  // this to be handed one day, and reading whichever arrived is cheaper than
+  // a row that silently says "none loaded" when there are strikes on screen.
+  const src = _ltgData || null;
+  const pts = (src && (src.features || src.strikes)) || (Array.isArray(src) ? src : []);
+  if (!Array.isArray(pts) || !pts.length) {
+    return { label: 'Lightning', value: 'none loaded', color: 'rgba(255,220,80,0.6)' };
+  }
+  let best = null, bestKm = Infinity;
+  for (const st of pts) {
+    const la = st.lat != null ? st.lat : st[0];
+    const lo = st.lon != null ? st.lon : (st.lng != null ? st.lng : st[1]);
+    if (!isFinite(la) || !isFinite(lo)) continue;
+    const dLat = (la - center.lat) * 111.32;
+    const dLon = (lo - center.lng) * 111.32 * Math.cos(center.lat * Math.PI / 180);
+    const km = Math.hypot(dLat, dLon);
+    if (km < bestKm) { bestKm = km; best = st; }
+  }
+  if (!best) return { label: 'Lightning', value: 'none', color: 'rgba(255,220,80,0.6)' };
+  const mi = bestKm * 0.621371;
+  const useKm = (typeof _units !== 'undefined' && _units.dist === 'km');
+  const ts = best.time || best.ts || best.t;
+  let age = '';
+  if (ts) {
+    const ms = Date.now() - (String(ts).length > 11 ? +ts : +ts * 1000);
+    if (isFinite(ms) && ms >= 0) {
+      const m = Math.round(ms / 60000);
+      age = m < 1 ? ', just now' : m < 60 ? `, ${m} min ago`
+                                          : `, ${Math.round(m / 60)} h ago`;
+    }
+  }
+  return { label: 'Nearest strike',
+           value: (useKm ? bestKm : mi).toFixed(0),
+           unit: (useKm ? 'km' : 'mi') + age,
+           color: 'rgba(255,220,80,0.95)' };
+}
+
+// Which polygon covers this point, for the layers that are areas rather
+// than fields. A category name is the honest reading of a risk area; a
+// number would be inventing precision the product does not have.
+function _inspPolyRow(label, layer, nameOf, color) {
+  if (!layer) return null;
+  const c = map.getCenter();
+  let hit = null;
+  try {
+    layer.eachLayer(l => {
+      if (hit || !l.getBounds || !l.getBounds().contains(c)) return;
+      const f = l.feature;
+      if (!f || !f.geometry) return;
+      const g = f.geometry;
+      const polys = g.type === 'Polygon' ? [g.coordinates]
+                  : g.type === 'MultiPolygon' ? g.coordinates : [];
+      if (polys.some(rings => rings && rings.length
+          && _cmPtInRing(c.lat, c.lng, rings[0]))) {
+        hit = nameOf(f) || 'yes';
+      }
+    });
+  } catch (e) {}
+  return { label, value: hit || 'none here',
+           color: hit ? color : 'rgba(150,150,150,0.55)' };
+}
+
+// The GWCFC outlook needs its own reader rather than the GeoJSON one above.
+// Its shapes are built as plain L.polygon objects straight from the published
+// document, so there is no .feature to walk: the risk name rides on the
+// polygon itself (see _gwcfcDraw), and the ring is the polygon's own latlngs.
+function _inspGwcfcRow(center) {
+  const list = (typeof _gwcfcLayers !== 'undefined' && _gwcfcLayers) || [];
+  let hit = null, color = null;
+  for (const l of list) {
+    if (!l || !l._gwoLabel || typeof l.getLatLngs !== 'function') continue;
+    try {
+      if (!l.getBounds().contains(center)) continue;
+      // getLatLngs on a polygon returns rings, and each point is a LatLng
+      // object rather than a pair, so it is turned into the [lng, lat] order
+      // _cmPtInRing reads before being handed over.
+      const rings = l.getLatLngs();
+      const outer = Array.isArray(rings[0]) ? rings[0] : rings;
+      const ring = outer.map(p => [p.lng, p.lat]);
+      if (ring.length > 2 && _cmPtInRing(center.lat, center.lng, ring)) {
+        hit = l._gwoLabel; color = l._gwoColor; break;
+      }
+    } catch (e) {}
+  }
+  return { label: 'GWCFC outlook', value: hit || 'none here',
+           color: hit ? (color || 'rgba(232,184,0,0.95)') : 'rgba(150,150,150,0.55)' };
+}
+
+function _inspAlertsRow(center) {
+  const list = (typeof _cmAlertsAt === 'function')
+    ? _cmAlertsAt(center.lat, center.lng) : [];
+  if (!list.length) {
+    return { label: 'Warnings', value: 'none here', color: 'rgba(150,150,150,0.55)' };
+  }
+  const ev = (list[0].properties || {}).event || 'Alert';
+  return { label: 'Warnings',
+           value: list.length > 1 ? `${ev} +${list.length - 1}` : ev,
+           color: (typeof _alertColorFor === 'function')
+             ? _alertColorFor(ev) : 'rgba(255,80,80,0.95)' };
+}
+
 function _inspUpdate() {
   _inspRafPending = false;
   if (!_inspEnabled || typeof map === 'undefined') return;
@@ -34729,7 +35480,27 @@ function _inspUpdate() {
   if (_sevOverlayLayer)                                               rows.push(_inspSevEnsRow(center));
   if (_iemModelLayer)                                                 rows.push(_inspModelsRow(cx, cy));
   if (typeof _hdOn !== 'undefined' && _hdOn && _hdLayer)              rows.push(_inspHdRow(cx, cy));
+  // The layers it used to walk past. Each is guarded on its own state, so a
+  // layer that is off contributes nothing rather than a row saying so.
+  if (typeof _sstOn !== 'undefined' && _sstOn)                        rows.push(_inspSstRow(center));
+  if (typeof _mrmsAnyOn === 'function' && _mrmsAnyOn())               rows.push(..._inspMrmsRows(cx, cy));
+  if (typeof activeLayers !== 'undefined' && activeLayers.lightning)  rows.push(_inspLightningRow(center));
+  if (typeof spcOutlookLayer !== 'undefined' && spcOutlookLayer) {
+    rows.push(_inspPolyRow('SPC outlook', spcOutlookLayer,
+      f => (f.properties || {}).LABEL2 || (f.properties || {}).LABEL
+        || (f.properties || {}).DN, 'rgba(255,170,60,0.95)'));
+  }
+  if (typeof _gwcfcOn !== 'undefined' && _gwcfcOn) {
+    rows.push(_inspGwcfcRow(center));
+  }
+  // Warnings last, so the most urgent thing sits closest to the readout's
+  // own edge rather than buried between two ocean temperatures.
+  if (typeof _lastAlertFeatures !== 'undefined' && (_lastAlertFeatures || []).length) {
+    rows.push(_inspAlertsRow(center));
+  }
 
+  const _real = rows.filter(Boolean);
+  rows.length = 0; rows.push(..._real);
   if (!rows.length) { _inspRenderRows([{ label: '', value: 'No layers active', color: 'rgba(120,120,120,0.5)' }]); return; }
   _inspRenderRows(rows);
 }
@@ -45499,9 +46270,95 @@ function selectProduct(p) {
       <span class="lqm-settings-lbl">Alert Desk</span>
       <button class="lqm-settings-btn" onclick="_adUiOpen()">Write an Alert</button>
     </div>
+    <div class="lqm-settings-row" style="display:none" id="lqm-sst-anchor"></div>
     <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:6px 0 2px;line-height:1.5;">
       The Alert Desk is where you write your own warnings and watches. Everything issued there is marked
       SIMULATED wherever it appears, so it can never be mistaken for a real National Weather Service product.
+    </div>
+  </div>
+
+  <!-- ─── OCEAN COLOURS: the scale the SST overlays are drawn with ───
+       The Pi sends numbers rather than a picture, so this is not a request
+       to rebuild anything: editing a stop recolours what is already
+       downloaded, on the spot. ─── -->
+  <div class="lqm-settings-group" data-cat="appearance">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-temp></use></svg> Ocean Colours</div>
+    <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Scale</span>
+      <select class="lqm-settings-sel" id="lqm-sst-which" onchange="_sstSettingsRender()">
+        <option value="actual">Sea temperature</option>
+        <option value="anomaly">Anomaly and change</option>
+        <option value="tchp">Cyclone heat potential</option>
+        <option value="d26">26 C isotherm depth</option>
+      </select>
+    </div>
+    <div id="lqm-sst-legend"></div>
+    <div id="lqm-sst-stops"></div>
+    <div class="lqm-settings-row">
+      <button class="lqm-settings-btn" onclick="_sstRampReset()">Reset to standard</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:2px 0 6px;line-height:1.5;">
+      These start on the scales these products are normally published in, so a map here means the
+      same thing as a map anywhere else. Change a stop and the ocean redraws immediately: the Pi
+      sends measurements rather than a picture, so the colours are yours to set and nothing has to
+      be rebuilt. Anomaly and change share one diverging scale, white at zero, because the sign is
+      the point.
+    </div>
+  </div>
+
+  <!-- ─── LAYER ORDER: who draws on top of whom ───
+       The overlay fly-out has always let you drag its own rows, but the four
+       big picture layers underneath it (radar, satellite, ocean, borders) had
+       a fixed stacking order baked in, so turning on two of them and not
+       liking which one won was not something you could fix. Both lists live
+       here now, in one place, and the fly-out and this list are the same
+       list: dragging in either moves the same row. ─── -->
+  <style>
+    .lqm-order-list { display:flex; flex-direction:column; gap:3px; padding:4px 0 6px; }
+    .lqm-order-row {
+      display:flex; align-items:center; gap:6px;
+      padding:5px 7px; border-radius:6px;
+      background:rgba(255,255,255,.04);
+      border:1px solid rgba(255,255,255,.07);
+      font-family:var(--mono); font-size:10px; color:var(--text);
+      touch-action:none;
+    }
+    .lqm-order-row.dragging { opacity:.55; border-color:var(--accent2); }
+    .lqm-order-row .lqm-order-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .lqm-order-row .lqm-order-z { font-size:8px; color:var(--muted); flex:none; }
+    .lqm-order-row .lqm-order-btn {
+      flex:none; width:20px; height:20px; line-height:18px; text-align:center;
+      border-radius:4px; cursor:pointer; user-select:none;
+      background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.10);
+      color:var(--text); font-size:9px;
+    }
+    .lqm-order-row .lqm-order-btn:hover { background:rgba(255,255,255,.14); }
+    .lqm-order-row .lqm-order-btn.off { opacity:.25; cursor:default; }
+    .lqm-order-row .lqm-order-grip { flex:none; cursor:grab; color:var(--muted); padding:0 2px; }
+    .lqm-order-row .lqm-order-dot { flex:none; width:7px; height:7px; border-radius:50%; background:rgba(255,255,255,.18); }
+    .lqm-order-row .lqm-order-dot.on { background:var(--accent2); box-shadow:0 0 5px var(--accent2); }
+  </style>
+  <div class="lqm-settings-group" data-cat="layers">
+    <div class="lqm-settings-category"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-grip></use></svg> Layer Order</div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:2px 0 6px;line-height:1.5;">
+      Top of a list draws on top on the map. Drag a row by its grip, or use the arrows if that is
+      easier on a phone. The change is live: you do not have to close Settings to see it.
+    </div>
+    <div class="lqm-settings-row"><span class="lqm-settings-lbl">Map layers</span></div>
+    <div id="lqm-stack-list" class="lqm-order-list"></div>
+    <div class="lqm-settings-row">
+      <button class="lqm-settings-btn" onclick="_stackReset()">Reset map layers</button>
+    </div>
+    <div class="lqm-settings-row"><span class="lqm-settings-lbl">Overlays</span></div>
+    <div id="lqm-ovorder-list" class="lqm-order-list"></div>
+    <div class="lqm-settings-row">
+      <button class="lqm-settings-btn" onclick="_ovOrderReset()">Reset overlays</button>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:2px 0 6px;line-height:1.5;">
+      A lit dot means that layer is on right now. Overlays always draw above the four map layers,
+      which is why they are two lists rather than one. Alert polygons are deliberately pinned low
+      in the stack: they are drawn to a canvas that covers the whole map, so letting them climb
+      would swallow every click meant for the markers underneath.
     </div>
   </div>
 
@@ -47629,6 +48486,10 @@ function lqmOpenSettings() {
   // Sync toggles with current app state
   if (typeof _satcSyncUi === 'function') { try { _satcSyncUi(); } catch (e) {} }
   if (typeof _ssRuleUiInit === 'function') { try { _ssRuleUiInit(); } catch (e) {} }
+  // Both order lists are rebuilt on every open rather than once at boot. They
+  // show which layers are live, and that answer is different every time.
+  if (typeof _stackRender === 'function') { try { _stackRender(); } catch (e) {} }
+  if (typeof _ovOrderRender === 'function') { try { _ovOrderRender(); } catch (e) {} }
   const mtSel = document.getElementById('lqm-set-maptype');
   if (mtSel) mtSel.value = currentMapType;
   const tzSel = document.getElementById('lqm-set-tz');
@@ -50742,7 +51603,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The WX Alerts panel no longer throws itself open every time a warning is issued. There is a new switch in Settings under Alerts, Open Panel on New Alert, and it is off to start with, so the panel stays exactly where you put it. Turn it on if you want the old behaviour back. Either way the warning still arrives, still draws on the map, still counts on the pill and still sounds: the switch only decides whether the panel opens itself.';
+const APP_LATEST_UPDATE = 'The ocean is on the map. Under Waves, Sea Surf. Temp now asks where the numbers should come from: Open-Meteo as before, or three analyses the Pi builds itself. OISST and Coral Reef Watch give you the temperature, how far it is from normal for the date, that same anomaly with the global average taken out, where records are being set, and how much it has moved over 7, 15 or 30 days. AOML adds ocean heat and the depth of the 26 C layer, which is what actually decides whether a hurricane can keep its fuel. The Inspector reads real numbers off all of it, and off MRMS, lightning, outlooks and warnings too. Settings gained an Ocean Colours scale you can retune and a Layer Order list that finally lets you say what draws on top. With thanks to Andrew Austin-Adler of Triple-A Tropics, whose product choices and anomaly conventions the ocean section follows.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -51529,6 +52390,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     // Default OFF, so only an explicit 'true' checks it. A missing key means
     // never set, which is off, which is why this compares against 'true'.
+    try { if (typeof _sstSettingsRender === 'function') _sstSettingsRender(); }
+    catch (e) {}
     if (localStorage.getItem('lqm_alertpopup')==='true') {
       const el=document.getElementById('lqm-set-alertpopup'); if(el) el.checked=true;
     }
@@ -54348,6 +55211,222 @@ function _ovLoadOrder(){
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', attach); else attach();
 })();
+
+// ══════════════════════════════════════════════════════════════════════════
+// LAYER ORDER: the four big map layers, and both order lists in Settings
+// ══════════════════════════════════════════════════════════════════════════
+//
+// Leaflet decides what covers what with panes: a pane is just a div, and a
+// higher z-index means it is painted later, which means on top. The overlay
+// list already reorders its own panes from 402 upward. The four layers below
+// that band had their z-values written once at boot and never moved, so with
+// radar and satellite both on you got whichever order the code happened to
+// pick. These four now read their z from a saved list instead, in the same
+// 398 to 401 band they already used, so nothing collides with the overlays.
+const MAP_STACK_KEY = 'gwcfc_map_stack_order';
+const MAP_STACK_TOP_Z = 401;            // the top row's z; each row below is one less
+const MAP_STACK_LAYERS = [
+  { id: 'borders',   pane: 'bordersPane',  label: 'Borders & Boundaries' },
+  { id: 'radar',     pane: 'radarPane',    label: 'Radar' },
+  { id: 'satellite', pane: 'satPhotoPane', label: 'Satellite' },
+  { id: 'ocean',     pane: 'sstPane',      label: 'Ocean & Sea Temperature' },
+];
+function _stackDefault(){ return MAP_STACK_LAYERS.map(l => l.id); }
+// Reads the saved order, then repairs it. A stored list can be stale in two
+// directions: it can name a layer that no longer exists (dropped on read) and
+// it can be missing one added since it was saved (appended in default order),
+// so a person who saved an order two versions ago still gets a complete list.
+function _stackOrder(){
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(MAP_STACK_KEY) || '[]'); } catch(e){}
+  if (!Array.isArray(saved)) saved = [];
+  const known = new Set(_stackDefault());
+  const out = saved.filter(id => known.has(id));
+  const seen = new Set(out);
+  _stackDefault().forEach(id => { if (!seen.has(id)) out.push(id); });
+  return out;
+}
+let _stackApplyWait = 0;
+function _stackApply(){
+  // The map is built by an earlier script than this one, but not necessarily
+  // before this one runs, and a saved order applied to a map that does not
+  // exist yet is an order silently lost. Wait for it, briefly, rather than
+  // giving up: ten tries at 300 ms is three seconds, far longer than the map
+  // takes, and it stops rather than spinning forever if something is broken.
+  if (typeof map === 'undefined' || !map) {
+    if (_stackApplyWait++ < 10) setTimeout(_stackApply, 300);
+    return;
+  }
+  _stackApplyWait = 0;
+  _stackOrder().forEach((id, idx) => {
+    const def = MAP_STACK_LAYERS.find(l => l.id === id);
+    if (!def) return;
+    const pane = map.getPane(def.pane);
+    if (pane) pane.style.zIndex = String(MAP_STACK_TOP_Z - idx);
+  });
+}
+function _stackSave(ids){
+  try { localStorage.setItem(MAP_STACK_KEY, JSON.stringify(ids)); } catch(e){}
+  _stackApply();
+}
+function _stackReset(){
+  try { localStorage.removeItem(MAP_STACK_KEY); } catch(e){}
+  _stackApply();
+  _stackRender();
+}
+// A pane holds nothing until a layer is added to it and its container is
+// removed again when the layer goes, so "has children" is the same question
+// as "is this layer on" without having to know each subsystem's own flag.
+function _stackLive(paneName){
+  if (typeof map === 'undefined' || !map) return false;
+  const pane = map.getPane(paneName);
+  return !!(pane && pane.childElementCount > 0);
+}
+function _stackRender(){
+  const host = document.getElementById('lqm-stack-list');
+  if (!host) return;
+  // bordersPane is built the first time borders are drawn, which can be long
+  // after boot, so re-applying on every open is what gets the saved order onto
+  // a pane that did not exist when the order was last applied.
+  _stackApply();
+  const ids = _stackOrder();
+  host.innerHTML = '';
+  ids.forEach((id, idx) => {
+    const def = MAP_STACK_LAYERS.find(l => l.id === id);
+    if (!def) return;
+    const row = document.createElement('div');
+    row.className = 'lqm-order-row';
+    row.dataset.stackid = id;
+    row.innerHTML =
+      `<span class="lqm-order-grip"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-grip></use></svg></span>` +
+      `<span class="lqm-order-dot${_stackLive(def.pane) ? ' on' : ''}"></span>` +
+      `<span class="lqm-order-name">${def.label}</span>` +
+      `<span class="lqm-order-z">z ${MAP_STACK_TOP_Z - idx}</span>` +
+      `<span class="lqm-order-btn${idx === 0 ? ' off' : ''}" data-move="up" title="Move up">▲</span>` +
+      `<span class="lqm-order-btn${idx === ids.length - 1 ? ' off' : ''}" data-move="down" title="Move down">▼</span>`;
+    host.appendChild(row);
+  });
+}
+function _stackRows(){ return Array.from(document.querySelectorAll('#lqm-stack-list .lqm-order-row')); }
+function _stackCommit(){
+  _stackSave(_stackRows().map(r => r.dataset.stackid));
+  _stackRender();
+}
+
+// ── The overlay list, mirrored into Settings ──────────────────────────────
+//
+// This is a view of the fly-out list, not a second copy of it: every move
+// here reorders the real .ov-pill rows and then calls the same save the
+// fly-out's own drag calls. One list, two places to touch it, so the two can
+// never drift apart and disagree about what draws on top.
+function _ovOrderRender(){
+  const host = document.getElementById('lqm-ovorder-list');
+  if (!host) return;
+  const rows = _ovRows();
+  host.innerHTML = '';
+  rows.forEach((src, idx) => {
+    const nameEl = src.querySelector('.ov-rowname');
+    const row = document.createElement('div');
+    row.className = 'lqm-order-row';
+    row.dataset.ovid = src.dataset.ovid;
+    row.innerHTML =
+      `<span class="lqm-order-grip"><svg class=svgi width=1em height=1em style=vertical-align:-.15em><use href=#ic-grip></use></svg></span>` +
+      `<span class="lqm-order-dot${src.classList.contains('active') ? ' on' : ''}"></span>` +
+      `<span class="lqm-order-name"></span>` +
+      `<span class="lqm-order-btn${idx === 0 ? ' off' : ''}" data-move="up" title="Move up">▲</span>` +
+      `<span class="lqm-order-btn${idx === rows.length - 1 ? ' off' : ''}" data-move="down" title="Move down">▼</span>`;
+    // textContent, not innerHTML: an overlay's name is a label, and putting a
+    // label through the HTML parser is how a stray & or < turns into markup.
+    row.querySelector('.lqm-order-name').textContent = nameEl ? nameEl.textContent : src.dataset.ovid;
+    host.appendChild(row);
+  });
+}
+function _ovOrderRows(){ return Array.from(document.querySelectorAll('#lqm-ovorder-list .lqm-order-row')); }
+function _ovOrderCommit(){
+  const cont = _ovContainer();
+  if (cont) {
+    _ovOrderRows().forEach(r => {
+      const real = document.getElementById('op-' + r.dataset.ovid);
+      if (real) cont.appendChild(real);          // appendChild moves, it does not copy
+    });
+  }
+  _ovSaveOrder();
+  _ovOrderRender();
+}
+function _ovOrderReset(){
+  try { localStorage.removeItem(OV_ORDER_KEY); } catch(e){}
+  // Nothing stores the original order, but the page's own markup is that
+  // order, so reloading the list from the document is the reset.
+  location.reload();
+}
+
+// One drag-and-arrows handler serving both lists, told apart by which
+// container the event started in.
+(function _orderListInit(){
+  let drag = null;
+  function listOf(el){
+    const host = el.closest('#lqm-stack-list, #lqm-ovorder-list');
+    if (!host) return null;
+    return host.id === 'lqm-stack-list'
+      ? { host, rows: _stackRows, commit: _stackCommit }
+      : { host, rows: _ovOrderRows, commit: _ovOrderCommit };
+  }
+  function onClick(e){
+    const btn = e.target.closest('.lqm-order-btn');
+    if (!btn || btn.classList.contains('off')) return;
+    const ctx = listOf(btn); if (!ctx) return;
+    const row = btn.closest('.lqm-order-row'); if (!row) return;
+    const rows = ctx.rows(), i = rows.indexOf(row);
+    if (btn.dataset.move === 'up' && i > 0) ctx.host.insertBefore(row, rows[i - 1]);
+    else if (btn.dataset.move === 'down' && i < rows.length - 1) {
+      // insertBefore the row after next, because inserting before the next
+      // one is where it already is: that would be a move of nothing.
+      if (rows[i + 2]) ctx.host.insertBefore(row, rows[i + 2]);
+      else ctx.host.appendChild(row);
+    }
+    ctx.commit();
+  }
+  function onDown(e){
+    const grip = e.target.closest('.lqm-order-grip'); if (!grip) return;
+    const ctx = listOf(grip); if (!ctx) return;
+    const row = grip.closest('.lqm-order-row'); if (!row) return;
+    e.preventDefault();
+    drag = { row, ctx };
+    row.classList.add('dragging');
+    try { grip.setPointerCapture(e.pointerId); } catch(_){}
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp, { once:true });
+    document.addEventListener('pointercancel', onUp, { once:true });
+  }
+  function onMove(e){
+    if (!drag) return;
+    const { host } = drag.ctx;
+    const others = drag.ctx.rows().filter(r => r !== drag.row);
+    let placed = false;
+    for (const sib of others){
+      const rect = sib.getBoundingClientRect();
+      if (e.clientY < rect.top + rect.height / 2){ host.insertBefore(drag.row, sib); placed = true; break; }
+    }
+    if (!placed) host.appendChild(drag.row);
+  }
+  function onUp(){
+    document.removeEventListener('pointermove', onMove);
+    if (!drag) return;
+    drag.row.classList.remove('dragging');
+    const ctx = drag.ctx; drag = null;
+    // Commit on drop rather than on every move: unlike the fly-out, this list
+    // is not the map, so there is nothing on screen that needs to keep up
+    // mid-drag, and a re-render mid-drag would delete the row being held.
+    ctx.commit();
+  }
+  function attach(){
+    document.addEventListener('pointerdown', onDown);
+    document.addEventListener('click', onClick);
+    _stackApply();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);
+  else attach();
+})();
 </script>
 
 <!-- ══════════════════════════════════════════════
@@ -54454,6 +55533,16 @@ function _ovLoadOrder(){
 
       <div class="credit-sep-label">People &amp; Communities</div>
       <div class="credit-row">
+        <img class="credit-logo" src="https://github.com/WeathermanAAA.png" alt="Andrew Austin-Adler avatar" loading="lazy">
+        <div class="credit-info">
+          <div class="credit-name">Triple-A Tropics &middot; Andrew Austin-Adler</div>
+          <div class="credit-desc">Used with permission, and in three separate places. The ensemble cyclone-centre detection and the ATCF ingest behind the AI Cyclones and Spaghetti panels are adapted from his code. The ocean section follows his product choices and anomaly conventions: which fields are worth showing, the 1991-2020 baseline, the record envelope, and subtracting the global mean to separate a warm patch from a warming ocean. Those fields are built on the Pi here rather than fetched from his server, so none of this costs him bandwidth.</div>
+          <div class="credit-uses"><span class="credit-use">Sea Surf. Temp</span><span class="credit-use">Ocean Heat</span><span class="credit-use">AI Cyclones</span><span class="credit-use">Spaghetti Models</span></div>
+          <a class="credit-link" href="https://triple-a-tropics.com/" target="_blank" rel="noopener">triple-a-tropics.com</a>
+          <a class="credit-link" href="https://github.com/WeathermanAAA/Triple-A-Tropics" target="_blank" rel="noopener" style="margin-left:10px">github.com/WeathermanAAA</a>
+        </div>
+      </div>
+      <div class="credit-row">
         <img class="credit-logo" src="https://www.google.com/s2/favicons?domain=globaleas.org&amp;sz=64" alt="Global Weather and EAS Society logo" loading="lazy">
         <div class="credit-info">
           <div class="credit-name">Global Weather &amp; EAS Society</div>
@@ -54510,6 +55599,36 @@ function _ovLoadOrder(){
           <div class="credit-desc">Watches, warnings and advisories, point forecasts, forecast zones and radar station metadata.</div>
           <div class="credit-uses"><span class="credit-use">Alerts</span><span class="credit-use">Forecasts</span><span class="credit-use">Radar Sites</span><span class="credit-use">WFO Offices</span></div>
           <a class="credit-link" href="https://www.weather.gov/documentation/services-web-api" target="_blank" rel="noopener">api.weather.gov</a>
+        </div>
+      </div>
+      <div class="credit-row">
+        <img class="credit-logo" src="https://www.google.com/s2/favicons?domain=ncei.noaa.gov&amp;sz=64" alt="NOAA NCEI logo" loading="lazy">
+        <div class="credit-info">
+          <div class="credit-name">NOAA NCEI &middot; OISST v2.1</div>
+          <div class="credit-full">National Centers for Environmental Information &middot; Optimum Interpolation SST</div>
+          <div class="credit-desc">The quarter-degree daily sea-surface temperature analysis, complete from 1982, which the ocean anomaly, record and change fields are all computed from against the 1991-2020 baseline.</div>
+          <div class="credit-uses"><span class="credit-use">Sea Surf. Temp</span><span class="credit-use">Anomalies</span><span class="credit-use">Records</span></div>
+          <a class="credit-link" href="https://www.ncei.noaa.gov/products/optimum-interpolation-sst" target="_blank" rel="noopener">ncei.noaa.gov</a>
+        </div>
+      </div>
+      <div class="credit-row">
+        <img class="credit-logo" src="https://www.google.com/s2/favicons?domain=coralreefwatch.noaa.gov&amp;sz=64" alt="NOAA Coral Reef Watch logo" loading="lazy">
+        <div class="credit-info">
+          <div class="credit-name">NOAA Coral Reef Watch</div>
+          <div class="credit-full">NESDIS STAR &middot; Coral Reef Watch 5 km daily SST</div>
+          <div class="credit-desc">The 5 km daily sea-surface temperature analysis, offered beside OISST as a second independent look at the same ocean at four times the resolution.</div>
+          <div class="credit-uses"><span class="credit-use">Sea Surf. Temp</span></div>
+          <a class="credit-link" href="https://coralreefwatch.noaa.gov/" target="_blank" rel="noopener">coralreefwatch.noaa.gov</a>
+        </div>
+      </div>
+      <div class="credit-row">
+        <img class="credit-logo" src="https://www.google.com/s2/favicons?domain=aoml.noaa.gov&amp;sz=64" alt="NOAA AOML logo" loading="lazy">
+        <div class="credit-info">
+          <div class="credit-name">NOAA AOML</div>
+          <div class="credit-full">Atlantic Oceanographic and Meteorological Laboratory</div>
+          <div class="credit-desc">Tropical cyclone heat potential and the depth of the 26 degree isotherm: how much warm water a hurricane actually has beneath it, which surface temperature alone cannot show.</div>
+          <div class="credit-uses"><span class="credit-use">Ocean Heat</span><span class="credit-use">26 C Depth</span></div>
+          <a class="credit-link" href="https://www.aoml.noaa.gov/phod/regsatprod/" target="_blank" rel="noopener">aoml.noaa.gov</a>
         </div>
       </div>
       <div class="credit-row">
@@ -59233,6 +60352,9 @@ function _mbPanes() {
     p.style.pointerEvents = 'none';
   }
   _mbPanesReady = true;
+  // bordersPane is in the reorderable stack, and it is born here rather than
+  // at boot, so its saved position has to be applied the moment it exists.
+  try { if (typeof _stackApply === 'function') _stackApply(); } catch (e) {}
   return true;
 }
 

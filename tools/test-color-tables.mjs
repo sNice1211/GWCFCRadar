@@ -347,18 +347,34 @@ console.log('\n7. the Settings rail');
     // Rebuilding must not duplicate the rail.
     lqmOpenSettings(); lqmOpenSettings();
     const tabsAfter = document.querySelectorAll('#lqm-set-rail .lqm-set-tab').length;
+    // The headings of cards that were folded into somebody else's tab. They
+    // have to still be on screen somewhere, or a merge is a section that
+    // quietly lost its name.
+    const subHeads = Array.from(
+      document.querySelectorAll('#lqm-set-content .lqm-settings-category.lqm-sub-head'))
+      .map(h => h.textContent.trim());
     return { tabs, onModels, litTab, litCount, onAlerts, everyTabHasContent,
-             everyCardHasTab, gatedHidden, afterJunk, tabsAfter, labels };
+             everyCardHasTab, gatedHidden, afterJunk, tabsAfter, labels,
+             subHeads };
   });
-  ok('there is a tab per section', r.tabs.length >= 14, String(r.tabs.length));
+  // Not one tab per card any more. Sections that are one subject split
+  // across several cards (radar and radar colours, wind and wave particles)
+  // now share a tab and keep their own headings as sub-heads inside it, so
+  // the count is a floor rather than an equality: it says the rail is real
+  // without breaking every time a section is added or merged.
+  ok('the rail carries a tab for every subject', r.tabs.length >= 12,
+     String(r.tabs.length));
   ok('every tab id is unique, so one click lights one tab',
      new Set(r.tabs).size === r.tabs.length, r.tabs.join(','));
-  // The names are the ones the sections already had. Inventing tab labels
-  // beside them would mean two names for one thing and a second place for
-  // them to drift apart.
-  ok('the tabs are named after the sections themselves',
-     r.labels.includes('Radar Colors') && r.labels.includes('StormStream Mode')
-     && r.labels.includes('Map Borders & Labels'), r.labels.join(' | '));
+  // A merged tab takes the subject's name, and the cards under it keep their
+  // own. Nothing gets a name invented for it in a second place, which is the
+  // thing that would let the two drift apart.
+  ok('the tabs are named after their subject',
+     r.labels.includes('Radar') && r.labels.includes('StormStream')
+     && r.labels.includes('Map'), r.labels.join(' | '));
+  ok('and a merged card keeps its own heading as a sub-head inside the tab',
+     r.subHeads.includes('Radar Colors')
+     && r.subHeads.includes('Map Borders & Labels'), r.subHeads.join(' | '));
   ok('and nothing was renamed on the way',
      r.tabs.length === r.labels.length, r.labels.join(' | '));
   ok('choosing one shows only that section',

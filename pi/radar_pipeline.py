@@ -1851,6 +1851,12 @@ def build_mrms():
             man["products"][name] = {
                 "file": f"{fdir}/{name}.png", "label": spec["label"],
                 "unit": spec["unit"], "min": lo, "max": hi,
+                # Which ramp painted it. MRMS ships finished pictures rather
+                # than encoded values, so this is the only way the page can
+                # work a number back out of a pixel: match the colour against
+                # the same 256 steps and read the index. Without it the
+                # Inspector can say a product is there but not what it says.
+                "ramp": spec["ramp"],
                 "bounds": [[south, west], [north, east]],
                 "built": now.isoformat(),
             }
