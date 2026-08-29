@@ -12202,11 +12202,36 @@ function _alertNoteNew(which, items) {
   return null;
 }
 
+// Whether a new alert is allowed to bring its panel to the front by itself.
+//
+// Default OFF. A panel that appears over whatever you are doing every time a
+// warning is issued is the behaviour most people want to be able to stop, so
+// it is opt in rather than opt out. Nothing about the warning itself is
+// hidden by that: the alert still arrives, still draws its polygon, still
+// counts on the pill, still sounds and still flashes, and the panel is one
+// tap away where it always was.
+//
+// Deliberately narrow: this gates the panel FLINGING ITSELF OPEN and nothing
+// else. Turning a switch labelled "open panel" into a switch that quietly
+// suppresses warnings would be the worst kind of setting in an app like this
+// one, so it does exactly what its label says and no more.
+function _alertPopupAllowed() {
+  try {
+    // Absent means never set, which is off. Compared against 'true' rather
+    // than against 'false' for that reason.
+    return localStorage.getItem('lqm_alertpopup') === 'true';
+  } catch (e) { return false; }
+}
+
 // Called by both renderers once they have built their cards.
 function _alertMaybeRaise(which, items) {
   let card = null;
+  // The seen-ids bookkeeping runs either way. Skipping it when the popup is
+  // off would leave every alert permanently "new", so switching the setting
+  // back on mid-session would raise the panel for something issued an hour
+  // ago as though it had just been published.
   try { card = _alertNoteNew(which, items); } catch (e) { return; }
-  if (card) _raiseAlertPanel(which, card);
+  if (card && _alertPopupAllowed()) _raiseAlertPanel(which, card);
 }
 
 // ── EAS API , powered by https://alerts.globaleas.org/swagger/v1/swagger.json (OAS 3.0) ──
@@ -45448,6 +45473,21 @@ function selectProduct(p) {
       </label>
     </div>
     <div class="lqm-settings-row">
+      <span class="lqm-settings-lbl">Open Panel on New Alert</span>
+      <label class="lqm-toggle">
+        <input type="checkbox" id="lqm-set-alertpopup"
+               onchange="lqmToggleSetting('alertpopup',this.checked)">
+        <div class="lqm-toggle-track"></div>
+        <div class="lqm-toggle-knob"></div>
+      </label>
+    </div>
+    <div style="font-family:var(--mono);font-size:9px;color:var(--muted);padding:2px 0 6px;line-height:1.5;">
+      Off by default. Turn it on and a newly issued warning brings the WX Alerts panel to the front by
+      itself. Left off, alerts still arrive, still draw on the map, still count on the pill and still
+      sound, and the panel stays exactly where you put it. This switch only decides whether the panel
+      opens itself; it never turns a warning off.
+    </div>
+    <div class="lqm-settings-row">
       <span class="lqm-settings-lbl">Alert Opacity</span>
       <div style="display:flex;align-items:center;gap:6px;">
         <input type="range" id="lqm-set-alertopacity" min="20" max="100" value="65" step="5"
@@ -50702,7 +50742,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The radar is a time machine now. A new Time Machine button on the Radar menu travels any site back to any moment since March 2022: pick a date and time, or jump by a day, a month or a year, and that radar redraws as it looked then with its own scrubbable loop. A gold PAST bar stays on screen so an old picture can never pass for a live one. Playback itself is far faster: frames are held so that showing one takes 0.009 of a millisecond instead of 3.8, the scan listing reads a whole day in one request instead of an hour at a time, frames decode several at once rather than one by one, and how much history is kept now follows your device memory instead of a fixed forty frames. Scrub to the start of a loop and it reaches further back on its own.';
+const APP_LATEST_UPDATE = 'The WX Alerts panel no longer throws itself open every time a warning is issued. There is a new switch in Settings under Alerts, Open Panel on New Alert, and it is off to start with, so the panel stays exactly where you put it. Turn it on if you want the old behaviour back. Either way the warning still arrives, still draws on the map, still counts on the pill and still sounds: the switch only decides whether the panel opens itself.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
@@ -51487,6 +51527,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const el = document.getElementById(elId);
       if (el) { el.value = v; window[fnName](v); }
     });
+    // Default OFF, so only an explicit 'true' checks it. A missing key means
+    // never set, which is off, which is why this compares against 'true'.
+    if (localStorage.getItem('lqm_alertpopup')==='true') {
+      const el=document.getElementById('lqm-set-alertpopup'); if(el) el.checked=true;
+    }
     if (localStorage.getItem('lqm_crosshair')==='1') { document.getElementById('lqm-set-crosshair').checked=true; document.body.classList.add('gwcfc-crosshair'); }
     if (localStorage.getItem('lqm_contrast')==='1')  { document.getElementById('lqm-set-contrast').checked=true; }
     if (localStorage.getItem('lqm_coords')==='1')    { const el=document.getElementById('lqm-set-coords'); if(el){el.checked=true;lqmToggleSetting('coords',true);} }

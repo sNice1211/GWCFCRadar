@@ -15,9 +15,13 @@
  * by measuring the same string twice, once in Comfortaa and once in the
  * fallback, because two different faces cannot produce the same width.
  *
- * Then the raise. A warning is worth nothing in a panel that happens to be
- * closed, so a newly issued alert opens its panel, brings it to the front and
- * marks the new row. The subtlety is "unless a specific area is selected":
+ * Then the raise, which is opt in: Settings > Alerts > Open Panel on New
+ * Alert, off by default, because a panel appearing over whatever you are
+ * doing every time a warning fires is the behaviour most people want to be
+ * able to stop. Turned on, a newly issued alert opens its panel, brings it to
+ * the front and marks the new row. Section 12 covers the switch itself, and
+ * the line it has to hold: off means the panel stays put, never that the
+ * warning is suppressed. The subtlety is "unless a specific area is selected":
  * someone watching one county should not have the panel thrown at them for a
  * warning two states away. So the gate is checked from both sides, with an
  * area set and without, and the seeding pass is checked too, since everything
@@ -95,6 +99,13 @@ await ctx.route('**://**', route => {
 await page.goto('file://' + join(ROOT, 'index.html'), { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(4200);
 await page.evaluate(() => { if (typeof closeTutorial === 'function') closeTutorial(); });
+// Raising the panel is opt in now: Settings > Alerts > Open Panel on New
+// Alert, off by default. Everything below this line exists to test the raise
+// itself, so the switch is turned on for it. Section 12 is where the switch
+// being off is checked, and it puts it back afterwards.
+await page.evaluate(() => {
+  try { localStorage.setItem('lqm_alertpopup', 'true'); } catch (e) {}
+});
 
 // One warning, as the National Weather Service actually shapes it.
 const feat = (id, event, area, lat = 35, lon = -97) => ({
@@ -424,7 +435,102 @@ console.log('\n11. the pop-out window is Comfortaa too');
   }
 }
 
-console.log('\n12. the page did not throw doing any of that');
+console.log('\n12. the switch that decides whether it raises at all');
+{
+  // Settings > Alerts > Open Panel on New Alert. Off by default, because a
+  // panel appearing over whatever you are doing every time a warning fires is
+  // the behaviour people most want to be able to stop.
+  //
+  // The line this section holds: the switch decides whether the PANEL OPENS
+  // ITSELF and nothing else. A switch in a weather app that quietly stopped
+  // warnings arriving would be a genuinely dangerous thing to ship, so the
+  // checks below prove the alert is still tracked while it is off.
+  const r = await page.evaluate(() => {
+    const out = {};
+    const panel = document.getElementById('alerts-panel');
+    const items = (ids) => ids.map(id => ({
+      id, area: '', card: document.createElement('div') }));
+    const shut = () => { panel.style.display = 'none'; };
+    const setSw = (v) => {
+      try {
+        if (v === null) localStorage.removeItem('lqm_alertpopup');
+        else localStorage.setItem('lqm_alertpopup', v);
+      } catch (e) {}
+    };
+
+    // Never set at all is the state a new visitor is in.
+    setSw(null);
+    out.defaultIsOff = !_alertPopupAllowed();
+    _alertSeen.alerts = null;
+    _alertMaybeRaise('alerts', items(['s1']));          // first pass seeds
+    shut();
+    _alertMaybeRaise('alerts', items(['s1', 's2']));    // s2 is genuinely new
+    out.stayedShutByDefault = panel.style.display !== 'flex';
+    // The alert is still KNOWN about, which is the whole safety point.
+    out.trackedAnyway = _alertSeen.alerts.has('s2');
+
+    // Turned on, the same event raises it.
+    setSw('true');
+    shut();
+    _alertMaybeRaise('alerts', items(['s1', 's2', 's3']));
+    out.raisesWhenOn = panel.style.display === 'flex';
+
+    // Off again, and one more new alert.
+    setSw('false');
+    shut();
+    _alertMaybeRaise('alerts', items(['s1', 's2', 's3', 's4']));
+    out.stayedShutWhenOff = panel.style.display !== 'flex';
+    out.trackedWhileOff = _alertSeen.alerts.has('s4');
+
+    // Switching back on must not then raise for s4, which happened while the
+    // switch was down. If the bookkeeping were skipped while off, every alert
+    // would stay permanently "new" and re-enabling would fling the panel open
+    // for something an hour old.
+    setSw('true');
+    shut();
+    _alertMaybeRaise('alerts', items(['s1', 's2', 's3', 's4']));
+    out.noStaleRaise = panel.style.display !== 'flex';
+    _alertMaybeRaise('alerts', items(['s1', 's2', 's3', 's4', 's5']));
+    out.stillRaisesForNew = panel.style.display === 'flex';
+    shut();
+
+    // The control itself.
+    const el = document.getElementById('lqm-set-alertpopup');
+    out.rowExists = !!el;
+    out.label = el ? el.closest('.lqm-settings-row')
+      .querySelector('.lqm-settings-lbl').textContent.trim() : null;
+    out.inAlertsSection = !!(el && /Alerts/.test(
+      el.closest('.lqm-settings-group').querySelector('.lqm-settings-category').textContent));
+    // Flipping the switch in the UI must be what writes the preference.
+    setSw(null);
+    el.checked = true; el.dispatchEvent(new Event('change'));
+    out.uiWritesOn = localStorage.getItem('lqm_alertpopup') === 'true'
+                  && _alertPopupAllowed();
+    el.checked = false; el.dispatchEvent(new Event('change'));
+    out.uiWritesOff = localStorage.getItem('lqm_alertpopup') === 'false'
+                   && !_alertPopupAllowed();
+
+    setSw('true');    // leave the rest of the file as it found things
+    return out;
+  });
+  ok('a fresh visitor has it off, so nothing flings itself open',
+     r.defaultIsOff && r.stayedShutByDefault, JSON.stringify(r));
+  // The one that matters most. Off must mean quiet, never blind.
+  ok('but the alert is still tracked while it is off',
+     r.trackedAnyway && r.trackedWhileOff, JSON.stringify(r));
+  ok('turning it on makes a new alert raise the panel', r.raisesWhenOn);
+  ok('turning it off again stops that', r.stayedShutWhenOff);
+  ok('and re-enabling does not raise for one that arrived while it was off',
+     r.noStaleRaise, JSON.stringify(r));
+  ok('while a genuinely new one still does', r.stillRaisesForNew);
+  ok('the switch is in Settings, under Alerts, and says what it does',
+     r.rowExists && r.inAlertsSection
+     && r.label === 'Open Panel on New Alert', JSON.stringify(r));
+  ok('and flipping it is what saves the choice',
+     r.uiWritesOn && r.uiWritesOff, JSON.stringify(r));
+}
+
+console.log('\n13. the page did not throw doing any of that');
 ok('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 await browser.close();
