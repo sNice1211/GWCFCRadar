@@ -11464,6 +11464,24 @@ function _fmtHHMMshort(d) {
 // Cached hot-path DOM references , set once after DOMContentLoaded
 let _elTimeline = null, _elAnimTime = null, _elFcstBadge = null;
 
+function _ensureFcstBadge() {
+  if (_elFcstBadge) return _elFcstBadge;
+  _elFcstBadge = document.getElementById('fcst-badge');
+  if (!_elFcstBadge) {
+    _elFcstBadge = document.createElement('span');
+    _elFcstBadge.id = 'fcst-badge';
+    _elFcstBadge.title = 'Forecast frame';
+    _elFcstBadge.style.cssText =
+      'font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:10px;' +
+      'background:rgba(255,224,102,0.18);color:#ffe066;border:1px solid rgba(255,224,102,0.4);' +
+      'letter-spacing:1px;flex-shrink:0;';
+    _elFcstBadge.textContent = 'FCST';
+    const animbar = document.getElementById('animbar');
+    if (animbar) animbar.appendChild(_elFcstBadge);
+  }
+  return _elFcstBadge;
+}
+
 function updateFrameLabel(idx) {
   if (!radarFrames[idx]) return;
   const d = new Date(radarFrames[idx].time * 1000);
@@ -11475,22 +11493,7 @@ function updateFrameLabel(idx) {
     _elAnimTime.style.color  = isForecast ? '#ffe066' : '';
     _elAnimTime.style.visibility = 'visible';
   }
-  if (!_elFcstBadge) {
-    _elFcstBadge = document.getElementById('fcst-badge');
-    if (!_elFcstBadge) {
-      _elFcstBadge = document.createElement('span');
-      _elFcstBadge.id = 'fcst-badge';
-      _elFcstBadge.title = 'Forecast frame';
-      _elFcstBadge.style.cssText =
-        'font-family:var(--mono);font-size:9px;padding:2px 6px;border-radius:10px;' +
-        'background:rgba(255,224,102,0.18);color:#ffe066;border:1px solid rgba(255,224,102,0.4);' +
-        'letter-spacing:1px;flex-shrink:0;';
-      _elFcstBadge.textContent = 'FCST';
-      const animbar = document.getElementById('animbar');
-      if (animbar) animbar.appendChild(_elFcstBadge);
-    }
-  }
-  if (_elFcstBadge) _elFcstBadge.style.display = isForecast ? 'inline-block' : 'none';
+  _ensureFcstBadge().style.display = isForecast ? 'inline-block' : 'none';
 }
 
 function showFrame(idx) {
@@ -22408,6 +22411,13 @@ const MRMS_PLAY_HOURS = 72;
 
 // Build the scrub list from the manifest the Pi just answered with. Frames
 // are timestamps only at this point; nothing is fetched.
+//
+// When composite reflectivity is the active layer and the Pi has a fresh
+// nowcast.json, its lead-time frames are appended after the observed ones -
+// same map, same scrub bar, just running past "now" into pysteps'
+// extrapolation. Every other product has no such file and gets none of
+// this; _mrmsNowcast is only ever set when key === 'composite' to begin
+// with (see _mrmsLoad).
 function _mrmsLoopBuild(man, base) {
   const key = _mrmsLeadKey();
   const p = key && man.products && man.products[key];
@@ -22426,6 +22436,13 @@ function _mrmsLoopBuild(man, base) {
   _mrmsLoop.frames = frames.map(f => ({
     t: f.t, file: f.file, time: _mrmsStampMs(f.t), bounds: p.bounds,
   })).filter(f => isFinite(f.time));
+  if (key === 'composite' && _mrmsNowcast && Array.isArray(_mrmsNowcast.frames)) {
+    const fcst = _mrmsNowcast.frames.map(f => ({
+      t: f.file, file: f.file, time: Date.parse(f.valid), bounds: p.bounds,
+      dir: 'nowcast', forecast: true,
+    })).filter(f => isFinite(f.time));
+    _mrmsLoop.frames = _mrmsLoop.frames.concat(fcst);
+  }
   _mrmsLoop.key = key;
   _mrmsLoop.base = base;
   // Hold the frame that was being looked at across a refresh, so the
@@ -22450,9 +22467,20 @@ function _mrmsLoopShow(idx) {
     if (!_mrmsOn[k]) return;
     const p = _mrmsManifest.products && _mrmsManifest.products[k];
     if (!p) return;
-    const pick = _mrmsNearest(p, want.time);
+    let pick, dir;
+    if (k === _mrmsLoop.key) {
+      // The timeline's own product: show exactly this frame, wherever it
+      // actually lives - radar/mrms for an observed one, radar/nowcast for
+      // one of pysteps' lead times. Every other active product has no
+      // forecast frames of its own, so it keeps landing on nearest-in-time
+      // the way it always has (which, past "now", is just its newest).
+      pick = want; dir = want.dir || 'mrms';
+    } else {
+      pick = _mrmsNearest(p, want.time);
+      dir = 'mrms';
+    }
     if (!pick) return;
-    const url = `${base}/radar/mrms/${pick.file}`;
+    const url = `${base}/radar/${dir}/${pick.file}`;
     if (_mrmsOv[k]) {
       // setUrl rather than a new layer: swapping the image on one overlay is
       // what makes playback a repaint instead of a teardown and rebuild.
@@ -22463,8 +22491,24 @@ function _mrmsLoopShow(idx) {
       _mrmsOv[k]._gwUrl = url;
     }
   });
+  _mrmsShowFcstBadge(!!want.forecast, want.time);
   _mrmsPreload(idx);
   if (typeof _refreshPlayButtonsEnabled === 'function') _refreshPlayButtonsEnabled();
+}
+
+// Same "FCST" pill and amber time label the model panel already shows past
+// its own analysis hour (see updateFrameLabel) - reused rather than a
+// second badge, so a forecast frame reads the same regardless of which
+// layer put it on screen.
+function _mrmsShowFcstBadge(isForecast, timeMs) {
+  if (!_elAnimTime) _elAnimTime = document.getElementById('anim-time');
+  if (_elAnimTime && isFinite(timeMs)) {
+    const ts = _fmtHHMM(new Date(timeMs));
+    _elAnimTime.textContent = (isForecast ? 'FCST ' : '') + ts;
+    _elAnimTime.style.color = isForecast ? '#ffe066' : '';
+    _elAnimTime.style.visibility = 'visible';
+  }
+  _ensureFcstBadge().style.display = isForecast ? 'inline-block' : 'none';
 }
 
 // The frame of one product closest in time to a wanted moment. Products are
@@ -22504,10 +22548,18 @@ function _mrmsPreload(idx) {
   for (let i = s; i <= e; i++) {
     Object.keys(_mrmsOn).forEach(k => {
       if (!_mrmsOn[k]) return;
-      const p = _mrmsManifest.products && _mrmsManifest.products[k];
-      const pick = p && _mrmsNearest(p, f[i].time);
+      let pick, dir;
+      if (k === _mrmsLoop.key) {
+        // Same reasoning as _mrmsLoopShow: the timeline's own product warms
+        // exactly the frames it will actually show, forecast ones included.
+        pick = f[i]; dir = f[i].dir || 'mrms';
+      } else {
+        const p = _mrmsManifest.products && _mrmsManifest.products[k];
+        pick = p && _mrmsNearest(p, f[i].time);
+        dir = 'mrms';
+      }
       if (!pick) return;
-      const url = `${base}/radar/mrms/${pick.file}`;
+      const url = `${base}/radar/${dir}/${pick.file}`;
       if (_mrmsWarmed.has(url)) return;
       _mrmsWarmed.add(url);
       // Bounded, or three days of scrubbing grows this set without limit.
@@ -22545,6 +22597,14 @@ async function _mrmsLoad() {
     return;
   }
   _mrmsManifest = man;
+  // Best-effort and composite-only: most Pis have no nowcast.json at all
+  // yet (this pipeline is new), and every other MRMS product has nothing
+  // for pysteps to extrapolate in the first place.
+  _mrmsNowcast = _mrmsLeadKey() === 'composite'
+    ? await fetch(`${base}/radar/nowcast/nowcast.json?t=${Date.now()}`,
+                  { cache: 'no-store' })
+        .then(r => r.ok ? r.json() : null).catch(() => null)
+    : null;
   _mrmsLoopBuild(man, base);
 
   if (_mrmsLoopActive()) {
@@ -28523,6 +28583,11 @@ function _mrmsGroupOf(key) {
 }
 
 let _mrmsManifest = null;
+// pysteps' lead-time frames for composite reflectivity, or null when
+// composite is not the active layer, or the Pi has not built a fresh
+// forecast, or a Pi old enough to predate this pipeline. Set in _mrmsLoad,
+// read in _mrmsLoopBuild.
+let _mrmsNowcast = null;
 
 async function _mrmsFetchManifest() {
   const base = _hdBase || await _hdResolveBase();
@@ -52019,7 +52084,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'You can ping people from the chat now. Type @ in the message box and a list of people opens: pick one and they get a real notification in Discord, not just a name on the map. The list is everyone the bot has seen in the server, plus anyone talking in the chat right now, and each row says whether picking them will actually reach Discord or only light them up here. Being pinged yourself turns the message gold, and you get a nudge even with the chat closed. Mentions typed in Discord now arrive here as names rather than as a row of digits. One message can ping up to eight people, and it still cannot ping @everyone, @here or a role: that is settled on the Pi and there is no way to ask for it from the page.';
+const APP_LATEST_UPDATE = 'Composite reflectivity radar can now show a short forecast. Turn it on and once the Pi has built one, the scrub bar keeps going past the newest real scan into about two hours of pysteps-predicted movement, marked with a yellow FCST badge so you always know which frames are observed and which are a guess.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

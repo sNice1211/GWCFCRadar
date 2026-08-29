@@ -27,14 +27,15 @@ same way netCDF4 is confined to satellite_pipeline.py.
 import os
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gfs_pipeline import Lock, band_alpha, disk_ok, free_mb, log, lut_for, \
-    read_data_png, write_json  # noqa: E402
+from gfs_pipeline import MAX_EDGE_PX, Lock, band_alpha, disk_ok, free_mb, \
+    log, lut_for, read_data_png, write_json  # noqa: E402
 from radar_pipeline import MRMS_PRODUCTS  # noqa: E402
 
 OUT_DIR = os.path.expanduser("~/wxdata/radar")
@@ -75,6 +76,36 @@ MAX_BASE_AGE_MIN = float(os.environ.get("GWCFC_NOWCAST_MAX_AGE_MIN", "15"))
 KEEP_HOURS = float(os.environ.get("GWCFC_NOWCAST_KEEP_HOURS", "6"))
 MAX_RUNS = int(os.environ.get("GWCFC_NOWCAST_MAX_RUNS", "24"))
 
+# composite_raw.png is kept at full MRMS resolution (7000x3500, 24.5M points
+# nationwide - see build_mrms's comment on why). pysteps' motion estimate and
+# semi-Lagrangian extrapolation each hold several arrays that size for every
+# lead time, and running that on the full national grid measured out at
+# 15GB+ before the kernel OOM-killed it. Shrinking first, the way every
+# other MRMS product's display PNG already does, is the fix - just with a
+# mean rather than a max, since a block max would bias the motion estimate
+# toward overestimating intensity and persistence at every step it was ever
+# downsampled at (the exact reason composite kept a full-res copy to begin
+# with; a block *mean* has no such bias, it only costs sharpness).
+# Reuses gfs_pipeline's own display-image ceiling as the default rather than
+# inventing a second number that could drift from it.
+NOWCAST_MAX_EDGE_PX = int(os.environ.get("GWCFC_NOWCAST_MAX_EDGE_PX", str(MAX_EDGE_PX)))
+
+
+def _downsample_mean(arr, factor):
+    """NaN-aware block-mean downsample by an integer factor. Trims any
+    leftover rows/cols that don't fill a whole block, same as build_mrms's
+    block-max halving does."""
+    if factor <= 1:
+        return arr
+    nj, ni = arr.shape
+    nj, ni = nj - nj % factor, ni - ni % factor
+    blocks = arr[:nj, :ni].reshape(nj // factor, factor, ni // factor, factor)
+    with warnings.catch_warnings():
+        # An all-NaN block (out of radar coverage) warns on every mean;
+        # ordinary and expected for a national grid's edges and gaps.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanmean(blocks, axis=(1, 3))
+
 
 def _scan_dirs():
     """Every MRMS scan folder that has a raw composite frame, oldest first."""
@@ -91,14 +122,23 @@ def _scan_dirs():
 
 
 def _latest_raw_frames(n=LOOKBACK_FRAMES):
-    """The n newest raw composite frames, oldest first, as (stamp, values)."""
+    """The n newest raw composite frames, oldest first, as (stamp, values),
+    downsampled to NOWCAST_MAX_EDGE_PX on the long edge if the source is
+    bigger - see NOWCAST_MAX_EDGE_PX above for why."""
     dirs = _scan_dirs()[-n:]
     lo, hi = MRMS_PRODUCTS[FIELD]["range"]
     frames = []
+    factor = None
     for stamp, path in dirs:
         q, has = read_data_png(path)
         vals = lo + q / 65535.0 * (hi - lo)
         vals[~has] = np.nan
+        if factor is None:
+            factor = max(1, -(-max(vals.shape) // NOWCAST_MAX_EDGE_PX))  # ceil div
+            if factor > 1:
+                log(f"nowcast: downsampling {vals.shape[1]}x{vals.shape[0]} "
+                    f"by {factor}x to stay under {NOWCAST_MAX_EDGE_PX}px")
+        vals = _downsample_mean(vals, factor)
         frames.append((stamp, vals))
     return frames
 
