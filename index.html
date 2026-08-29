@@ -6200,8 +6200,66 @@ body.shot-mode > button {
   font-family: 'Comfortaa', sans-serif; font-size: 12px; line-height: 1.45;
   color: rgba(232,244,255,0.9); word-wrap: break-word; overflow-wrap: anywhere;
 }
-#lqm-chat-foot { flex-shrink: 0; border-top: 1px solid rgba(212,175,55,0.18); padding: 9px 10px; }
+/* A name somebody was pinged by. Reads as a chip rather than plain text so a
+   ping is visible at a glance in a wall of messages. */
+.chat-mention {
+  color: #b9cbff; background: rgba(114,137,218,0.20);
+  border-radius: 4px; padding: 0 3px; font-weight: 700;
+}
+/* The same chip when the ping is aimed at YOU. Gold, because that is what the
+   rest of this page uses for "this one is about you". */
+.chat-mention.me { color: #ffe07a; background: rgba(212,175,55,0.26); }
+/* And the whole row, so being pinged is findable while scrolling back rather
+   than something you have to read every message to notice. */
+.chat-msg.pinged {
+  background: rgba(212,175,55,0.07);
+  border-left: 2px solid rgba(212,175,55,0.55);
+  border-radius: 6px; padding: 3px 4px 3px 6px; margin-left: -6px;
+}
+
+#lqm-chat-foot { flex-shrink: 0; border-top: 1px solid rgba(212,175,55,0.18); padding: 9px 10px; position: relative; }
 #lqm-chat-row { display: flex; gap: 7px; align-items: center; }
+
+/* The @ picker. Sits ABOVE the composer rather than below it, because the
+   composer is already at the bottom of the panel and a list opening downwards
+   would be off the end of it. */
+#lqm-chat-mentions {
+  display: none; position: absolute; left: 10px; right: 10px; bottom: 100%;
+  margin-bottom: 6px; z-index: 30;
+  max-height: 190px; overflow-y: auto;
+  background: rgba(8,14,24,0.97);
+  border: 1px solid rgba(0,140,186,0.45); border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(0,0,0,0.55);
+  padding: 4px;
+}
+#lqm-chat-mentions.open { display: block; }
+.chat-mrow {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 7px; border-radius: 7px; cursor: pointer;
+  font-family: 'Comfortaa', sans-serif; font-size: 11px; color: #d4e8ff;
+}
+.chat-mrow:hover, .chat-mrow.on { background: rgba(0,140,186,0.22); }
+.chat-mrow .chat-mav {
+  width: 20px; height: 20px; flex: 0 0 20px; border-radius: 50%;
+  background-size: cover; background-position: center;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 10px; color: #fff;
+}
+.chat-mrow .chat-mname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Says whether choosing this person will actually reach them. Somebody who
+   has never linked a Discord account can still be named, but naming them is
+   a highlight on the map and nothing more, and saying so beats a ping that
+   silently goes nowhere. */
+.chat-mrow .chat-mwhere {
+  flex: 0 0 auto; font-family: var(--mono); font-size: 7.5px;
+  letter-spacing: 0.5px; padding: 1px 4px; border-radius: 4px;
+}
+.chat-mrow .chat-mwhere.discord { color: #8ea1e1; background: rgba(114,137,218,0.16); }
+.chat-mrow .chat-mwhere.radar   { color: #7fd4ee; background: rgba(0,140,186,0.16); }
+.chat-mhint {
+  font-family: var(--mono); font-size: 8px; color: rgba(212,232,255,0.35);
+  padding: 3px 7px 2px; border-top: 1px solid rgba(255,255,255,0.06); margin-top: 3px;
+}
 #lqm-chat-input {
   flex: 1 1 auto; min-width: 0;
   background: rgba(0,0,0,0.35); border: 1px solid rgba(0,140,186,0.35);
@@ -45471,9 +45529,12 @@ function selectProduct(p) {
       <button class="chat-tool" id="lqm-chat-dictate" onclick="chatDictate()" title="Voice typing"><svg class=svgi width=1em height=1em><use href=#ic-antenna></use></svg></button>
       <button class="chat-tool" id="lqm-chat-rec" onclick="chatToggleVoiceMsg()" title="Record a voice message"><svg class=svgi width=1em height=1em><use href=#ic-speaker></use></svg></button>
     </div>
+    <div id="lqm-chat-mentions"></div>
     <div id="lqm-chat-row">
-      <input id="lqm-chat-input" type="text" maxlength="500" placeholder="Message…" autocomplete="off"
-             onkeydown="if(event.key==='Enter'){event.preventDefault();chatSend();}"/>
+      <input id="lqm-chat-input" type="text" maxlength="500" placeholder="Message… type @ to ping someone" autocomplete="off"
+             oninput="_mentionOnInput()"
+             onblur="_mentionCloseSoon()"
+             onkeydown="_mentionOnKeydown(event)"/>
       <button id="lqm-chat-send" onclick="chatSend()">SEND</button>
     </div>
     <div id="lqm-chat-status"></div>
@@ -47774,6 +47835,306 @@ let _chatUnsub = null;
 let _chatMsgs = [];
 let _chatLastSent = 0;
 
+/* ══════════════════════════════════════════════════════════════════════════
+   PINGING PEOPLE
+   ══════════════════════════════════════════════════════════════════════════
+
+   Typing @ in the composer opens a list of people. Picking one puts their
+   name in the message and remembers their Discord id, and when the message
+   goes out that name is rewritten as <@id> on the copy Discord receives.
+   Discord then raises a real notification on their phone.
+
+   The part worth understanding is where the safety lives. It is NOT here.
+   The browser only ASKS for a ping; the Pi decides. Every relayed message
+   carries allowed_mentions with an empty "parse", which is what makes
+   @everyone, @here and role pings impossible no matter what the text says,
+   plus a "users" list of exactly the ids the sender picked. So a message
+   cannot ping anyone the sender did not choose, and nothing that arrives
+   here from a page anyone can edit changes that.
+
+   Two sources feed the list, and they cover different gaps:
+
+     - chatRoster, which the bot writes for everyone it sees in Discord.
+       Complete, but only after the bot has been running and only once the
+       Firestore rules are published.
+     - the people already visible in this chat window, who arrived carrying
+       their own Discord id on every bridged message. Always available with
+       no new infrastructure at all, which is what makes the feature work
+       the moment it ships rather than the moment the Pi is next restarted.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const MENTION_MAX = 8;              // the same cap the Pi enforces
+const MENTION_ROSTER_TTL = 5 * 60 * 1000;
+const MENTION_ROWS = 7;             // how many the picker shows at once
+
+let _mentionRoster = [];            // [{id, name, avatar}] from the bot
+let _mentionRosterAt = 0;
+let _mentionPicked = [];            // people named in the message being typed
+let _mentionOpen = false;
+let _mentionSel = 0;
+let _mentionList = [];              // what the picker is currently showing
+let _mentionAnchor = -1;            // where the @ being completed starts
+let _mentionCloseTimer = null;
+
+// The roster the bot publishes. Missing is a normal state, not an error: it
+// simply means the bot has not run since this shipped, and the fallback below
+// covers that, so this fails quietly on purpose.
+async function _mentionFetchRoster(force) {
+  if (!force && Date.now() - _mentionRosterAt < MENTION_ROSTER_TTL) return _mentionRoster;
+  if (!_fbDb) return _mentionRoster;
+  try {
+    const snap = await _fbDb.collection('chatRoster').orderBy('seen', 'desc').limit(200).get();
+    _mentionRoster = snap.docs.map(d => d.data())
+      .filter(p => p && p.id && p.name);
+    _mentionRosterAt = Date.now();
+  } catch (e) {
+    // A rules file that has not been published yet lands here. Say it once,
+    // in the console, rather than at the person trying to type a message.
+    console.warn('chat roster unavailable:', e.message || e);
+    _mentionRosterAt = Date.now();     // do not retry on every keystroke
+  }
+  return _mentionRoster;
+}
+
+// Everyone this page could name, roster first and then whoever is on screen.
+// Deduplicated by Discord id where there is one and by name where there is
+// not, so a person who is both in the roster and in the window is one row.
+function _mentionCandidates() {
+  const out = [], seen = new Set();
+  const add = (id, name, avatar, where) => {
+    if (!name) return;
+    const key = id ? 'd:' + id : 'n:' + name.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ id: id || '', name, avatar: avatar || '', where });
+  };
+  _mentionRoster.forEach(p => add(p.id, p.name, p.avatar, 'discord'));
+  // Newest first, so the people talking right now are the easiest to reach.
+  for (let i = _chatMsgs.length - 1; i >= 0; i--) {
+    const m = _chatMsgs[i];
+    if (!m || !m.name) continue;
+    // Naming yourself is never what you meant to do.
+    if (m.uid && _currentUser && m.uid === _currentUser.uid) continue;
+    add(m.discordId || '', m.name, m.avatar, m.discordId ? 'discord' : 'radar');
+  }
+  return out;
+}
+
+// The word being typed after an @, or null if the cursor is not in one.
+// Deliberately allows spaces, because Discord display names have them and a
+// picker that gave up at the first space could not find "Storm Chaser Dan".
+// It stops after three words, which is longer than any real name and short
+// enough that an ordinary sentence containing an @ does not stay open forever.
+function _mentionQueryAt(text, caret) {
+  const before = text.slice(0, caret);
+  const at = before.lastIndexOf('@');
+  if (at < 0) return null;
+  // An @ only starts a mention at the beginning of a word, so an email
+  // address does not open the picker halfway through.
+  if (at > 0 && !/\s/.test(before[at - 1])) return null;
+  const frag = before.slice(at + 1);
+  if (/\n/.test(frag)) return null;
+  if (frag.split(/\s+/).length > 3) return null;
+  return { at, q: frag };
+}
+
+function _mentionRender() {
+  const box = document.getElementById('lqm-chat-mentions');
+  if (!box) return;
+  if (!_mentionOpen || !_mentionList.length) {
+    box.classList.remove('open');
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML = _mentionList.map((p, i) => {
+    const av = p.avatar && /^https?:/.test(p.avatar)
+      ? `<div class="chat-mav" style="background-image:url('${_escapeHtml(p.avatar)}')"></div>`
+      : `<div class="chat-mav" style="background:hsl(${Math.abs(_hashHue(p.name))},55%,38%)">`
+        + `${_escapeHtml((p.avatar && !/^https?:/.test(p.avatar)) ? p.avatar : p.name.charAt(0).toUpperCase())}</div>`;
+    // The tag is the honest bit: "discord" means this ping becomes a real
+    // notification, "radar" means it only lights up here.
+    const tag = p.where === 'discord'
+      ? `<span class="chat-mwhere discord">PINGS DISCORD</span>`
+      : `<span class="chat-mwhere radar">MAP ONLY</span>`;
+    return `<div class="chat-mrow${i === _mentionSel ? ' on' : ''}" data-i="${i}"
+      onmousedown="event.preventDefault();_mentionChoose(${i})">`
+      + `${av}<span class="chat-mname">${_escapeHtml(p.name)}</span>${tag}</div>`;
+  }).join('') + `<div class="chat-mhint">up and down to move, enter or tab to pick, esc to close</div>`;
+  box.classList.add('open');
+}
+
+function _mentionClose() {
+  _mentionOpen = false; _mentionList = []; _mentionAnchor = -1;
+  _mentionRender();
+}
+// Clicking a row blurs the input before the click lands, so the close waits a
+// moment for the choice to happen first.
+function _mentionCloseSoon() {
+  clearTimeout(_mentionCloseTimer);
+  _mentionCloseTimer = setTimeout(_mentionClose, 150);
+}
+
+function _mentionOnInput() {
+  const input = document.getElementById('lqm-chat-input');
+  if (!input) return;
+  const found = _mentionQueryAt(input.value, input.selectionStart ?? input.value.length);
+  if (!found) { _mentionClose(); return; }
+  // Fetched lazily, on the first @ rather than at boot: most visits never
+  // open the chat, and none of them should pay for a list they never see.
+  _mentionFetchRoster().then(() => {
+    const again = _mentionQueryAt(input.value, input.selectionStart ?? input.value.length);
+    if (!again) return;
+    const q = again.q.toLowerCase();
+    _mentionList = _mentionCandidates()
+      .filter(p => !q || p.name.toLowerCase().includes(q))
+      // A name that STARTS with what was typed is almost always the one
+      // meant, so those come first rather than being buried mid-list.
+      .sort((a, b) => {
+        const A = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+        const B = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+        return A - B;
+      })
+      .slice(0, MENTION_ROWS);
+    _mentionAnchor = again.at;
+    _mentionSel = 0;
+    _mentionOpen = _mentionList.length > 0;
+    _mentionRender();
+  });
+}
+
+function _mentionOnKeydown(e) {
+  if (_mentionOpen && _mentionList.length) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      _mentionSel = (_mentionSel + 1) % _mentionList.length; _mentionRender(); return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      _mentionSel = (_mentionSel - 1 + _mentionList.length) % _mentionList.length; _mentionRender(); return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      // Enter picks the highlighted person rather than sending. Sending a
+      // half-typed name because the picker was open is the one thing that
+      // would make this feel broken.
+      e.preventDefault(); _mentionChoose(_mentionSel); return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); _mentionClose(); return; }
+  }
+  if (e.key === 'Enter') { e.preventDefault(); chatSend(); }
+}
+
+function _mentionChoose(i) {
+  clearTimeout(_mentionCloseTimer);
+  const p = _mentionList[i];
+  const input = document.getElementById('lqm-chat-input');
+  if (!p || !input || _mentionAnchor < 0) return;
+  const caret = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, _mentionAnchor);
+  const after = input.value.slice(caret);
+  const token = '@' + p.name + ' ';
+  input.value = before + token + after;
+  const pos = before.length + token.length;
+  try { input.setSelectionRange(pos, pos); } catch (e) {}
+  if (p.id && !_mentionPicked.some(x => x.id === p.id)) {
+    if (_mentionPicked.length < MENTION_MAX) {
+      _mentionPicked.push({ id: p.id, name: p.name });
+    } else {
+      _chatStatus(`That is ${MENTION_MAX} people, which is as many as one message may ping.`);
+    }
+  }
+  _mentionClose();
+  input.focus();
+}
+
+// Finding one person's name in a message, and ONLY that person's.
+//
+// A plain substring search gets this wrong in a way that matters: "Danielle"
+// contains "Dan", so pinging Danielle would also ping Dan, and Dan would get
+// a notification for a message that never named him. The lookahead is what
+// stops that. A name only counts when the character after it could not have
+// been part of the name, so "@Danielle" matches Danielle and not Dan, while
+// "@Dan!" and "@Dan" at the end of a line both still match Dan.
+//
+// The escape is the other half: a display name may legitimately contain
+// regex characters, and "A.B(x)" unescaped is either a throw or a match on
+// the wrong text.
+function _mentionRe(name, flags) {
+  const esc = String(name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('@' + esc + '(?![A-Za-z0-9_])', flags || 'i');
+}
+
+// Which of the picked names actually survived to the send. Somebody can pick
+// a person and then delete the name again, and pinging them anyway because
+// the pick was remembered would be a notification for a message that does
+// not mention them. So the text is the final word: a name has to still be in
+// it to still count.
+function _mentionsInText(text) {
+  return _mentionPicked
+    .filter(p => _mentionRe(p.name).test(text))
+    .slice(0, MENTION_MAX);
+}
+
+// The copy Discord gets, with each name swapped for the token that pings.
+function _mentionToDiscord(text, picked) {
+  let out = text;
+  picked.forEach(p => {
+    out = out.replace(_mentionRe(p.name, 'gi'), `<@${p.id}>`);
+  });
+  return out;
+}
+
+// This account's Discord id, if it has ever been linked. It lives on the
+// Firestore profile rather than on the Firebase auth user, because linking
+// happens long after signing in, so it is read from the profile the page
+// already loaded rather than from _currentUser, which has never carried it.
+function _myDiscordId() {
+  try {
+    return (typeof _aiSyncProfileData !== 'undefined'
+      && _aiSyncProfileData && _aiSyncProfileData.discordId) || '';
+  } catch (e) { return ''; }
+}
+function _myChatName() {
+  if (!_currentUser) return '';
+  return String(_currentUser.displayName
+    || (_currentUser.email || '').split('@')[0] || '').toLowerCase();
+}
+
+// Was this message aimed at the person reading it? True for a Discord id
+// that belongs to this account, and for a plain name match, so somebody who
+// has never linked Discord still sees their own pings on the map.
+function _mentionHitsMe(m) {
+  if (!m || !Array.isArray(m.mentions) || !m.mentions.length) return false;
+  const myId = _myDiscordId();
+  const myName = _myChatName();
+  return m.mentions.some(x => (myId && x.id === myId)
+    || (myName && String(x.name || '').toLowerCase() === myName));
+}
+
+// Names inside a message body, drawn as chips. Runs over text that has
+// ALREADY been escaped, so nothing here can introduce markup: it only ever
+// wraps a run of characters that is known to be inert.
+function _mentionDecorate(escapedText, mentions, mine) {
+  if (!Array.isArray(mentions) || !mentions.length) return escapedText;
+  let out = escapedText;
+  // Longest name first, so "Storm Chaser Dan" is chipped as one person
+  // rather than being half-eaten by a shorter "Dan" that appears inside it.
+  const byLength = mentions.slice().sort(
+    (a, b) => String(b.name || '').length - String(a.name || '').length);
+  byLength.forEach(x => {
+    const name = String(x.name || '');
+    if (!name) return;
+    const myId = _myDiscordId(), myName = _myChatName();
+    const isMe = mine && ((myId && x.id === myId)
+                          || (myName && name.toLowerCase() === myName));
+    // The name is escaped first so it matches the already-escaped body, and
+    // the same boundary rule applies here as everywhere else: chipping "Dan"
+    // out of the middle of "Danielle" would show a ping that is not there.
+    out = out.replace(_mentionRe(_escapeHtml(name), 'gi'),
+      s => `<span class="chat-mention${isMe ? ' me' : ''}">${s}</span>`);
+  });
+  return out;
+}
+
 function _chatStatus(html) {
   const el = document.getElementById('lqm-chat-status');
   if (el) el.innerHTML = html || '';
@@ -47813,8 +48174,9 @@ function _chatRender() {
     const audio = m.audio
       ? `<audio class="chat-audio" controls preload="none" src="${_escapeHtml(m.audio)}"></audio>`
       : '';
-    const body = _escapeHtml(m.text || '');
-    return `<div class="chat-msg">${av}<div class="chat-body">
+    const mine = _mentionHitsMe(m);
+    const body = _mentionDecorate(_escapeHtml(m.text || ''), m.mentions, mine);
+    return `<div class="chat-msg${mine ? ' pinged' : ''}">${av}<div class="chat-body">
       ${quote}
       <div class="chat-meta">
         <span class="chat-name">${_escapeHtml(m.name || 'Anonymous')}</span>
@@ -47829,6 +48191,34 @@ function _chatRender() {
   if (atBottom) box.scrollTop = box.scrollHeight;
 }
 
+// Being pinged on the map should be as noticeable as being pinged in
+// Discord. Discord raises the notification on the phone; this is the other
+// half, for somebody who is looking at the map instead.
+//
+// _chatPingSeen holds the timestamp of the newest ping already announced, so
+// the first snapshot after opening the page does not announce a backlog of
+// pings from yesterday, and a later snapshot does not re-announce the same
+// one every time Firestore pushes an unrelated change.
+let _chatPingSeen = 0;
+function _chatNoticePings() {
+  const fresh = _chatMsgs.filter(m => m && m.ts > _chatPingSeen && _mentionHitsMe(m));
+  // The high-water mark moves whether or not anything is shown, so the very
+  // first snapshot silently swallows the history rather than announcing it.
+  const newest = _chatMsgs.reduce((a, m) => Math.max(a, (m && m.ts) || 0), 0);
+  const first = _chatPingSeen === 0;
+  _chatPingSeen = Math.max(_chatPingSeen, newest);
+  if (first || !fresh.length) return;
+  // Nothing is said when the chat is already on screen: the row lights up
+  // gold there, which is the same news told better.
+  const open = document.getElementById('lqm-chat-overlay')?.classList.contains('lqm-panel-open');
+  if (open) return;
+  const last = fresh[fresh.length - 1];
+  if (typeof showToast === 'function') {
+    showToast(`${_escapeHtml(last.name || 'Someone')} pinged you in chat`
+      + (fresh.length > 1 ? ` (+${fresh.length - 1} more)` : ''), 6000);
+  }
+}
+
 // One live listener while the panel is open. Firestore pushes changes, so a
 // message from either side shows up without polling.
 function _chatSubscribe() {
@@ -47837,6 +48227,7 @@ function _chatSubscribe() {
     _chatUnsub = _fbDb.collection('chat').orderBy('ts', 'desc').limit(CHAT_LIMIT)
       .onSnapshot(snap => {
         _chatMsgs = snap.docs.map(d => d.data()).reverse();
+        _chatNoticePings();
         _chatRender();
       }, err => {
         console.warn('chat listener:', err);
@@ -48053,13 +48444,20 @@ async function chatToggleVoiceMsg() {
 
 // Posting to Discord is deliberately not awaited by the map write: if the
 // relay is unreachable the message must still appear on the map.
-async function _chatPostToDiscord(name, text) {
+async function _chatPostToDiscord(name, text, mentions) {
   try {
     await _relayPost('chat', {
       // username puts the sender's name on the Discord post, so the channel
       // reads as people talking rather than one bot repeating everyone.
       username: `${name} (radar)`.slice(0, 80),
       content: text.slice(0, 1900),
+      // The ids this message is asking to ping. The Pi checks every one of
+      // them and forwards them as allowed_mentions.users, which is the only
+      // way a <@id> in the text above raises a notification at all. Sending
+      // ids the sender did not pick would be pointless: the Pi would forward
+      // them, but they are not in the text, and a ping with no mention in
+      // the message is not something Discord shows anybody.
+      mentions: (mentions || []).map(m => m.id).filter(Boolean),
     });
   } catch (e) {
     console.warn('chat -> Discord relay:', e);
@@ -48081,7 +48479,12 @@ async function chatSend() {
   // Capped because this is rendered in everybody else's chat, not just your
   // own: an absurdly long display name would otherwise stretch every row.
   const name = (_currentUser.displayName || (_currentUser.email || '').split('@')[0] || 'Radar user').slice(0, 40);
+  // Worked out BEFORE the box is cleared, from the text as it actually reads:
+  // a name that was picked and then deleted again must not ping.
+  const picked = _mentionsInText(text);
   input.value = '';
+  _mentionPicked = [];
+  _mentionClose();
   _chatStatus('');
   const attach = _chatAttach, reply = _chatReplyTo;
   chatClearAttachment();
@@ -48098,19 +48501,32 @@ async function chatSend() {
     if (reply) doc.replyTo = reply;
     if (attach?.image) doc.image = attach.image;
     if (attach?.audio) doc.audio = attach.audio;
+    // Stored so the web chat can light the same names up. This copy is a
+    // display aid only; the Discord notification is decided on the Pi.
+    if (picked.length) doc.mentions = picked;
     await _fbDb.collection('chat').add(doc);
 
     // Discord gets a readable stand-in for anything it cannot show inline:
     // the audio and the image live in Firestore, not on a public URL.
-    let out = text;
+    // Names become <@id> here and only here, so the map keeps showing the
+    // name a person reads while Discord gets the token that notifies them.
+    let out = _mentionToDiscord(text, picked);
     if (reply) out = `> ${reply.name}: ${reply.text}\n${out}`;
     if (attach?.image) out += (out ? '\n' : '') + '[shared a view of the map]';
     if (attach?.audio) out += (out ? '\n' : '') + `[voice message, ${attach.secs}s]`;
-    _chatPostToDiscord(name, out);   // not awaited on purpose
+    _chatPostToDiscord(name, out, picked);   // not awaited on purpose
+    if (picked.length) {
+      _chatStatus(`Pinged ${picked.map(p => p.name).join(', ')} in Discord.`);
+      setTimeout(() => _chatStatus(''), 4000);
+    }
   } catch (e) {
     console.warn('chat send:', e);
     input.value = text;               // give the message back rather than losing it
     _chatAttach = attach; _chatReplyTo = reply;
+    // The pings come back with it. Without this the message could be resent
+    // by pressing enter again and would quietly reach nobody, because the
+    // names would still be in the text but the ids behind them would be gone.
+    _mentionPicked = picked;
     if (attach) _chatShowAttachment(attach.image ? 'Map view ready to send' : `Voice message, ${attach.secs}s`, attach.image || null);
     if (reply) _chatShowReplyBar(reply);
     // A voice clip or a screenshot carries no text, which the earlier chat rule
@@ -51603,7 +52019,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'The ocean is on the map. Under Waves, Sea Surf. Temp now asks where the numbers should come from: Open-Meteo as before, or three analyses the Pi builds itself. OISST and Coral Reef Watch give you the temperature, how far it is from normal for the date, that same anomaly with the global average taken out, where records are being set, and how much it has moved over 7, 15 or 30 days. AOML adds ocean heat and the depth of the 26 C layer, which is what actually decides whether a hurricane can keep its fuel. The Inspector reads real numbers off all of it, and off MRMS, lightning, outlooks and warnings too. Settings gained an Ocean Colours scale you can retune and a Layer Order list that finally lets you say what draws on top. With thanks to Andrew Austin-Adler of Triple-A Tropics, whose product choices and anomaly conventions the ocean section follows.';
+const APP_LATEST_UPDATE = 'You can ping people from the chat now. Type @ in the message box and a list of people opens: pick one and they get a real notification in Discord, not just a name on the map. The list is everyone the bot has seen in the server, plus anyone talking in the chat right now, and each row says whether picking them will actually reach Discord or only light them up here. Being pinged yourself turns the message gold, and you get a nudge even with the chat closed. Mentions typed in Discord now arrive here as names rather than as a row of digits. One message can ping up to eight people, and it still cannot ping @everyone, @here or a role: that is settled on the Pi and there is no way to ask for it from the page.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');

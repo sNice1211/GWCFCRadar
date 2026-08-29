@@ -163,21 +163,57 @@ export async function patchUser(uid, fields) {
 //
 // createDocument rather than PATCH, because each message is a new document and
 // Firestore generates the id.
-export async function addChatMessage({ text, name, discordId, avatar }) {
+export async function addChatMessage({ text, name, discordId, avatar, mentions }) {
+  const doc = {
+    text,
+    name,
+    source: 'discord',
+    discordId: discordId || '',
+    avatar: avatar || '',
+    // Client-side milliseconds rather than a server timestamp: the website
+    // orders on this field, and it needs a value the instant the document
+    // lands rather than one that is briefly null.
+    ts: Date.now(),
+  };
+  // Who this message pinged, so the website can light the same names up that
+  // Discord did. Written only when there are some: an empty array on every
+  // message is a field the rules would have to allow for no benefit.
+  if (Array.isArray(mentions) && mentions.length) {
+    doc.mentions = mentions.slice(0, 8).map(m => ({
+      id: String(m.id || '').slice(0, 25),
+      name: String(m.name || '').slice(0, 60),
+    }));
+  }
   return call('/chat', {
     method: 'POST',
     body: JSON.stringify({
-      fields: Object.fromEntries(Object.entries({
-        text,
-        name,
-        source: 'discord',
-        discordId: discordId || '',
-        avatar: avatar || '',
-        // Client-side milliseconds rather than a server timestamp: the website
-        // orders on this field, and it needs a value the instant the document
-        // lands rather than one that is briefly null.
-        ts: Date.now(),
-      }).map(([k, v]) => [k, toValue(v)])),
+      fields: Object.fromEntries(Object.entries(doc).map(([k, v]) => [k, toValue(v)])),
+    }),
+  });
+}
+
+// ── The pingable roster ─────────────────────────────────────────────────────
+// The website cannot ask Discord who is in the server: it has no token, and a
+// webhook can only post, never read. So the bot writes down everyone it sees
+// and the website reads that list.
+//
+// The document id IS the Discord id, so this is naturally idempotent: seeing
+// somebody for the hundredth time updates their entry rather than adding a
+// hundredth copy of them. Nothing here is secret. A display name and an
+// avatar are what anyone in the server can already see, and the Discord id is
+// the thing that makes a ping land, which is the whole point.
+export async function upsertRosterEntry({ id, name, avatar }) {
+  if (!id) return null;
+  const fields = { id: String(id), name: String(name || '').slice(0, 60),
+                   avatar: String(avatar || '').slice(0, 300), seen: Date.now() };
+  const mask = Object.keys(fields).map(k => `updateMask.fieldPaths=${k}`).join('&');
+  // PATCH with a mask creates the document if it is missing and updates only
+  // these fields if it is not, which is exactly "remember this person" in one
+  // call with no read first.
+  return call(`/chatRoster/${encodeURIComponent(id)}?${mask}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, toValue(v)])),
     }),
   });
 }

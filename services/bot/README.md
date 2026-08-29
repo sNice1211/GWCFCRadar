@@ -88,6 +88,45 @@ the reply, that's the "thinking" state, not a hang.
 
 ---
 
+## Pinging people from the map
+
+Someone on the radar site can type `@` in the chat and pick a person. Their
+message reaches Discord with a real mention in it, so that person gets a real
+notification on their phone.
+
+**Where the list of people comes from.** The website has no Discord token and
+a webhook can only post, never read, so it cannot ask who is in the server.
+The bot writes the list instead, into a `chatRoster` collection in Firestore:
+Discord id, display name, avatar. By default it remembers everyone it sees,
+which means anyone who talks in the bridged channel, runs a command, or links
+their account. That grows on its own and needs no special permission.
+
+If you want the whole membership listed from the start instead, three things
+have to be true together, or the bot will not start at all:
+
+1. **Server Members Intent** switched on in the Discord developer portal
+   (Bot → Privileged Gateway Intents).
+2. `GatewayIntentBits.GuildMembers` added to the intents list in
+   `asturio-bot.mjs`.
+3. `ROSTER_SWEEP=1` in `.env`.
+
+Asking for a privileged intent that has not been granted is a hard failure,
+not a degraded one, which is why this is opt-in and off by default.
+
+**What a ping cannot do.** The Pi decides, not the browser. Every relayed
+message carries `allowed_mentions` with an empty `parse`, which is what makes
+`@everyone`, `@here` and role pings impossible whatever the message says,
+plus a `users` list holding only the ids the sender actually picked. Those ids
+are checked to be plain digits and capped at eight per message before they go
+anywhere. So a message can notify the people it names and nobody else.
+
+**Coming the other way**, a mention typed in Discord arrives on the map as
+`@Name` rather than as `<@844029301...>`: the bot resolves it before writing
+to Firestore, because the raw token is unreadable to anyone looking at the
+map.
+
+---
+
 ## If something goes wrong
 
 **`Missing DISCORD_TOKEN or DISCORD_CLIENT_ID`**

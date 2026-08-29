@@ -207,8 +207,47 @@ service cloud.firestore {
           (request.resource.data.source == 'radar' && realAccount()
             && request.resource.data.uid == request.auth.uid)
           || (request.resource.data.source == 'discord' && isSignedIn())
-        );
+        )
+        // Mentions are optional, and bounded when present. This list is only
+        // ever a display aid here: it lights names up in the web chat. It is
+        // NOT what decides who gets a Discord notification, which is settled
+        // on the Pi by allowed_mentions and cannot be reached from Firestore
+        // at all. Capped anyway, because an unbounded array on a document
+        // anyone signed in may create is a way to store junk cheaply.
+        && (!('mentions' in request.resource.data)
+            || (request.resource.data.mentions is list
+                && request.resource.data.mentions.size() <= 8));
       allow update: if false;
+      allow delete: if isStaff();
+    }
+
+    // ── THE PINGABLE ROSTER ───────────────────────────────────────────────
+    //
+    // Who the map's chat is allowed to offer as a ping target: Discord id,
+    // the name that person goes by, and their avatar. The bot writes it,
+    // because the website has no way to ask Discord who is in the server.
+    //
+    // World readable, and that is the honest description of what it is: a
+    // display name and an avatar are what anyone already sees in the server,
+    // and a Discord user id is public in every message that person sends. No
+    // email, no token, nothing that grants access to anything.
+    //
+    // Writable by anyone signed in, because the bot signs in anonymously
+    // exactly as a visitor does and has no more access than one. The fields
+    // are pinned to shape and size so the worst a passer-by can do is write a
+    // wrong name into a list of names, which the bot corrects the next time
+    // it sees that person speak.
+    match /chatRoster/{discordId} {
+      allow read: if true;
+      allow write: if isSignedIn()
+        && request.resource.data.id is string
+        && request.resource.data.id.size() <= 25
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 60
+        && request.resource.data.seen is number
+        && (!('avatar' in request.resource.data)
+            || (request.resource.data.avatar is string
+                && request.resource.data.avatar.size() <= 300));
       allow delete: if isStaff();
     }
 

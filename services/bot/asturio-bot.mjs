@@ -16,7 +16,7 @@ import {
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { getLinkCode, claimLinkCode, getSyncHistory, appendSyncHistory,
-         addChatMessage } from './firestore.mjs';
+         addChatMessage, upsertRosterEntry } from './firestore.mjs';
 
 const TOKEN     = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
@@ -926,7 +926,34 @@ client.once(Events.ClientReady, async c => {
   applyStatus(c.user, s);
   console.log(`Status: ${s.kind} "${s.text}" (${s.presence || 'online'})`);
   await applyAvatar(c.user);
+  if (ROSTER_SWEEP) rosterSweep(c).catch(e => console.error('roster sweep:', e.message || e));
 });
+
+// The whole membership at once, for people who have switched the Server
+// Members Intent on. Opt-in because without that intent the fetch returns
+// almost nothing, and asking for an intent that has not been granted stops
+// the bot dead rather than degrading. Repeated hourly so someone who joins
+// today does not have to speak before they can be pinged.
+async function rosterSweep(c) {
+  for (const guild of c.guilds.cache.values()) {
+    const members = await guild.members.fetch();
+    let n = 0;
+    for (const member of members.values()) {
+      if (member.user.bot) continue;
+      // Sequential rather than a flood of parallel writes: this is a
+      // background nicety and has no business competing with the chat bridge
+      // for the same Firestore quota.
+      await upsertRosterEntry({
+        id: member.user.id,
+        name: member.displayName || member.user.globalName || member.user.username,
+        avatar: member.user.displayAvatarURL({ extension: 'png', size: 64 }),
+      }).catch(() => {});
+      n++;
+    }
+    console.log(`Roster: ${n} people from ${guild.name}`);
+  }
+  setTimeout(() => rosterSweep(c).catch(() => {}), 60 * 60 * 1000);
+}
 
 client.on(Events.InteractionCreate, async (i) => {
   // Completion runs on every keystroke and Discord gives it three seconds, so
@@ -942,6 +969,9 @@ client.on(Events.InteractionCreate, async (i) => {
     return;
   }
   if (!i.isChatInputCommand()) return;
+  // Running any command is being seen, which is how somebody who reads more
+  // than they type still ends up pingable from the map.
+  rememberPerson(i.user, i.member);
   try {
     if (i.commandName === 'alerts') {
       await i.deferReply();
@@ -1078,6 +1108,60 @@ client.on(Events.InteractionCreate, async (i) => {
 // the website is listening to live.
 const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID || '';
 
+// ── Who the website is allowed to ping ──────────────────────────────────────
+//
+// The site has no Discord token and a webhook can only post, so it cannot ask
+// the server who is in it. The bot writes the list instead.
+//
+// By default this is "everyone the bot has actually seen": whoever speaks in
+// the bridged channel, whoever runs a command, whoever links their account.
+// That needs no privileged intent, which matters, because the alternative
+// (asking Discord for the whole member list) requires the Server Members
+// Intent, and a bot asking for an intent it has not been granted does not
+// degrade, it refuses to start. Growing the list from real activity cannot
+// break anything, and after a day of chat it is most of the active server.
+//
+// Set ROSTER_SWEEP=1 only if you have switched the Server Members Intent on
+// in the Discord developer portal AND added GuildMembers to the intents
+// below; then the whole membership is listed from the first minute.
+const ROSTER_SWEEP = process.env.ROSTER_SWEEP === '1';
+
+// Not awaited by anything that matters. Remembering a name is a convenience;
+// failing to remember one must never cost the message that triggered it.
+function rememberPerson(user, member) {
+  if (!user || user.bot) return;
+  upsertRosterEntry({
+    id: user.id,
+    name: member?.displayName || user.globalName || user.username,
+    avatar: user.displayAvatarURL({ extension: 'png', size: 64 }),
+  }).catch(e => console.error('roster:', e.message || e));
+}
+
+// Discord sends mentions down the wire as <@123>, not as a name. Written
+// straight into Firestore that is what the website would show: a row reading
+// "<@844029301...>" where a name belongs. So every mention is resolved to the
+// name that person actually goes by here, and the ids are kept alongside so
+// the site can tell whether the ping was aimed at the reader.
+function resolveMentions(m) {
+  let text = m.content || '';
+  const found = [];
+  for (const [id, user] of m.mentions.users) {
+    const member = m.mentions.members?.get(id) || null;
+    const name = member?.displayName || user.globalName || user.username;
+    // Both spellings: <@id> and the older <@!id> nickname form, which older
+    // clients still send and which would otherwise be left as raw text.
+    text = text.replace(new RegExp(`<@!?${id}>`, 'g'), `@${name}`);
+    found.push({ id, name });
+  }
+  // Roles and @everyone are turned into plain readable words rather than
+  // resolved: the site has no role list, and leaving the raw token would
+  // print an id at somebody.
+  for (const [id, role] of (m.mentions.roles || [])) {
+    text = text.replace(new RegExp(`<@&${id}>`, 'g'), `@${role.name}`);
+  }
+  return { text: text.trim(), mentions: found };
+}
+
 client.on(Events.MessageCreate, async (m) => {
   if (!CHAT_CHANNEL_ID || m.channelId !== CHAT_CHANNEL_ID) return;
   // Messages the website sent arrive here as webhook posts. Relaying those back
@@ -1085,7 +1169,11 @@ client.on(Events.MessageCreate, async (m) => {
   // webhookId check is what stops the bridge feeding itself in a loop.
   if (m.webhookId) return;
   if (m.author.bot) return;
-  const text = (m.content || '').trim();
+  // Seeing somebody speak is how they become pingable from the map. This runs
+  // before the empty-text check on purpose: a person who only ever posts
+  // pictures is still a person somebody may want to ping.
+  rememberPerson(m.author, m.member);
+  const { text, mentions } = resolveMentions(m);
   if (!text) return;   // attachment-only posts have nothing to show on the map
   try {
     await addChatMessage({
@@ -1093,6 +1181,7 @@ client.on(Events.MessageCreate, async (m) => {
       name: m.member?.displayName || m.author.globalName || m.author.username,
       discordId: m.author.id,
       avatar: m.author.displayAvatarURL({ extension: 'png', size: 64 }),
+      mentions,
     });
   } catch (e) {
     console.error('chat bridge (Discord -> radar):', e.message || e);

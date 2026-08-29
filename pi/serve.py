@@ -28,9 +28,17 @@ inside the served directory, so no request can read them:
     ~/.gwcfc_webhooks.json      {"chat": "https://discord.com/api/webhooks/...",
                                  "feedback": "https://discord.com/api/webhooks/..."}
 
-The relay also strips @everyone/@here from every string and pins
-allowed_mentions to nothing, so even the Pi's own door cannot be used to
-mass-ping, and it rate limits per sender.
+The relay also strips @everyone/@here from every string, and it rate limits
+per sender.
+
+Mentions are an allowlist, never a parse. The chat door accepts a list of
+Discord user ids and forwards allowed_mentions as {"parse": [], "users": ids}.
+The empty parse is the important half: it is what keeps @everyone, @here and
+every ROLE ping impossible no matter what the message text says, because
+Discord will only ping an id that appears in the users list. So naming a
+person pings that person, and nothing else in the message can ping anybody.
+Ids are checked to be plain digits and capped in number before they go
+anywhere near Discord.
 """
 
 import json
@@ -50,6 +58,17 @@ WEBHOOKS_FILE = os.path.expanduser("~/.gwcfc_webhooks.json")
 RELAY_PATHS = {"/relay/chat": "chat", "/relay/feedback": "feedback"}
 RELAY_MAX_BYTES = 8192
 RELAY_MIN_GAP_S = 2.0
+# How many people one message may ping. A ping is a notification on somebody
+# else's phone, so this is the number that decides whether the door can be
+# used to bother a whole channel one name at a time. Eight is more than any
+# real message needs and far short of a crowd.
+RELAY_MAX_MENTIONS = 8
+# A Discord id is a snowflake: digits only, and currently 17 to 19 of them.
+# The range is deliberately loose at both ends so this does not start
+# rejecting real accounts the year the ids get longer, but it stays strict
+# about the only thing that matters, which is that nothing but digits is ever
+# forwarded as an id.
+SNOWFLAKE_RE = re.compile(r"^[0-9]{5,25}$")
 
 _relay_last = {}  # sender ip -> monotonic time of the last accepted post
 
@@ -111,6 +130,37 @@ def sanitize_text(s):
     return s
 
 
+def clean_mentions(raw):
+    """
+    The people this message is allowed to ping, and nobody else.
+
+    Whatever arrives is treated as a list of strings and reduced to the ones
+    that are plainly Discord ids. Anything else is dropped silently rather
+    than refused: a message with one unusable id in it should still send,
+    just without that ping. Order is kept and duplicates removed, so naming
+    the same person twice is one ping rather than two.
+    """
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw:
+        # Numbers are accepted as well as strings because JSON will happily
+        # carry an id either way, and a caller doing the obvious thing should
+        # not have their pings silently vanish.
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, int):
+            item = str(item)
+        if not isinstance(item, str):
+            continue
+        item = item.strip()
+        if SNOWFLAKE_RE.match(item) and item not in out:
+            out.append(item)
+        if len(out) >= RELAY_MAX_MENTIONS:
+            break
+    return out
+
+
 def shape_payload(kind, payload):
     """
     The message is REBUILT from scratch out of the few fields the site
@@ -124,7 +174,13 @@ def shape_payload(kind, payload):
         content = sanitize_text(str(payload.get("content", "")))[:1900].strip()
         if not content:
             return None
-        return {"username": name, "content": content}
+        out = {"username": name, "content": content}
+        # Only the chat door carries mentions. Feedback is a form posted into a
+        # staff channel and has no business waking anyone up.
+        pings = clean_mentions(payload.get("mentions"))
+        if pings:
+            out["_mentions"] = pings
+        return out
 
     # feedback: exactly one embed with a known shape
     embeds = payload.get("embeds")
@@ -439,9 +495,22 @@ class CORSHandler(SimpleHTTPRequestHandler):
         if payload is None:
             self._reply_json(400, {"error": "nothing to relay"})
             return
-        # Belt and braces: sanitize_text defangs the words, this tells
-        # Discord to ping nobody regardless of what slipped through.
-        payload["allowed_mentions"] = {"parse": []}
+        # Mentions, decided here and nowhere else.
+        #
+        # "parse" stays EMPTY whatever happens. That single empty list is what
+        # makes @everyone, @here and every role ping impossible: Discord will
+        # not raise a ping for anything it was not explicitly handed, so the
+        # words in the message cannot ping on their own no matter how they are
+        # spelled. sanitize_text defangs those words too, but this is the half
+        # that actually holds.
+        #
+        # "users" is then the allowlist: the specific people the sender named.
+        # A <@id> in the text pings only if that id is in this list, so a
+        # message cannot smuggle in a ping for somebody the sender did not
+        # pick, and it cannot ping a role at all.
+        pings = payload.pop("_mentions", [])
+        payload["allowed_mentions"] = {"parse": [], "users": pings} if pings \
+            else {"parse": []}
 
         req = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"),

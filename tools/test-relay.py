@@ -179,8 +179,69 @@ def main():
            "discord.gg/i" not in m.get("content", ""), m.get("content", ""))
         ok("attacker embeds do not exist on the other side", "embeds" not in m, str(m.keys()))
         ok("avatar spoofing does not exist on the other side", "avatar_url" not in m, str(m.keys()))
-        ok("Discord is told to ping nobody, regardless",
+        ok("with nobody named, Discord is told to ping nobody",
            m.get("allowed_mentions") == {"parse": []}, str(m.get("allowed_mentions")))
+
+        print("\n2b. naming people pings them, and nothing else")
+        # The site can ask for a ping now, which it could not before. The
+        # question every check here is asking is the same one: can the door be
+        # used to ping somebody the sender did not pick? "parse" staying empty
+        # is what makes the answer no.
+        time.sleep(2.1)
+        code, body = post(port, "/relay/chat", {
+            "username": "Ralph (radar)",
+            "content": "look at this <@123456789012345678> @everyone <@&5555> now",
+            "mentions": ["123456789012345678"],
+        })
+        m = received[-1] if received else {}
+        am = m.get("allowed_mentions") or {}
+        ok("the named person is on the allowlist",
+           am.get("users") == ["123456789012345678"], str(am))
+        ok("parse stays EMPTY, so @everyone and @here still cannot fire",
+           am.get("parse") == [], str(am))
+        ok("no roles key, so a role ping in the text reaches nobody",
+           "roles" not in am, str(am))
+        ok("the mention token itself survives so Discord can render it",
+           "<@123456789012345678>" in m.get("content", ""), m.get("content", ""))
+        ok("and @everyone in the same message is still defanged",
+           "@everyone" not in m.get("content", ""), m.get("content", ""))
+
+        time.sleep(2.1)
+        code, _ = post(port, "/relay/chat", {
+            "content": "junk ids",
+            # Every one of these is a way somebody might try to smuggle
+            # something that is not a user id into the allowlist.
+            "mentions": ["everyone", "<@123>", "12", "1" * 40, "", None, True,
+                         {"id": "1"}, "123456789012345678'; DROP", "987654321098765432"],
+        })
+        am = (received[-1] if received else {}).get("allowed_mentions") or {}
+        ok("only the things that are actually ids survive",
+           am.get("users") == ["987654321098765432"], str(am))
+
+        time.sleep(2.1)
+        code, _ = post(port, "/relay/chat", {
+            "content": "a crowd",
+            "mentions": [str(10 ** 17 + i) for i in range(40)],
+        })
+        am = (received[-1] if received else {}).get("allowed_mentions") or {}
+        ok("one message cannot ping a crowd", len(am.get("users") or []) == 8,
+           str(len(am.get("users") or [])))
+
+        time.sleep(2.1)
+        code, _ = post(port, "/relay/chat", {
+            "content": "same person twice",
+            "mentions": ["123456789012345678", "123456789012345678"],
+        })
+        am = (received[-1] if received else {}).get("allowed_mentions") or {}
+        ok("naming one person twice is one ping",
+           am.get("users") == ["123456789012345678"], str(am))
+
+        time.sleep(2.1)
+        code, _ = post(port, "/relay/chat", {"content": "not a list",
+                                             "mentions": "123456789012345678"})
+        am = (received[-1] if received else {}).get("allowed_mentions") or {}
+        ok("a mentions field that is not a list pings nobody rather than throwing",
+           am == {"parse": []}, str(am))
 
         print("\n3. the brakes")
         code, _ = post(port, "/relay/chat", {"content": "again immediately"})
@@ -214,6 +275,18 @@ def main():
            and "discord.gg/s" not in e.get("description", ""), e.get("description", ""))
         ok("embed images and links do not survive",
            "image" not in e and "url" not in e, str(e.keys()))
+
+        time.sleep(2.1)
+        # Feedback is a form posted into a staff channel. Nobody filling one
+        # in has any business waking a person up, so the mentions field is not
+        # something that door reads at all.
+        code, _ = post(port, "/relay/feedback", {
+            "embeds": [{"description": "ping me please"}],
+            "mentions": ["123456789012345678"],
+        })
+        am = (received[-1] if received else {}).get("allowed_mentions") or {}
+        ok("the feedback door ignores mentions entirely",
+           am == {"parse": []}, str(am))
 
         print("\n5. the ambient door: keys stay home, answers get cached")
         code, body = get_json(port, "/relay/ambient")
