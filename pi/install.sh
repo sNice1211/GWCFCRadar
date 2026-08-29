@@ -8,6 +8,7 @@
 #
 #   gwcfc-models    builds the model images, hourly
 #   gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
+#   gwcfc-nowcast   extrapolates recent radar into a 0-2 hour nowcast
 #   gwcfc-sat       builds the GOES RGB composites, every ten minutes
 #   gwcfc-sst       builds the ocean temperature and heat fields, 4x a day
 #   gwcfc-cyclones  fetches the DeepMind cyclone runs
@@ -69,7 +70,12 @@ fi
 # ── 1. system packages ──────────────────────────────────────────────────────
 say "System packages"
 NEED=()
-for p in python3-venv python3-numpy python3-scipy python3-pillow python3-requests libeccodes-tools ffmpeg; do
+# build-essential and python3-dev exist for one thing: pysteps ships no wheel
+# for any platform, only a source archive, so pip always compiles its two
+# Cython motion-estimation extensions rather than downloading something
+# prebuilt. Without a compiler that install fails outright rather than
+# falling back to anything slower.
+for p in python3-venv python3-numpy python3-scipy python3-pillow python3-requests libeccodes-tools ffmpeg build-essential python3-dev; do
   dpkg -s "$p" >/dev/null 2>&1 || NEED+=("$p")
 done
 if [ ${#NEED[@]} -gt 0 ]; then
@@ -123,6 +129,20 @@ fi
 if ! "$VENV/bin/python" -c "import matplotlib" >/dev/null 2>&1; then
   "$VENV/bin/pip" install --quiet matplotlib || \
     warn "matplotlib would not install; sounding images will not build"
+fi
+# pysteps runs the radar nowcast; opencv-python-headless is its Lucas-Kanade
+# motion estimator (pysteps' LK method calls into OpenCV directly, with no
+# fallback). opencv-python-headless is a plain manylinux wheel. pysteps is
+# not: it ships no wheel for any platform, only a source archive, so this is
+# a real compile - the build-essential/python3-dev pulled in above exist for
+# exactly this - rather than the instant install everything else here is.
+if ! "$VENV/bin/python" -c "import cv2" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet opencv-python-headless || \
+    warn "opencv-python-headless would not install; nowcast will not build"
+fi
+if ! "$VENV/bin/python" -c "import pysteps" >/dev/null 2>&1; then
+  "$VENV/bin/pip" install --quiet pysteps || \
+    warn "pysteps would not install; nowcast will not build"
 fi
 # ── SounderPy and SHARPpy, installed WITHOUT their dependency lists ─────
 #
@@ -381,6 +401,37 @@ Description=Radar every five minutes
 
 [Timer]
 OnCalendar=*:0/5
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# The 0-2 hour nowcast, extrapolated from the last few composite reflectivity
+# scans build_mrms() keeps as raw values. Its own timer rather than riding
+# radar's: build_mrms() has its own per-pass time budget shared across the
+# whole MRMS catalogue, and a slow pysteps run has no business eating into
+# that. Ten minutes, not five, because composite frames are five minutes
+# apart and a five-minute nowcast timer would often find no new frame to
+# work from. Offset to *:3 so it trails the radar timer's *:0 pass rather
+# than racing it for the same fresh scan.
+cat > "$UNITS/gwcfc-nowcast.service" <<EOF
+[Unit]
+Description=Extrapolate recent radar composites into a 0-2 hour nowcast
+
+[Service]
+Type=oneshot
+ExecStart=-$VENV/bin/python $REPO/pi/nowcast_pipeline.py
+TimeoutStartSec=600
+Nice=10
+EOF
+
+cat > "$UNITS/gwcfc-nowcast.timer" <<'EOF'
+[Unit]
+Description=Nowcast every ten minutes
+
+[Timer]
+OnCalendar=*:3/10
 Persistent=false
 
 [Install]
@@ -784,6 +835,7 @@ systemctl --user enable  gwcfc-tunnel.service      >/dev/null 2>&1
 systemctl --user restart gwcfc-tunnel.service      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-models.timer   >/dev/null 2>&1
 systemctl --user enable --now gwcfc-radar.timer    >/dev/null 2>&1
+systemctl --user enable --now gwcfc-nowcast.timer  >/dev/null 2>&1
 systemctl --user enable --now gwcfc-sat.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-snd.timer      >/dev/null 2>&1
 systemctl --user enable --now gwcfc-sst.timer      >/dev/null 2>&1

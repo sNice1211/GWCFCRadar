@@ -3987,6 +3987,21 @@ def render_data_png(values, lats, lo, hi, out_path):
         out_path, optimize=True)
 
 
+def read_data_png(path):
+    """
+    Read back a grid written by render_data_png.
+
+    Mirrors the browser's own decoder exactly (index.html's sounding reader:
+    high byte times 256 plus low byte, over 65535 steps) so the two never
+    drift apart. Returns (quantised, has_data); the caller rescales with the
+    same lo/hi it encoded with: lo + quantised / 65535 * (hi - lo).
+    """
+    img = np.asarray(Image.open(path).convert("RGBA"))
+    hib = img[..., 0].astype(np.float64)
+    lob = img[..., 1].astype(np.float64)
+    return hib * 256.0 + lob, img[..., 3] > 0
+
+
 def open_levels(grib_path):
     """
     Pull pressure-level fields out of a GRIB file.

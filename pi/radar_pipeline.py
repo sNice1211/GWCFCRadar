@@ -50,7 +50,8 @@ from PIL import Image
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gfs_pipeline import (HTTP, LUTS, MAX_EDGE_PX, Lock, band_alpha,
                           bounds_from, disk_ok, free_mb, hours_for_disk, log,
-                          lut_for, regrid_to_latlon, write_json)  # noqa: E402
+                          lut_for, regrid_to_latlon, render_data_png,
+                          write_json)  # noqa: E402
 
 OUT_DIR = os.path.expanduser("~/wxdata/radar")
 
@@ -1795,6 +1796,14 @@ def build_mrms():
                 arr[arr < -900] = np.nan
             else:
                 arr[arr < 0] = np.nan
+            # Kept at full resolution, before the block-max halving below,
+            # for the nowcast pipeline: a block *maximum* is the right choice
+            # for showing a rotation track's filaments on the display PNG,
+            # and the wrong one for a motion estimate, which would end up
+            # biased toward overestimating intensity and persistence at
+            # every step it was ever downsampled at. Only the composite
+            # product pays for this; every other MRMS product is unaffected.
+            raw_arr = arr if name == "composite" else None
             # Halve the grid by taking each 2x2 block's maximum, not by slicing.
             # A rotation track is a filament one or two cells wide, and plain
             # slicing deletes every filament that falls on a dropped row; these
@@ -1844,6 +1853,13 @@ def build_mrms():
             fdir = now.strftime("%Y%m%d_%H%M%S")
             fout = os.path.join(out, fdir)
             os.makedirs(fout, exist_ok=True)
+            if raw_arr is not None:
+                # Lossless, for nowcast_pipeline.py to read back as real dBZ
+                # rather than a colour. Lands in the same scan folder as
+                # composite.png, so it rides the same pruning below for free.
+                render_data_png(
+                    raw_arr, np.linspace(north, south, raw_arr.shape[0]),
+                    lo, hi, os.path.join(fout, "composite_raw.png"))
             path = os.path.join(fout, f"{name}.png")
             Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA").save(
                 path, optimize=True)

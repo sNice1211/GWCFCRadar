@@ -31,6 +31,7 @@ prints the address to give the site. Safe to run again if a step fails.
 
     gwcfc-models    builds the model images, hourly
     gwcfc-radar     decodes Level 2 and Level 3 radar, every five minutes
+    gwcfc-nowcast   extrapolates recent radar into a 0-2 hour nowcast
     gwcfc-cyclones  DeepMind cyclone tracks and genesis, every three hours
     gwcfc-serve     serves them with the header that makes them readable
     gwcfc-tunnel    gives them a public HTTPS address
@@ -319,6 +320,30 @@ the number means towards the radar on one side of zero and away on the other,
 and the thing worth seeing is the two sitting next to each other, which is
 rotation. Green towards, red away, nothing at all at the middle, because a
 colour at zero fills the map with air that is not moving.
+
+## Nowcast, extrapolated from the last few scans
+
+    ~/wxenv/bin/pip install pysteps opencv-python-headless
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/nowcast_pipeline.py --check
+    ~/wxenv/bin/python ~/GWCFCRadar/pi/nowcast_pipeline.py
+
+Where the composite reflectivity mosaic is headed over the next two hours,
+worked out from where it has been over the last ten minutes. build_mrms()
+keeps the last few scans of that one product as real dBZ rather than only as
+a colour, alongside the picture it already built; this reads three of them,
+estimates a motion field with pysteps' Lucas-Kanade method, and advects the
+newest frame along it.
+
+Ten minute steps out to two hours, not five minute steps: skill in a pure
+extrapolation falls off within about an hour, so finer steps than that would
+only be more frames of the same fading signal, not more accuracy. A forecast
+built from a scan more than fifteen minutes old is skipped rather than
+served stale.
+
+Its own timer, ten minutes, a few minutes behind radar's own five, so a fresh
+scan has usually landed by the time this runs. Kept off build_mrms()'s own
+pass rather than folded into it: that pass has a time budget shared across
+seventy-odd products, and one slow pysteps run has no business spending it.
 
 ## Cyclones, from DeepMind
 
