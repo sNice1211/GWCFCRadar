@@ -22650,6 +22650,163 @@ function _mrmsToggle(key, pillId) {
   });
 }
 
+// ── STORM SPOTLIGHT (DGMR) ──────────────────────────────────────────────────
+// A learned nowcast (DeepMind's DGMR) for whichever storm is currently
+// strongest anywhere in the US - see pi/dgmr_pipeline.py. Deliberately kept
+// out of the _mrmsLoop machinery above: that system assumes every active
+// layer shares one national extent and one timeline, and DGMR is the
+// opposite of that - one small ~2.5 degree box that moves to a different
+// storm every cycle, with its own fixed 18-frame forecast. Wiring it into
+// that shared state machine would mean touching stepFrame/seekFrame's
+// dispatch chain that real radar playback depends on, for a feature that is
+// still experimental. So this is entirely self-contained: its own toggle,
+// its own fetch, its own tiny player, nothing else on the page reaches into
+// it or is reached by it.
+let _spotOn = false;
+let _spotManifest = null;
+let _spotIdx = 0;
+let _spotTimer = null;
+let _spotRect = null;
+let _spotOv = null;
+
+function _spotPanel() {
+  let el = document.getElementById('spot-panel');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'spot-panel';
+  el.style.cssText =
+    'position:absolute;right:10px;bottom:100px;width:220px;z-index:900;' +
+    'background:#10161f;border:1px solid #324258;border-radius:8px;' +
+    'padding:10px;font:12px/1.4 -apple-system,Segoe UI,sans-serif;color:#cfd8e3;' +
+    'display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4);';
+  el.innerHTML =
+    '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">' +
+    '<span style="font-size:9px;padding:2px 6px;border-radius:10px;letter-spacing:1px;' +
+    'background:rgba(255,224,102,0.18);color:#ffe066;border:1px solid rgba(255,224,102,0.4);">AI</span>' +
+    '<b style="font-size:12px;">Storm Spotlight</b></div>' +
+    '<img id="spot-img" style="width:100%;border-radius:4px;background:#000;display:block;">' +
+    '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;">' +
+    '<button id="spot-play" onclick="_spotPlayToggle()" style="background:#1c2634;' +
+    'border:1px solid #324258;color:#cfd8e3;border-radius:6px;padding:3px 8px;' +
+    'cursor:pointer;font-size:12px;">&#9654;</button>' +
+    '<input id="spot-slider" type="range" min="0" max="17" value="0" style="flex:1;" ' +
+    'oninput="_spotShow(+this.value)">' +
+    '<span id="spot-time" style="font-variant-numeric:tabular-nums;font-size:11px;' +
+    'min-width:34px;text-align:right;">+5m</span></div>' +
+    '<div style="margin-top:6px;font-size:10.5px;opacity:0.7;">' +
+    'Experimental. A learned prediction, not physics - tends to understate how ' +
+    'strong a storm actually is. Treat it as a rough direction, not a number.</div>';
+  document.body.appendChild(el);
+  return el;
+}
+
+async function _spotLoad() {
+  const base = _hdBase || await _hdResolveBase();
+  if (!base) return;
+  const man = await fetch(`${base}/radar/dgmr/dgmr.json?t=${Date.now()}`,
+                          { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!man || !Array.isArray(man.frames) || !man.frames.length) {
+    _spotManifest = null;
+    if (_spotRect) { try { map.removeLayer(_spotRect); } catch (e) {} _spotRect = null; }
+    if (_spotOv) { try { map.removeLayer(_spotOv); } catch (e) {} _spotOv = null; }
+    return;
+  }
+  _spotManifest = man;
+  if (_spotRect) { try { map.removeLayer(_spotRect); } catch (e) {} }
+  // The box itself, so it is obvious where on the map this is even looking -
+  // without it "Storm Spotlight" is a picture with no place attached to it.
+  _spotRect = L.rectangle(man.bounds, {
+    color: '#ffe066', weight: 1, fill: false, dashArray: '4,4',
+    interactive: false, pane: 'radarPane',
+  }).addTo(map);
+  _spotIdx = Math.min(_spotIdx, man.frames.length - 1);
+  _spotShow(_spotIdx);
+}
+
+function _spotShow(idx) {
+  if (!_spotManifest || !_spotManifest.frames.length) return;
+  const f = _spotManifest.frames;
+  idx = Math.max(0, Math.min(f.length - 1, idx));
+  _spotIdx = idx;
+  const want = f[idx];
+  const base = _hdBase;
+  if (base) {
+    const url = `${base}/radar/dgmr/${want.file}`;
+    if (_spotOv) {
+      if (_spotOv._gwUrl !== url) { _spotOv.setUrl(url); _spotOv._gwUrl = url; }
+    } else {
+      _spotOv = L.imageOverlay(url, _spotManifest.bounds,
+        { opacity: 0.8, interactive: false, pane: 'radarPane' }).addTo(map);
+      _spotOv._gwUrl = url;
+    }
+  }
+  const img = document.getElementById('spot-img');
+  if (img && base) img.src = `${base}/radar/dgmr/${want.file}`;
+  const slider = document.getElementById('spot-slider');
+  if (slider) { slider.max = f.length - 1; slider.value = idx; }
+  const timeEl = document.getElementById('spot-time');
+  if (timeEl) timeEl.textContent = `+${want.lead_min}m`;
+}
+
+function _spotPlayToggle() {
+  const btn = document.getElementById('spot-play');
+  if (_spotTimer) {
+    clearInterval(_spotTimer);
+    _spotTimer = null;
+    if (btn) btn.innerHTML = '&#9654;';
+    return;
+  }
+  if (btn) btn.innerHTML = '&#10074;&#10074;';
+  _spotTimer = setInterval(() => {
+    if (!_spotManifest) return;
+    _spotShow((_spotIdx + 1) % _spotManifest.frames.length);
+  }, 700);
+}
+
+function _spotToggle() {
+  _spotOn = !_spotOn;
+  const btn = document.getElementById('spot-toggle');
+  if (btn) btn.classList.toggle('active', _spotOn);
+  const panel = _spotPanel();
+  panel.style.display = _spotOn ? 'block' : 'none';
+  if (_spotOn) {
+    _spotLoad();
+    // Same five-minute beat as pi/dgmr_pipeline.py's own cadence - no point
+    // polling faster than a new one could possibly exist.
+    if (!_spotRefresh) _spotRefresh = setInterval(_spotLoad, 5 * 60 * 1000);
+  } else {
+    if (_spotRefresh) { clearInterval(_spotRefresh); _spotRefresh = null; }
+    if (_spotTimer) { clearInterval(_spotTimer); _spotTimer = null; }
+    if (_spotRect) { try { map.removeLayer(_spotRect); } catch (e) {} _spotRect = null; }
+    if (_spotOv) { try { map.removeLayer(_spotOv); } catch (e) {} _spotOv = null; }
+  }
+}
+let _spotRefresh = null;
+
+function _spotInitButton() {
+  if (document.getElementById('spot-toggle')) return;
+  const btn = document.createElement('button');
+  btn.id = 'spot-toggle';
+  btn.title = 'Storm Spotlight: an experimental AI-predicted nowcast for the strongest storm in the US right now';
+  btn.textContent = 'Storm Spotlight';
+  btn.onclick = _spotToggle;
+  btn.style.cssText =
+    'position:absolute;right:10px;bottom:64px;z-index:900;' +
+    'background:#1c2634;border:1px solid #324258;color:#cfd8e3;' +
+    'border-radius:6px;padding:6px 10px;cursor:pointer;font-size:11px;' +
+    'font-family:-apple-system,Segoe UI,sans-serif;';
+  document.body.appendChild(btn);
+  const style = document.createElement('style');
+  style.textContent = '#spot-toggle.active{background:#324258;border-color:#ffe066;color:#ffe066;}';
+  document.head.appendChild(style);
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _spotInitButton);
+} else {
+  _spotInitButton();
+}
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // ── POLYGON SPATIAL FILTER ────────────────────────────────────────────────
@@ -52084,7 +52241,7 @@ function lqmOpenTutorial() {
 // summary instead of a raw commit log. Dismissing it is remembered per
 // message (keyed on the text itself, not a version number), so editing
 // this string is what makes a previously-dismissed bar reappear.
-const APP_LATEST_UPDATE = 'Composite reflectivity radar can now show a short forecast. Turn it on and once the Pi has built one, the scrub bar keeps going past the newest real scan into about two hours of pysteps-predicted movement, marked with a yellow FCST badge so you always know which frames are observed and which are a guess.';
+const APP_LATEST_UPDATE = 'New: Storm Spotlight, a small button bottom-right on the map. It uses an AI model (DeepMind\'s DGMR) to predict 90 minutes of movement for whichever storm is currently strongest in the whole country, and draws a dashed box on the map showing where it is looking. It is experimental and tends to understate how strong a storm really is, so treat it as a rough direction, not a number.';
 
 function _initUpdateBar() {
   const bar = document.getElementById('update-bar');
